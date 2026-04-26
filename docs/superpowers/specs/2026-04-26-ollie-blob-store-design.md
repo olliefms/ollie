@@ -230,10 +230,10 @@ When `s=` is present, `total` reflects the number of items returned (up to `limi
 
 Content negotiation on `Accept` header.
 
-- `Accept: application/json` → full metadata JSON (all fields including `summary`, `updated_at`)
+- `Accept: application/json` → full metadata JSON (all fields including current `status`, `summary`, `updated_at`)
 - `Accept: */*` or `Accept: application/octet-stream` → raw file bytes with correct `Content-Type` and `Content-Disposition` headers
 
-Returns `404` if ID not found, `409 Conflict` if status is not `ready` and raw bytes are requested.
+The file is written to disk synchronously during upload before the `202` is returned, so raw bytes are always available regardless of processing status. Embedding and summary enrichment does not gate data access. Returns `404` if the ID is not found.
 
 ---
 
