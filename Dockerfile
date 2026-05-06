@@ -1,7 +1,7 @@
 # Dockerfile
-FROM rust:1.78-slim AS builder
+FROM rust:1.91-slim AS builder
 
-RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y pkg-config libssl-dev protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -20,6 +20,7 @@ RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/
 COPY --from=builder /app/target/release/ollie /usr/local/bin/ollie
 
 RUN useradd -m -u 1001 ollie
+RUN mkdir -p /data/blobs /data/lancedb && chown -R ollie:ollie /data
 USER ollie
 
 EXPOSE 3000
