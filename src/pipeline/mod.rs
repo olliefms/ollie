@@ -1,6 +1,7 @@
 // src/pipeline/mod.rs
 pub mod geocoding;
 pub mod recovery;
+pub mod routing;
 pub mod worker;
 
 use crate::{ai::OllamaClient, db::DbClient, storage::BlobStore};
@@ -60,10 +61,24 @@ pub fn spawn_geocoding_pipeline(
 }
 
 pub fn spawn_routing_pipeline(
-    _workers: usize,
-    _db: Arc<DbClient>,
-    _ors: Arc<crate::routing::RoutingClient>,
+    workers: usize,
+    db: Arc<DbClient>,
+    ors: Arc<crate::routing::RoutingClient>,
 ) -> async_channel::Sender<uuid::Uuid> {
-    let (tx, _rx) = async_channel::bounded::<uuid::Uuid>(256);
+    let workers = workers.max(1);
+    let (tx, rx) = async_channel::bounded::<uuid::Uuid>(256);
+    for i in 0..workers {
+        let rx = rx.clone();
+        let db = db.clone();
+        let ors = ors.clone();
+        tokio::spawn(async move {
+            tracing::info!("routing worker {i} started");
+            while let Ok(id) = rx.recv().await {
+                if let Err(e) = routing::process_load_routing(id, &db, &ors).await {
+                    tracing::error!("routing worker {i} error for {id}: {e}");
+                }
+            }
+        });
+    }
     tx
 }
