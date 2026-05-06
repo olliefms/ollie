@@ -1,0 +1,33 @@
+# docker-compose.yml
+services:
+  blob-store:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY is required}
+      OLLAMA_BASE_URL: http://ollama:11434
+      BLOB_STORE_PATH: /data/blobs
+      LANCEDB_PATH: /data/lancedb
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+      OLLAMA_SUMMARY_MODEL: ${OLLAMA_SUMMARY_MODEL:-llama3.2}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-llava}
+      OLLAMA_EMBED_DIM: ${OLLAMA_EMBED_DIM:-768}
+      PIPELINE_WORKERS: ${PIPELINE_WORKERS:-1}
+      RUST_LOG: ollie=info
+    volumes:
+      - ./data:/data
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+volumes:
+  ollama-models:
