@@ -166,7 +166,7 @@ PDFs use `lopdf::Document::load_mem()`. If lopdf can't extract ≥50 words, the 
 | `OLLAMA_BASE_URL` | No | `http://localhost:11434` | Ollama API base URL |
 | `OLLAMA_EMBED_MODEL` | No | `nomic-embed-text` | Embedding model |
 | `OLLAMA_SUMMARY_MODEL` | No | `llama3.2` | Text summarization model |
-| `OLLAMA_VISION_MODEL` | No | `llava` | Vision/image description model |
+| `OLLAMA_VISION_MODEL` | No | `moondream` | Vision/image description model |
 | `OLLAMA_EMBED_DIM` | No | `768` | Embedding dimension (must match model) |
 | `PIPELINE_WORKERS` | No | `1` | Concurrent pipeline workers |
 

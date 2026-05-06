@@ -7,9 +7,9 @@ pub enum Extractable {
     /// Raw bytes to send to the vision model (image or sparse PDF)
     ImageBytes(Bytes),
     /// lopdf extracted enough tokens but the alphanumeric ratio is too low —
-    /// likely CID-keyed or custom-encoded fonts. Needs hybrid vision extraction.
-    /// TODO: wire up vision path once issue #3 (llava segfault) is resolved.
-    GibberishPdf,
+    /// likely CID-keyed or custom-encoded fonts. Carries the raw lopdf text for
+    /// use as auxiliary context in hybrid vision extraction.
+    GibberishPdf(String),
     Unsupported,
 }
 
@@ -26,7 +26,7 @@ pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
         let text = extract_pdf_text(data);
         if word_count(&text) >= 50 {
             if is_gibberish(&text) {
-                return Extractable::GibberishPdf;
+                return Extractable::GibberishPdf(text);
             }
             return Extractable::Text(text);
         }
