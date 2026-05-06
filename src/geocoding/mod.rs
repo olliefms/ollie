@@ -29,9 +29,15 @@ struct Coordinates {
     y: f64, // latitude
 }
 
+impl Default for GeocodingClient {
+    fn default() -> Self {
+        Self { client: Client::new() }
+    }
+}
+
 impl GeocodingClient {
     pub fn new() -> Self {
-        Self { client: Client::new() }
+        Self::default()
     }
 
     /// If the address string looks like "lat,lng", parse it directly.

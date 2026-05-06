@@ -42,6 +42,7 @@ impl DbClient {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_facility_metadata(
         &self, id: Uuid,
         name: Option<String>, address: Option<String>,

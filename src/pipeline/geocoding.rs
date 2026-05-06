@@ -5,7 +5,6 @@ use crate::{
     error::AppError,
     geocoding::GeocodingClient,
 };
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub async fn process_facility_geocoding(
@@ -44,6 +43,7 @@ pub async fn process_facility_geocoding(
 mod tests {
     use super::*;
     use crate::{db::DbClient, geocoding::GeocodingClient, models::GeocodeStatus};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[tokio::test]
