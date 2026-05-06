@@ -21,7 +21,7 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
     let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
     let ai = Arc::new(OllamaClient::new(
-        "http://localhost:11434", "nomic-embed-text", "llama3.2", "llava",
+        "http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream",
     ));
     let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
     let ors = Arc::new(ollie::routing::RoutingClient::new(""));
