@@ -6,10 +6,6 @@ pub enum Extractable {
     Text(String),
     /// Raw bytes to send to the vision model (image or sparse PDF)
     ImageBytes(Bytes),
-    /// lopdf extracted enough tokens but the alphanumeric ratio is too low —
-    /// likely CID-keyed or custom-encoded fonts. Carries the raw lopdf text for
-    /// use as auxiliary context in hybrid vision extraction.
-    GibberishPdf(String),
     Unsupported,
 }
 
@@ -25,9 +21,6 @@ pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
     if mime_type == "application/pdf" {
         let text = extract_pdf_text(data);
         if word_count(&text) >= 50 {
-            if is_gibberish(&text) {
-                return Extractable::GibberishPdf(text);
-            }
             return Extractable::Text(text);
         }
         return Extractable::ImageBytes(data.clone());
@@ -45,24 +38,7 @@ pub fn bytes_to_base64(data: &Bytes) -> String {
 }
 
 fn extract_pdf_text(data: &[u8]) -> String {
-    let Ok(doc) = lopdf::Document::load_mem(data) else {
-        return String::new();
-    };
-    let page_nums: Vec<u32> = doc.get_pages().keys().copied().collect();
-    let mut text = String::new();
-    for page_num in page_nums {
-        if let Ok(page_text) = doc.extract_text(&[page_num]) {
-            text.push_str(&page_text);
-            text.push('\n');
-        }
-    }
-    text
-}
-
-fn is_gibberish(text: &str) -> bool {
-    let alphanumeric = text.chars().filter(|c| c.is_alphanumeric()).count();
-    let total = text.chars().filter(|c| !c.is_whitespace()).count();
-    total > 0 && (alphanumeric as f64 / total as f64) < 0.5
+    pdf_extract::extract_text_from_mem(data).unwrap_or_default()
 }
 
 fn word_count(s: &str) -> usize {
@@ -103,22 +79,6 @@ mod tests {
         assert_eq!(word_count(""), 0);
     }
 
-    #[test]
-    fn test_is_gibberish_with_clean_text() {
-        assert!(!is_gibberish("Landstar Ranger Inc Freight Bill 4385951 Equipment 53VN Total Miles 2217"));
-    }
-
-    #[test]
-    fn test_is_gibberish_with_symbol_heavy_text() {
-        // Simulates lopdf output from CID-encoded fonts: lots of symbols, few alphanumeric chars
-        let garbage: String = "⌁⌂⌃⌄⌅⌆⌇⌈⌉⌊⌋⌌⌍⌎⌏⌐⌑⌒⌓⌔⌕⌖⌗⌘⌙⌚⌛⌜⌝⌞⌟⌠⌡⌢⌣⌤⌥⌦⌧⌨〈〉⌫⌬⌭⌮⌯⌰⌱⌲⌳⌴⌵⌶⌷⌸⌹⌺⌻⌼⌽⌾⌿".repeat(3);
-        assert!(is_gibberish(&garbage));
-    }
-
-    #[test]
-    fn test_is_gibberish_empty_is_not_gibberish() {
-        assert!(!is_gibberish(""));
-    }
 
     #[test]
     fn test_bytes_to_base64_roundtrips() {
