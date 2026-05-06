@@ -1,0 +1,43 @@
+[package]
+name = "ollie"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "ollie"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ollie"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.7", features = ["multipart"] }
+axum-extra = { version = "0.9", features = ["query"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["trace"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+sha2 = "0.10"
+hex = "0.4"
+lancedb = "0.27"
+arrow-array = "53"
+arrow-schema = "53"
+async-channel = "2"
+reqwest = { version = "0.12", features = ["json"] }
+mime_guess = "2"
+lopdf = "0.32"
+base64 = { version = "0.22", features = ["std"] }
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "1"
+dotenvy = "0.15"
+futures = "0.3"
+bytes = "1"
+anyhow = "1"
+
+[dev-dependencies]
+axum-test = "15"
+tempfile = "3"
