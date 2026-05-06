@@ -4,7 +4,9 @@ use bytes::Bytes;
 
 pub enum Extractable {
     Text(String),
-    /// Raw bytes to send to the vision model (image or sparse PDF)
+    /// Scanned PDF: raw bytes + whatever garbled text was extracted (may be empty)
+    ScannedPdf(Bytes, String),
+    /// True image bytes to send to the vision model
     ImageBytes(Bytes),
     Unsupported,
 }
@@ -23,7 +25,7 @@ pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
         if word_count(&text) >= 50 {
             return Extractable::Text(text);
         }
-        return Extractable::ImageBytes(data.clone());
+        return Extractable::ScannedPdf(data.clone(), text);
     }
 
     if mime_type.starts_with("image/") {

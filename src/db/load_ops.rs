@@ -119,7 +119,7 @@ impl DbClient {
         limit: usize,
         offset: usize,
     ) -> Result<(usize, Vec<LoadListItem>), AppError> {
-        let filter = build_load_filter(status_filter, customer_filter, tag_filter, from_date, to_date);
+        let filter = build_load_filter(status_filter, customer_filter, tag_filter, from_date, to_date)?;
         let total = self.load_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut q = self.load_table.query().limit(limit + offset);
@@ -138,7 +138,7 @@ impl DbClient {
         tag_filter: &[String],
         limit: usize,
     ) -> Result<Vec<LoadListItem>, AppError> {
-        let filter = build_load_filter(status_filter, customer_filter, tag_filter, None, None);
+        let filter = build_load_filter(status_filter, customer_filter, tag_filter, None, None)?;
         let mut q = self.load_table.query()
             .nearest_to(embedding)
             .map_err(|e| AppError::Internal(e.to_string()))?
@@ -328,7 +328,7 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
 fn build_load_filter(
     status: Option<&str>, customer: Option<&str>,
     tags: &[String], from: Option<&str>, to: Option<&str>,
-) -> Option<String> {
+) -> Result<Option<String>, AppError> {
     let mut parts: Vec<String> = Vec::new();
     // Escape single quotes to prevent SQL injection in LanceDB filter strings
     if let Some(s) = status { parts.push(format!("status = '{}'", s.replace('\'', "''"))); }
@@ -340,9 +340,17 @@ fn build_load_filter(
         let tag = tag.replace('\'', "''");
         parts.push(format!("tags LIKE '%\"{tag}\"%'"));
     }
-    if let Some(f) = from { parts.push(format!("created_at >= '{f}'")); }
-    if let Some(t) = to { parts.push(format!("created_at <= '{t}'")); }
-    if parts.is_empty() { None } else { Some(parts.join(" AND ")) }
+    if let Some(f) = from {
+        chrono::DateTime::parse_from_rfc3339(f)
+            .map_err(|_| AppError::BadRequest("invalid 'from' datetime".into()))?;
+        parts.push(format!("created_at >= '{f}'"));
+    }
+    if let Some(t) = to {
+        chrono::DateTime::parse_from_rfc3339(t)
+            .map_err(|_| AppError::BadRequest("invalid 'to' datetime".into()))?;
+        parts.push(format!("created_at <= '{t}'"));
+    }
+    Ok(if parts.is_empty() { None } else { Some(parts.join(" AND ")) })
 }
 
 async fn collect_stream(
@@ -467,5 +475,25 @@ mod tests {
         db.update_load_miles(load.id, 385.5).await.unwrap();
         let fetched = db.get_load_by_id(load.id).await.unwrap();
         assert!((fetched.miles.unwrap() - 385.5).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_build_load_filter_valid_dates() {
+        let filter = build_load_filter(None, None, &[], Some("2026-01-01T00:00:00Z"), Some("2026-12-31T23:59:59Z")).unwrap();
+        let f = filter.unwrap();
+        assert!(f.contains("created_at >= '2026-01-01T00:00:00Z'"));
+        assert!(f.contains("created_at <= '2026-12-31T23:59:59Z'"));
+    }
+
+    #[test]
+    fn test_build_load_filter_invalid_from_returns_bad_request() {
+        let result = build_load_filter(None, None, &[], Some("' OR 1=1--"), None);
+        assert!(matches!(result, Err(AppError::BadRequest(_))));
+    }
+
+    #[test]
+    fn test_build_load_filter_invalid_to_returns_bad_request() {
+        let result = build_load_filter(None, None, &[], None, Some("not-a-date"));
+        assert!(matches!(result, Err(AppError::BadRequest(_))));
     }
 }
