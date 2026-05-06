@@ -100,6 +100,14 @@ impl DbClient {
         self.insert_load(&record).await
     }
 
+    pub async fn clear_load_miles(&self, id: Uuid) -> Result<(), AppError> {
+        let mut record = self.get_load_by_id(id).await?;
+        record.miles = None;
+        record.updated_at = Utc::now();
+        self.delete_load_by_id(id).await?;
+        self.insert_load(&record).await
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn list_loads(
         &self,
@@ -404,6 +412,7 @@ mod tests {
         let (db, _dir) = test_db().await;
         let load = sample_load();
         db.insert_load(&load).await.unwrap();
+        db.transition_load_status(load.id, LoadStatus::Assigned, None, None, None).await.unwrap();
         db.transition_load_status(load.id, LoadStatus::Dispatched, None, None, None).await.unwrap();
         let fetched = db.get_load_by_id(load.id).await.unwrap();
         assert_eq!(fetched.status, LoadStatus::Dispatched);

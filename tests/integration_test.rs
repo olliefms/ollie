@@ -477,6 +477,9 @@ async fn test_dispatch_transitions_to_dispatched() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let id = create_test_load(&server, &fac_id).await;
 
+    server.post(&format!("/api/v1/loads/{id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret").await;
+
     let resp = server.post(&format!("/api/v1/loads/{id}/dispatch"))
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
         .await;
@@ -502,6 +505,8 @@ async fn test_full_load_lifecycle() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let id = create_test_load(&server, &fac_id).await;
 
+    server.post(&format!("/api/v1/loads/{id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret").await;
     let dispatch = server.post(&format!("/api/v1/loads/{id}/dispatch"))
         .add_header(header::AUTHORIZATION, "Bearer test-secret").await;
     assert_eq!(dispatch.json::<serde_json::Value>()["status"], "dispatched");
@@ -544,7 +549,7 @@ async fn test_cancel_load() {
 }
 
 #[tokio::test]
-async fn test_assign_transitions_planned_to_dispatched() {
+async fn test_assign_transitions_planned_to_assigned() {
     let (server, _b, _d, _rx) = test_server().await;
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let id = create_test_load(&server, &fac_id).await;
@@ -553,5 +558,5 @@ async fn test_assign_transitions_planned_to_dispatched() {
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
         .await;
     assert_eq!(resp.status_code(), 200);
-    assert_eq!(resp.json::<serde_json::Value>()["status"], "dispatched");
+    assert_eq!(resp.json::<serde_json::Value>()["status"], "assigned");
 }
