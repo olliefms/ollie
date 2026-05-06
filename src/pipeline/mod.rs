@@ -1,4 +1,5 @@
 // src/pipeline/mod.rs
+pub mod geocoding;
 pub mod recovery;
 pub mod worker;
 
@@ -34,12 +35,27 @@ pub fn spawn_pipeline(
 }
 
 pub fn spawn_geocoding_pipeline(
-    _workers: usize,
-    _db: Arc<DbClient>,
-    _geocoding: Arc<crate::geocoding::GeocodingClient>,
-    _ai: Arc<crate::ai::OllamaClient>,
+    workers: usize,
+    db: Arc<DbClient>,
+    geocoding: Arc<crate::geocoding::GeocodingClient>,
+    ai: Arc<crate::ai::OllamaClient>,
 ) -> async_channel::Sender<uuid::Uuid> {
-    let (tx, _rx) = async_channel::bounded::<uuid::Uuid>(256);
+    let workers = workers.max(1);
+    let (tx, rx) = async_channel::bounded::<uuid::Uuid>(256);
+    for i in 0..workers {
+        let rx = rx.clone();
+        let db = db.clone();
+        let geocoding = geocoding.clone();
+        let ai = ai.clone();
+        tokio::spawn(async move {
+            tracing::info!("geocoding worker {i} started");
+            while let Ok(id) = rx.recv().await {
+                if let Err(e) = geocoding::process_facility_geocoding(id, &db, &geocoding, &ai).await {
+                    tracing::error!("geocoding worker {i} error for {id}: {e}");
+                }
+            }
+        });
+    }
     tx
 }
 
