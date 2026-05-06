@@ -82,6 +82,9 @@ impl FacilityRecord {
             self.tags.join(" "),
             contact_text,
         )
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
     }
 }
 
