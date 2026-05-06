@@ -62,28 +62,29 @@ impl std::str::FromStr for ServiceType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LoadStatus {
-    Planned, Dispatched, InTransit, Delivered, Invoiced, Settled, Cancelled,
+    Planned, Assigned, Dispatched, InTransit, Delivered, Invoiced, Settled, Cancelled,
 }
 
 impl LoadStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Planned => "planned", Self::Dispatched => "dispatched",
-            Self::InTransit => "in_transit", Self::Delivered => "delivered",
-            Self::Invoiced => "invoiced", Self::Settled => "settled",
-            Self::Cancelled => "cancelled",
+            Self::Planned => "planned", Self::Assigned => "assigned",
+            Self::Dispatched => "dispatched", Self::InTransit => "in_transit",
+            Self::Delivered => "delivered", Self::Invoiced => "invoiced",
+            Self::Settled => "settled", Self::Cancelled => "cancelled",
         }
     }
 
     pub fn can_transition_to(&self, next: &LoadStatus) -> bool {
         match (self, next) {
-            (Self::Planned, Self::Dispatched) => true,
+            (Self::Planned, Self::Assigned) => true,
+            (Self::Assigned, Self::Dispatched) => true,
             (Self::Dispatched, Self::InTransit) => true,
             (Self::Dispatched | Self::InTransit, Self::Delivered) => true,
             (Self::Delivered, Self::Invoiced) => true,
             (Self::Invoiced, Self::Settled) => true,
             // Cancel only from pre-delivery states; delivered/invoiced/settled are terminal
-            (Self::Planned | Self::Dispatched | Self::InTransit, Self::Cancelled) => true,
+            (Self::Planned | Self::Assigned | Self::Dispatched | Self::InTransit, Self::Cancelled) => true,
             _ => false,
         }
     }
@@ -93,10 +94,10 @@ impl std::str::FromStr for LoadStatus {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "planned" => Ok(Self::Planned), "dispatched" => Ok(Self::Dispatched),
-            "in_transit" => Ok(Self::InTransit), "delivered" => Ok(Self::Delivered),
-            "invoiced" => Ok(Self::Invoiced), "settled" => Ok(Self::Settled),
-            "cancelled" => Ok(Self::Cancelled),
+            "planned" => Ok(Self::Planned), "assigned" => Ok(Self::Assigned),
+            "dispatched" => Ok(Self::Dispatched), "in_transit" => Ok(Self::InTransit),
+            "delivered" => Ok(Self::Delivered), "invoiced" => Ok(Self::Invoiced),
+            "settled" => Ok(Self::Settled), "cancelled" => Ok(Self::Cancelled),
             other => Err(format!("unknown load status: {other}")),
         }
     }
@@ -331,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_load_status_roundtrip() {
-        for s in ["planned","dispatched","in_transit","delivered","invoiced","settled","cancelled"] {
+        for s in ["planned","assigned","dispatched","in_transit","delivered","invoiced","settled","cancelled"] {
             let st: LoadStatus = s.parse().unwrap();
             assert_eq!(st.as_str(), s);
         }
@@ -339,13 +340,15 @@ mod tests {
 
     #[test]
     fn test_load_status_valid_transitions() {
-        assert!(LoadStatus::Planned.can_transition_to(&LoadStatus::Dispatched));
+        assert!(LoadStatus::Planned.can_transition_to(&LoadStatus::Assigned));
+        assert!(LoadStatus::Assigned.can_transition_to(&LoadStatus::Dispatched));
         assert!(LoadStatus::Dispatched.can_transition_to(&LoadStatus::InTransit));
         assert!(LoadStatus::Dispatched.can_transition_to(&LoadStatus::Delivered));
         assert!(LoadStatus::InTransit.can_transition_to(&LoadStatus::Delivered));
         assert!(LoadStatus::Delivered.can_transition_to(&LoadStatus::Invoiced));
         assert!(LoadStatus::Invoiced.can_transition_to(&LoadStatus::Settled));
         assert!(LoadStatus::Planned.can_transition_to(&LoadStatus::Cancelled));
+        assert!(LoadStatus::Assigned.can_transition_to(&LoadStatus::Cancelled));
         assert!(LoadStatus::Dispatched.can_transition_to(&LoadStatus::Cancelled));
         assert!(LoadStatus::InTransit.can_transition_to(&LoadStatus::Cancelled));
         assert!(!LoadStatus::Delivered.can_transition_to(&LoadStatus::Cancelled));
@@ -353,6 +356,7 @@ mod tests {
         assert!(!LoadStatus::Settled.can_transition_to(&LoadStatus::Dispatched));
         assert!(!LoadStatus::Cancelled.can_transition_to(&LoadStatus::Planned));
         assert!(!LoadStatus::Planned.can_transition_to(&LoadStatus::Delivered));
+        assert!(!LoadStatus::Planned.can_transition_to(&LoadStatus::Dispatched));
     }
 
     #[test]
