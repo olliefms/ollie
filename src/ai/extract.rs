@@ -6,6 +6,10 @@ pub enum Extractable {
     Text(String),
     /// Raw bytes to send to the vision model (image or sparse PDF)
     ImageBytes(Bytes),
+    /// lopdf extracted enough tokens but the alphanumeric ratio is too low —
+    /// likely CID-keyed or custom-encoded fonts. Needs hybrid vision extraction.
+    /// TODO: wire up vision path once issue #3 (llava segfault) is resolved.
+    GibberishPdf,
     Unsupported,
 }
 
@@ -21,6 +25,9 @@ pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
     if mime_type == "application/pdf" {
         let text = extract_pdf_text(data);
         if word_count(&text) >= 50 {
+            if is_gibberish(&text) {
+                return Extractable::GibberishPdf;
+            }
             return Extractable::Text(text);
         }
         return Extractable::ImageBytes(data.clone());
@@ -50,6 +57,12 @@ fn extract_pdf_text(data: &[u8]) -> String {
         }
     }
     text
+}
+
+fn is_gibberish(text: &str) -> bool {
+    let alphanumeric = text.chars().filter(|c| c.is_alphanumeric()).count();
+    let total = text.chars().filter(|c| !c.is_whitespace()).count();
+    total > 0 && (alphanumeric as f64 / total as f64) < 0.5
 }
 
 fn word_count(s: &str) -> usize {
@@ -88,6 +101,23 @@ mod tests {
     fn test_word_count() {
         assert_eq!(word_count("hello world foo"), 3);
         assert_eq!(word_count(""), 0);
+    }
+
+    #[test]
+    fn test_is_gibberish_with_clean_text() {
+        assert!(!is_gibberish("Landstar Ranger Inc Freight Bill 4385951 Equipment 53VN Total Miles 2217"));
+    }
+
+    #[test]
+    fn test_is_gibberish_with_symbol_heavy_text() {
+        // Simulates lopdf output from CID-encoded fonts: lots of symbols, few alphanumeric chars
+        let garbage: String = "⌁⌂⌃⌄⌅⌆⌇⌈⌉⌊⌋⌌⌍⌎⌏⌐⌑⌒⌓⌔⌕⌖⌗⌘⌙⌚⌛⌜⌝⌞⌟⌠⌡⌢⌣⌤⌥⌦⌧⌨〈〉⌫⌬⌭⌮⌯⌰⌱⌲⌳⌴⌵⌶⌷⌸⌹⌺⌻⌼⌽⌾⌿".repeat(3);
+        assert!(is_gibberish(&garbage));
+    }
+
+    #[test]
+    fn test_is_gibberish_empty_is_not_gibberish() {
+        assert!(!is_gibberish(""));
     }
 
     #[test]
