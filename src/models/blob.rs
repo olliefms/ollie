@@ -1,9 +1,10 @@
 // src/models/blob.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlobStatus {
     Pending,
@@ -36,7 +37,7 @@ impl std::str::FromStr for BlobStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BlobRecord {
     pub id: Uuid,
     pub owner_id: i64,
@@ -51,19 +52,20 @@ pub struct BlobRecord {
     pub summary: Option<String>,
     pub tags: Vec<String>,
     #[serde(skip)]
+    #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateBlobRequest {
     pub name: Option<String>,
     pub tags: Option<Vec<String>>,
 }
 
 /// Returned by GET /api/v1/blobs — no embedding, optional score
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BlobListItem {
     pub id: Uuid,
     pub owner_id: i64,
@@ -90,7 +92,7 @@ impl From<BlobRecord> for BlobListItem {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct BlobListResponse {
     pub total: usize,
     pub items: Vec<BlobListItem>,
