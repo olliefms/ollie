@@ -3,7 +3,7 @@ use crate::{
     ai::{
         embed::embed_text,
         extract::{extract_content, Extractable},
-        summarize::{describe_image, summarize_text},
+        summarize::{describe_image, describe_scanned_pdf, summarize_text},
         OllamaClient,
     },
     db::DbClient,
@@ -37,12 +37,11 @@ pub async fn process_blob(
                 let embedding = embed_text(ai, &description).await?;
                 Ok((Some(description), Some(embedding)))
             }
-            // TODO: replace with hybrid vision+text extraction once issue #3 is resolved
-            Extractable::GibberishPdf => Err(AppError::Internal(
-                "extraction_failed: PDF text is gibberish (CID/custom font encoding); \
-                 hybrid vision extraction pending issue #3"
-                    .into(),
-            )),
+            Extractable::GibberishPdf(raw_text) => {
+                let description = describe_scanned_pdf(ai, &data, &raw_text).await?;
+                let embedding = embed_text(ai, &description).await?;
+                Ok((Some(description), Some(embedding)))
+            }
             Extractable::Unsupported => Ok((None, None)),
         }
     }.await;

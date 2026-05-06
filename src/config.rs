@@ -37,7 +37,7 @@ impl Config {
             ollama_summary_model: env::var("OLLAMA_SUMMARY_MODEL")
                 .unwrap_or_else(|_| "llama3.2".into()),
             ollama_vision_model: env::var("OLLAMA_VISION_MODEL")
-                .unwrap_or_else(|_| "llava".into()),
+                .unwrap_or_else(|_| "moondream".into()),
             ollama_embed_dim: env::var("OLLAMA_EMBED_DIM")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -74,7 +74,7 @@ mod tests {
         assert_eq!(cfg.pipeline_workers, 1);
         assert_eq!(cfg.ollama_embed_model, "nomic-embed-text");
         assert_eq!(cfg.ollama_summary_model, "llama3.2");
-        assert_eq!(cfg.ollama_vision_model, "llava");
+        assert_eq!(cfg.ollama_vision_model, "moondream");
         assert_eq!(cfg.ollama_embed_dim, 768);
         env::remove_var("ADMIN_API_KEY");
     }

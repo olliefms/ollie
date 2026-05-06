@@ -11,7 +11,7 @@ services:
       LANCEDB_PATH: /data/lancedb
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
       OLLAMA_SUMMARY_MODEL: ${OLLAMA_SUMMARY_MODEL:-llama3.2}
-      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-llava}
+      OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-moondream}
       OLLAMA_EMBED_DIM: ${OLLAMA_EMBED_DIM:-768}
       PIPELINE_WORKERS: ${PIPELINE_WORKERS:-1}
       RUST_LOG: ollie=info
@@ -28,6 +28,7 @@ services:
     ports:
       - "11434:11434"
     restart: unless-stopped
+    entrypoint: ["/bin/sh", "-c", "ollama serve & SERVER_PID=$!; sleep 5 && ollama pull moondream && ollama pull nomic-embed-text && ollama pull llama3.2 && wait $SERVER_PID"]
 
 volumes:
   ollama-models:

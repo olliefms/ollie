@@ -87,7 +87,7 @@ mod tests {
 
     #[test]
     fn test_client_constructs() {
-        let c = OllamaClient::new("http://localhost:11434", "nomic-embed-text", "llama3.2", "llava");
+        let c = OllamaClient::new("http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream");
         assert_eq!(c.embed_model, "nomic-embed-text");
     }
 
