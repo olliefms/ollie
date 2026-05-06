@@ -8,10 +8,8 @@ use crate::{
     },
     db::DbClient,
     error::AppError,
-    models::BlobStatus,
     storage::BlobStore,
 };
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub async fn process_blob(
@@ -39,6 +37,12 @@ pub async fn process_blob(
                 let embedding = embed_text(ai, &description).await?;
                 Ok((Some(description), Some(embedding)))
             }
+            // TODO: replace with hybrid vision+text extraction once issue #3 is resolved
+            Extractable::GibberishPdf => Err(AppError::Internal(
+                "extraction_failed: PDF text is gibberish (CID/custom font encoding); \
+                 hybrid vision extraction pending issue #3"
+                    .into(),
+            )),
             Extractable::Unsupported => Ok((None, None)),
         }
     }.await;
