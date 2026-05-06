@@ -138,6 +138,8 @@ The integration tests in `tests/integration_test.rs` do not call Ollama. The pip
 
 All endpoints require `Authorization: Bearer <ADMIN_API_KEY>`. The key is set via the `ADMIN_API_KEY` environment variable (required — no default). Missing or wrong key → 401.
 
+`ADMIN_API_KEY` is arbitrary — any non-empty string works. For local dev or testing, `ADMIN_API_KEY=test-key` is fine. There is no provisioning or secret management required.
+
 ## Deduplication Logic
 
 On upload, the server computes SHA-256 of the file bytes:
