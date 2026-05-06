@@ -1,4 +1,4 @@
-// src/models.rs
+// src/models/blob.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
