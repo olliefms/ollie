@@ -27,7 +27,7 @@ arrow-schema = "57"
 async-channel = "2"
 reqwest = { version = "0.12", features = ["json"] }
 mime_guess = "2"
-lopdf = "0.32"
+pdf-extract = "0.7"
 base64 = { version = "0.22", features = ["std"] }
 chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
