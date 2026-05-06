@@ -14,19 +14,55 @@ use axum_extra::extract::Query;
 use bytes::Bytes;
 use chrono::Utc;
 use serde::Deserialize;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListQuery {
+    /// Semantic search query — triggers vector search when present
     pub s: Option<String>,
+    /// Filter by name (substring match)
     pub name: Option<String>,
-    // axum_extra::Query handles repeated ?tag=a&tag=b correctly
+    /// Filter by tag (repeat for multiple: ?tag=a&tag=b)
     #[serde(default)]
     pub tag: Vec<String>,
+    /// Maximum results (default 20, max 100)
     pub limit: Option<usize>,
+    /// Pagination offset (default 0)
     pub offset: Option<usize>,
 }
 
+/// Multipart form fields for blob upload
+#[derive(ToSchema)]
+#[allow(dead_code)]
+pub struct BlobUploadRequest {
+    /// File bytes (any content type)
+    #[schema(format = Binary)]
+    pub file: Vec<u8>,
+    /// Optional display name; defaults to the uploaded filename
+    pub name: Option<String>,
+    /// JSON-encoded array of tag strings, e.g. `["invoice","2024"]`
+    pub tags: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/blobs",
+    request_body(
+        content = BlobUploadRequest,
+        content_type = "multipart/form-data",
+        description = "File upload with optional name and tags"
+    ),
+    responses(
+        (status = 201, description = "Blob deduplicated — record created, AI output copied from existing", body = BlobRecord),
+        (status = 202, description = "Blob accepted — queued for AI processing", body = BlobRecord),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "blobs"
+)]
 pub async fn upload_blob(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -104,6 +140,17 @@ pub async fn upload_blob(
     Ok((status_code, Json(record)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blobs",
+    params(ListQuery),
+    responses(
+        (status = 200, description = "List of blobs (or semantic search results when ?s= is provided)", body = BlobListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "blobs"
+)]
 pub async fn list_blobs(
     State(state): State<AppState>,
     Query(q): Query<ListQuery>,

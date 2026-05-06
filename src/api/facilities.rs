@@ -17,18 +17,37 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::Utc;
 use serde::Deserialize;
+use utoipa::IntoParams;
 use uuid::Uuid;
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListFacilitiesQuery {
+    /// Semantic search query — triggers vector search when present
     pub s: Option<String>,
+    /// Filter by name (substring match)
     pub name: Option<String>,
+    /// Filter by tag (repeat for multiple: ?tag=a&tag=b)
     #[serde(default)]
     pub tag: Vec<String>,
+    /// Maximum results (default 20, max 100)
     pub limit: Option<usize>,
+    /// Pagination offset (default 0)
     pub offset: Option<usize>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/facilities",
+    request_body(content = CreateFacilityRequest, description = "Facility to create"),
+    responses(
+        (status = 201, description = "Created facility record", body = FacilityRecord),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "facilities"
+)]
 pub async fn create_facility(
     State(state): State<AppState>,
     Json(body): Json<CreateFacilityRequest>,
@@ -61,6 +80,17 @@ pub async fn create_facility(
     Ok((StatusCode::CREATED, Json(record)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/facilities",
+    params(ListFacilitiesQuery),
+    responses(
+        (status = 200, description = "List of facilities (or semantic search results when ?s= is provided)", body = FacilityListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "facilities"
+)]
 pub async fn list_facilities(
     State(state): State<AppState>,
     Query(q): Query<ListFacilitiesQuery>,
@@ -79,6 +109,20 @@ pub async fn list_facilities(
     Ok(Json(FacilityListResponse { total, items }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/facilities/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Facility UUID")
+    ),
+    responses(
+        (status = 200, description = "Facility record", body = FacilityRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "facilities"
+)]
 pub async fn get_facility(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -87,6 +131,21 @@ pub async fn get_facility(
     Ok(Json(record))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/v1/facilities/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Facility UUID")
+    ),
+    request_body(content = UpdateFacilityRequest, description = "Fields to update — all optional"),
+    responses(
+        (status = 200, description = "Updated facility record", body = FacilityRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "facilities"
+)]
 pub async fn update_facility(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -110,6 +169,21 @@ pub async fn update_facility(
     Ok(Json(updated))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/facilities/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Facility UUID")
+    ),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 409, description = "Conflict — facility is referenced by one or more loads"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "facilities"
+)]
 pub async fn delete_facility(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

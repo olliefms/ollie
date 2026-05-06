@@ -1,9 +1,10 @@
 // src/models/load.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StopType { Pickup, Delivery }
 
@@ -24,7 +25,7 @@ impl std::str::FromStr for StopType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceType { PreLoaded, LiveLoad, LiveUnload, DropAndHook, Relay }
 
@@ -58,7 +59,7 @@ impl std::str::FromStr for ServiceType {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LoadStatus {
     Planned, Dispatched, InTransit, Delivered, Invoiced, Settled, Cancelled,
@@ -101,13 +102,13 @@ impl std::str::FromStr for LoadStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RateLineItem {
     pub description: String,
     pub amount_usd: f64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Stop {
     pub sequence: u32,
     pub stop_type: StopType,
@@ -119,7 +120,7 @@ pub struct Stop {
     pub blob_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct StopInput {
     pub sequence: u32,
     pub stop_type: StopType,
@@ -135,7 +136,7 @@ pub struct StopInput {
     pub blob_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct StopResponse {
     pub sequence: u32,
     pub stop_type: StopType,
@@ -151,7 +152,7 @@ pub struct StopResponse {
     pub blob_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct LoadRecord {
     pub id: Uuid,
     pub load_number: String,
@@ -171,6 +172,7 @@ pub struct LoadRecord {
     pub invoice_date: Option<String>,
     pub cancellation_reason: Option<String>,
     #[serde(skip)]
+    #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -182,7 +184,7 @@ impl LoadRecord {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateLoadRequest {
     pub load_number: Option<String>,
     pub customer_name: String,
@@ -200,7 +202,7 @@ pub struct CreateLoadRequest {
     pub blob_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateLoadRequest {
     pub customer_name: Option<String>,
     pub customer_ref: Option<String>,
@@ -214,18 +216,18 @@ pub struct UpdateLoadRequest {
     pub blob_ids: Option<Vec<Uuid>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct InvoiceActionRequest {
     pub invoice_number: Option<String>,
     pub invoice_date: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CancelActionRequest {
     pub reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LoadListItem {
     pub id: Uuid,
     pub load_number: String,
@@ -265,13 +267,13 @@ impl From<LoadRecord> for LoadListItem {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct LoadListResponse {
     pub total: usize,
     pub items: Vec<LoadListItem>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct LoadDetailResponse {
     pub id: Uuid,
     pub load_number: String,

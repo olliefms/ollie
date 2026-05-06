@@ -9,6 +9,20 @@ use axum::{
 };
 use uuid::Uuid;
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/blob/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Blob UUID")
+    ),
+    responses(
+        (status = 200, description = "Blob record (when Accept: application/json) or raw file bytes", body = crate::models::BlobRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "blobs"
+)]
 pub async fn get_blob(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -41,6 +55,22 @@ pub async fn get_blob(
         .into_response())
 }
 
+#[utoipa::path(
+    put,
+    path = "/api/v1/blob/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Blob UUID")
+    ),
+    request_body(content = UpdateBlobRequest, description = "Fields to update — at least one of name or tags required"),
+    responses(
+        (status = 200, description = "Updated blob record", body = crate::models::BlobRecord),
+        (status = 400, description = "Bad request — neither name nor tags provided"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "blobs"
+)]
 pub async fn update_blob(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -55,6 +85,21 @@ pub async fn update_blob(
     Ok(Json(updated))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/blob/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Blob UUID")
+    ),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 409, description = "Conflict — blob is referenced by one or more loads"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "blobs"
+)]
 pub async fn delete_blob(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,

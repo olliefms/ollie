@@ -134,6 +134,35 @@ let body = resp.as_bytes();
 
 The integration tests in `tests/integration_test.rs` do not call Ollama. The pipeline receiver is kept alive but workers are never polled. All upload tests check HTTP response codes only, not AI output.
 
+## OpenAPI / Agent Discoverability
+
+The API is documented via `utoipa` (v4). Two unauthenticated endpoints serve the spec:
+
+- `GET /openapi.json` — full OpenAPI 3.0 spec (auto-generated)
+- `GET /llms.txt` — plain-text summary written for LLM consumption
+
+### Required for every new endpoint
+
+1. **Handler**: Add `#[utoipa::path(...)]` directly above the handler function.
+   - Use OpenAPI path syntax (`{id}` not `:id`)
+   - Include `security(("BearerAuth" = []))` for authenticated endpoints
+   - Set `tag` to `"blobs"`, `"facilities"`, or `"loads"` (or a new tag for new resource groups)
+   - Document all responses including 400/401/404/409 where applicable
+
+2. **Request/response types**: Add `#[derive(utoipa::ToSchema)]` to every struct or enum used
+   in request bodies or responses. Fields with `#[serde(skip)]` also need `#[schema(skip)]`
+   to be excluded from the generated schema.
+
+3. **Query parameter structs**: Add `#[derive(utoipa::IntoParams)]` and
+   `#[into_params(parameter_in = Query)]`. Reference the struct with `params(MyQuery)` in
+   the path annotation. Add `#[param(description = "...")]` per field.
+
+4. **Register in ApiDoc**: Add the handler path to the `paths(...)` list in the `ApiDoc`
+   struct in `src/api/mod.rs`. Add any new schema types to the `schemas(...)` list.
+
+5. **llms.txt**: Review and update `LLMS_TXT` in `src/api/mod.rs` when new endpoint groups
+   are added or auth behaviour changes. The text is hand-written; keep it concise.
+
 ## API Auth
 
 All endpoints require `Authorization: Bearer <ADMIN_API_KEY>`. The key is set via the `ADMIN_API_KEY` environment variable (required — no default). Missing or wrong key → 401.

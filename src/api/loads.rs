@@ -19,21 +19,44 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::Utc;
 use serde::Deserialize;
+use utoipa::IntoParams;
 use uuid::Uuid;
 
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct ListLoadsQuery {
+    /// Semantic search query — triggers vector search when present
     pub s: Option<String>,
+    /// Filter by status (planned, dispatched, in_transit, delivered, invoiced, settled, cancelled)
     pub status: Option<String>,
+    /// Filter by customer name (substring match)
     pub customer: Option<String>,
+    /// Filter by created_at >= this date (ISO 8601, e.g. 2024-01-01)
     pub from: Option<String>,
+    /// Filter by created_at <= this date (ISO 8601, e.g. 2024-12-31)
     pub to: Option<String>,
+    /// Filter by tag (repeat for multiple: ?tag=a&tag=b)
     #[serde(default)]
     pub tag: Vec<String>,
+    /// Maximum results (default 20, max 100)
     pub limit: Option<usize>,
+    /// Pagination offset (default 0)
     pub offset: Option<usize>,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads",
+    request_body(content = CreateLoadRequest, description = "Load to create"),
+    responses(
+        (status = 201, description = "Created load detail", body = LoadDetailResponse),
+        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = FacilityResolutionResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn create_load(
     State(state): State<AppState>,
     Json(body): Json<CreateLoadRequest>,
@@ -82,6 +105,17 @@ pub async fn create_load(
     Ok((StatusCode::CREATED, Json(response)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/loads",
+    params(ListLoadsQuery),
+    responses(
+        (status = 200, description = "List of loads (or semantic search results when ?s= is provided)", body = LoadListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn list_loads(
     State(state): State<AppState>,
     Query(q): Query<ListLoadsQuery>,
@@ -105,6 +139,20 @@ pub async fn list_loads(
     Ok(Json(LoadListResponse { total, items }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/v1/loads/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Load UUID")
+    ),
+    responses(
+        (status = 200, description = "Load detail with expanded stop information", body = LoadDetailResponse),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn get_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -114,6 +162,22 @@ pub async fn get_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    patch,
+    path = "/api/v1/loads/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Load UUID")
+    ),
+    request_body(content = UpdateLoadRequest, description = "Fields to update — all optional"),
+    responses(
+        (status = 200, description = "Updated load detail", body = LoadDetailResponse),
+        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = FacilityResolutionResponse),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn update_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -156,6 +220,20 @@ pub async fn update_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/v1/loads/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Load UUID")
+    ),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn delete_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -165,6 +243,19 @@ pub async fn delete_load(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/assign",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load transitioned to dispatched", body = LoadDetailResponse),
+        (status = 409, description = "Invalid status transition"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn assign_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -176,6 +267,19 @@ pub async fn assign_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/dispatch",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load transitioned to dispatched", body = LoadDetailResponse),
+        (status = 409, description = "Invalid status transition"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn dispatch_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -187,6 +291,19 @@ pub async fn dispatch_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/in_transit",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load transitioned to in_transit", body = LoadDetailResponse),
+        (status = 409, description = "Invalid status transition"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn in_transit_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -198,6 +315,19 @@ pub async fn in_transit_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/deliver",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load transitioned to delivered", body = LoadDetailResponse),
+        (status = 409, description = "Invalid status transition"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn deliver_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -209,6 +339,20 @@ pub async fn deliver_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/invoice",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    request_body(content = InvoiceActionRequest, description = "Optional invoice number and date"),
+    responses(
+        (status = 200, description = "Load transitioned to invoiced", body = LoadDetailResponse),
+        (status = 409, description = "Invalid status transition"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn invoice_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -222,6 +366,20 @@ pub async fn invoice_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/cancel",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    request_body(content = CancelActionRequest, description = "Optional cancellation reason"),
+    responses(
+        (status = 200, description = "Load transitioned to cancelled", body = LoadDetailResponse),
+        (status = 409, description = "Invalid status transition — cannot cancel delivered/invoiced/settled loads"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn cancel_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -234,6 +392,19 @@ pub async fn cancel_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/settle",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load transitioned to settled", body = LoadDetailResponse),
+        (status = 409, description = "Invalid status transition"),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
 pub async fn settle_load(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
