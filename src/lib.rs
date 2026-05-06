@@ -13,6 +13,8 @@ pub mod storage;
 use ai::OllamaClient;
 use config::Config;
 use db::DbClient;
+use geocoding::GeocodingClient;
+use routing::RoutingClient;
 use std::sync::Arc;
 use storage::BlobStore;
 use uuid::Uuid;
@@ -22,6 +24,10 @@ pub struct AppState {
     pub db: Arc<DbClient>,
     pub store: Arc<BlobStore>,
     pub ai: Arc<OllamaClient>,
+    pub geocoding: Arc<GeocodingClient>,
+    pub ors: Arc<RoutingClient>,
     pub pipeline_tx: async_channel::Sender<Uuid>,
+    pub geocoding_tx: async_channel::Sender<Uuid>,
+    pub routing_tx: async_channel::Sender<Uuid>,
     pub config: Arc<Config>,
 }
