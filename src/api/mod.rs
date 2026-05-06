@@ -5,16 +5,184 @@ pub mod blobs;
 pub mod facilities;
 pub mod loads;
 
-use crate::{api::auth::require_bearer, AppState};
+use crate::{api::auth::require_bearer, models, AppState};
 use axum::{
     middleware::from_fn,
+    response::IntoResponse,
     routing::{delete, get, patch, post, put},
     Router,
 };
+use utoipa::OpenApi;
+use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
+
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        blobs::upload_blob,
+        blobs::list_blobs,
+        blob::get_blob,
+        blob::update_blob,
+        blob::delete_blob,
+        facilities::create_facility,
+        facilities::list_facilities,
+        facilities::get_facility,
+        facilities::update_facility,
+        facilities::delete_facility,
+        loads::create_load,
+        loads::list_loads,
+        loads::get_load,
+        loads::update_load,
+        loads::delete_load,
+        loads::assign_load,
+        loads::dispatch_load,
+        loads::in_transit_load,
+        loads::deliver_load,
+        loads::invoice_load,
+        loads::cancel_load,
+        loads::settle_load,
+    ),
+    components(
+        schemas(
+            models::BlobStatus,
+            models::BlobRecord,
+            models::UpdateBlobRequest,
+            models::BlobListItem,
+            models::BlobListResponse,
+            models::GeocodeStatus,
+            models::FacilityContact,
+            models::FacilityRecord,
+            models::CreateFacilityRequest,
+            models::UpdateFacilityRequest,
+            models::FacilityListItem,
+            models::FacilityListResponse,
+            models::FacilityCandidate,
+            models::FacilityResolutionResponse,
+            models::StopType,
+            models::ServiceType,
+            models::LoadStatus,
+            models::RateLineItem,
+            models::Stop,
+            models::StopInput,
+            models::StopResponse,
+            models::LoadRecord,
+            models::CreateLoadRequest,
+            models::UpdateLoadRequest,
+            models::InvoiceActionRequest,
+            models::CancelActionRequest,
+            models::LoadListItem,
+            models::LoadListResponse,
+            models::LoadDetailResponse,
+            blobs::BlobUploadRequest,
+        )
+    ),
+    modifiers(&SecurityAddon),
+    info(
+        title = "ollie API",
+        version = "1.0.0",
+        description = "RAG-enabled blob store and freight load management API. \
+            All endpoints require Bearer auth except /openapi.json and /llms.txt."
+    ),
+    tags(
+        (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
+        (name = "facilities", description = "Freight facility management with geocoding and semantic search"),
+        (name = "loads", description = "Freight load lifecycle management"),
+    )
+)]
+struct ApiDoc;
+
+struct SecurityAddon;
+
+impl utoipa::Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "BearerAuth",
+                SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
+            );
+        }
+    }
+}
+
+async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
+    axum::Json(ApiDoc::openapi())
+}
+
+const LLMS_TXT: &str = r#"# ollie API
+
+ollie is a REST API for freight load management with RAG-enabled document blob storage.
+
+## Authentication
+
+All endpoints except /openapi.json and /llms.txt require:
+  Authorization: Bearer <ADMIN_API_KEY>
+
+Missing or incorrect key returns 401 Unauthorized.
+
+## Endpoint Groups
+
+### Blobs — /api/v1/blobs, /api/v1/blob/:id
+Store and retrieve files (PDFs, images, documents). Files are content-addressed and
+deduplicated. Uploaded files are processed asynchronously: Ollama generates a text
+summary and a vector embedding. Supports semantic search via ?s=<query>.
+
+  POST   /api/v1/blobs          Upload file (multipart/form-data: file, name?, tags?)
+  GET    /api/v1/blobs          List or search blobs (?s=query for semantic search)
+  GET    /api/v1/blob/:id       Download file or get JSON record (Accept: application/json)
+  PUT    /api/v1/blob/:id       Update name and/or tags
+  DELETE /api/v1/blob/:id       Delete (blocked if referenced by a load)
+
+### Facilities — /api/v1/facilities, /api/v1/facilities/:id
+Freight facilities (warehouses, loading docks). Address geocoding runs asynchronously.
+Used as stop locations on loads. Supports semantic search.
+
+  POST   /api/v1/facilities     Create facility
+  GET    /api/v1/facilities     List or search facilities (?s=query for semantic search)
+  GET    /api/v1/facilities/:id Get facility
+  PATCH  /api/v1/facilities/:id Update facility fields
+  DELETE /api/v1/facilities/:id Delete (blocked if referenced by a load)
+
+### Loads — /api/v1/loads, /api/v1/loads/:id
+Freight loads with multi-stop routes. Status lifecycle:
+  planned → dispatched → in_transit → delivered → invoiced → settled
+  (cancel is allowed from planned, dispatched, or in_transit)
+
+  POST   /api/v1/loads          Create load
+  GET    /api/v1/loads          List or search loads (?s, ?status, ?customer, ?from, ?to, ?tag)
+  GET    /api/v1/loads/:id      Get load detail
+  PATCH  /api/v1/loads/:id      Update load fields
+  DELETE /api/v1/loads/:id      Delete load
+
+  POST   /api/v1/loads/:id/assign      Transition to dispatched
+  POST   /api/v1/loads/:id/dispatch    Transition to dispatched
+  POST   /api/v1/loads/:id/in_transit  Transition to in_transit
+  POST   /api/v1/loads/:id/deliver     Transition to delivered
+  POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
+  POST   /api/v1/loads/:id/cancel      Transition to cancelled (body: reason?)
+  POST   /api/v1/loads/:id/settle      Transition to settled
+
+## Facility Resolution
+
+When creating or updating a load, stops can specify a facility by UUID (facility_id)
+or by name + address. If a name+address match is ambiguous, the API returns 200 with
+a FacilityResolutionResponse listing candidates. Retry the request with the chosen
+facility_id or set force_new_facility=true to create a new facility.
+
+## Full Spec
+
+Machine-readable OpenAPI 3.0 spec: GET /openapi.json
+"#;
+
+async fn llms_txt() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+        LLMS_TXT,
+    )
+}
 
 pub fn router(state: AppState) -> Router {
     let key = state.config.admin_api_key.clone();
-    Router::new()
+
+    let protected = Router::new()
         // Blobs
         .route("/api/v1/blobs", post(blobs::upload_blob))
         .route("/api/v1/blobs", get(blobs::list_blobs))
@@ -41,9 +209,14 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/loads/:id/invoice", post(loads::invoice_load))
         .route("/api/v1/loads/:id/cancel", post(loads::cancel_load))
         .route("/api/v1/loads/:id/settle", post(loads::settle_load))
-        .layer(from_fn(move |req, next| {
+        .route_layer(from_fn(move |req, next| {
             let k = key.clone();
             async move { require_bearer(k, req, next).await }
-        }))
+        }));
+
+    Router::new()
+        .route("/openapi.json", get(openapi_json))
+        .route("/llms.txt", get(llms_txt))
+        .merge(protected)
         .with_state(state)
 }

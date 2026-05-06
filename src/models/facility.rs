@@ -1,9 +1,10 @@
 // src/models/facility.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GeocodeStatus {
     Pending,
@@ -33,7 +34,7 @@ impl std::str::FromStr for GeocodeStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FacilityContact {
     pub name: String,
     pub title: Option<String>,
@@ -42,7 +43,7 @@ pub struct FacilityContact {
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FacilityRecord {
     pub id: Uuid,
     pub owner_id: i64,
@@ -59,6 +60,7 @@ pub struct FacilityRecord {
     pub avg_dwell_minutes: Option<f64>,
     pub dwell_sample_count: i64,
     #[serde(skip)]
+    #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -88,7 +90,7 @@ impl FacilityRecord {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateFacilityRequest {
     pub name: String,
     pub address: String,
@@ -101,7 +103,7 @@ pub struct CreateFacilityRequest {
     pub blob_ids: Vec<Uuid>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateFacilityRequest {
     pub name: Option<String>,
     pub address: Option<String>,
@@ -111,7 +113,7 @@ pub struct UpdateFacilityRequest {
     pub blob_ids: Option<Vec<Uuid>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct FacilityListItem {
     pub id: Uuid,
     pub owner_id: i64,
@@ -144,13 +146,13 @@ impl From<FacilityRecord> for FacilityListItem {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct FacilityListResponse {
     pub total: usize,
     pub items: Vec<FacilityListItem>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FacilityCandidate {
     pub id: Uuid,
     pub name: String,
@@ -159,7 +161,7 @@ pub struct FacilityCandidate {
     pub score: f32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FacilityResolutionResponse {
     pub facility_resolution_required: bool,
     pub candidates: Vec<FacilityCandidate>,
