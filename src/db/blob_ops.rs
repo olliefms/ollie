@@ -20,14 +20,14 @@ impl DbClient {
         let schema = blob_schema(self.embed_dim);
         let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
-        self.table.add(reader).execute().await
+        self.blob_table.add(reader).execute().await
             .map(|_| ())
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn get_by_id(&self, id: Uuid) -> Result<BlobRecord, AppError> {
         let id_str = id.to_string();
-        let stream = self.table.query()
+        let stream = self.blob_table.query()
             .only_if(format!("id = '{id_str}'"))
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -38,12 +38,12 @@ impl DbClient {
     }
 
     pub async fn count_by_checksum(&self, checksum: &str) -> Result<usize, AppError> {
-        self.table.count_rows(Some(format!("checksum = '{checksum}'")))
+        self.blob_table.count_rows(Some(format!("checksum = '{checksum}'")))
             .await.map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn get_one_by_checksum(&self, checksum: &str) -> Result<Option<BlobRecord>, AppError> {
-        let stream = self.table.query()
+        let stream = self.blob_table.query()
             .only_if(format!("checksum = '{checksum}'"))
             .limit(1)
             .execute().await
@@ -91,16 +91,16 @@ impl DbClient {
 
     pub async fn delete_by_id(&self, id: Uuid) -> Result<(), AppError> {
         let id_str = id.to_string();
-        self.table.delete(&format!("id = '{id_str}'")).await
+        self.blob_table.delete(&format!("id = '{id_str}'")).await
             .map(|_| ())
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn list(&self, name_filter: Option<&str>, tag_filter: &[String], limit: usize, offset: usize) -> Result<(usize, Vec<BlobListItem>), AppError> {
         let filter = build_filter(name_filter, tag_filter, None);
-        let total = self.table.count_rows(filter.clone()).await
+        let total = self.blob_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.table.query().limit(limit + offset);
+        let mut q = self.blob_table.query().limit(limit + offset);
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let items: Vec<BlobListItem> = batches_to_records(collect_stream(stream).await?)?
@@ -113,7 +113,7 @@ impl DbClient {
 
     pub async fn search(&self, embedding: Vec<f32>, name_filter: Option<&str>, tag_filter: &[String], limit: usize) -> Result<Vec<BlobListItem>, AppError> {
         let filter = build_filter(name_filter, tag_filter, Some("status = 'ready'"));
-        let mut q = self.table.query()
+        let mut q = self.blob_table.query()
             .nearest_to(embedding)
             .map_err(|e| AppError::Internal(e.to_string()))?
             .limit(limit);
@@ -137,7 +137,7 @@ impl DbClient {
     }
 
     pub async fn list_non_ready_ids(&self) -> Result<Vec<Uuid>, AppError> {
-        let stream = self.table.query()
+        let stream = self.blob_table.query()
             .only_if("status = 'pending' OR status = 'processing'")
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -146,7 +146,7 @@ impl DbClient {
     }
 
     pub async fn create_vector_index(&self) -> Result<(), AppError> {
-        self.table
+        self.blob_table
             .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
             .execute()
             .await
