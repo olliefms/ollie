@@ -143,8 +143,8 @@ Used as stop locations on loads. Supports semantic search.
 
 ### Loads — /api/v1/loads, /api/v1/loads/:id
 Freight loads with multi-stop routes. Status lifecycle:
-  planned → dispatched → in_transit → delivered → invoiced → settled
-  (cancel is allowed from planned, dispatched, or in_transit)
+  planned → assigned → dispatched → in_transit → delivered → invoiced → settled
+  (cancel is allowed from planned, assigned, dispatched, or in_transit)
 
   POST   /api/v1/loads          Create load
   GET    /api/v1/loads          List or search loads (?s, ?status, ?customer, ?from, ?to, ?tag)
@@ -152,8 +152,8 @@ Freight loads with multi-stop routes. Status lifecycle:
   PATCH  /api/v1/loads/:id      Update load fields
   DELETE /api/v1/loads/:id      Delete load
 
-  POST   /api/v1/loads/:id/assign      Transition to dispatched
-  POST   /api/v1/loads/:id/dispatch    Transition to dispatched
+  POST   /api/v1/loads/:id/assign      Transition to assigned (from planned)
+  POST   /api/v1/loads/:id/dispatch    Transition to dispatched (from assigned)
   POST   /api/v1/loads/:id/in_transit  Transition to in_transit
   POST   /api/v1/loads/:id/deliver     Transition to delivered
   POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)

@@ -183,6 +183,7 @@ pub async fn update_load(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateLoadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let stops_provided = body.stops.is_some();
     let stops = match body.stops {
         Some(inputs) => Some(resolve_stops(&state, inputs).await?),
         None => None,
@@ -206,13 +207,15 @@ pub async fn update_load(
     );
     let embedding = embed_text(&state.ai, &embed_text_str).await.ok();
 
-    let updated = state.db.update_load_metadata(
+    let mut updated = state.db.update_load_metadata(
         id, body.customer_name, body.customer_ref, stops,
         body.rate_items, body.commodity, body.weight_lbs, body.miles,
         body.notes, body.tags, body.blob_ids, embedding,
     ).await?;
 
-    if body.miles.is_none() {
+    if stops_provided && body.miles.is_none() {
+        state.db.clear_load_miles(id).await?;
+        updated.miles = None;
         let _ = state.routing_tx.try_send(id);
     }
 
@@ -248,7 +251,7 @@ pub async fn delete_load(
     path = "/api/v1/loads/{id}/assign",
     params(("id" = Uuid, Path, description = "Load UUID")),
     responses(
-        (status = 200, description = "Load transitioned to dispatched", body = LoadDetailResponse),
+        (status = 200, description = "Load transitioned to assigned", body = LoadDetailResponse),
         (status = 409, description = "Invalid status transition"),
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
@@ -261,7 +264,7 @@ pub async fn assign_load(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let record = state.db.transition_load_status(
-        id, LoadStatus::Dispatched, None, None, None,
+        id, LoadStatus::Assigned, None, None, None,
     ).await?;
     let response = build_detail_response(&state, record).await?;
     Ok(Json(response))
