@@ -1,10 +1,10 @@
-# ollie-api — Agent Guide
+# ollie — Agent Guide
 
 This file is for AI coding agents working on this codebase. Read it before making changes.
 
 ## Project Overview
 
-ollie-api is a RAG-enabled blob store written in Rust. It accepts file uploads, stores them content-addressed on disk, and uses Ollama to generate summaries and embeddings. Blobs are indexed in LanceDB for semantic search.
+ollie is a RAG-enabled blob store written in Rust. It accepts file uploads, stores them content-addressed on disk, and uses Ollama to generate summaries and embeddings. Blobs are indexed in LanceDB for semantic search.
 
 **Stack:** Axum 0.7, LanceDB 0.27, Arrow 57, async-channel 2, reqwest 0.12, lopdf 0.32
 

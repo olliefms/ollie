@@ -1,4 +1,4 @@
-# ollie-api
+# ollie
 
 A RAG-enabled blob store. Upload files; get back semantic search.
 
@@ -24,8 +24,8 @@ ollama pull llava
 
 ```bash
 # Clone the repo
-git clone https://github.com/ergofobe/ollie-api.git
-cd ollie-api
+git clone https://github.com/ergofobe/ollie.git
+cd ollie
 
 # Set your API key
 echo "ADMIN_API_KEY=your-secret-key" > .env
@@ -39,8 +39,8 @@ The API is available at `http://localhost:3000`.
 ## Building from Source
 
 ```bash
-git clone https://github.com/ergofobe/ollie-api.git
-cd ollie-api
+git clone https://github.com/ergofobe/ollie.git
+cd ollie
 
 # Create .env
 cat > .env <<EOF
