@@ -186,3 +186,45 @@ async fn test_put_updates_name_and_tags() {
     assert_eq!(body["name"], "renamed.txt");
     assert_eq!(body["tags"], serde_json::json!(["finance"]));
 }
+
+#[tokio::test]
+async fn test_delete_blob_blocked_when_referenced_by_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Upload a blob
+    let upload = server.post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"rate con".to_vec())
+                .file_name("rate_con.pdf").mime_type("application/pdf")))
+        .await;
+    let blob_id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create a facility
+    let fac = server.post("/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Test Dock", "address": "Memphis, TN" }))
+        .await;
+    let fac_id = fac.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create a load referencing the blob
+    let load_body = serde_json::json!({
+        "customer_name": "ACME",
+        "stops": [{
+            "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+            "facility_id": fac_id, "scheduled_arrive": "2026-05-10"
+        }],
+        "rate_items": [],
+        "blob_ids": [blob_id]
+    });
+    server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&load_body)
+        .await;
+
+    // Attempt to delete the blob — should be blocked
+    let del = server.delete(&format!("/api/v1/blob/{blob_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(del.status_code(), 409);
+}
