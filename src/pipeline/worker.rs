@@ -3,7 +3,7 @@ use crate::{
     ai::{
         embed::embed_text,
         extract::{extract_content, Extractable},
-        summarize::{describe_image, describe_scanned_pdf, summarize_text},
+        summarize::{describe_image, summarize_text},
         OllamaClient,
     },
     db::DbClient,
@@ -34,11 +34,6 @@ pub async fn process_blob(
             }
             Extractable::ImageBytes(bytes) => {
                 let description = describe_image(ai, &bytes).await?;
-                let embedding = embed_text(ai, &description).await?;
-                Ok((Some(description), Some(embedding)))
-            }
-            Extractable::GibberishPdf(raw_text) => {
-                let description = describe_scanned_pdf(ai, &data, &raw_text).await?;
                 let embedding = embed_text(ai, &description).await?;
                 Ok((Some(description), Some(embedding)))
             }
