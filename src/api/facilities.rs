@@ -1,0 +1,266 @@
+// src/api/facilities.rs
+use crate::{
+    ai::embed::embed_text,
+    error::AppError,
+    models::{
+        CreateFacilityRequest, FacilityListResponse, FacilityRecord,
+        FacilityResolutionResponse, GeocodeStatus, UpdateFacilityRequest,
+    },
+    AppState,
+};
+use axum::{
+    extract::{Path, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use axum_extra::extract::Query;
+use chrono::Utc;
+use serde::Deserialize;
+use uuid::Uuid;
+
+#[derive(Deserialize, Default)]
+pub struct ListFacilitiesQuery {
+    pub s: Option<String>,
+    pub name: Option<String>,
+    #[serde(default)]
+    pub tag: Vec<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+pub async fn create_facility(
+    State(state): State<AppState>,
+    Json(body): Json<CreateFacilityRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let now = Utc::now();
+    let embedding_text = format!(
+        "{} {} {} {}",
+        body.name,
+        body.address,
+        body.notes.as_deref().unwrap_or(""),
+        body.tags.join(" "),
+    );
+
+    let embedding = embed_text(&state.ai, &embedding_text).await.ok();
+
+    let record = FacilityRecord {
+        id: Uuid::new_v4(), owner_id: 0,
+        name: body.name, address: body.address,
+        normalized_address: None, lat: None, lng: None,
+        geocode_status: GeocodeStatus::Pending,
+        contacts: body.contacts,
+        notes: body.notes, tags: body.tags, blob_ids: body.blob_ids,
+        avg_dwell_minutes: None, dwell_sample_count: 0,
+        embedding, created_at: now, updated_at: now,
+    };
+
+    state.db.insert_facility(&record).await?;
+    let _ = state.geocoding_tx.try_send(record.id);
+
+    Ok((StatusCode::CREATED, Json(record)))
+}
+
+pub async fn list_facilities(
+    State(state): State<AppState>,
+    Query(q): Query<ListFacilitiesQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let limit = q.limit.unwrap_or(20).min(100);
+    let offset = q.offset.unwrap_or(0);
+
+    if let Some(query_text) = q.s {
+        let embedding = embed_text(&state.ai, &query_text).await?;
+        let items = state.db.search_facilities(embedding, q.name.as_deref(), &q.tag, limit).await?;
+        let total = items.len();
+        return Ok(Json(FacilityListResponse { total, items }));
+    }
+
+    let (total, items) = state.db.list_facilities(q.name.as_deref(), &q.tag, limit, offset).await?;
+    Ok(Json(FacilityListResponse { total, items }))
+}
+
+pub async fn get_facility(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.get_facility_by_id(id).await?;
+    Ok(Json(record))
+}
+
+pub async fn update_facility(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateFacilityRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let address_changed = body.address.is_some();
+    let updated = state.db.update_facility_metadata(
+        id, body.name, body.address, body.contacts,
+        body.notes, body.tags, body.blob_ids,
+    ).await?;
+
+    let embedding_text = updated.embedding_text();
+    if let Ok(embedding) = embed_text(&state.ai, &embedding_text).await {
+        let _ = state.db.update_facility_embedding(id, embedding).await;
+    }
+
+    if address_changed {
+        let _ = state.geocoding_tx.try_send(id);
+    }
+
+    Ok(Json(updated))
+}
+
+pub async fn delete_facility(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.get_facility_by_id(id).await?;
+
+    if state.db.any_load_references_facility(id).await? {
+        return Err(AppError::Conflict(
+            "facility is referenced by one or more loads and cannot be deleted".into(),
+        ));
+    }
+
+    state.db.delete_facility_by_id(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Resolve a facility from a name+address string, applying dedup logic.
+/// Returns Ok(Uuid) if resolved/created, Err(FacilityResolutionResponse) if ambiguous.
+pub async fn resolve_or_create_facility(
+    state: &AppState,
+    name: &str,
+    address: &str,
+    force_new: bool,
+) -> Result<Uuid, FacilityResolutionResponse> {
+    if force_new {
+        return create_new_facility(state, name, address).await
+            .map_err(|_| FacilityResolutionResponse {
+                facility_resolution_required: false, candidates: vec![],
+            });
+    }
+
+    let text = format!("{name} {address}");
+    let embedding = match embed_text(&state.ai, &text).await {
+        Ok(e) => e,
+        Err(_) => return create_new_facility(state, name, address).await
+            .map_err(|_| FacilityResolutionResponse {
+                facility_resolution_required: false, candidates: vec![],
+            }),
+    };
+
+    let candidates = state.db.search_facilities(embedding, None, &[], 5).await
+        .unwrap_or_default();
+
+    let high = state.config.facility_dedup_high_threshold as f32;
+    let low = state.config.facility_dedup_low_threshold as f32;
+
+    if let Some(top) = candidates.first() {
+        if top.score.unwrap_or(0.0) >= high {
+            return Ok(top.id);
+        }
+    }
+
+    let above_low: Vec<_> = candidates.into_iter()
+        .filter(|c| c.score.unwrap_or(0.0) >= low)
+        .map(|c| crate::models::FacilityCandidate {
+            id: c.id, name: c.name, address: c.address,
+            normalized_address: c.normalized_address,
+            score: c.score.unwrap_or(0.0),
+        })
+        .collect();
+
+    if !above_low.is_empty() {
+        return Err(FacilityResolutionResponse {
+            facility_resolution_required: true,
+            candidates: above_low,
+        });
+    }
+
+    create_new_facility(state, name, address).await
+        .map_err(|_| FacilityResolutionResponse {
+            facility_resolution_required: false, candidates: vec![],
+        })
+}
+
+async fn create_new_facility(
+    state: &AppState,
+    name: &str,
+    address: &str,
+) -> Result<Uuid, AppError> {
+    let now = Utc::now();
+    let text = format!("{name} {address}");
+    let embedding = embed_text(&state.ai, &text).await.ok();
+    let record = FacilityRecord {
+        id: Uuid::new_v4(), owner_id: 0,
+        name: name.to_string(), address: address.to_string(),
+        normalized_address: None, lat: None, lng: None,
+        geocode_status: GeocodeStatus::Pending,
+        contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
+        avg_dwell_minutes: None, dwell_sample_count: 0,
+        embedding, created_at: now, updated_at: now,
+    };
+    state.db.insert_facility(&record).await?;
+    let _ = state.geocoding_tx.try_send(record.id);
+    Ok(record.id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ai::OllamaClient, config::Config, db::DbClient, routing::RoutingClient,
+        storage::BlobStore,
+    };
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn test_state() -> (AppState, TempDir, TempDir) {
+        let blob_dir = TempDir::new().unwrap();
+        let db_dir = TempDir::new().unwrap();
+        std::env::set_var("ADMIN_API_KEY", "test-secret");
+        let config = Arc::new(Config::from_env().unwrap());
+        let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
+        let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
+        let ai = Arc::new(OllamaClient::new(
+            "http://localhost:11434", "nomic-embed-text", "llama3.2", "llava",
+        ));
+        let geocoding = Arc::new(crate::geocoding::GeocodingClient::new());
+        let ors = Arc::new(RoutingClient::new(""));
+        let (geocoding_tx, _rx) = async_channel::bounded(10);
+        let (routing_tx, _rx2) = async_channel::bounded(10);
+        let (pipeline_tx, _rx3) = async_channel::bounded(10);
+        let state = AppState { db, store, ai, geocoding, ors, pipeline_tx, geocoding_tx, routing_tx, config };
+        (state, blob_dir, db_dir)
+    }
+
+    #[tokio::test]
+    async fn test_resolve_creates_new_when_no_embedding() {
+        let (state, _b, _d) = test_state().await;
+        let id = resolve_or_create_facility(&state, "Fresh Dock", "123 Main St, Dallas TX", false)
+            .await
+            .expect("should create a new facility");
+        state.db.get_facility_by_id(id).await.expect("facility should exist");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_returns_existing_on_second_call_no_embedding() {
+        let (state, _b, _d) = test_state().await;
+        let id1 = resolve_or_create_facility(&state, "Dock A", "100 Oak Ave, Nashville TN", false)
+            .await.unwrap();
+        let id2 = resolve_or_create_facility(&state, "Dock A", "100 Oak Ave, Nashville TN", false)
+            .await.unwrap();
+        assert_ne!(id1, id2, "without embeddings, dedup is not active");
+    }
+
+    #[tokio::test]
+    async fn test_resolve_force_new_skips_dedup() {
+        let (state, _b, _d) = test_state().await;
+        let id1 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", false)
+            .await.unwrap();
+        let id2 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", true)
+            .await.unwrap();
+        assert_ne!(id1, id2, "force_new_facility=true must always create a new record");
+    }
+}
