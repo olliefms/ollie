@@ -50,6 +50,7 @@ impl GeocodingClient {
         if parts.len() != 2 { return None; }
         let lat = parts[0].trim().parse::<f64>().ok()?;
         let lng = parts[1].trim().parse::<f64>().ok()?;
+        if !lat.is_finite() || !lng.is_finite() { return None; }
         if lat.abs() > 90.0 || lng.abs() > 180.0 { return None; }
         Some((lat, lng))
     }
