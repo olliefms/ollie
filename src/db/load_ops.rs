@@ -41,6 +41,7 @@ impl DbClient {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_load_metadata(
         &self, id: Uuid,
         customer_name: Option<String>, customer_ref: Option<String>,
@@ -99,6 +100,7 @@ impl DbClient {
         self.insert_load(&record).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_loads(
         &self,
         status_filter: Option<&str>,

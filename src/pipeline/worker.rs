@@ -8,10 +8,8 @@ use crate::{
     },
     db::DbClient,
     error::AppError,
-    models::BlobStatus,
     storage::BlobStore,
 };
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub async fn process_blob(

@@ -1,6 +1,5 @@
 // src/pipeline/routing.rs
 use crate::{db::DbClient, error::AppError, routing::RoutingClient};
-use std::sync::Arc;
 use uuid::Uuid;
 
 pub async fn process_load_routing(
@@ -45,6 +44,7 @@ pub async fn process_load_routing(
 mod tests {
     use super::*;
     use crate::{db::DbClient, routing::RoutingClient};
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     #[tokio::test]

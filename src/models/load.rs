@@ -38,12 +38,11 @@ impl ServiceType {
     }
 
     pub fn is_valid_for(&self, stop_type: &StopType) -> bool {
-        match (self, stop_type) {
-            (Self::PreLoaded | Self::LiveLoad, StopType::Pickup) => true,
-            (Self::LiveUnload | Self::DropAndHook, StopType::Delivery) => true,
-            (Self::Relay, _) => true,
-            _ => false,
-        }
+        matches!((self, stop_type),
+            (Self::PreLoaded | Self::LiveLoad, StopType::Pickup)
+            | (Self::LiveUnload | Self::DropAndHook, StopType::Delivery)
+            | (Self::Relay, _)
+        )
     }
 }
 
