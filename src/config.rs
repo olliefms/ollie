@@ -13,6 +13,10 @@ pub struct Config {
     pub ollama_vision_model: String,
     pub ollama_embed_dim: usize,
     pub pipeline_workers: usize,
+    pub ors_api_key: String,
+    pub facility_dedup_high_threshold: f64,
+    pub facility_dedup_low_threshold: f64,
+    pub geocoding_workers: usize,
 }
 
 impl Config {
@@ -42,6 +46,13 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(1),
+            ors_api_key: env::var("ORS_API_KEY").unwrap_or_default(),
+            facility_dedup_high_threshold: env::var("FACILITY_DEDUP_HIGH_THRESHOLD")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.92),
+            facility_dedup_low_threshold: env::var("FACILITY_DEDUP_LOW_THRESHOLD")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(0.75),
+            geocoding_workers: env::var("GEOCODING_WORKERS")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(1),
         })
     }
 }
@@ -49,9 +60,13 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_config_from_env() {
+        let _g = ENV_LOCK.lock().unwrap();
         env::set_var("ADMIN_API_KEY", "test-key");
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.admin_api_key, "test-key");
@@ -65,7 +80,21 @@ mod tests {
     }
 
     #[test]
+    fn test_config_ors_and_dedup_defaults() {
+        let _g = ENV_LOCK.lock().unwrap();
+        env::set_var("ADMIN_API_KEY", "test-key");
+        env::remove_var("ORS_API_KEY");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.ors_api_key, "");
+        assert!((cfg.facility_dedup_high_threshold - 0.92).abs() < f64::EPSILON);
+        assert!((cfg.facility_dedup_low_threshold - 0.75).abs() < f64::EPSILON);
+        assert_eq!(cfg.geocoding_workers, 1);
+        env::remove_var("ADMIN_API_KEY");
+    }
+
+    #[test]
     fn test_config_missing_api_key() {
+        let _g = ENV_LOCK.lock().unwrap();
         env::remove_var("ADMIN_API_KEY");
         assert!(Config::from_env().is_err());
     }

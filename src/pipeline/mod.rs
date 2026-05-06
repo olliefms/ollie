@@ -1,5 +1,7 @@
 // src/pipeline/mod.rs
+pub mod geocoding;
 pub mod recovery;
+pub mod routing;
 pub mod worker;
 
 use crate::{ai::OllamaClient, db::DbClient, storage::BlobStore};
@@ -28,6 +30,54 @@ pub fn spawn_pipeline(
                 }
             }
             tracing::info!("pipeline worker {i} stopped");
+        });
+    }
+    tx
+}
+
+pub fn spawn_geocoding_pipeline(
+    workers: usize,
+    db: Arc<DbClient>,
+    geocoding: Arc<crate::geocoding::GeocodingClient>,
+    ai: Arc<crate::ai::OllamaClient>,
+) -> async_channel::Sender<uuid::Uuid> {
+    let workers = workers.max(1);
+    let (tx, rx) = async_channel::bounded::<uuid::Uuid>(256);
+    for i in 0..workers {
+        let rx = rx.clone();
+        let db = db.clone();
+        let geocoding = geocoding.clone();
+        let ai = ai.clone();
+        tokio::spawn(async move {
+            tracing::info!("geocoding worker {i} started");
+            while let Ok(id) = rx.recv().await {
+                if let Err(e) = geocoding::process_facility_geocoding(id, &db, &geocoding, &ai).await {
+                    tracing::error!("geocoding worker {i} error for {id}: {e}");
+                }
+            }
+        });
+    }
+    tx
+}
+
+pub fn spawn_routing_pipeline(
+    workers: usize,
+    db: Arc<DbClient>,
+    ors: Arc<crate::routing::RoutingClient>,
+) -> async_channel::Sender<uuid::Uuid> {
+    let workers = workers.max(1);
+    let (tx, rx) = async_channel::bounded::<uuid::Uuid>(256);
+    for i in 0..workers {
+        let rx = rx.clone();
+        let db = db.clone();
+        let ors = ors.clone();
+        tokio::spawn(async move {
+            tracing::info!("routing worker {i} started");
+            while let Ok(id) = rx.recv().await {
+                if let Err(e) = routing::process_load_routing(id, &db, &ors).await {
+                    tracing::error!("routing worker {i} error for {id}: {e}");
+                }
+            }
         });
     }
     tx

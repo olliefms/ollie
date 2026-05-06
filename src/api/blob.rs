@@ -60,6 +60,13 @@ pub async fn delete_blob(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let record = state.db.get_by_id(id).await?;
+
+    if state.db.any_load_references_blob(id).await? {
+        return Err(AppError::Conflict(
+            "blob is referenced by one or more loads and cannot be deleted".into(),
+        ));
+    }
+
     let ref_count = state.db.count_by_checksum(&record.checksum).await?;
     if ref_count <= 1 {
         state.store.delete(&record.checksum).await?;
