@@ -32,3 +32,22 @@ pub fn spawn_pipeline(
     }
     tx
 }
+
+pub fn spawn_geocoding_pipeline(
+    _workers: usize,
+    _db: Arc<DbClient>,
+    _geocoding: Arc<crate::geocoding::GeocodingClient>,
+    _ai: Arc<crate::ai::OllamaClient>,
+) -> async_channel::Sender<uuid::Uuid> {
+    let (tx, _rx) = async_channel::bounded::<uuid::Uuid>(256);
+    tx
+}
+
+pub fn spawn_routing_pipeline(
+    _workers: usize,
+    _db: Arc<DbClient>,
+    _ors: Arc<crate::routing::RoutingClient>,
+) -> async_channel::Sender<uuid::Uuid> {
+    let (tx, _rx) = async_channel::bounded::<uuid::Uuid>(256);
+    tx
+}

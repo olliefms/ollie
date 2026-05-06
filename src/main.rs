@@ -4,7 +4,9 @@ use ollie::{
     api,
     config::Config,
     db::DbClient,
-    pipeline::{recovery::requeue_stale, spawn_pipeline},
+    geocoding::GeocodingClient,
+    pipeline::{recovery::requeue_stale, spawn_pipeline, spawn_geocoding_pipeline, spawn_routing_pipeline},
+    routing::RoutingClient,
     storage::BlobStore,
     AppState,
 };
@@ -25,21 +27,33 @@ async fn main() -> anyhow::Result<()> {
     let db = Arc::new(DbClient::new(&config.lancedb_path, config.ollama_embed_dim).await?);
     let store = Arc::new(BlobStore::new(&config.blob_store_path));
     let ai = Arc::new(OllamaClient::new(
-        &config.ollama_base_url,
-        &config.ollama_embed_model,
-        &config.ollama_summary_model,
-        &config.ollama_vision_model,
+        &config.ollama_base_url, &config.ollama_embed_model,
+        &config.ollama_summary_model, &config.ollama_vision_model,
     ));
+    let geocoding = Arc::new(GeocodingClient::new());
+    let ors = Arc::new(RoutingClient::new(&config.ors_api_key));
 
     let pipeline_tx = spawn_pipeline(config.pipeline_workers, db.clone(), store.clone(), ai.clone());
-    requeue_stale(&db, &pipeline_tx).await?;
+    let geocoding_tx = spawn_geocoding_pipeline(config.geocoding_workers, db.clone(), geocoding.clone(), ai.clone());
+    let routing_tx = spawn_routing_pipeline(1, db.clone(), ors.clone());
 
-    // Build vector index (no-op if table is empty or index already exists)
-    if let Err(e) = db.create_vector_index().await {
-        tracing::warn!("vector index not created: {e} (needs data first)");
+    requeue_stale(&db, &pipeline_tx, &geocoding_tx, &routing_tx).await?;
+
+    for (result, label) in [
+        (db.create_vector_index().await, "blobs"),
+        (db.create_facility_vector_index().await, "facilities"),
+        (db.create_load_vector_index().await, "loads"),
+    ] {
+        if let Err(e) = result {
+            tracing::warn!("vector index not created for {label}: {e}");
+        }
     }
 
-    let state = AppState { db, store, ai, pipeline_tx, config: config.clone() };
+    let state = AppState {
+        db, store, ai, geocoding, ors,
+        pipeline_tx, geocoding_tx, routing_tx,
+        config: config.clone(),
+    };
     let app = api::router(state);
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;

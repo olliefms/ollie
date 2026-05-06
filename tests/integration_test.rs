@@ -23,10 +23,17 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     let ai = Arc::new(OllamaClient::new(
         "http://localhost:11434", "nomic-embed-text", "llama3.2", "llava",
     ));
-    // Receiver kept alive so sends don't fail — channel not drained (no Ollama in tests)
-    let (tx, rx) = async_channel::bounded(100);
+    let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
+    let ors = Arc::new(ollie::routing::RoutingClient::new(""));
 
-    let state = AppState { db, store, ai, pipeline_tx: tx, config };
+    let (pipeline_tx, rx) = async_channel::bounded(100);
+    let (geocoding_tx, _grx) = async_channel::bounded(100);
+    let (routing_tx, _rrx) = async_channel::bounded(100);
+
+    let state = AppState {
+        db, store, ai, geocoding, ors,
+        pipeline_tx, geocoding_tx, routing_tx, config,
+    };
     let server = TestServer::new(api::router(state)).unwrap();
     (server, blob_dir, db_dir, rx)
 }

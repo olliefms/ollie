@@ -5,6 +5,8 @@ use uuid::Uuid;
 pub async fn requeue_stale(
     db: &DbClient,
     tx: &async_channel::Sender<Uuid>,
+    _geocoding_tx: &async_channel::Sender<Uuid>,
+    _routing_tx: &async_channel::Sender<Uuid>,
 ) -> Result<usize, AppError> {
     let ids = db.list_non_ready_ids().await?;
     let count = ids.len();
@@ -48,7 +50,9 @@ mod tests {
         db.insert(&ready).await.unwrap();
 
         let (tx, rx) = async_channel::bounded(10);
-        let count = requeue_stale(&db, &tx).await.unwrap();
+        let (gtx, _) = async_channel::bounded(10);
+        let (rtx, _) = async_channel::bounded(10);
+        let count = requeue_stale(&db, &tx, &gtx, &rtx).await.unwrap();
         assert_eq!(count, 1);
         let received = rx.recv().await.unwrap();
         assert_eq!(received, pending.id);
