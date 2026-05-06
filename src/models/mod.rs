@@ -1,4 +1,3 @@
-// src/models/mod.rs
 pub mod blob;
 pub mod facility;
 pub mod load;
