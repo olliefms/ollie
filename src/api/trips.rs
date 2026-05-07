@@ -169,9 +169,9 @@ pub async fn update_trip(
         ("id" = Uuid, Path, description = "Trip UUID")
     ),
     responses(
-        (status = 204, description = "Cancelled (soft delete)"),
-        (status = 409, description = "Cannot cancel in_transit or delivered trip"),
-        (status = 404, description = "Not found"),
+        (status = 204, description = "Trip was active → soft-cancelled (status set to Cancelled); or trip was already Cancelled → hard-deleted (row removed)"),
+        (status = 409, description = "Cannot cancel in_transit, delivered, or completed trip"),
+        (status = 404, description = "Trip not found"),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),

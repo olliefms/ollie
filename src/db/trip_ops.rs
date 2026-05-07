@@ -134,11 +134,17 @@ impl DbClient {
                     "cannot cancel trip with status '{}'", record.status.as_str()
                 )));
             }
-            TripStatus::Cancelled => return Ok(()),
+            TripStatus::Cancelled => return self.hard_delete_trip(id).await,
             _ => {}
         }
         self.transition_trip_status(id, TripStatus::Cancelled).await?;
         Ok(())
+    }
+
+    pub async fn hard_delete_trip(&self, id: Uuid) -> Result<(), AppError> {
+        self.trip_table.delete(&format!("id = '{id}'")).await
+            .map(|_| ())
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn next_trip_number(&self, year: i32) -> Result<String, AppError> {
