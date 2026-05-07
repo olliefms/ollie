@@ -285,6 +285,9 @@ mod tests {
         let blob_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
         std::env::set_var("ADMIN_API_KEY", "test-secret");
+        std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
+        std::env::set_var("DRIVER_RP_ID", "localhost");
+        std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
         let config = Arc::new(Config::from_env().unwrap());
         let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
         let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
@@ -296,7 +299,22 @@ mod tests {
         let (geocoding_tx, _rx) = async_channel::bounded(10);
         let (routing_tx, _rx2) = async_channel::bounded(10);
         let (pipeline_tx, _rx3) = async_channel::bounded(10);
-        let state = AppState { db, store, ai, geocoding, ors, pipeline_tx, geocoding_tx, routing_tx, config };
+        let rp_origin = webauthn_rs::prelude::Url::parse("http://localhost:3000").unwrap();
+        let webauthn = Arc::new(
+            webauthn_rs::prelude::WebauthnBuilder::new("localhost", &rp_origin)
+                .unwrap()
+                .build()
+                .unwrap(),
+        );
+        let auth_challenge_store = Arc::new(dashmap::DashMap::new());
+        let reg_challenge_store = Arc::new(dashmap::DashMap::new());
+        let state = AppState {
+            db, store, ai, geocoding, ors,
+            pipeline_tx, geocoding_tx, routing_tx,
+            config, webauthn,
+            auth_challenge_store,
+            reg_challenge_store,
+        };
         (state, blob_dir, db_dir)
     }
 

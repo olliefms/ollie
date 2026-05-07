@@ -17,8 +17,10 @@ use db::DbClient;
 use geocoding::GeocodingClient;
 use routing::RoutingClient;
 use std::sync::Arc;
+use std::time::Instant;
 use storage::BlobStore;
 use uuid::Uuid;
+use webauthn_rs::prelude::{PasskeyAuthentication, PasskeyRegistration};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -31,4 +33,7 @@ pub struct AppState {
     pub geocoding_tx: async_channel::Sender<Uuid>,
     pub routing_tx: async_channel::Sender<Uuid>,
     pub config: Arc<Config>,
+    pub webauthn: Arc<webauthn_rs::Webauthn>,
+    pub auth_challenge_store: Arc<dashmap::DashMap<Uuid, (PasskeyAuthentication, Instant)>>,
+    pub reg_challenge_store: Arc<dashmap::DashMap<Uuid, (PasskeyRegistration, Instant)>>,
 }

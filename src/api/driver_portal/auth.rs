@@ -1,0 +1,379 @@
+// src/api/driver_portal/auth.rs
+use crate::{
+    AppState,
+    error::AppError,
+    models::{DriverCredentials, DriverPasskeyCredential, DriverStatus},
+};
+use axum::{
+    Json,
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+};
+use chrono::Utc;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::time::Instant;
+use uuid::Uuid;
+use webauthn_rs::prelude::Passkey;
+
+use super::jwt::{decode_driver_jwt, encode_driver_jwt};
+
+// --- Phone normalization ---
+
+pub fn normalize_phone(phone: &str) -> String {
+    let stripped: String = phone.chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '(' | ')'))
+        .collect();
+    if stripped.starts_with('+') {
+        return stripped;
+    }
+    if stripped.len() == 10 && stripped.chars().all(|c| c.is_ascii_digit()) {
+        return format!("+1{stripped}");
+    }
+    if stripped.chars().all(|c| c.is_ascii_digit()) {
+        return format!("+{stripped}");
+    }
+    stripped
+}
+
+// --- Request/Response types ---
+
+#[derive(Deserialize)]
+pub struct ChallengeRequest {
+    pub phone: String,
+}
+
+#[derive(Deserialize)]
+pub struct VerifyRequest {
+    pub driver_id: Uuid,
+    pub response: Value,
+}
+
+#[derive(Deserialize)]
+pub struct PinAuthRequest {
+    pub phone: String,
+    pub pin: String,
+}
+
+#[derive(Deserialize)]
+pub struct RegisterPasskeyRequest {
+    pub phase: String,
+    pub driver_id: Uuid,
+    pub response: Option<Value>,
+}
+
+// --- Helpers ---
+
+fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    headers.get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+fn default_credentials(driver_id: Uuid) -> DriverCredentials {
+    DriverCredentials {
+        driver_id,
+        pin_hash: None,
+        token_version: 0,
+        failed_pin_attempts: 0,
+        locked_until: None,
+        updated_at: Utc::now(),
+    }
+}
+
+// --- Handlers ---
+
+pub async fn challenge(
+    State(state): State<AppState>,
+    Json(req): Json<ChallengeRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let phone = normalize_phone(&req.phone);
+    let driver = state.db.get_driver_by_phone(&phone).await?
+        .ok_or(AppError::NotFound)?;
+
+    if driver.status == DriverStatus::Inactive {
+        return Err(AppError::Unauthorized);
+    }
+
+    let passkey_records = state.db.get_passkey_credentials_for_driver(driver.id).await?;
+    let passkeys: Vec<Passkey> = passkey_records.iter()
+        .filter_map(|r| serde_json::from_str::<Passkey>(&r.public_key).ok())
+        .collect();
+
+    let (rcr, auth_state) = state.webauthn
+        .start_passkey_authentication(&passkeys)
+        .map_err(|e| AppError::Internal(format!("webauthn start auth error: {e}")))?;
+
+    state.auth_challenge_store.insert(driver.id, (auth_state, Instant::now()));
+
+    let challenge_value = serde_json::to_value(&rcr)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    Ok(Json(json!({ "challenge": challenge_value })))
+}
+
+pub async fn verify(
+    State(state): State<AppState>,
+    Json(req): Json<VerifyRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let driver = state.db.get_driver_by_id(req.driver_id).await?;
+    if driver.status == DriverStatus::Inactive {
+        return Err(AppError::Unauthorized);
+    }
+
+    let (auth_state, _ts) = state.auth_challenge_store
+        .remove(&req.driver_id)
+        .map(|(_, v)| v)
+        .ok_or(AppError::Unauthorized)?;
+
+    let pub_key_cred = serde_json::from_value(req.response)
+        .map_err(|e| AppError::BadRequest(format!("invalid credential response: {e}")))?;
+
+    let auth_result = state.webauthn
+        .finish_passkey_authentication(&pub_key_cred, &auth_state)
+        .map_err(|_| AppError::Unauthorized)?;
+
+    // Update counter — CredentialID is HumanBinaryData (Vec<u8>), encode as base64url for storage key
+    let credential_id = base64::Engine::encode(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        auth_result.cred_id().as_slice(),
+    );
+    if let Some(mut passkey_cred) = state.db.get_passkey_credential(&credential_id).await? {
+        passkey_cred.counter = auth_result.counter() as i64;
+        state.db.upsert_passkey_credential(&passkey_cred).await?;
+    }
+
+    // Get or create driver credentials
+    let creds = state.db.get_driver_credentials(req.driver_id).await?
+        .unwrap_or_else(|| default_credentials(req.driver_id));
+
+    let token = encode_driver_jwt(req.driver_id, creds.token_version, &state.config.driver_jwt_secret)?;
+
+    tracing::info!(driver_id = %req.driver_id, "driver auth via passkey succeeded");
+
+    Ok(Json(json!({ "token": token })))
+}
+
+pub async fn pin_auth(
+    State(state): State<AppState>,
+    Json(req): Json<PinAuthRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let phone = normalize_phone(&req.phone);
+    let driver = state.db.get_driver_by_phone(&phone).await?
+        .ok_or(AppError::Unauthorized)?;
+
+    if driver.status == DriverStatus::Inactive {
+        return Err(AppError::Unauthorized);
+    }
+
+    let mut creds = state.db.get_driver_credentials(driver.id).await?
+        .ok_or(AppError::Unauthorized)?;
+
+    let pin_hash = creds.pin_hash.clone().ok_or(AppError::Unauthorized)?;
+
+    // Check lockout
+    if let Some(locked_until) = creds.locked_until {
+        if locked_until > Utc::now() {
+            return Ok((
+                StatusCode::LOCKED,
+                Json(json!({
+                    "error": format!("locked until {}", locked_until.to_rfc3339()),
+                    "locked_until": locked_until.to_rfc3339(),
+                })),
+            ).into_response());
+        }
+    }
+
+    let pin_valid = bcrypt::verify(&req.pin, &pin_hash)
+        .map_err(|e| AppError::Internal(format!("bcrypt error: {e}")))?;
+
+    if !pin_valid {
+        creds.failed_pin_attempts += 1;
+        if creds.failed_pin_attempts >= 5 {
+            let extra_failures = creds.failed_pin_attempts - 5;
+            let backoff_mins = 15u64 * 2u64.pow(extra_failures as u32);
+            let backoff_mins = backoff_mins.min(24 * 60);
+            creds.locked_until = Some(Utc::now() + chrono::Duration::minutes(backoff_mins as i64));
+            tracing::warn!(
+                driver_id = %driver.id,
+                failed_attempts = creds.failed_pin_attempts,
+                locked_until = ?creds.locked_until,
+                "driver PIN lockout"
+            );
+        }
+        creds.updated_at = Utc::now();
+        state.db.upsert_driver_credentials(&creds).await?;
+        return Err(AppError::Unauthorized);
+    }
+
+    // Valid PIN
+    creds.failed_pin_attempts = 0;
+    creds.locked_until = None;
+    creds.updated_at = Utc::now();
+    state.db.upsert_driver_credentials(&creds).await?;
+
+    let token = encode_driver_jwt(driver.id, creds.token_version, &state.config.driver_jwt_secret)?;
+
+    tracing::info!(driver_id = %driver.id, "driver auth via PIN succeeded");
+
+    Ok(Json(json!({ "token": token })).into_response())
+}
+
+pub async fn register_passkey(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<RegisterPasskeyRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let token = bearer_token(&headers).ok_or(AppError::Unauthorized)?;
+    let claims = decode_driver_jwt(token, &state.config.driver_jwt_secret)?;
+    let jwt_driver_id: Uuid = claims.driver_id.parse()
+        .map_err(|_| AppError::Unauthorized)?;
+
+    if jwt_driver_id != req.driver_id {
+        return Err(AppError::Unauthorized);
+    }
+
+    match req.phase.as_str() {
+        "start" => {
+            let driver = state.db.get_driver_by_id(req.driver_id).await?;
+            if driver.status == DriverStatus::Inactive {
+                return Err(AppError::Unauthorized);
+            }
+
+            let existing = state.db.get_passkey_credentials_for_driver(req.driver_id).await?;
+            let existing_passkeys: Vec<Passkey> = existing.iter()
+                .filter_map(|r| serde_json::from_str::<Passkey>(&r.public_key).ok())
+                .collect();
+            let exclude: Vec<webauthn_rs::prelude::CredentialID> = existing_passkeys.iter()
+                .map(|p| p.cred_id().clone())
+                .collect();
+            let exclude_opt = if exclude.is_empty() { None } else { Some(exclude) };
+
+            let phone_display = driver.phone.as_deref().unwrap_or("unknown");
+            let name_display = driver.name.as_str();
+
+            let (ccr, reg_state) = state.webauthn
+                .start_passkey_registration(
+                    req.driver_id,
+                    phone_display,
+                    name_display,
+                    exclude_opt,
+                )
+                .map_err(|e| AppError::Internal(format!("webauthn start reg error: {e}")))?;
+
+            state.reg_challenge_store.insert(req.driver_id, (reg_state, Instant::now()));
+
+            let challenge_value = serde_json::to_value(&ccr)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+
+            Ok(Json(json!({ "challenge": challenge_value })).into_response())
+        }
+        "finish" => {
+            let cred_value = req.response.ok_or_else(|| AppError::BadRequest("response is required for finish phase".into()))?;
+
+            let (reg_state, _ts) = state.reg_challenge_store
+                .remove(&req.driver_id)
+                .map(|(_, v)| v)
+                .ok_or(AppError::BadRequest("no pending registration for this driver".into()))?;
+
+            let reg_pub_key = serde_json::from_value(cred_value)
+                .map_err(|e| AppError::BadRequest(format!("invalid credential response: {e}")))?;
+
+            let passkey = state.webauthn
+                .finish_passkey_registration(&reg_pub_key, &reg_state)
+                .map_err(|e| AppError::BadRequest(format!("webauthn finish reg error: {e}")))?;
+
+            let credential_id = base64::Engine::encode(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+                passkey.cred_id().as_slice(),
+            );
+            let public_key = serde_json::to_string(&passkey)
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+
+            let passkey_cred = DriverPasskeyCredential {
+                credential_id,
+                driver_id: req.driver_id,
+                public_key,
+                counter: 0,
+                transports: "[]".into(),
+                created_at: Utc::now(),
+            };
+            state.db.upsert_passkey_credential(&passkey_cred).await?;
+
+            tracing::info!(driver_id = %req.driver_id, "driver passkey registered");
+
+            Ok(Json(json!({ "ok": true })).into_response())
+        }
+        other => Err(AppError::BadRequest(format!("unknown phase: {other}"))),
+    }
+}
+
+pub async fn refresh(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    let token = bearer_token(&headers).ok_or(AppError::Unauthorized)?;
+    let claims = decode_driver_jwt(token, &state.config.driver_jwt_secret)?;
+
+    // Check iat: refresh window is 7 days
+    let now = jsonwebtoken::get_current_timestamp() as usize;
+    let max_refresh_secs = 7 * 24 * 3600;
+    if now.saturating_sub(claims.iat) > max_refresh_secs {
+        return Err(AppError::Unauthorized);
+    }
+
+    let driver_id: Uuid = claims.driver_id.parse()
+        .map_err(|_| AppError::Unauthorized)?;
+
+    let creds = state.db.get_driver_credentials(driver_id).await?
+        .ok_or(AppError::Unauthorized)?;
+
+    if creds.token_version != claims.token_version {
+        return Err(AppError::Unauthorized);
+    }
+
+    let driver = state.db.get_driver_by_id(driver_id).await?;
+    if driver.status == DriverStatus::Inactive {
+        return Err(AppError::Unauthorized);
+    }
+
+    let new_token = encode_driver_jwt(driver_id, creds.token_version, &state.config.driver_jwt_secret)?;
+
+    Ok(Json(json!({ "token": new_token })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_phone_e164_unchanged() {
+        assert_eq!(normalize_phone("+12125551234"), "+12125551234");
+    }
+
+    #[test]
+    fn test_normalize_phone_10_digits() {
+        assert_eq!(normalize_phone("2125551234"), "+12125551234");
+    }
+
+    #[test]
+    fn test_normalize_phone_strips_formatting() {
+        assert_eq!(normalize_phone("(212) 555-1234"), "+12125551234");
+    }
+
+    #[test]
+    fn test_normalize_phone_strips_dashes() {
+        assert_eq!(normalize_phone("212-555-1234"), "+12125551234");
+    }
+
+    #[test]
+    fn test_normalize_phone_international_with_plus() {
+        assert_eq!(normalize_phone("+442071838750"), "+442071838750");
+    }
+
+    #[test]
+    fn test_normalize_phone_11_digits_numeric() {
+        assert_eq!(normalize_phone("12125551234"), "+12125551234");
+    }
+}

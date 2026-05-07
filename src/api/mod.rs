@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod blob;
 pub mod blobs;
+pub mod driver_portal;
 pub mod drivers;
 pub mod events;
 pub mod facilities;
