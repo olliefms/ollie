@@ -2,8 +2,14 @@
 pub mod auth;
 pub mod blob;
 pub mod blobs;
+pub mod drivers;
+pub mod events;
 pub mod facilities;
 pub mod loads;
+pub mod trailers;
+pub mod trip_actions;
+pub mod trips;
+pub mod trucks;
 
 use crate::{api::auth::require_bearer, models, AppState};
 use axum::{
@@ -84,8 +90,13 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
     ),
     tags(
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
+        (name = "drivers", description = "Driver management with state machine"),
+        (name = "events", description = "Append-only event journal (read-only)"),
         (name = "facilities", description = "Freight facility management with geocoding and semantic search"),
         (name = "loads", description = "Freight load lifecycle management"),
+        (name = "trailers", description = "Trailer management with state machine"),
+        (name = "trips", description = "Trip management with stop tracking and load cascade"),
+        (name = "trucks", description = "Truck management with state machine"),
     )
 )]
 struct ApiDoc;
@@ -209,6 +220,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/loads/:id/invoice", post(loads::invoice_load))
         .route("/api/v1/loads/:id/cancel", post(loads::cancel_load))
         .route("/api/v1/loads/:id/settle", post(loads::settle_load))
+        // Drivers, trucks, trailers, trips, trip actions, events (stubs — filled in by Wave 2/3/4)
+        .merge(drivers::router())
+        .merge(trucks::router())
+        .merge(trailers::router())
+        .merge(trips::router())
+        .merge(trip_actions::router())
+        .merge(events::router())
         .route_layer(from_fn(move |req, next| {
             let k = key.clone();
             async move { require_bearer(k, req, next).await }
