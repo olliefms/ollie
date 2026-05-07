@@ -128,15 +128,15 @@ pub async fn list_loads(
         let items = state.db.search_loads(
             embedding, q.status.as_deref(), q.customer.as_deref(), &q.tag, limit,
         ).await?;
-        let total = items.len();
-        return Ok(Json(LoadListResponse { total, items }));
+        let returned = items.len();
+        return Ok(Json(LoadListResponse { returned, items }));
     }
 
     let (total, items) = state.db.list_loads(
         q.status.as_deref(), q.customer.as_deref(), &q.tag,
         q.from.as_deref(), q.to.as_deref(), limit, offset,
     ).await?;
-    Ok(Json(LoadListResponse { total, items }))
+    Ok(Json(LoadListResponse { returned: total, items }))
 }
 
 #[utoipa::path(
@@ -423,7 +423,7 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
     let mut stops = Vec::new();
     let mut resolutions: Vec<FacilityResolutionResponse> = Vec::new();
 
-    for input in inputs {
+    for (idx, input) in inputs.into_iter().enumerate() {
         if !input.service_type.is_valid_for(&input.stop_type) {
             return Err(AppError::BadRequest(format!(
                 "service_type '{}' is not valid for stop_type '{}'",
@@ -443,10 +443,13 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             ))?;
             match resolve_or_create_facility(state, &name, &address, input.force_new_facility).await {
                 Ok(id) => id,
-                Err(resolution) => {
-                    resolutions.push(resolution);
+                Err(AppError::FacilityResolution(res)) => {
+                    let mut inner = *res;
+                    for r in &mut inner { r.stop_index = idx; }
+                    resolutions.extend(inner);
                     continue;
                 }
+                Err(e) => return Err(e),
             }
         };
 
@@ -468,7 +471,7 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
     }
 
     if !resolutions.is_empty() {
-        return Err(AppError::FacilityResolution(Box::new(resolutions.remove(0))));
+        return Err(AppError::FacilityResolution(Box::new(resolutions)));
     }
 
     Ok(stops)
