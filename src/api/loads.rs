@@ -19,8 +19,18 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::Utc;
 use serde::Deserialize;
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LoadStopArriveRequest {
+    pub actual_arrive: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LoadStopDepartRequest {
+    pub actual_depart: String,
+}
 
 #[derive(Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -320,6 +330,90 @@ pub async fn settle_load(
         id, LoadStatus::Settled, None, None, None,
     ).await?;
     let response = build_detail_response(&state, record).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/stops/{seq}/arrive",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Load UUID"),
+        ("seq" = u32, Path, description = "Stop sequence number"),
+    ),
+    request_body(content = LoadStopArriveRequest, description = "Actual arrival time"),
+    responses(
+        (status = 200, description = "Stop arrival recorded", body = LoadDetailResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
+pub async fn load_stop_arrive(
+    State(state): State<AppState>,
+    Path((id, seq)): Path<(uuid::Uuid, u32)>,
+    Json(body): Json<LoadStopArriveRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let load = state.db.get_load_by_id(id).await?;
+    let stop_exists = load.stops.iter().any(|s| s.sequence == seq);
+    if !stop_exists {
+        return Err(AppError::NotFound);
+    }
+    let mut updated_stops = load.stops.clone();
+    for stop in &mut updated_stops {
+        if stop.sequence == seq {
+            stop.actual_arrive = Some(body.actual_arrive.clone());
+            break;
+        }
+    }
+    let updated = state.db.update_load_metadata(
+        id, None, None, Some(updated_stops),
+        None, None, None, None, None, None, None, None,
+    ).await?;
+    let response = build_detail_response(&state, updated).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/stops/{seq}/depart",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Load UUID"),
+        ("seq" = u32, Path, description = "Stop sequence number"),
+    ),
+    request_body(content = LoadStopDepartRequest, description = "Actual departure time"),
+    responses(
+        (status = 200, description = "Stop departure recorded", body = LoadDetailResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
+pub async fn load_stop_depart(
+    State(state): State<AppState>,
+    Path((id, seq)): Path<(uuid::Uuid, u32)>,
+    Json(body): Json<LoadStopDepartRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let load = state.db.get_load_by_id(id).await?;
+    let stop_exists = load.stops.iter().any(|s| s.sequence == seq);
+    if !stop_exists {
+        return Err(AppError::NotFound);
+    }
+    let mut updated_stops = load.stops.clone();
+    for stop in &mut updated_stops {
+        if stop.sequence == seq {
+            stop.actual_depart = Some(body.actual_depart.clone());
+            break;
+        }
+    }
+    let updated = state.db.update_load_metadata(
+        id, None, None, Some(updated_stops),
+        None, None, None, None, None, None, None, None,
+    ).await?;
+    let response = build_detail_response(&state, updated).await?;
     Ok(Json(response))
 }
 
