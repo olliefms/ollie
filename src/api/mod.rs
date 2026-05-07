@@ -174,9 +174,17 @@ Freight loads with multi-stop routes. Status lifecycle:
 ## Facility Resolution
 
 When creating or updating a load, stops can specify a facility by UUID (facility_id)
-or by name + address. If a name+address match is ambiguous, the API returns 200 with
-a FacilityResolutionResponse listing candidates. Retry the request with the chosen
-facility_id or set force_new_facility=true to create a new facility.
+or by name + address. If any name+address matches are ambiguous, the API returns 200
+with an array of FacilityResolutionResponse objects — one per ambiguous stop, each
+with a stop_index field identifying which stop needs resolution. Retry the request
+with facility_id set for each ambiguous stop, or set force_new_facility=true to
+create a new facility for that stop.
+
+## List vs. Search Response Counts
+
+GET endpoints that support ?s= return a `returned` field.
+- List mode (no ?s=): `returned` equals the total count of matching records (for pagination).
+- Search mode (?s=query): `returned` equals the number of items in this response (bounded by limit).
 
 ## Full Spec
 
