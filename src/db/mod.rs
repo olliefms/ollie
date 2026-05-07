@@ -51,8 +51,8 @@ impl DbClient {
             empty_driver_batch(schema, embed_dim)
         }).await?;
 
-        let truck_table = open_or_create(&conn, "trucks", placeholder_schema(), |schema| {
-            empty_placeholder_batch(schema)
+        let truck_table = open_or_create(&conn, "trucks", truck_schema(embed_dim), |schema| {
+            empty_truck_batch(schema, embed_dim)
         }).await?;
 
         let trailer_table = open_or_create(&conn, "trailers", placeholder_schema(), |schema| {
@@ -295,6 +295,50 @@ fn empty_event_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatc
         Arc::new(FixedSizeListArray::from_iter_primitive::<
             arrow_array::types::Float32Type, _, _
         >(nulls, embed_dim as i32)),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn truck_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("unit_number", DataType::Utf8, false),
+        Field::new("year", DataType::Int64, true),
+        Field::new("make", DataType::Utf8, true),
+        Field::new("model", DataType::Utf8, true),
+        Field::new("vin", DataType::Utf8, true),
+        Field::new("plate", DataType::Utf8, true),
+        Field::new("plate_state", DataType::Utf8, true),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_truck_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<Option<i64>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

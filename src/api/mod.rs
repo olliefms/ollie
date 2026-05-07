@@ -54,6 +54,11 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         drivers::get_driver,
         drivers::update_driver,
         drivers::delete_driver,
+        trucks::create_truck,
+        trucks::list_trucks,
+        trucks::get_truck,
+        trucks::update_truck,
+        trucks::delete_truck,
     ),
     components(
         schemas(
@@ -97,6 +102,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::UpdateDriverRequest,
             models::DriverListItem,
             models::DriverListResponse,
+            models::TruckStatus,
+            models::TruckRecord,
+            models::CreateTruckRequest,
+            models::UpdateTruckRequest,
+            models::TruckListItem,
+            models::TruckListResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -210,6 +221,16 @@ DELETE soft-deletes (sets status=inactive). PUT cannot set assigned or dispatche
   GET    /api/v1/drivers/:id      Get driver
   PUT    /api/v1/drivers/:id      Update driver fields (cannot manually set assigned/dispatched)
   DELETE /api/v1/drivers/:id      Soft-delete (sets status=inactive)
+
+### Trucks — /api/v1/trucks, /api/v1/trucks/:id
+Truck records with state machine. Status: available → assigned → dispatched (assigned/dispatched driven by trip events).
+out_of_service can be set/cleared via PUT. DELETE soft-deletes (sets status=inactive).
+
+  POST   /api/v1/trucks          Create truck
+  GET    /api/v1/trucks          List or search trucks (?s, ?status, ?limit, ?offset)
+  GET    /api/v1/trucks/:id      Get truck
+  PUT    /api/v1/trucks/:id      Update truck fields (out_of_service allowed; assigned/dispatched rejected)
+  DELETE /api/v1/trucks/:id      Soft-delete (sets status=inactive)
 
 ### Events — /api/v1/events, /api/v1/events/:id
 Append-only event journal recording entity lifecycle transitions. Written by internal
