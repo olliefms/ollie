@@ -300,7 +300,7 @@ async fn test_list_facilities() {
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
         .await;
     assert_eq!(list.status_code(), 200);
-    assert!(list.json::<serde_json::Value>()["total"].as_u64().unwrap() >= 1);
+    assert!(list.json::<serde_json::Value>()["returned"].as_u64().unwrap() >= 1);
 }
 
 async fn create_test_facility(server: &axum_test::TestServer, name: &str, address: &str) -> String {
@@ -352,7 +352,8 @@ async fn test_create_load_auto_creates_facility_from_name_address() {
                 "sequence": 1, "stop_type": "pickup", "service_type": "pre_loaded",
                 "facility_name": "Brand New Dock",
                 "address": "Tulsa, OK",
-                "scheduled_arrive": "2026-05-10"
+                "scheduled_arrive": "2026-05-10",
+                "force_new_facility": true
             }],
             "rate_items": []
         }))
@@ -362,7 +363,7 @@ async fn test_create_load_auto_creates_facility_from_name_address() {
     let facs = server.get("/api/v1/facilities")
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
         .await;
-    assert!(facs.json::<serde_json::Value>()["total"].as_u64().unwrap() >= 1);
+    assert!(facs.json::<serde_json::Value>()["returned"].as_u64().unwrap() >= 1);
 }
 
 #[tokio::test]
