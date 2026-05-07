@@ -127,6 +127,17 @@ pub async fn verify(
         return Err(AppError::Unauthorized);
     }
 
+    // Fix 2: check locked_until before allowing passkey login
+    let mut creds = match state.db.get_driver_credentials(req.driver_id).await? {
+        Some(c) => c,
+        None => default_credentials(req.driver_id),
+    };
+    if let Some(locked_until) = creds.locked_until {
+        if locked_until > Utc::now() {
+            return Err(AppError::Unauthorized);
+        }
+    }
+
     let (auth_state, _ts) = state.auth_challenge_store
         .remove(&req.driver_id)
         .map(|(_, v)| v)
@@ -149,9 +160,12 @@ pub async fn verify(
         state.db.upsert_passkey_credential(&passkey_cred).await?;
     }
 
-    // Get or create driver credentials
-    let creds = state.db.get_driver_credentials(req.driver_id).await?
-        .unwrap_or_else(|| default_credentials(req.driver_id));
+    // Fix 2: reset lockout on successful passkey auth
+    // Fix 4: always persist credentials row so the JWT middleware can find it
+    creds.failed_pin_attempts = 0;
+    creds.locked_until = None;
+    creds.updated_at = Utc::now();
+    state.db.upsert_driver_credentials(&creds).await?;
 
     let token = encode_driver_jwt(req.driver_id, creds.token_version, &state.config.driver_jwt_secret)?;
 
@@ -245,12 +259,20 @@ pub async fn register_passkey(
         return Err(AppError::Unauthorized);
     }
 
+    // Fix 1: validate token_version and driver status before either phase
+    let reg_creds = state.db.get_driver_credentials(req.driver_id).await?
+        .ok_or(AppError::Unauthorized)?;
+    if reg_creds.token_version != claims.token_version {
+        return Err(AppError::Unauthorized);
+    }
+    let reg_driver = state.db.get_driver_by_id(req.driver_id).await?;
+    if reg_driver.status == DriverStatus::Inactive {
+        return Err(AppError::Unauthorized);
+    }
+
     match req.phase.as_str() {
         "start" => {
-            let driver = state.db.get_driver_by_id(req.driver_id).await?;
-            if driver.status == DriverStatus::Inactive {
-                return Err(AppError::Unauthorized);
-            }
+            // driver status and token_version already validated above
 
             let existing = state.db.get_passkey_credentials_for_driver(req.driver_id).await?;
             let existing_passkeys: Vec<Passkey> = existing.iter()
@@ -261,8 +283,8 @@ pub async fn register_passkey(
                 .collect();
             let exclude_opt = if exclude.is_empty() { None } else { Some(exclude) };
 
-            let phone_display = driver.phone.as_deref().unwrap_or("unknown");
-            let name_display = driver.name.as_str();
+            let phone_display = reg_driver.phone.as_deref().unwrap_or("unknown");
+            let name_display = reg_driver.name.as_str();
 
             let (ccr, reg_state) = state.webauthn
                 .start_passkey_registration(
@@ -342,6 +364,13 @@ pub async fn refresh(
 
     if creds.token_version != claims.token_version {
         return Err(AppError::Unauthorized);
+    }
+
+    // Fix 3: locked drivers must not be able to extend a session
+    if let Some(locked_until) = creds.locked_until {
+        if locked_until > Utc::now() {
+            return Err(AppError::Unauthorized);
+        }
     }
 
     let driver = state.db.get_driver_by_id(driver_id).await?;
