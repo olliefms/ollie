@@ -59,6 +59,11 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         trucks::get_truck,
         trucks::update_truck,
         trucks::delete_truck,
+        trailers::create_trailer,
+        trailers::list_trailers,
+        trailers::get_trailer,
+        trailers::update_trailer,
+        trailers::delete_trailer,
     ),
     components(
         schemas(
@@ -108,6 +113,13 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::UpdateTruckRequest,
             models::TruckListItem,
             models::TruckListResponse,
+            models::TrailerOwner,
+            models::TrailerStatus,
+            models::TrailerRecord,
+            models::CreateTrailerRequest,
+            models::UpdateTrailerRequest,
+            models::TrailerListItem,
+            models::TrailerListResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -231,6 +243,17 @@ out_of_service can be set/cleared via PUT. DELETE soft-deletes (sets status=inac
   GET    /api/v1/trucks/:id      Get truck
   PUT    /api/v1/trucks/:id      Update truck fields (out_of_service allowed; assigned/dispatched rejected)
   DELETE /api/v1/trucks/:id      Soft-delete (sets status=inactive)
+
+### Trailers — /api/v1/trailers, /api/v1/trailers/:id
+Trailer records with owner type (fleet|carrier|customer|other) and state machine.
+Non-fleet trailers require owner_name. out_of_service can be set/cleared via PUT.
+DELETE soft-deletes (sets status=inactive).
+
+  POST   /api/v1/trailers          Create trailer (owner_name required if owner != fleet)
+  GET    /api/v1/trailers          List or search trailers (?s, ?status, ?owner, ?limit, ?offset)
+  GET    /api/v1/trailers/:id      Get trailer
+  PUT    /api/v1/trailers/:id      Update trailer fields (out_of_service allowed; assigned/dispatched rejected)
+  DELETE /api/v1/trailers/:id      Soft-delete (sets status=inactive)
 
 ### Events — /api/v1/events, /api/v1/events/:id
 Append-only event journal recording entity lifecycle transitions. Written by internal

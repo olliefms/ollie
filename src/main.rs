@@ -45,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
         (db.create_load_vector_index().await, "loads"),
         (db.create_driver_vector_index().await, "drivers"),
         (db.create_truck_vector_index().await, "trucks"),
+        (db.create_trailer_vector_index().await, "trailers"),
         (db.create_event_vector_index().await, "events"),
     ] {
         if let Err(e) = result {

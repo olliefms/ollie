@@ -12,4 +12,5 @@ pub use driver::*;
 pub use event::*;
 pub use facility::*;
 pub use load::*;
+pub use trailer::*;
 pub use truck::*;
