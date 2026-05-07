@@ -1,3 +1,4 @@
+pub mod extract_store;
 pub mod shard;
 
 use crate::error::AppError;

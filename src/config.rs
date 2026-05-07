@@ -6,6 +6,7 @@ pub struct Config {
     pub admin_api_key: String,
     pub port: u16,
     pub blob_store_path: String,
+    pub extract_store_path: String,
     pub lancedb_path: String,
     pub ollama_base_url: String,
     pub ollama_embed_model: String,
@@ -28,6 +29,8 @@ impl Config {
             port: env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3000),
             blob_store_path: env::var("BLOB_STORE_PATH")
                 .unwrap_or_else(|_| "./data/blobs".into()),
+            extract_store_path: env::var("EXTRACT_STORE_PATH")
+                .unwrap_or_else(|_| "./data/extracts".into()),
             lancedb_path: env::var("LANCEDB_PATH")
                 .unwrap_or_else(|_| "./data/lancedb".into()),
             ollama_base_url: env::var("OLLAMA_BASE_URL")

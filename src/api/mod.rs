@@ -29,6 +29,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         blob::get_blob,
         blob::update_blob,
         blob::delete_blob,
+        blob::query_blob,
         facilities::create_facility,
         facilities::list_facilities,
         facilities::get_facility,
@@ -79,6 +80,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::LoadListResponse,
             models::LoadDetailResponse,
             blobs::BlobUploadRequest,
+            blob::BlobQueryRequest,
+            blob::BlobQueryResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -136,11 +139,17 @@ Store and retrieve files (PDFs, images, documents). Files are content-addressed 
 deduplicated. Uploaded files are processed asynchronously: Ollama generates a text
 summary and a vector embedding. Supports semantic search via ?s=<query>.
 
-  POST   /api/v1/blobs          Upload file (multipart/form-data: file, name?, tags?)
-  GET    /api/v1/blobs          List or search blobs (?s=query for semantic search)
-  GET    /api/v1/blob/:id       Download file or get JSON record (Accept: application/json)
-  PUT    /api/v1/blob/:id       Update name and/or tags
-  DELETE /api/v1/blob/:id       Delete (blocked if referenced by a load)
+  POST   /api/v1/blobs              Upload file (multipart/form-data: file, name?, tags?)
+  GET    /api/v1/blobs              List or search blobs (?s=query for semantic search)
+  GET    /api/v1/blob/:id           Download file or get JSON record (Accept: application/json)
+  PUT    /api/v1/blob/:id           Update name and/or tags
+  DELETE /api/v1/blob/:id           Delete (blocked if referenced by a load)
+  POST   /api/v1/blobs/:id/query    Ask a natural-language question about the document.
+                                    Body: { "prompt": "...", "model": "llama3.2" (optional) }
+                                    Returns: { id, prompt, answer, model, processing_time_ms }
+                                    Requires blob status=ready. Uses extracted text (text blobs)
+                                    or vision model (scanned PDFs). 400 for bad prompt,
+                                    422 if not ready or content type not queryable.
 
 ### Facilities — /api/v1/facilities, /api/v1/facilities/:id
 Freight facilities (warehouses, loading docks). Address geocoding runs asynchronously.
@@ -200,6 +209,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/blob/:id", get(blob::get_blob))
         .route("/api/v1/blob/:id", put(blob::update_blob))
         .route("/api/v1/blob/:id", delete(blob::delete_blob))
+        .route("/api/v1/blobs/:id/query", post(blob::query_blob))
         // Facilities
         .route("/api/v1/facilities", post(facilities::create_facility))
         .route("/api/v1/facilities", get(facilities::list_facilities))
