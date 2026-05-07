@@ -1,6 +1,6 @@
 use crate::{ai::extract::Extractable, error::AppError, storage::shard::shard_path};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 
 #[derive(Serialize, Deserialize)]
@@ -17,6 +17,16 @@ pub enum ExtractForQuery {
 
 fn extract_path(base_dir: &str, checksum: &str) -> PathBuf {
     shard_path(base_dir, checksum).with_extension("json")
+}
+
+pub async fn delete_extract(base_dir: &Path, checksum: &str) -> Result<(), std::io::Error> {
+    let base_str = base_dir.to_string_lossy();
+    let path = extract_path(&base_str, checksum);
+    match fs::remove_file(&path).await {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 pub async fn read_extract(base_dir: &str, checksum: &str) -> Option<ExtractForQuery> {
