@@ -117,7 +117,7 @@ pub enum TripTab {
 
 pub fn classify_trip(trip: &TripListItem) -> TripTab {
     match &trip.status {
-        TripStatus::Delivered | TripStatus::Completed | TripStatus::Cancelled => TripTab::Past,
+        TripStatus::Delivered | TripStatus::Cancelled => TripTab::Past,
         TripStatus::Dispatched | TripStatus::InTransit => TripTab::Current,
         TripStatus::Assigned => {
             let first_arrive = trip.stops.first().and_then(|s| s.scheduled_arrive.as_deref());

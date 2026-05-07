@@ -54,7 +54,6 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         trip_actions::dispatch_trip,
         trip_actions::undispatch_trip,
         trip_actions::cancel_trip,
-        trip_actions::complete_trip,
         trip_actions::stop_arrive,
         trip_actions::stop_depart,
         trip_actions::stop_late,
