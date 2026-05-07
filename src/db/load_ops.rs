@@ -213,6 +213,20 @@ impl DbClient {
             .into_iter().map(|r| r.id).collect())
     }
 
+    pub async fn list_unrouted_loads_for_facility(&self, facility_id: Uuid) -> Result<Vec<Uuid>, AppError> {
+        let fac_str = facility_id.to_string();
+        let filter = format!(
+            "miles IS NULL AND status NOT IN ('delivered','invoiced','settled','cancelled') AND stops LIKE '%\"{}\"%'",
+            fac_str
+        );
+        let stream = self.load_table.query()
+            .only_if(filter)
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_loads(collect_stream(stream).await?)?
+            .into_iter().map(|r| r.id).collect())
+    }
+
     pub async fn create_load_vector_index(&self) -> Result<(), AppError> {
         self.load_table
             .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
