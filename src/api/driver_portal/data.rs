@@ -250,30 +250,30 @@ pub async fn trip_detail(
 
     let load_fut = async {
         if let Some(lid) = trip.load_id {
-            state.db.get_load_by_id(lid).await.ok()
+            state.db.get_load_by_id(lid).await.map(Some)
         } else {
-            None
+            Ok(None)
         }
     };
     let facilities_fut = join_all(facility_ids.iter().map(|fid| state.db.get_facility_by_id(*fid)));
 
-    let (load_opt, facility_results) = tokio::join!(load_fut, facilities_fut);
+    let (load_opt, facility_results) = tokio::try_join!(load_fut, async { Ok(facilities_fut.await) })?;
     let facilities: HashMap<Uuid, crate::models::FacilityRecord> = facility_ids
         .iter()
         .zip(facility_results)
         .filter_map(|(id, r)| r.ok().map(|f| (*id, f)))
         .collect();
 
-    let (truck_opt, trailer_results) = tokio::join!(
+    let (truck_opt, trailer_results) = tokio::try_join!(
         async {
             if let Some(tid) = trip.truck_id {
-                state.db.get_truck_by_id(tid).await.ok()
+                state.db.get_truck_by_id(tid).await.map(Some)
             } else {
-                None
+                Ok(None)
             }
         },
-        join_all(trip.trailer_ids.iter().map(|tid| state.db.get_trailer_by_id(*tid))),
-    );
+        async { Ok(join_all(trip.trailer_ids.iter().map(|tid| state.db.get_trailer_by_id(*tid))).await) },
+    )?;
 
     let truck_unit = truck_opt.map(|t| t.unit_number);
     let trailer_units = trailer_results.into_iter().filter_map(|r| r.ok().map(|t| t.unit_number)).collect();
@@ -338,22 +338,22 @@ pub async fn stop_detail(
 
     let stop = trip.stops.iter().find(|s| s.sequence == seq).ok_or(AppError::NotFound)?;
 
-    let (facility_opt, load_opt) = tokio::join!(
+    let (facility_opt, load_opt) = tokio::try_join!(
         async {
             if let Some(fid) = stop.facility_id {
-                state.db.get_facility_by_id(fid).await.ok()
+                state.db.get_facility_by_id(fid).await.map(Some)
             } else {
-                None
+                Ok(None)
             }
         },
         async {
             if let Some(lid) = trip.load_id {
-                state.db.get_load_by_id(lid).await.ok()
+                state.db.get_load_by_id(lid).await.map(Some)
             } else {
-                None
+                Ok(None)
             }
         },
-    );
+    )?;
 
     let facility_name = facility_opt.as_ref().map(|f| f.name.clone());
     let address = facility_opt.map(|f| DriverStopAddress {
