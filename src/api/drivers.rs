@@ -3,8 +3,8 @@ use crate::{
     ai::embed::embed_text,
     error::AppError,
     models::{
-        CreateDriverRequest, DriverListResponse, DriverRecord, DriverStatus,
-        UpdateDriverRequest,
+        CreateDriverRequest, DriverCredentials, DriverListResponse, DriverRecord, DriverStatus,
+        SetDriverPinRequest, UpdateDriverRequest,
     },
     AppState,
 };
@@ -187,6 +187,63 @@ pub async fn delete_driver(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/drivers/{id}/pin",
+    tag = "drivers",
+    request_body = SetDriverPinRequest,
+    responses(
+        (status = 204, description = "PIN set successfully"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Driver not found"),
+        (status = 422, description = "Invalid PIN format"),
+        (status = 500, description = "Internal server error"),
+    ),
+    security(("BearerAuth" = [])),
+)]
+pub async fn set_driver_pin(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetDriverPinRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.get_driver_by_id(id).await?;
+
+    let pin = body.pin.trim().to_string();
+    let len = pin.len();
+    if !(4..=6).contains(&len) || !pin.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::UnprocessableEntity("PIN must be 4–6 numeric digits".into()));
+    }
+
+    let pin_hash = tokio::task::spawn_blocking(move || bcrypt::hash(&pin, 12u32))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let now = Utc::now();
+    let credentials = match state.db.get_driver_credentials(id).await? {
+        Some(existing) => DriverCredentials {
+            driver_id: id,
+            pin_hash: Some(pin_hash),
+            token_version: existing.token_version + 1,
+            failed_pin_attempts: 0,
+            locked_until: None,
+            updated_at: now,
+        },
+        None => DriverCredentials {
+            driver_id: id,
+            pin_hash: Some(pin_hash),
+            token_version: 0,
+            failed_pin_attempts: 0,
+            locked_until: None,
+            updated_at: now,
+        },
+    };
+
+    state.db.upsert_driver_credentials(&credentials).await?;
+    tracing::info!(driver_id = %id, "dispatcher set PIN for driver");
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn router() -> Router<AppState> {
     use axum::routing::{delete, get, post, put};
     Router::new()
@@ -195,4 +252,5 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/drivers/:id", get(get_driver))
         .route("/api/v1/drivers/:id", put(update_driver))
         .route("/api/v1/drivers/:id", delete(delete_driver))
+        .route("/api/v1/drivers/:id/pin", post(set_driver_pin))
 }
