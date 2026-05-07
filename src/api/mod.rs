@@ -49,6 +49,11 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         loads::settle_load,
         events::list_events,
         events::get_event_handler,
+        drivers::create_driver,
+        drivers::list_drivers,
+        drivers::get_driver,
+        drivers::update_driver,
+        drivers::delete_driver,
     ),
     components(
         schemas(
@@ -86,6 +91,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             blob::BlobQueryResponse,
             models::EventResponse,
             models::EventListResponse,
+            models::DriverStatus,
+            models::DriverRecord,
+            models::CreateDriverRequest,
+            models::UpdateDriverRequest,
+            models::DriverListItem,
+            models::DriverListResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -189,6 +200,16 @@ are eligible only if actual_arrive ≤ scheduled_arrive + grace_minutes (early =
   POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
   POST   /api/v1/loads/:id/cancel      Transition to cancelled (body: reason?)
   POST   /api/v1/loads/:id/settle      Transition to settled
+
+### Drivers — /api/v1/drivers, /api/v1/drivers/:id
+Driver records with state machine. Status: available → assigned → dispatched (last two driven by trip events).
+DELETE soft-deletes (sets status=inactive). PUT cannot set assigned or dispatched.
+
+  POST   /api/v1/drivers          Create driver
+  GET    /api/v1/drivers          List or search drivers (?s, ?status, ?limit, ?offset)
+  GET    /api/v1/drivers/:id      Get driver
+  PUT    /api/v1/drivers/:id      Update driver fields (cannot manually set assigned/dispatched)
+  DELETE /api/v1/drivers/:id      Soft-delete (sets status=inactive)
 
 ### Events — /api/v1/events, /api/v1/events/:id
 Append-only event journal recording entity lifecycle transitions. Written by internal
