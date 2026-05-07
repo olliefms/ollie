@@ -101,12 +101,12 @@ pub async fn list_facilities(
     if let Some(query_text) = q.s {
         let embedding = embed_text(&state.ai, &query_text).await?;
         let items = state.db.search_facilities(embedding, q.name.as_deref(), &q.tag, limit).await?;
-        let total = items.len();
-        return Ok(Json(FacilityListResponse { total, items }));
+        let returned = items.len();
+        return Ok(Json(FacilityListResponse { returned, items }));
     }
 
     let (total, items) = state.db.list_facilities(q.name.as_deref(), &q.tag, limit, offset).await?;
-    Ok(Json(FacilityListResponse { total, items }))
+    Ok(Json(FacilityListResponse { returned: total, items }))
 }
 
 #[utoipa::path(
@@ -201,31 +201,23 @@ pub async fn delete_facility(
 }
 
 /// Resolve a facility from a name+address string, applying dedup logic.
-/// Returns Ok(Uuid) if resolved/created, Err(FacilityResolutionResponse) if ambiguous.
+/// Returns Ok(Uuid) if resolved/created.
+/// Returns Err(AppError::FacilityResolution) if ambiguous (stop_index defaults to 0; caller overrides).
+/// Returns Err on embed or DB failure — fails closed rather than silently creating duplicates.
 pub async fn resolve_or_create_facility(
     state: &AppState,
     name: &str,
     address: &str,
     force_new: bool,
-) -> Result<Uuid, FacilityResolutionResponse> {
+) -> Result<Uuid, AppError> {
     if force_new {
-        return create_new_facility(state, name, address).await
-            .map_err(|_| FacilityResolutionResponse {
-                facility_resolution_required: false, candidates: vec![],
-            });
+        return create_new_facility(state, name, address).await;
     }
 
     let text = format!("{name} {address}");
-    let embedding = match embed_text(&state.ai, &text).await {
-        Ok(e) => e,
-        Err(_) => return create_new_facility(state, name, address).await
-            .map_err(|_| FacilityResolutionResponse {
-                facility_resolution_required: false, candidates: vec![],
-            }),
-    };
+    let embedding = embed_text(&state.ai, &text).await?;
 
-    let candidates = state.db.search_facilities(embedding, None, &[], 5).await
-        .unwrap_or_default();
+    let candidates = state.db.search_facilities(embedding, None, &[], 5).await?;
 
     let high = state.config.facility_dedup_high_threshold as f32;
     let low = state.config.facility_dedup_low_threshold as f32;
@@ -246,16 +238,14 @@ pub async fn resolve_or_create_facility(
         .collect();
 
     if !above_low.is_empty() {
-        return Err(FacilityResolutionResponse {
+        return Err(AppError::FacilityResolution(Box::new(vec![FacilityResolutionResponse {
+            stop_index: 0,
             facility_resolution_required: true,
             candidates: above_low,
-        });
+        }])));
     }
 
     create_new_facility(state, name, address).await
-        .map_err(|_| FacilityResolutionResponse {
-            facility_resolution_required: false, candidates: vec![],
-        })
 }
 
 async fn create_new_facility(
@@ -310,31 +300,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_resolve_creates_new_when_no_embedding() {
+    async fn test_resolve_force_new_creates_facility() {
         let (state, _b, _d) = test_state().await;
-        let id = resolve_or_create_facility(&state, "Fresh Dock", "123 Main St, Dallas TX", false)
+        let id = resolve_or_create_facility(&state, "Fresh Dock", "123 Main St, Dallas TX", true)
             .await
-            .expect("should create a new facility");
+            .expect("force_new should create a new facility even without Ollama");
         state.db.get_facility_by_id(id).await.expect("facility should exist");
     }
 
     #[tokio::test]
-    async fn test_resolve_returns_existing_on_second_call_no_embedding() {
+    async fn test_resolve_propagates_error_when_embed_fails() {
         let (state, _b, _d) = test_state().await;
-        let id1 = resolve_or_create_facility(&state, "Dock A", "100 Oak Ave, Nashville TN", false)
-            .await.unwrap();
-        let id2 = resolve_or_create_facility(&state, "Dock A", "100 Oak Ave, Nashville TN", false)
-            .await.unwrap();
-        assert_ne!(id1, id2, "without embeddings, dedup is not active");
+        // Without Ollama, embed_text fails and the error is propagated (fail closed)
+        let result = resolve_or_create_facility(&state, "Dock A", "100 Oak Ave, Nashville TN", false).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_resolve_force_new_skips_dedup() {
         let (state, _b, _d) = test_state().await;
-        let id1 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", false)
-            .await.unwrap();
-        let id2 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", true)
-            .await.unwrap();
+        let id1 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", true).await.unwrap();
+        let id2 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", true).await.unwrap();
         assert_ne!(id1, id2, "force_new_facility=true must always create a new record");
     }
 }

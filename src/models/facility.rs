@@ -148,7 +148,8 @@ impl From<FacilityRecord> for FacilityListItem {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FacilityListResponse {
-    pub total: usize,
+    /// Number of items returned. For list mode equals total matching count; for search mode equals items in this response.
+    pub returned: usize,
     pub items: Vec<FacilityListItem>,
 }
 
@@ -163,6 +164,7 @@ pub struct FacilityCandidate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FacilityResolutionResponse {
+    pub stop_index: usize,
     pub facility_resolution_required: bool,
     pub candidates: Vec<FacilityCandidate>,
 }

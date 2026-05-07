@@ -317,7 +317,8 @@ impl From<LoadRecord> for LoadListItem {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct LoadListResponse {
-    pub total: usize,
+    /// Number of items returned. For list mode equals total matching count; for search mode equals items in this response.
+    pub returned: usize,
     pub items: Vec<LoadListItem>,
 }
 
