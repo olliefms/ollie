@@ -244,6 +244,8 @@ pub async fn set_driver_pin(
 
     let now = Utc::now();
     let credentials = match state.db.get_driver_credentials(id).await? {
+        // Non-atomic: fetch → increment → upsert means two concurrent PIN resets could produce the same new version.
+        // Acceptable here — PIN resets are rare and have no tight concurrent requirements.
         Some(existing) => DriverCredentials {
             driver_id: id,
             pin_hash: Some(pin_hash),
@@ -252,6 +254,7 @@ pub async fn set_driver_pin(
             locked_until: None,
             updated_at: now,
         },
+        // token_version starts at 0 and is incremented on each PIN change to invalidate outstanding JWTs.
         None => DriverCredentials {
             driver_id: id,
             pin_hash: Some(pin_hash),

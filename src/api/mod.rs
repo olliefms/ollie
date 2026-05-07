@@ -245,7 +245,7 @@ are eligible only if actual_arrive ≤ scheduled_arrive + grace_minutes (early =
   POST   /api/v1/loads          Create load
   GET    /api/v1/loads          List or search loads (?s, ?status, ?customer, ?from, ?to, ?tag)
   GET    /api/v1/loads/:id      Get load detail
-  PATCH  /api/v1/loads/:id      Update load fields
+  PATCH  /api/v1/loads/:id      Update load fields (unknown fields in the request body are silently ignored)
   DELETE /api/v1/loads/:id      Delete load (409 if load has active trips — cancel or complete them first)
 
   POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
