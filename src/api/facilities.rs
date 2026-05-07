@@ -105,8 +105,9 @@ pub async fn list_facilities(
         return Ok(Json(FacilityListResponse { returned, items }));
     }
 
-    let (total, items) = state.db.list_facilities(q.name.as_deref(), &q.tag, limit, offset).await?;
-    Ok(Json(FacilityListResponse { returned: total, items }))
+    let (_total, items) = state.db.list_facilities(q.name.as_deref(), &q.tag, limit, offset).await?;
+    let returned = items.len();
+    Ok(Json(FacilityListResponse { returned, items }))
 }
 
 #[utoipa::path(

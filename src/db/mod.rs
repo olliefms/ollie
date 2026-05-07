@@ -14,6 +14,7 @@ use arrow_array::{
     RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
+use lancedb::table::NewColumnTransform;
 use lancedb::Table;
 use std::sync::Arc;
 
@@ -39,9 +40,7 @@ impl DbClient {
             empty_blob_batch(schema, embed_dim)
         }).await?;
 
-        let facility_table = open_or_create(&conn, "facilities", facility_schema(embed_dim), |schema| {
-            empty_facility_batch(schema, embed_dim)
-        }).await?;
+        let facility_table = open_or_create_facility(&conn, embed_dim).await?;
 
         let load_table = open_or_create(&conn, "loads", load_schema(embed_dim), |schema| {
             empty_load_batch(schema, embed_dim)
@@ -98,6 +97,37 @@ where
             let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
             conn.create_table(name, reader).execute().await
                 .map_err(|e| AppError::Internal(e.to_string()))
+        }
+    }
+}
+
+async fn open_or_create_facility(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = facility_schema(embed_dim);
+    match conn.open_table("facilities").execute().await {
+        Err(_) => {
+            let batch = empty_facility_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("facilities", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing_schema = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let needs_geocode_failure_count = existing_schema.field_with_name("geocode_failure_count").is_err();
+            let needs_geocode_status = existing_schema.field_with_name("geocode_status").is_err();
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            if needs_geocode_failure_count {
+                transforms.push(("geocode_failure_count".into(), "CAST(0 AS BIGINT)".into()));
+            }
+            if needs_geocode_status {
+                transforms.push(("geocode_status".into(), "'pending'".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating facilities table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("facility schema migration failed: {e}")))?;
+            }
+            Ok(table)
         }
     }
 }

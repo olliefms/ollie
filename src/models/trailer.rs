@@ -59,15 +59,14 @@ impl TrailerStatus {
     }
 
     pub fn can_transition_to(&self, next: &TrailerStatus) -> bool {
-        match (self, next) {
-            (Self::Available, Self::Assigned) => true,
-            (Self::Assigned, Self::Dispatched) => true,
-            (Self::Dispatched, Self::Available) => true,
-            (_, Self::OutOfService) => true,
-            (Self::OutOfService, Self::Available) => true,
-            (_, Self::Inactive) => true,
-            _ => false,
-        }
+        matches!((self, next),
+            (Self::Available, Self::Assigned)
+            | (Self::Assigned, Self::Dispatched)
+            | (Self::Dispatched, Self::Available)
+            | (_, Self::OutOfService)
+            | (Self::OutOfService, Self::Available)
+            | (_, Self::Inactive)
+        )
     }
 }
 

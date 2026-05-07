@@ -60,7 +60,7 @@ pub struct ListLoadsQuery {
     request_body(content = CreateLoadRequest, description = "Load to create"),
     responses(
         (status = 201, description = "Created load detail", body = LoadDetailResponse),
-        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = FacilityResolutionResponse),
+        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = Vec<FacilityResolutionResponse>),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
     ),
@@ -181,7 +181,7 @@ pub async fn get_load(
     request_body(content = UpdateLoadRequest, description = "Fields to update — all optional"),
     responses(
         (status = 200, description = "Updated load detail", body = LoadDetailResponse),
-        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = FacilityResolutionResponse),
+        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = Vec<FacilityResolutionResponse>),
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
     ),
