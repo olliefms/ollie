@@ -241,6 +241,7 @@ pub async fn update_load(
     ),
     responses(
         (status = 204, description = "Deleted"),
+        (status = 409, description = "Load has active trips — cancel or complete them first"),
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
     ),
@@ -252,6 +253,12 @@ pub async fn delete_load(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     state.db.get_load_by_id(id).await?;
+    let active = state.db.count_active_trips_for_load(id).await?;
+    if active > 0 {
+        return Err(AppError::Conflict(format!(
+            "load has {active} active trip(s); cancel or complete them first"
+        )));
+    }
     state.db.delete_load_by_id(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
