@@ -238,6 +238,7 @@
   padding: 1rem;
   box-shadow: var(--shadow);
   min-height: 44px;
+  cursor: pointer;
 }
 
 .trip-card__header {

@@ -1,4 +1,4 @@
-import { isAuthenticated } from '../utils/auth.js';
+import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
 
 export async function renderTrips(container) {
@@ -50,17 +50,19 @@ export async function renderTrips(container) {
   // Trip list
   const tripList = document.createElement('div');
   tripList.className = 'trip-list';
-  tripList.id = 'trip-list';
 
   page.appendChild(header);
   page.appendChild(tabBar);
   page.appendChild(tripList);
   container.appendChild(page);
 
+  // Track current tab to guard against stale responses
+  let currentTab;
+
   // Load initial trips
   async function loadTrips(tab) {
-    const listEl = document.getElementById('trip-list');
-    listEl.innerHTML = '';
+    currentTab = tab;
+    tripList.innerHTML = '';
 
     // Loading state
     const loadingEl = document.createElement('div');
@@ -68,37 +70,46 @@ export async function renderTrips(container) {
     const spinner = document.createElement('div');
     spinner.className = 'spinner';
     loadingEl.appendChild(spinner);
-    listEl.appendChild(loadingEl);
+    tripList.appendChild(loadingEl);
 
     try {
       const data = await apiFetch(`/trips?tab=${tab}`);
-      listEl.innerHTML = '';
+
+      // Discard response if user switched tabs while fetching
+      if (currentTab !== tab) return;
+
+      tripList.innerHTML = '';
 
       if (!data.items || data.items.length === 0) {
         const emptyEl = document.createElement('div');
         emptyEl.className = 'trips-empty';
         emptyEl.textContent = tab === 'current' ? 'No current trips' : `No ${tab} trips`;
-        listEl.appendChild(emptyEl);
+        tripList.appendChild(emptyEl);
         return;
       }
 
       data.items.forEach(trip => {
         const card = renderTripCard(trip, tab);
-        listEl.appendChild(card);
+        tripList.appendChild(card);
       });
     } catch (err) {
-      listEl.innerHTML = '';
+      if (err.status === 401) {
+        clearAuth();
+        window.location.replace('/driver');
+        return;
+      }
+
+      tripList.innerHTML = '';
       const errorEl = document.createElement('div');
       errorEl.className = 'trips-error';
       errorEl.textContent = err.message || 'Failed to load trips';
-      listEl.appendChild(errorEl);
+      tripList.appendChild(errorEl);
     }
   }
 
   function renderTripCard(trip, tab) {
     const card = document.createElement('div');
     card.className = 'trip-card';
-    card.style.cursor = 'pointer';
     card.addEventListener('click', () => {
       window.location.href = `/driver/trips/${trip.id}`;
     });
@@ -151,10 +162,12 @@ export async function renderTrips(container) {
 
       if (trip.stops_completed < trip.stop_count && trip.stops && trip.stops.length > 0) {
         const nextStop = trip.stops[trip.stops_completed];
-        const nextStopEl = document.createElement('div');
-        nextStopEl.className = 'trip-card__next-stop';
-        nextStopEl.textContent = `Next: ${nextStop.location}`;
-        card.appendChild(nextStopEl);
+        if (nextStop) {
+          const nextStopEl = document.createElement('div');
+          nextStopEl.className = 'trip-card__next-stop';
+          nextStopEl.textContent = `Next: ${nextStop.location}`;
+          card.appendChild(nextStopEl);
+        }
       }
     } else {
       // Past and Upcoming tabs show scheduled start date
