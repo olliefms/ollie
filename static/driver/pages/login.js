@@ -102,6 +102,10 @@ export function renderLogin(container) {
       showError(authError, 'Enter your PIN');
       return;
     }
+    if (pin.length < 4) {
+      showError(authError, 'PIN must be at least 4 digits');
+      return;
+    }
     setLoading(true);
     hideError(authError);
     try {
