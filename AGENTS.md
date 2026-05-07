@@ -245,6 +245,24 @@ cargo test --manifest-path /Users/jimp7508/src/ollie/Cargo.toml test_upload_retu
 
 After any change: run `cargo test`, `cargo clippy`, `cargo build` before committing.
 
+## Release Workflow
+
+### Minor releases (x.Y.0) — 3 sessions
+
+1. **Plan (PM session):** Create release branch, write plan doc, file issues, run Opus architecture review as a subagent (never a separate session), resolve decisions inline.
+2. **Execute + Review/Fix (orchestrator session):** Single session owns the worktree. Spawns subagents per issue in dependency order — foundational models/scaffolding first. No parallel cross-session worktrees. Runs `cargo build && cargo test && cargo clippy` after every merge. When done: run ultrareview, **dump findings to `docs/superpowers/reviews/vX.Y.0-ultrareview.md` immediately**, triage, fix, land.
+3. **Release (PM session):** Merge branch → main, tag, GitHub release.
+
+### Patch releases (x.y.Z) — 2 sessions
+
+1. **Plan (PM session):** Create release branch, file issues, run Opus review as a subagent (no ultrareview — cheaper, stays in PM session).
+2. **Execute + Release (orchestrator session):** Same orchestrator model. After tests/lint pass, PM merges, tags, releases.
+
+### Key rules
+- Parallelism lives **inside** one orchestrator via subagents — never across worktree-owning sessions
+- Architecture review is always a subagent call, never a separate session
+- Always dump ultrareview output to disk before triaging (prevents losing findings on crash)
+
 ## Commit Style
 
 - Use `feat:`, `fix:`, `refactor:`, `test:`, `chore:` prefixes

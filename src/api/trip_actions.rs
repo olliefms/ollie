@@ -483,6 +483,44 @@ pub async fn check_call(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/trips/{id}/complete",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 204, description = "Trip completed and resources released"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip must be in delivered status"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "trips"
+)]
+pub async fn complete_trip(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let existing = state.db.get_trip(id).await?;
+    if existing.status != TripStatus::Delivered {
+        return Err(AppError::Conflict("trip must be in delivered status to complete".into()));
+    }
+
+    state.db.transition_trip_status(id, TripStatus::Completed).await?;
+
+    if let Some(driver_id) = existing.driver_id {
+        let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
+    }
+    if let Some(truck_id) = existing.truck_id {
+        let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
+    }
+    for &trailer_id in &existing.trailer_ids {
+        let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
+    }
+
+    events::on_trip_completed(&state.db, id, existing.driver_id, existing.truck_id, &existing.trailer_ids).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/trips/:id/assign", post(assign_trip))
@@ -490,6 +528,7 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/trips/:id/dispatch", post(dispatch_trip))
         .route("/api/v1/trips/:id/undispatch", post(undispatch_trip))
         .route("/api/v1/trips/:id/cancel", post(cancel_trip))
+        .route("/api/v1/trips/:id/complete", post(complete_trip))
         .route("/api/v1/trips/:id/stops/:seq/arrive", post(stop_arrive))
         .route("/api/v1/trips/:id/stops/:seq/depart", post(stop_depart))
         .route("/api/v1/trips/:id/stops/:seq/late", post(stop_late))
