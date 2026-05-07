@@ -743,3 +743,39 @@ async fn test_set_driver_pin_increments_token_version() {
     // but we can confirm the second call also returns 204 (idempotent success).
     // The token_version increment is verified at the DB layer by the handler logic.
 }
+
+// ── DELETE /api/v1/loads/:id FK guard ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_delete_load_blocked_by_active_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "FK Guard Dock", "Chicago, IL").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    // Create a trip referencing the load (status defaults to planned = active)
+    let trip_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201);
+    let trip_id = trip_resp.json::<serde_json::Value>()["id"]
+        .as_str().unwrap().to_string();
+
+    // DELETE load → 409 because the trip is active
+    let del1 = server.delete(&format!("/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(del1.status_code(), 409);
+
+    // Cancel the trip (first DELETE soft-cancels it)
+    let cancel = server.delete(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(cancel.status_code(), 204);
+
+    // DELETE load → 204 now that no active trips remain
+    let del2 = server.delete(&format!("/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(del2.status_code(), 204);
+}
