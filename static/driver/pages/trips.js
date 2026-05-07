@@ -25,8 +25,8 @@ export async function renderTrips(container) {
   const tabBar = document.createElement('div');
   tabBar.className = 'tab-bar';
   const tabs = [
-    { id: 'current', label: 'Current' },
     { id: 'past', label: 'Past' },
+    { id: 'current', label: 'Current' },
     { id: 'upcoming', label: 'Upcoming' },
   ];
   let activeTab = 'current';
@@ -130,10 +130,24 @@ export async function renderTrips(container) {
 
     // Tab-specific content
     if (tab === 'current') {
-      const progress = document.createElement('div');
-      progress.className = 'trip-card__progress';
-      progress.textContent = `${trip.stops_completed} / ${trip.stop_count} stops`;
-      card.appendChild(progress);
+      const progressWrapper = document.createElement('div');
+      progressWrapper.className = 'trip-card__progress';
+
+      const bar = document.createElement('div');
+      bar.className = 'progress-bar';
+      const fill = document.createElement('div');
+      fill.className = 'progress-bar__fill';
+      const pct = trip.stop_count > 0 ? (trip.stops_completed / trip.stop_count) * 100 : 0;
+      fill.style.width = `${pct}%`;
+      bar.appendChild(fill);
+
+      const label = document.createElement('span');
+      label.className = 'progress-bar__label';
+      label.textContent = `${trip.stops_completed} / ${trip.stop_count} stops`;
+
+      progressWrapper.appendChild(bar);
+      progressWrapper.appendChild(label);
+      card.appendChild(progressWrapper);
 
       if (trip.stops_completed < trip.stop_count && trip.stops && trip.stops.length > 0) {
         const nextStop = trip.stops[trip.stops_completed];
