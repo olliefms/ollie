@@ -1,7 +1,12 @@
 // src/db/mod.rs
 pub mod blob_ops;
+pub mod driver_ops;
+pub mod event_ops;
 pub mod facility_ops;
 pub mod load_ops;
+pub mod trailer_ops;
+pub mod trip_ops;
+pub mod truck_ops;
 
 use crate::error::AppError;
 use arrow_array::{
@@ -14,8 +19,13 @@ use std::sync::Arc;
 
 pub struct DbClient {
     pub blob_table: Table,
+    pub driver_table: Table,
+    pub event_table: Table,
     pub facility_table: Table,
     pub load_table: Table,
+    pub trailer_table: Table,
+    pub trip_table: Table,
+    pub truck_table: Table,
     pub embed_dim: usize,
 }
 
@@ -37,7 +47,37 @@ impl DbClient {
             empty_load_batch(schema, embed_dim)
         }).await?;
 
-        Ok(Self { blob_table, facility_table, load_table, embed_dim })
+        let driver_table = open_or_create(&conn, "drivers", placeholder_schema(), |schema| {
+            empty_placeholder_batch(schema)
+        }).await?;
+
+        let truck_table = open_or_create(&conn, "trucks", placeholder_schema(), |schema| {
+            empty_placeholder_batch(schema)
+        }).await?;
+
+        let trailer_table = open_or_create(&conn, "trailers", placeholder_schema(), |schema| {
+            empty_placeholder_batch(schema)
+        }).await?;
+
+        let trip_table = open_or_create(&conn, "trips", placeholder_schema(), |schema| {
+            empty_placeholder_batch(schema)
+        }).await?;
+
+        let event_table = open_or_create(&conn, "events", placeholder_schema(), |schema| {
+            empty_placeholder_batch(schema)
+        }).await?;
+
+        Ok(Self {
+            blob_table,
+            driver_table,
+            event_table,
+            facility_table,
+            load_table,
+            trailer_table,
+            trip_table,
+            truck_table,
+            embed_dim,
+        })
     }
 }
 
@@ -180,6 +220,19 @@ fn empty_facility_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordB
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
     ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn placeholder_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_placeholder_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ])
+    .map_err(|e| AppError::Internal(e.to_string()))
 }
 
 fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
