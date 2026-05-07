@@ -384,9 +384,20 @@ pub fn router(state: AppState) -> Router {
             async move { require_bearer(k, req, next).await }
         }));
 
+    // Driver portal: auth endpoints + JWT-protected data endpoints (#51 adds routes)
+    let driver_portal = driver_portal::portal_router(&state);
+
+    // Static file serving for the driver PWA; SPA fallback to index.html
+    let driver_static = tower_http::services::ServeDir::new("static/driver")
+        .not_found_service(tower_http::services::ServeFile::new(
+            "static/driver/index.html",
+        ));
+
     Router::new()
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .merge(protected)
+        .merge(driver_portal)
+        .nest_service("/driver", driver_static)
         .with_state(state)
 }
