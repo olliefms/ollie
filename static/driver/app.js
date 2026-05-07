@@ -26,20 +26,27 @@ function route() {
     return;
   }
 
-  // Trip detail page (stub for #54)
+  // Trip detail page
   const tripDetailMatch = path.match(/^\/driver\/trips\/([a-f0-9-]+)$/);
   if (tripDetailMatch) {
     if (!isAuthenticated()) {
       window.location.replace('/driver');
       return;
     }
-    const tripId = tripDetailMatch[1];
-    const stubDiv = document.createElement('div');
-    stubDiv.style.padding = '2rem';
-    const p = document.createElement('p');
-    p.textContent = `Trip detail for ${tripId} — coming in #54`;
-    stubDiv.appendChild(p);
-    app.appendChild(stubDiv);
+    const { renderTripDetail } = await import('./pages/trip-detail.js');
+    renderTripDetail(app, tripDetailMatch[1]);
+    return;
+  }
+
+  // Stop detail page
+  const stopMatch = path.match(/^\/driver\/trips\/([a-f0-9-]+)\/stops\/(\d+)$/);
+  if (stopMatch) {
+    if (!isAuthenticated()) {
+      window.location.replace('/driver');
+      return;
+    }
+    const { renderStopDetail } = await import('./pages/stop-detail.js');
+    renderStopDetail(app, stopMatch[1], parseInt(stopMatch[2], 10));
     return;
   }
 

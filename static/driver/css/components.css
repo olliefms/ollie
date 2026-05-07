@@ -323,3 +323,245 @@
   font-size: 0.875rem;
   color: var(--color-text-muted);
 }
+
+/* Trip detail page */
+.trip-detail-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--color-bg);
+}
+
+.trip-detail-header {
+  padding: 1.5rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.trip-detail-back {
+  min-height: 44px;
+  align-self: flex-start;
+}
+
+.trip-detail-number {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.trip-detail-page .badge {
+  align-self: flex-start;
+}
+
+.trip-detail-section {
+  background: var(--color-surface);
+  margin: 1rem;
+  border-radius: var(--radius);
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.trip-detail-row {
+  padding: 0.5rem 0;
+  font-size: 1rem;
+  color: var(--color-text);
+  line-height: 1.5;
+}
+
+.trip-detail-row + .trip-detail-row {
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.75rem;
+}
+
+.trip-detail-notes {
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+  font-style: italic;
+}
+
+.trip-detail-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 200px;
+}
+
+.trip-detail-error {
+  margin: 1rem;
+  padding: 1rem;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  color: var(--color-danger);
+  text-align: center;
+}
+
+/* Stop timeline */
+.stop-timeline {
+  display: flex;
+  flex-direction: column;
+}
+
+.stop-node {
+  display: flex;
+  gap: 1rem;
+  padding: 1rem 0;
+  cursor: pointer;
+  min-height: 44px;
+  align-items: flex-start;
+}
+
+.stop-node__marker {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 3px solid var(--color-primary);
+  background: var(--color-surface);
+  margin-top: 2px;
+  position: relative;
+}
+
+.stop-node--completed .stop-node__marker {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.stop-node--upcoming .stop-node__marker {
+  background: transparent;
+  border-color: var(--color-border);
+}
+
+.stop-node__content {
+  flex: 1;
+  padding-top: 2px;
+}
+
+.stop-node__title {
+  font-weight: 600;
+  color: var(--color-text);
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.stop-node__type {
+  font-weight: 700;
+}
+
+.stop-node__name {
+  font-weight: 500;
+}
+
+.stop-node__time {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+}
+
+/* Stop detail page */
+.stop-detail-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--color-bg);
+}
+
+.stop-detail-header {
+  padding: 1.5rem;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.stop-detail-back {
+  min-height: 44px;
+  align-self: flex-start;
+}
+
+.stop-detail-title {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--color-text);
+  margin: 0;
+}
+
+.stop-detail-type {
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  align-self: flex-start;
+}
+
+.stop-detail-section {
+  background: var(--color-surface);
+  margin: 1rem;
+  border-radius: var(--radius);
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.stop-detail-section-label {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.75rem;
+}
+
+.stop-detail-row {
+  padding: 0.5rem 0;
+  font-size: 1rem;
+  color: var(--color-text);
+  line-height: 1.6;
+}
+
+.stop-detail-row + .stop-detail-row {
+  border-top: 1px solid var(--color-border);
+  padding-top: 0.75rem;
+}
+
+.stop-detail-row--name {
+  font-weight: 700;
+  font-size: 1.1rem;
+  margin-bottom: 0.25rem;
+  border: none;
+  padding: 0;
+}
+
+.stop-detail-actual-label {
+  font-weight: 600;
+  color: var(--color-text);
+  min-width: 80px;
+  display: inline-block;
+}
+
+.stop-detail-notes {
+  color: var(--color-text-muted);
+  font-size: 0.95rem;
+  border: none;
+  padding: 0;
+  margin-top: 0.5rem;
+}
+
+.stop-detail-loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 200px;
+}
+
+.stop-detail-error {
+  margin: 1rem;
+  padding: 1rem;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  color: var(--color-danger);
+  text-align: center;
+}
