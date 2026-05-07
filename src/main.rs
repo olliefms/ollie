@@ -11,6 +11,7 @@ use ollie::{
     AppState,
 };
 use std::{net::SocketAddr, sync::Arc};
+use webauthn_rs::prelude::{Url, WebauthnBuilder};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -56,10 +57,36 @@ async fn main() -> anyhow::Result<()> {
         tracing::warn!("scalar indices not created for events: {e}");
     }
 
+    let rp_origin = Url::parse(&config.driver_rp_origin)
+        .expect("DRIVER_RP_ORIGIN must be a valid URL");
+    let webauthn = Arc::new(
+        WebauthnBuilder::new(&config.driver_rp_id, &rp_origin)
+            .expect("Failed to build Webauthn")
+            .build()
+            .expect("Failed to build Webauthn"),
+    );
+
+    let auth_challenge_store: Arc<dashmap::DashMap<uuid::Uuid, _>> = Arc::new(dashmap::DashMap::new());
+    let reg_challenge_store: Arc<dashmap::DashMap<uuid::Uuid, _>> = Arc::new(dashmap::DashMap::new());
+
+    let auth_store_sweep = auth_challenge_store.clone();
+    let reg_store_sweep = reg_challenge_store.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(60)).await;
+            let cutoff = std::time::Instant::now() - std::time::Duration::from_secs(300);
+            auth_store_sweep.retain(|_, (_, ts)| *ts > cutoff);
+            reg_store_sweep.retain(|_, (_, ts)| *ts > cutoff);
+        }
+    });
+
     let state = AppState {
         db, store, ai, geocoding, ors,
         pipeline_tx, geocoding_tx, routing_tx,
         config: config.clone(),
+        webauthn,
+        auth_challenge_store,
+        reg_challenge_store,
     };
     let app = api::router(state);
 

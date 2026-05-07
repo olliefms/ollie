@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod blob;
 pub mod blobs;
+pub mod driver_portal;
 pub mod drivers;
 pub mod events;
 pub mod facilities;
@@ -57,6 +58,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         trip_actions::stop_depart,
         trip_actions::stop_late,
         trip_actions::check_call,
+        trip_actions::complete_trip,
         loads::load_stop_arrive,
         loads::load_stop_depart,
         events::list_events,
@@ -66,6 +68,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         drivers::get_driver,
         drivers::update_driver,
         drivers::delete_driver,
+        drivers::set_driver_pin,
         trucks::create_truck,
         trucks::list_trucks,
         trucks::get_truck,
@@ -117,6 +120,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::DriverRecord,
             models::CreateDriverRequest,
             models::UpdateDriverRequest,
+            models::SetDriverPinRequest,
             models::DriverListItem,
             models::DriverListResponse,
             models::TruckStatus,
@@ -381,9 +385,20 @@ pub fn router(state: AppState) -> Router {
             async move { require_bearer(k, req, next).await }
         }));
 
+    // Driver portal: auth endpoints + JWT-protected data endpoints (#51 adds routes)
+    let driver_portal = driver_portal::portal_router(&state);
+
+    // Static file serving for the driver PWA; SPA fallback to index.html
+    let driver_static = tower_http::services::ServeDir::new("static/driver")
+        .not_found_service(tower_http::services::ServeFile::new(
+            "static/driver/index.html",
+        ));
+
     Router::new()
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .merge(protected)
+        .merge(driver_portal)
+        .nest_service("/driver", driver_static)
         .with_state(state)
 }

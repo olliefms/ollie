@@ -1,5 +1,6 @@
 pub mod blob;
 pub mod driver;
+pub mod driver_credentials;
 pub mod event;
 pub mod facility;
 pub mod load;
@@ -9,6 +10,7 @@ pub mod truck;
 
 pub use blob::*;
 pub use driver::*;
+pub use driver_credentials::*;
 pub use event::*;
 pub use facility::*;
 pub use load::*;

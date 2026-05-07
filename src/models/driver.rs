@@ -95,6 +95,11 @@ pub struct UpdateDriverRequest {
     pub notes: Option<String>,
 }
 
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetDriverPinRequest {
+    pub pin: String,
+}
+
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct DriverListItem {
     pub id: Uuid,

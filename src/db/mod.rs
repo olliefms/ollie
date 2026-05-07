@@ -1,5 +1,6 @@
 // src/db/mod.rs
 pub mod blob_ops;
+pub mod driver_credentials_ops;
 pub mod driver_ops;
 pub mod event_ops;
 pub mod facility_ops;
@@ -20,6 +21,8 @@ use std::sync::Arc;
 
 pub struct DbClient {
     pub blob_table: Table,
+    pub driver_credentials_table: Table,
+    pub driver_passkey_credentials_table: Table,
     pub driver_table: Table,
     pub event_table: Table,
     pub facility_table: Table,
@@ -66,8 +69,24 @@ impl DbClient {
             empty_event_batch(schema, embed_dim)
         }).await?;
 
+        let driver_credentials_table = open_or_create(
+            &conn,
+            "driver_credentials",
+            driver_credentials_schema(),
+            empty_driver_credentials_batch,
+        ).await?;
+
+        let driver_passkey_credentials_table = open_or_create(
+            &conn,
+            "driver_passkey_credentials",
+            driver_passkey_credentials_schema(),
+            empty_driver_passkey_credentials_batch,
+        ).await?;
+
         Ok(Self {
             blob_table,
+            driver_credentials_table,
+            driver_passkey_credentials_table,
             driver_table,
             event_table,
             facility_table,
@@ -467,6 +486,50 @@ fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
 }
 
 
+pub fn driver_credentials_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("driver_id", DataType::Utf8, false),
+        Field::new("pin_hash", DataType::Utf8, true),
+        Field::new("token_version", DataType::Int64, false),
+        Field::new("failed_pin_attempts", DataType::Int64, false),
+        Field::new("locked_until", DataType::Utf8, true),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_driver_credentials_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn driver_passkey_credentials_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("credential_id", DataType::Utf8, false),
+        Field::new("driver_id", DataType::Utf8, false),
+        Field::new("public_key", DataType::Utf8, false),
+        Field::new("counter", DataType::Int64, false),
+        Field::new("transports", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_driver_passkey_credentials_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
 fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
     let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
     RecordBatch::try_new(schema, vec![
@@ -501,7 +564,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_db_client_creates_all_three_tables() {
+    async fn test_db_client_creates_tables() {
         let dir = TempDir::new().unwrap();
         let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
         assert_eq!(client.blob_table.count_rows(None).await.unwrap(), 0);
@@ -521,5 +584,13 @@ mod tests {
         let schema = facility_schema(4);
         assert!(matches!(schema.field_with_name("lat").unwrap().data_type(), DataType::Float64));
         assert!(matches!(schema.field_with_name("lng").unwrap().data_type(), DataType::Float64));
+    }
+
+    #[tokio::test]
+    async fn test_db_client_has_credential_tables() {
+        let dir = TempDir::new().unwrap();
+        let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
+        assert_eq!(client.driver_credentials_table.count_rows(None).await.unwrap(), 0);
+        assert_eq!(client.driver_passkey_credentials_table.count_rows(None).await.unwrap(), 0);
     }
 }
