@@ -59,8 +59,8 @@ impl DbClient {
             empty_trailer_batch(schema, embed_dim)
         }).await?;
 
-        let trip_table = open_or_create(&conn, "trips", placeholder_schema(), |schema| {
-            empty_placeholder_batch(schema)
+        let trip_table = open_or_create(&conn, "trips", trip_schema(embed_dim), |schema| {
+            empty_trip_batch(schema, embed_dim)
         }).await?;
 
         let event_table = open_or_create(&conn, "events", event_schema(embed_dim), |schema| {
@@ -392,18 +392,50 @@ fn empty_trailer_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBa
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-pub fn placeholder_schema() -> Arc<Schema> {
+pub fn trip_schema(embed_dim: usize) -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
+        Field::new("trip_number", DataType::Utf8, false),
+        Field::new("load_id", DataType::Utf8, true),
+        Field::new("sequence", DataType::Int64, false),
+        Field::new("driver_id", DataType::Utf8, true),
+        Field::new("truck_id", DataType::Utf8, true),
+        Field::new("trailer_ids", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("stops", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
     ]))
 }
 
-fn empty_placeholder_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
     RecordBatch::try_new(schema, vec![
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
-    ])
-    .map_err(|e| AppError::Internal(e.to_string()))
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
 }
+
 
 fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
     let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];

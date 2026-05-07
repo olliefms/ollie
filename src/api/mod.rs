@@ -40,13 +40,14 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         loads::get_load,
         loads::update_load,
         loads::delete_load,
-        loads::assign_load,
-        loads::dispatch_load,
-        loads::in_transit_load,
-        loads::deliver_load,
         loads::invoice_load,
         loads::cancel_load,
         loads::settle_load,
+        trips::create_trip,
+        trips::list_trips,
+        trips::get_trip,
+        trips::update_trip,
+        trips::delete_trip,
         events::list_events,
         events::get_event_handler,
         drivers::create_driver,
@@ -120,6 +121,14 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::UpdateTrailerRequest,
             models::TrailerListItem,
             models::TrailerListResponse,
+            models::TripStatus,
+            models::TripStopType,
+            models::TripStop,
+            models::TripRecord,
+            models::CreateTripRequest,
+            models::UpdateTripRequest,
+            models::TripListItem,
+            models::TripListResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -216,13 +225,25 @@ are eligible only if actual_arrive ≤ scheduled_arrive + grace_minutes (early =
   PATCH  /api/v1/loads/:id      Update load fields
   DELETE /api/v1/loads/:id      Delete load
 
-  POST   /api/v1/loads/:id/assign      Transition to assigned (from planned)
-  POST   /api/v1/loads/:id/dispatch    Transition to dispatched (from assigned)
-  POST   /api/v1/loads/:id/in_transit  Transition to in_transit
-  POST   /api/v1/loads/:id/deliver     Transition to delivered
   POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
   POST   /api/v1/loads/:id/cancel      Transition to cancelled (body: reason?)
   POST   /api/v1/loads/:id/settle      Transition to settled
+
+### Trips — /api/v1/trips, /api/v1/trips/:id
+Trips represent the physical movement of a truck+driver on behalf of a load. A load may have
+multiple trips (relay). Status lifecycle:
+  planned → assigned (via /assign) → dispatched (via /dispatch) → in_transit → delivered
+  (assign/dispatch are reversible; cancel allowed from planned, assigned, dispatched only;
+   in_transit and delivered are terminal for cancel — use relay instead)
+
+When a trip with both load_id and driver_id is created and the linked load is planned,
+the load is automatically transitioned to assigned.
+
+  POST   /api/v1/trips          Create trip (trip_number auto-generated as T-YYYY-NNNN if omitted)
+  GET    /api/v1/trips          List trips (?load_id, ?driver_id, ?status, ?limit, ?offset)
+  GET    /api/v1/trips/:id      Get trip record
+  PATCH  /api/v1/trips/:id      Update trip fields (load_id, sequence, stops, notes)
+  DELETE /api/v1/trips/:id      Soft-delete (transitions to cancelled; blocked if in_transit or delivered)
 
 ### Drivers — /api/v1/drivers, /api/v1/drivers/:id
 Driver records with state machine. Status: available → assigned → dispatched (last two driven by trip events).
@@ -313,10 +334,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/loads/:id", patch(loads::update_load))
         .route("/api/v1/loads/:id", delete(loads::delete_load))
         // Loads — actions
-        .route("/api/v1/loads/:id/assign", post(loads::assign_load))
-        .route("/api/v1/loads/:id/dispatch", post(loads::dispatch_load))
-        .route("/api/v1/loads/:id/in_transit", post(loads::in_transit_load))
-        .route("/api/v1/loads/:id/deliver", post(loads::deliver_load))
         .route("/api/v1/loads/:id/invoice", post(loads::invoice_load))
         .route("/api/v1/loads/:id/cancel", post(loads::cancel_load))
         .route("/api/v1/loads/:id/settle", post(loads::settle_load))
