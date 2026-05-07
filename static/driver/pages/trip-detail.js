@@ -62,7 +62,7 @@ export async function renderTripDetail(container, tripId) {
 
     const truckDiv = document.createElement('div');
     truckDiv.className = 'trip-detail-row';
-    truckDiv.textContent = `Truck: ${data.truck_unit}`;
+    truckDiv.textContent = `Truck: ${data.truck_unit || '—'}`;
     equipmentSection.appendChild(truckDiv);
 
     if (data.trailer_units && data.trailer_units.length > 0) {
@@ -113,8 +113,7 @@ export async function renderTripDetail(container, tripId) {
       stopsSection.appendChild(stopTimeline);
     } else {
       const emptyMsg = document.createElement('div');
-      emptyMsg.className = 'trip-detail-row';
-      emptyMsg.style.color = 'var(--color-text-muted)';
+      emptyMsg.className = 'trip-detail-empty';
       emptyMsg.textContent = 'No stops assigned yet.';
       stopsSection.appendChild(emptyMsg);
     }
