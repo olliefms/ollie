@@ -154,7 +154,7 @@ export async function renderStopDetail(container, tripId, seq) {
 
     const commodityRow = document.createElement('div');
     commodityRow.className = 'stop-detail-row';
-    commodityRow.textContent = `${data.commodity} • ${formatWeight(data.weight_lbs)}`;
+    commodityRow.textContent = `${data.commodity || '—'} • ${formatWeight(data.weight_lbs)}`;
     commoditySection.appendChild(commodityRow);
 
     page.appendChild(commoditySection);
