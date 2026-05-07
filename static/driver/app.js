@@ -1,5 +1,6 @@
 import { isAuthenticated } from './utils/auth.js';
 import { renderLogin } from './pages/login.js';
+import { renderTrips } from './pages/trips.js';
 
 const app = document.getElementById('app');
 
@@ -15,16 +16,28 @@ function route() {
     return;
   }
 
-  if (path.startsWith('/driver/trips')) {
+  // Trip list page
+  if (path === '/driver/trips' || path === '/driver/trips/') {
     if (!isAuthenticated()) {
       window.location.replace('/driver');
       return;
     }
-    // #53 will add renderTripList; stub for now
+    renderTrips(app);
+    return;
+  }
+
+  // Trip detail page (stub for #54)
+  const tripDetailMatch = path.match(/^\/driver\/trips\/([a-f0-9-]+)$/);
+  if (tripDetailMatch) {
+    if (!isAuthenticated()) {
+      window.location.replace('/driver');
+      return;
+    }
+    const tripId = tripDetailMatch[1];
     const stubDiv = document.createElement('div');
     stubDiv.style.padding = '2rem';
     const p = document.createElement('p');
-    p.textContent = 'Loading trips...';
+    p.textContent = `Trip detail for ${tripId} — coming in #54`;
     stubDiv.appendChild(p);
     app.appendChild(stubDiv);
     return;
