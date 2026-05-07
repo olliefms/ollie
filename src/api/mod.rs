@@ -49,6 +49,21 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         loads::settle_load,
         events::list_events,
         events::get_event_handler,
+        drivers::create_driver,
+        drivers::list_drivers,
+        drivers::get_driver,
+        drivers::update_driver,
+        drivers::delete_driver,
+        trucks::create_truck,
+        trucks::list_trucks,
+        trucks::get_truck,
+        trucks::update_truck,
+        trucks::delete_truck,
+        trailers::create_trailer,
+        trailers::list_trailers,
+        trailers::get_trailer,
+        trailers::update_trailer,
+        trailers::delete_trailer,
     ),
     components(
         schemas(
@@ -86,6 +101,25 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             blob::BlobQueryResponse,
             models::EventResponse,
             models::EventListResponse,
+            models::DriverStatus,
+            models::DriverRecord,
+            models::CreateDriverRequest,
+            models::UpdateDriverRequest,
+            models::DriverListItem,
+            models::DriverListResponse,
+            models::TruckStatus,
+            models::TruckRecord,
+            models::CreateTruckRequest,
+            models::UpdateTruckRequest,
+            models::TruckListItem,
+            models::TruckListResponse,
+            models::TrailerOwner,
+            models::TrailerStatus,
+            models::TrailerRecord,
+            models::CreateTrailerRequest,
+            models::UpdateTrailerRequest,
+            models::TrailerListItem,
+            models::TrailerListResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -189,6 +223,37 @@ are eligible only if actual_arrive ≤ scheduled_arrive + grace_minutes (early =
   POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
   POST   /api/v1/loads/:id/cancel      Transition to cancelled (body: reason?)
   POST   /api/v1/loads/:id/settle      Transition to settled
+
+### Drivers — /api/v1/drivers, /api/v1/drivers/:id
+Driver records with state machine. Status: available → assigned → dispatched (last two driven by trip events).
+DELETE soft-deletes (sets status=inactive). PUT cannot set assigned or dispatched.
+
+  POST   /api/v1/drivers          Create driver
+  GET    /api/v1/drivers          List or search drivers (?s, ?status, ?limit, ?offset)
+  GET    /api/v1/drivers/:id      Get driver
+  PUT    /api/v1/drivers/:id      Update driver fields (cannot manually set assigned/dispatched)
+  DELETE /api/v1/drivers/:id      Soft-delete (sets status=inactive)
+
+### Trucks — /api/v1/trucks, /api/v1/trucks/:id
+Truck records with state machine. Status: available → assigned → dispatched (assigned/dispatched driven by trip events).
+out_of_service can be set/cleared via PUT. DELETE soft-deletes (sets status=inactive).
+
+  POST   /api/v1/trucks          Create truck
+  GET    /api/v1/trucks          List or search trucks (?s, ?status, ?limit, ?offset)
+  GET    /api/v1/trucks/:id      Get truck
+  PUT    /api/v1/trucks/:id      Update truck fields (out_of_service allowed; assigned/dispatched rejected)
+  DELETE /api/v1/trucks/:id      Soft-delete (sets status=inactive)
+
+### Trailers — /api/v1/trailers, /api/v1/trailers/:id
+Trailer records with owner type (fleet|carrier|customer|other) and state machine.
+Non-fleet trailers require owner_name. out_of_service can be set/cleared via PUT.
+DELETE soft-deletes (sets status=inactive).
+
+  POST   /api/v1/trailers          Create trailer (owner_name required if owner != fleet)
+  GET    /api/v1/trailers          List or search trailers (?s, ?status, ?owner, ?limit, ?offset)
+  GET    /api/v1/trailers/:id      Get trailer
+  PUT    /api/v1/trailers/:id      Update trailer fields (out_of_service allowed; assigned/dispatched rejected)
+  DELETE /api/v1/trailers/:id      Soft-delete (sets status=inactive)
 
 ### Events — /api/v1/events, /api/v1/events/:id
 Append-only event journal recording entity lifecycle transitions. Written by internal
