@@ -3,7 +3,7 @@ use crate::{
     ai::extract::{bytes_to_base64, extract_content, Extractable},
     error::AppError,
     models::{BlobStatus, UpdateBlobRequest},
-    storage::extract_store::{read_extract, write_extract, ExtractForQuery},
+    storage::extract_store::{delete_extract, read_extract, write_extract, ExtractForQuery},
     AppState,
 };
 use axum::{
@@ -124,6 +124,10 @@ pub async fn delete_blob(
     let ref_count = state.db.count_by_checksum(&record.checksum).await?;
     if ref_count <= 1 {
         state.store.delete(&record.checksum).await?;
+        let extract_base = std::path::Path::new(&state.config.extract_store_path);
+        if let Err(e) = delete_extract(extract_base, &record.checksum).await {
+            tracing::warn!("failed to delete extract cache for {}: {e}", record.checksum);
+        }
     }
     state.db.delete_by_id(id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -213,7 +217,7 @@ pub async fn query_blob(
 
     let answer = match extract {
         ExtractForQuery::Text(text) => {
-            let truncated = if text.len() > 12000 { &text[..12000] } else { &text };
+            let truncated: String = text.chars().take(12000).collect();
             let prompt = format!(
                 "You are reading a freight document. Answer based ONLY on the following text.\n\
                 Document:\n{truncated}\n\nUser question: {}",
@@ -224,14 +228,15 @@ pub async fn query_blob(
         ExtractForQuery::ScannedPdf(raw_text) => {
             let data = state.store.read(&record.checksum).await?;
             let b64 = bytes_to_base64(&data);
-            let truncated = if raw_text.len() > 2000 { &raw_text[..2000] } else { &raw_text };
+            let truncated: String = raw_text.chars().take(2000).collect();
+            let vision_model = state.ai.vision_model.clone();
             let prompt = format!(
                 "You are reading a scanned freight document. The raw text extracted is provided \
                 as auxiliary context (may be garbled due to font encoding).\n\
                 RAW TEXT:\n{truncated}\n\nUser question: {}",
                 body.prompt
             );
-            state.ai.generate(&model, &prompt, Some(b64)).await?
+            state.ai.generate(&vision_model, &prompt, Some(b64)).await?
         }
     };
 
