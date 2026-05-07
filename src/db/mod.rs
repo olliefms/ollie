@@ -1,7 +1,12 @@
 // src/db/mod.rs
 pub mod blob_ops;
+pub mod driver_ops;
+pub mod event_ops;
 pub mod facility_ops;
 pub mod load_ops;
+pub mod trailer_ops;
+pub mod trip_ops;
+pub mod truck_ops;
 
 use crate::error::AppError;
 use arrow_array::{
@@ -9,13 +14,19 @@ use arrow_array::{
     RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
+use lancedb::table::NewColumnTransform;
 use lancedb::Table;
 use std::sync::Arc;
 
 pub struct DbClient {
     pub blob_table: Table,
+    pub driver_table: Table,
+    pub event_table: Table,
     pub facility_table: Table,
     pub load_table: Table,
+    pub trailer_table: Table,
+    pub trip_table: Table,
+    pub truck_table: Table,
     pub embed_dim: usize,
 }
 
@@ -29,15 +40,43 @@ impl DbClient {
             empty_blob_batch(schema, embed_dim)
         }).await?;
 
-        let facility_table = open_or_create(&conn, "facilities", facility_schema(embed_dim), |schema| {
-            empty_facility_batch(schema, embed_dim)
-        }).await?;
+        let facility_table = open_or_create_facility(&conn, embed_dim).await?;
 
         let load_table = open_or_create(&conn, "loads", load_schema(embed_dim), |schema| {
             empty_load_batch(schema, embed_dim)
         }).await?;
 
-        Ok(Self { blob_table, facility_table, load_table, embed_dim })
+        let driver_table = open_or_create(&conn, "drivers", driver_schema(embed_dim), |schema| {
+            empty_driver_batch(schema, embed_dim)
+        }).await?;
+
+        let truck_table = open_or_create(&conn, "trucks", truck_schema(embed_dim), |schema| {
+            empty_truck_batch(schema, embed_dim)
+        }).await?;
+
+        let trailer_table = open_or_create(&conn, "trailers", trailer_schema(embed_dim), |schema| {
+            empty_trailer_batch(schema, embed_dim)
+        }).await?;
+
+        let trip_table = open_or_create(&conn, "trips", trip_schema(embed_dim), |schema| {
+            empty_trip_batch(schema, embed_dim)
+        }).await?;
+
+        let event_table = open_or_create(&conn, "events", event_schema(embed_dim), |schema| {
+            empty_event_batch(schema, embed_dim)
+        }).await?;
+
+        Ok(Self {
+            blob_table,
+            driver_table,
+            event_table,
+            facility_table,
+            load_table,
+            trailer_table,
+            trip_table,
+            truck_table,
+            embed_dim,
+        })
     }
 }
 
@@ -58,6 +97,37 @@ where
             let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
             conn.create_table(name, reader).execute().await
                 .map_err(|e| AppError::Internal(e.to_string()))
+        }
+    }
+}
+
+async fn open_or_create_facility(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = facility_schema(embed_dim);
+    match conn.open_table("facilities").execute().await {
+        Err(_) => {
+            let batch = empty_facility_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("facilities", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing_schema = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let needs_geocode_failure_count = existing_schema.field_with_name("geocode_failure_count").is_err();
+            let needs_geocode_status = existing_schema.field_with_name("geocode_status").is_err();
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            if needs_geocode_failure_count {
+                transforms.push(("geocode_failure_count".into(), "CAST(0 AS BIGINT)".into()));
+            }
+            if needs_geocode_status {
+                transforms.push(("geocode_status".into(), "'pending'".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating facilities table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("facility schema migration failed: {e}")))?;
+            }
+            Ok(table)
         }
     }
 }
@@ -99,6 +169,7 @@ pub fn facility_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("blob_ids", DataType::Utf8, false),
         Field::new("avg_dwell_minutes", DataType::Float64, true),
         Field::new("dwell_sample_count", DataType::Int64, false),
+        Field::new("geocode_failure_count", DataType::Int64, false),
         Field::new("embedding", DataType::FixedSizeList(
             Arc::new(Field::new("item", DataType::Float32, true)),
             embed_dim as i32,
@@ -134,6 +205,48 @@ pub fn load_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
     ]))
+}
+
+pub fn driver_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("phone", DataType::Utf8, true),
+        Field::new("email", DataType::Utf8, true),
+        Field::new("license_number", DataType::Utf8, true),
+        Field::new("license_state", DataType::Utf8, true),
+        Field::new("license_expiry", DataType::Utf8, true),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_driver_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
 fn empty_blob_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
@@ -174,6 +287,7 @@ fn empty_facility_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordB
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),
         Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(FixedSizeListArray::from_iter_primitive::<
             arrow_array::types::Float32Type, _, _
         >(nulls, embed_dim as i32)),
@@ -181,6 +295,177 @@ fn empty_facility_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordB
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
+
+pub fn event_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("entity_type", DataType::Utf8, false),
+        Field::new("entity_id", DataType::Utf8, false),
+        Field::new("event_type", DataType::Utf8, false),
+        Field::new("payload", DataType::Utf8, true),
+        Field::new("actor", DataType::Utf8, true),
+        Field::new("occurred_at", DataType::Utf8, false),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+    ]))
+}
+
+fn empty_event_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn truck_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("unit_number", DataType::Utf8, false),
+        Field::new("year", DataType::Int64, true),
+        Field::new("make", DataType::Utf8, true),
+        Field::new("model", DataType::Utf8, true),
+        Field::new("vin", DataType::Utf8, true),
+        Field::new("plate", DataType::Utf8, true),
+        Field::new("plate_state", DataType::Utf8, true),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_truck_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<Option<i64>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn trailer_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("unit_number", DataType::Utf8, false),
+        Field::new("owner", DataType::Utf8, false),
+        Field::new("owner_name", DataType::Utf8, true),
+        Field::new("year", DataType::Int64, true),
+        Field::new("make", DataType::Utf8, true),
+        Field::new("trailer_type", DataType::Utf8, true),
+        Field::new("length_ft", DataType::Float64, true),
+        Field::new("vin", DataType::Utf8, true),
+        Field::new("plate", DataType::Utf8, true),
+        Field::new("plate_state", DataType::Utf8, true),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_trailer_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<Option<i64>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn trip_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("trip_number", DataType::Utf8, false),
+        Field::new("load_id", DataType::Utf8, true),
+        Field::new("sequence", DataType::Int64, false),
+        Field::new("driver_id", DataType::Utf8, true),
+        Field::new("truck_id", DataType::Utf8, true),
+        Field::new("trailer_ids", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("stops", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
 
 fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
     let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];

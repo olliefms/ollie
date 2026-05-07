@@ -19,8 +19,10 @@ pub enum AppError {
     Conflict(String),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("{0}")]
+    UnprocessableEntity(String),
     #[error("facility resolution required")]
-    FacilityResolution(Box<crate::models::FacilityResolutionResponse>),
+    FacilityResolution(Box<Vec<crate::models::FacilityResolutionResponse>>),
 }
 
 impl IntoResponse for AppError {
@@ -33,6 +35,7 @@ impl IntoResponse for AppError {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::FacilityResolution(_) => unreachable!(),
         };
@@ -66,7 +69,7 @@ mod tests {
     #[test]
     fn test_facility_resolution_returns_200() {
         use crate::models::FacilityResolutionResponse;
-        let body = FacilityResolutionResponse { facility_resolution_required: true, candidates: vec![] };
+        let body = vec![FacilityResolutionResponse { stop_index: 0, facility_resolution_required: true, candidates: vec![] }];
         assert_eq!(status_of(AppError::FacilityResolution(Box::new(body))), StatusCode::OK);
     }
 }

@@ -64,8 +64,7 @@ impl DbClient {
         if let Some(v) = blob_ids { record.blob_ids = v; }
         if let Some(v) = embedding { record.embedding = Some(v); }
         record.updated_at = Utc::now();
-        self.delete_load_by_id(id).await?;
-        self.insert_load(&record).await?;
+        self.upsert_load(&record).await?;
         Ok(record)
     }
 
@@ -87,8 +86,7 @@ impl DbClient {
         if let Some(v) = invoice_date { record.invoice_date = Some(v); }
         if let Some(v) = cancellation_reason { record.cancellation_reason = Some(v); }
         record.updated_at = Utc::now();
-        self.delete_load_by_id(id).await?;
-        self.insert_load(&record).await?;
+        self.upsert_load(&record).await?;
         Ok(record)
     }
 
@@ -96,16 +94,26 @@ impl DbClient {
         let mut record = self.get_load_by_id(id).await?;
         record.miles = Some(miles);
         record.updated_at = Utc::now();
-        self.delete_load_by_id(id).await?;
-        self.insert_load(&record).await
+        self.upsert_load(&record).await
     }
 
     pub async fn clear_load_miles(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_load_by_id(id).await?;
         record.miles = None;
         record.updated_at = Utc::now();
-        self.delete_load_by_id(id).await?;
-        self.insert_load(&record).await
+        self.upsert_load(&record).await
+    }
+
+    async fn upsert_load(&self, record: &LoadRecord) -> Result<(), AppError> {
+        let batch = load_to_batch(record, self.embed_dim)?;
+        let schema = load_schema(self.embed_dim);
+        let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+        let mut op = self.load_table.merge_insert(&["id"]);
+        op.when_matched_update_all(None).when_not_matched_insert_all();
+        op.execute(reader).await
+            .map(|_| ())
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -199,6 +207,20 @@ impl DbClient {
         // loads with no miles and non-terminal status
         let stream = self.load_table.query()
             .only_if("miles IS NULL AND status NOT IN ('delivered','invoiced','settled','cancelled')")
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_loads(collect_stream(stream).await?)?
+            .into_iter().map(|r| r.id).collect())
+    }
+
+    pub async fn list_unrouted_loads_for_facility(&self, facility_id: Uuid) -> Result<Vec<Uuid>, AppError> {
+        let fac_str = facility_id.to_string();
+        let filter = format!(
+            "miles IS NULL AND status NOT IN ('delivered','invoiced','settled','cancelled') AND stops LIKE '%\"{}\"%'",
+            fac_str
+        );
+        let stream = self.load_table.query()
+            .only_if(filter)
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(batches_to_loads(collect_stream(stream).await?)?
@@ -449,6 +471,9 @@ mod tests {
             service_type: crate::models::ServiceType::LiveLoad,
             facility_id: fac_id,
             scheduled_arrive: "2026-05-10".into(),
+            scheduled_arrive_end: None, actual_arrive: None, actual_depart: None,
+            expected_dwell_minutes: None, detention_free_minutes: None,
+            detention_grace_minutes: None,
             notes: None, blob_ids: vec![],
         }];
         db.insert_load(&load).await.unwrap();

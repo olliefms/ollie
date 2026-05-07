@@ -55,8 +55,7 @@ impl DbClient {
         let mut record = self.get_by_id(id).await?;
         record.status = BlobStatus::Processing;
         record.updated_at = Utc::now();
-        self.delete_by_id(id).await?;
-        self.insert(&record).await
+        self.upsert_blob(&record).await
     }
 
     pub async fn mark_ready(&self, id: Uuid, summary: Option<String>, embedding: Option<Vec<f32>>) -> Result<(), AppError> {
@@ -66,8 +65,7 @@ impl DbClient {
         record.embedding = embedding;
         record.error = None;
         record.updated_at = Utc::now();
-        self.delete_by_id(id).await?;
-        self.insert(&record).await
+        self.upsert_blob(&record).await
     }
 
     pub async fn mark_failed(&self, id: Uuid, error: String) -> Result<(), AppError> {
@@ -75,8 +73,7 @@ impl DbClient {
         record.status = BlobStatus::Failed;
         record.error = Some(error);
         record.updated_at = Utc::now();
-        self.delete_by_id(id).await?;
-        self.insert(&record).await
+        self.upsert_blob(&record).await
     }
 
     pub async fn update_metadata(&self, id: Uuid, name: Option<String>, tags: Option<Vec<String>>) -> Result<BlobRecord, AppError> {
@@ -84,9 +81,20 @@ impl DbClient {
         if let Some(n) = name { record.name = n; }
         if let Some(t) = tags { record.tags = t; }
         record.updated_at = Utc::now();
-        self.delete_by_id(id).await?;
-        self.insert(&record).await?;
+        self.upsert_blob(&record).await?;
         Ok(record)
+    }
+
+    async fn upsert_blob(&self, record: &BlobRecord) -> Result<(), AppError> {
+        let batch = record_to_batch(record, self.embed_dim)?;
+        let schema = blob_schema(self.embed_dim);
+        let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+        let mut op = self.blob_table.merge_insert(&["id"]);
+        op.when_matched_update_all(None).when_not_matched_insert_all();
+        op.execute(reader).await
+            .map(|_| ())
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn delete_by_id(&self, id: Uuid) -> Result<(), AppError> {

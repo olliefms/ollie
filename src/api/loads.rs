@@ -19,8 +19,18 @@ use axum::{
 use axum_extra::extract::Query;
 use chrono::Utc;
 use serde::Deserialize;
-use utoipa::IntoParams;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LoadStopArriveRequest {
+    pub actual_arrive: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct LoadStopDepartRequest {
+    pub actual_depart: String,
+}
 
 #[derive(Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -50,7 +60,7 @@ pub struct ListLoadsQuery {
     request_body(content = CreateLoadRequest, description = "Load to create"),
     responses(
         (status = 201, description = "Created load detail", body = LoadDetailResponse),
-        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = FacilityResolutionResponse),
+        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = Vec<FacilityResolutionResponse>),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
     ),
@@ -128,15 +138,15 @@ pub async fn list_loads(
         let items = state.db.search_loads(
             embedding, q.status.as_deref(), q.customer.as_deref(), &q.tag, limit,
         ).await?;
-        let total = items.len();
-        return Ok(Json(LoadListResponse { total, items }));
+        let returned = items.len();
+        return Ok(Json(LoadListResponse { returned, items }));
     }
 
     let (total, items) = state.db.list_loads(
         q.status.as_deref(), q.customer.as_deref(), &q.tag,
         q.from.as_deref(), q.to.as_deref(), limit, offset,
     ).await?;
-    Ok(Json(LoadListResponse { total, items }))
+    Ok(Json(LoadListResponse { returned: total, items }))
 }
 
 #[utoipa::path(
@@ -171,7 +181,7 @@ pub async fn get_load(
     request_body(content = UpdateLoadRequest, description = "Fields to update — all optional"),
     responses(
         (status = 200, description = "Updated load detail", body = LoadDetailResponse),
-        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = FacilityResolutionResponse),
+        (status = 200, description = "Facility resolution required — ambiguous stop facility", body = Vec<FacilityResolutionResponse>),
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
     ),
@@ -244,102 +254,6 @@ pub async fn delete_load(
     state.db.get_load_by_id(id).await?;
     state.db.delete_load_by_id(id).await?;
     Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/loads/{id}/assign",
-    params(("id" = Uuid, Path, description = "Load UUID")),
-    responses(
-        (status = 200, description = "Load transitioned to assigned", body = LoadDetailResponse),
-        (status = 409, description = "Invalid status transition"),
-        (status = 404, description = "Not found"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "loads"
-)]
-pub async fn assign_load(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let record = state.db.transition_load_status(
-        id, LoadStatus::Assigned, None, None, None,
-    ).await?;
-    let response = build_detail_response(&state, record).await?;
-    Ok(Json(response))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/loads/{id}/dispatch",
-    params(("id" = Uuid, Path, description = "Load UUID")),
-    responses(
-        (status = 200, description = "Load transitioned to dispatched", body = LoadDetailResponse),
-        (status = 409, description = "Invalid status transition"),
-        (status = 404, description = "Not found"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "loads"
-)]
-pub async fn dispatch_load(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let record = state.db.transition_load_status(
-        id, LoadStatus::Dispatched, None, None, None,
-    ).await?;
-    let response = build_detail_response(&state, record).await?;
-    Ok(Json(response))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/loads/{id}/in_transit",
-    params(("id" = Uuid, Path, description = "Load UUID")),
-    responses(
-        (status = 200, description = "Load transitioned to in_transit", body = LoadDetailResponse),
-        (status = 409, description = "Invalid status transition"),
-        (status = 404, description = "Not found"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "loads"
-)]
-pub async fn in_transit_load(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let record = state.db.transition_load_status(
-        id, LoadStatus::InTransit, None, None, None,
-    ).await?;
-    let response = build_detail_response(&state, record).await?;
-    Ok(Json(response))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/loads/{id}/deliver",
-    params(("id" = Uuid, Path, description = "Load UUID")),
-    responses(
-        (status = 200, description = "Load transitioned to delivered", body = LoadDetailResponse),
-        (status = 409, description = "Invalid status transition"),
-        (status = 404, description = "Not found"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "loads"
-)]
-pub async fn deliver_load(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let record = state.db.transition_load_status(
-        id, LoadStatus::Delivered, None, None, None,
-    ).await?;
-    let response = build_detail_response(&state, record).await?;
-    Ok(Json(response))
 }
 
 #[utoipa::path(
@@ -419,11 +333,95 @@ pub async fn settle_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/stops/{seq}/arrive",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Load UUID"),
+        ("seq" = u32, Path, description = "Stop sequence number"),
+    ),
+    request_body(content = LoadStopArriveRequest, description = "Actual arrival time"),
+    responses(
+        (status = 200, description = "Stop arrival recorded", body = LoadDetailResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
+pub async fn load_stop_arrive(
+    State(state): State<AppState>,
+    Path((id, seq)): Path<(uuid::Uuid, u32)>,
+    Json(body): Json<LoadStopArriveRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let load = state.db.get_load_by_id(id).await?;
+    let stop_exists = load.stops.iter().any(|s| s.sequence == seq);
+    if !stop_exists {
+        return Err(AppError::NotFound);
+    }
+    let mut updated_stops = load.stops.clone();
+    for stop in &mut updated_stops {
+        if stop.sequence == seq {
+            stop.actual_arrive = Some(body.actual_arrive.clone());
+            break;
+        }
+    }
+    let updated = state.db.update_load_metadata(
+        id, None, None, Some(updated_stops),
+        None, None, None, None, None, None, None, None,
+    ).await?;
+    let response = build_detail_response(&state, updated).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/loads/{id}/stops/{seq}/depart",
+    params(
+        ("id" = uuid::Uuid, Path, description = "Load UUID"),
+        ("seq" = u32, Path, description = "Stop sequence number"),
+    ),
+    request_body(content = LoadStopDepartRequest, description = "Actual departure time"),
+    responses(
+        (status = 200, description = "Stop departure recorded", body = LoadDetailResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "loads"
+)]
+pub async fn load_stop_depart(
+    State(state): State<AppState>,
+    Path((id, seq)): Path<(uuid::Uuid, u32)>,
+    Json(body): Json<LoadStopDepartRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let load = state.db.get_load_by_id(id).await?;
+    let stop_exists = load.stops.iter().any(|s| s.sequence == seq);
+    if !stop_exists {
+        return Err(AppError::NotFound);
+    }
+    let mut updated_stops = load.stops.clone();
+    for stop in &mut updated_stops {
+        if stop.sequence == seq {
+            stop.actual_depart = Some(body.actual_depart.clone());
+            break;
+        }
+    }
+    let updated = state.db.update_load_metadata(
+        id, None, None, Some(updated_stops),
+        None, None, None, None, None, None, None, None,
+    ).await?;
+    let response = build_detail_response(&state, updated).await?;
+    Ok(Json(response))
+}
+
 async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<Stop>, AppError> {
     let mut stops = Vec::new();
     let mut resolutions: Vec<FacilityResolutionResponse> = Vec::new();
 
-    for input in inputs {
+    for (idx, input) in inputs.into_iter().enumerate() {
         if !input.service_type.is_valid_for(&input.stop_type) {
             return Err(AppError::BadRequest(format!(
                 "service_type '{}' is not valid for stop_type '{}'",
@@ -443,10 +441,13 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             ))?;
             match resolve_or_create_facility(state, &name, &address, input.force_new_facility).await {
                 Ok(id) => id,
-                Err(resolution) => {
-                    resolutions.push(resolution);
+                Err(AppError::FacilityResolution(res)) => {
+                    let mut inner = *res;
+                    for r in &mut inner { r.stop_index = idx; }
+                    resolutions.extend(inner);
                     continue;
                 }
+                Err(e) => return Err(e),
             }
         };
 
@@ -456,13 +457,19 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             service_type: input.service_type,
             facility_id,
             scheduled_arrive: input.scheduled_arrive,
+            scheduled_arrive_end: input.scheduled_arrive_end,
+            actual_arrive: input.actual_arrive,
+            actual_depart: input.actual_depart,
+            expected_dwell_minutes: input.expected_dwell_minutes,
+            detention_free_minutes: input.detention_free_minutes,
+            detention_grace_minutes: input.detention_grace_minutes,
             notes: input.notes,
             blob_ids: input.blob_ids,
         });
     }
 
     if !resolutions.is_empty() {
-        return Err(AppError::FacilityResolution(Box::new(resolutions.remove(0))));
+        return Err(AppError::FacilityResolution(Box::new(resolutions)));
     }
 
     Ok(stops)
@@ -488,6 +495,12 @@ async fn build_detail_response(
             lat: facility.and_then(|f| f.lat),
             lng: facility.and_then(|f| f.lng),
             scheduled_arrive: stop.scheduled_arrive.clone(),
+            scheduled_arrive_end: stop.scheduled_arrive_end.clone(),
+            actual_arrive: stop.actual_arrive.clone(),
+            actual_depart: stop.actual_depart.clone(),
+            expected_dwell_minutes: stop.expected_dwell_minutes,
+            detention_free_minutes: stop.detention_free_minutes,
+            detention_grace_minutes: stop.detention_grace_minutes,
             notes: stop.notes.clone(),
             blob_ids: stop.blob_ids.clone(),
         }
