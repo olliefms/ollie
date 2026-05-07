@@ -25,7 +25,7 @@ pub async fn process_blob(
     extract_base: &str,
 ) -> Result<(), AppError> {
     db.mark_processing(id).await?;
-    if let Err(e) = db.append_event("blob", id, "processing_started", None, Some("pipeline"), &now_z()).await {
+    if let Err(e) = db.append_event("blob", id, "processing_started", None, Some("pipeline"), &now_z(), Some(ai)).await {
         tracing::warn!("event append failed for {id} (processing_started): {e}");
     }
 
@@ -62,7 +62,7 @@ pub async fn process_blob(
     match result {
         Ok((summary, embedding)) => {
             db.mark_ready(id, summary, embedding).await?;
-            if let Err(e) = db.append_event("blob", id, "processing_completed", None, Some("pipeline"), &now_z()).await {
+            if let Err(e) = db.append_event("blob", id, "processing_completed", None, Some("pipeline"), &now_z(), Some(ai)).await {
                 tracing::warn!("event append failed for {id} (processing_completed): {e}");
             }
             tracing::info!("pipeline completed for {id}");
@@ -74,7 +74,7 @@ pub async fn process_blob(
             if let Err(ev_err) = db.append_event(
                 "blob", id, "processing_failed",
                 Some(serde_json::json!({ "error": err_str })),
-                Some("pipeline"), &now_z(),
+                Some("pipeline"), &now_z(), Some(ai),
             ).await {
                 tracing::warn!("event append failed for {id} (processing_failed): {ev_err}");
             }
