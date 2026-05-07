@@ -193,10 +193,13 @@ function renderStopNode(stop, tripId) {
 
 function formatStatus(status) {
   const labels = {
+    'planned': 'Planned',
+    'assigned': 'Assigned',
+    'dispatched': 'Dispatched',
     'in_transit': 'In Transit',
     'delivered': 'Delivered',
-    'pending': 'Pending',
-    'scheduled': 'Scheduled',
+    'completed': 'Completed',
+    'cancelled': 'Cancelled',
   };
   return labels[status] || status;
 }
@@ -204,10 +207,13 @@ function formatStatus(status) {
 function formatStopType(type) {
   const labels = {
     'origin': 'ORIGIN',
-    'destination': 'DESTINATION',
+    'fuel': 'FUEL',
     'pickup': 'PICKUP',
-    'dropoff': 'DROPOFF',
-    'intermediate': 'STOP',
+    'delivery': 'DELIVERY',
+    'relay': 'RELAY',
+    'empty_move': 'EMPTY MOVE',
+    'maintenance': 'MAINTENANCE',
+    'terminal': 'TERMINAL',
   };
   return labels[type] || type.toUpperCase();
 }
