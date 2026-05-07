@@ -209,7 +209,10 @@ Store and retrieve files (PDFs, images, documents). Files are content-addressed 
 deduplicated. Uploaded files are processed asynchronously: Ollama generates a text
 summary and a vector embedding. Supports semantic search via ?s=<query>.
 
-  POST   /api/v1/blobs              Upload file (multipart/form-data: file, name?, tags?)
+  POST   /api/v1/blobs              Upload file (multipart/form-data: file, name?, tags?).
+                                    Returns 202 (accepted, queued for AI processing) for new files,
+                                    or 201 (created, AI output copied) when an identical file was
+                                    previously uploaded (content-addressed deduplication).
   GET    /api/v1/blobs              List or search blobs (?s=query for semantic search)
   GET    /api/v1/blob/:id           Download file or get JSON record (Accept: application/json)
   PUT    /api/v1/blob/:id           Update name and/or tags
@@ -277,6 +280,7 @@ the load is automatically transitioned to assigned.
   POST   /api/v1/trips/:id/dispatch         Dispatch trip (must be assigned)
   POST   /api/v1/trips/:id/undispatch       Revert dispatched trip to assigned
   POST   /api/v1/trips/:id/cancel           Cancel trip (blocked if in_transit or delivered)
+  POST   /api/v1/trips/:id/complete         Complete trip (must be delivered; releases driver/truck/trailers back to available); returns 204
   POST   /api/v1/trips/:id/stops/:seq/arrive  Record actual arrival at stop (body: actual_arrive)
   POST   /api/v1/trips/:id/stops/:seq/depart  Record actual departure from stop (body: actual_depart); triggers trip/load status cascades
   POST   /api/v1/trips/:id/stops/:seq/late    Flag stop as late (body: eta?, notes?); returns 204
@@ -286,11 +290,14 @@ the load is automatically transitioned to assigned.
 Driver records with state machine. Status: available → assigned → dispatched (last two driven by trip events).
 DELETE soft-deletes (sets status=inactive). PUT cannot set assigned or dispatched.
 
-  POST   /api/v1/drivers          Create driver
-  GET    /api/v1/drivers          List or search drivers (?s, ?status, ?limit, ?offset)
-  GET    /api/v1/drivers/:id      Get driver
-  PUT    /api/v1/drivers/:id      Update driver fields (cannot manually set assigned/dispatched)
-  DELETE /api/v1/drivers/:id      Soft-delete (sets status=inactive)
+  POST   /api/v1/drivers              Create driver
+  GET    /api/v1/drivers              List or search drivers (?s, ?status, ?limit, ?offset)
+  GET    /api/v1/drivers/:id          Get driver
+  PUT    /api/v1/drivers/:id          Update driver fields (cannot manually set assigned/dispatched)
+  DELETE /api/v1/drivers/:id          Soft-delete (sets status=inactive)
+  POST   /api/v1/drivers/:id/pin      Set driver PIN (body: pin — 4–6 numeric digits); returns 204.
+                                      Used by dispatchers to provision portal access. Invalidates
+                                      any outstanding driver JWTs.
 
 ### Trucks — /api/v1/trucks, /api/v1/trucks/:id
 Truck records with state machine. Status: available → assigned → dispatched (assigned/dispatched driven by trip events).
@@ -334,6 +341,26 @@ create a new facility for that stop.
 GET endpoints that support ?s= return a `returned` field.
 - List mode (no ?s=): `returned` equals the total count of matching records (for pagination).
 - Search mode (?s=query): `returned` equals the number of items in this response (bounded by limit).
+
+## Driver Portal
+
+The driver-facing PWA has its own API namespace at /driver/api/v1/. These endpoints
+use JWT auth (not Bearer) and are intended for the driver mobile app only — not for
+admin automation. They are not part of the Bearer-protected admin API surface and are
+not described in /openapi.json.
+
+Auth endpoints (no auth required):
+  POST /driver/api/v1/auth/challenge         Begin WebAuthn assertion or PIN challenge
+  POST /driver/api/v1/auth/verify            Complete WebAuthn assertion (returns JWT)
+  POST /driver/api/v1/auth/pin               Authenticate with PIN (returns JWT)
+  POST /driver/api/v1/auth/register-passkey  Register a new passkey for the authenticated driver
+  POST /driver/api/v1/auth/refresh           Refresh an expiring JWT
+
+Data endpoints (JWT required — driver sees only their own trips):
+  GET  /driver/api/v1/me                     Driver profile and current status
+  GET  /driver/api/v1/trips                  Driver's trips (?tab=current|upcoming|past)
+  GET  /driver/api/v1/trips/:id              Trip detail (stops, load summary, equipment)
+  GET  /driver/api/v1/trips/:id/stops/:seq   Stop detail (facility contacts, commodity info)
 
 ## Full Spec
 
