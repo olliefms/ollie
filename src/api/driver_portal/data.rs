@@ -89,6 +89,13 @@ pub struct DriverStopAddress {
     pub zip: Option<String>,
 }
 
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct DriverFacilityContact {
+    pub name: String,
+    pub title: Option<String>,
+    pub phone: String,
+}
+
 #[derive(Serialize)]
 pub struct DriverStopDetailResponse {
     pub sequence: u32,
@@ -103,6 +110,7 @@ pub struct DriverStopDetailResponse {
     pub commodity: Option<String>,
     pub weight_lbs: Option<f64>,
     pub notes: Option<String>,
+    pub contacts: Vec<DriverFacilityContact>,
 }
 
 // ---------------------------------------------------------------------------
@@ -356,6 +364,21 @@ pub async fn stop_detail(
     )?;
 
     let facility_name = facility_opt.as_ref().map(|f| f.name.clone());
+    let contacts: Vec<DriverFacilityContact> = facility_opt
+        .as_ref()
+        .map(|f| {
+            f.contacts
+                .iter()
+                .filter_map(|c| {
+                    c.phone.as_ref().map(|phone| DriverFacilityContact {
+                        name: c.name.clone(),
+                        title: c.title.clone(),
+                        phone: phone.clone(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let address = facility_opt.map(|f| DriverStopAddress {
         street: Some(f.address.clone()),
         city: None,
@@ -376,6 +399,7 @@ pub async fn stop_detail(
         commodity: load_opt.as_ref().and_then(|l| l.commodity.clone()),
         weight_lbs: load_opt.as_ref().and_then(|l| l.weight_lbs),
         notes: stop.notes.clone(),
+        contacts,
     }))
 }
 

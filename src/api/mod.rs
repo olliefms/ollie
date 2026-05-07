@@ -151,6 +151,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             trip_actions::CheckCallRequest,
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
+            driver_portal::data::DriverFacilityContact,
         )
     ),
     modifiers(&SecurityAddon),
