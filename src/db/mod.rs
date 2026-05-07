@@ -564,7 +564,7 @@ mod tests {
     use tempfile::TempDir;
 
     #[tokio::test]
-    async fn test_db_client_creates_all_three_tables() {
+    async fn test_db_client_creates_tables() {
         let dir = TempDir::new().unwrap();
         let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
         assert_eq!(client.blob_table.count_rows(None).await.unwrap(), 0);
