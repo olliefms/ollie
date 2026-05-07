@@ -45,6 +45,12 @@ Static files are served by Axum via `ServeDir` at `/driver`. The service worker 
 - Progress bar showing completed stops (current tab only)
 - Scheduled start date (upcoming/past tabs)
 
+**Tab classification** — status alone is insufficient; time matters:
+- `upcoming` → status in {planned, assigned} AND first stop `scheduled_arrive` > now
+- `current` → status in {dispatched, in_transit}, OR status=assigned AND first stop `scheduled_arrive` ≤ now
+- `past` → status in {delivered, cancelled}
+This logic lives in one server-side function, unit-tested against boundary cases.
+
 **Trip detail view** — stop timeline (vertical, scrollable):
 - Back button → trip list
 - Header: trip number, status badge
@@ -86,14 +92,41 @@ Static files are served by Axum via `ServeDir` at `/driver`. The service worker 
 
 **Passkey registration:** After PIN login on a new device, the UI prompts the driver to register a passkey for future logins. `POST /driver/api/v1/auth/register-passkey` stores the credential.
 
-**Credential storage:** New `driver_credentials` LanceDB table:
+**Credential storage:** Two new LanceDB tables:
+
+`driver_credentials` — one row per driver:
 
 | Field | Type | Notes |
 |-------|------|-------|
-| `driver_id` | UUID | FK → driver record |
-| `pin_hash` | String | bcrypt, nullable — driver may have no PIN |
-| `passkey_credentials` | String | JSON array of registered WebAuthn credentials |
+| `driver_id` | UUID | Merge key |
+| `pin_hash` | String (nullable) | bcrypt cost 12; null if no PIN set |
+| `token_version` | i64 | Incremented on PIN reset / passkey reset / status → inactive; checked on every JWT-authenticated request |
+| `failed_pin_attempts` | i64 | Reset to 0 on success |
+| `locked_until` | RFC3339 (nullable) | PIN lockout expiry — exponential backoff after 5 failed attempts |
 | `updated_at` | RFC3339 | Last modified |
+
+`driver_passkey_credentials` — one row per registered passkey (separate table to avoid counter race conditions):
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `credential_id` | String | Merge key — WebAuthn credential ID (base64url) |
+| `driver_id` | UUID | Which driver owns this credential |
+| `public_key` | String | Serialized public key |
+| `counter` | i64 | Monotonic signature counter — updated on every successful auth |
+| `transports` | String | JSON array of transport hints |
+| `created_at` | RFC3339 | Registration time |
+
+**Phone normalization:** Phone numbers are normalized to E.164 format on write (`PUT /api/v1/drivers/:id`) and on lookup during auth. Reject ambiguous inputs at the API boundary.
+
+**WebAuthn user handle:** `driver_id` UUID used as the WebAuthn `user.id` — not phone number. Phone numbers can change; the user handle must be stable for the life of the credential.
+
+**PIN brute-force protection:** After 5 failed PIN attempts, the account is locked with exponential backoff (starting 15 minutes). Lockout state stored in `driver_credentials.locked_until`. Rate limiting on `/auth/pin` by IP (10 req/min) provides a second layer.
+
+**Driver status enforcement:** `DriverRecord.status == inactive` blocks authentication at both `/auth/verify` and `/auth/pin`. JWT middleware also checks `token_version` against the stored value — mismatch returns 401, forcing re-login.
+
+**Session cap:** Refresh is refused if the JWT's `iat` claim is more than 7 days old. A `token_version` bump (on PIN reset, passkey removal, or status change) immediately invalidates all outstanding JWTs without waiting for expiry.
+
+**JWT claims:** HS256 signed with `DRIVER_JWT_SECRET` env var (≥32 random bytes; panic at startup if missing or shorter). Claims: `driver_id`, `token_version`, `iss: "ollie-driver"`, `aud: "ollie-driver"`, `exp` (8h), `iat`. `kid` included from day one for future key rotation.
 
 ---
 
@@ -208,10 +241,13 @@ Separate router mounted under `/driver/api/v1/`. All non-auth endpoints require 
 
 | Change | Details |
 |--------|---------|
-| New LanceDB table | `driver_credentials` — pin_hash, passkey_credentials, updated_at; uses `merge_insert` keyed on `driver_id` |
+| New LanceDB table | `driver_credentials` — pin_hash, token_version, failed_pin_attempts, locked_until; `merge_insert` on `driver_id` |
+| New LanceDB table | `driver_passkey_credentials` — one row per passkey; counter updated per-auth; `merge_insert` on `credential_id` |
 | New Axum router | `src/api/driver_portal/` — auth + data endpoints |
 | New JWT middleware | `src/api/driver_portal/auth.rs` — validates driver JWT |
-| New admin endpoint | `POST /api/v1/drivers/:id/pin` — dispatcher sets initial PIN (bearer auth) |
+| New admin endpoint | `POST /api/v1/drivers/:id/pin` — dispatcher sets initial PIN (bearer auth); bumps token_version |
+| LanceDB join pattern | trips/:id enrichment uses `tokio::try_join!` for facility batch + load fetch (not sequential awaits) |
+| Audit logging | Structured log lines (tracing) for all auth events: PIN set, passkey register, login success/fail, lockout |
 | Static file serving | `ServeDir` at `/driver` → `static/driver/` |
 | WebAuthn library | `webauthn-rs` crate |
 | No model changes | `DriverRecord.phone` stays optional; no new fields on existing models |
