@@ -551,6 +551,47 @@ async fn test_trip_creation_cascades_load_to_assigned() {
     assert_eq!(load_resp.json::<serde_json::Value>()["status"], "assigned");
 }
 
+// ── Trip two-step DELETE ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_trip_two_step_delete() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create a minimal trip (no load or driver required)
+    let create_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(create_resp.status_code(), 201);
+    let trip_id = create_resp.json::<serde_json::Value>()["id"]
+        .as_str().unwrap().to_string();
+
+    // First DELETE — soft-cancel: should return 204
+    let del1 = server.delete(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(del1.status_code(), 204);
+
+    // GET — trip should still exist with status cancelled
+    let get_resp = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(get_resp.status_code(), 200);
+    assert_eq!(get_resp.json::<serde_json::Value>()["status"], "cancelled");
+
+    // Second DELETE — hard-delete: should return 204
+    let del2 = server.delete(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(del2.status_code(), 204);
+
+    // GET — trip should now return 404
+    let get_after = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(get_after.status_code(), 404);
+}
+
 // ── Blob query endpoint tests ──────────────────────────────────────────────
 
 #[tokio::test]

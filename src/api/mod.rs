@@ -267,7 +267,9 @@ the load is automatically transitioned to assigned.
   GET    /api/v1/trips          List trips (?load_id, ?driver_id, ?status, ?limit, ?offset)
   GET    /api/v1/trips/:id      Get trip record
   PATCH  /api/v1/trips/:id      Update trip fields (load_id, sequence, stops, notes)
-  DELETE /api/v1/trips/:id      Soft-delete (transitions to cancelled; blocked if in_transit or delivered)
+  DELETE /api/v1/trips/:id      Two-step delete: first DELETE soft-cancels (transitions to cancelled; blocked if
+                                in_transit, delivered, or completed → 204); second DELETE on an already-cancelled
+                                trip hard-deletes the row (→ 204). GET after hard-delete returns 404.
 
   POST   /api/v1/trips/:id/assign           Assign driver, truck, trailers (body: driver_id, truck_id, trailer_ids?)
   POST   /api/v1/trips/:id/unassign         Unassign resources and revert to planned
