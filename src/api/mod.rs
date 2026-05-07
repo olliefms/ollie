@@ -40,13 +40,25 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         loads::get_load,
         loads::update_load,
         loads::delete_load,
-        loads::assign_load,
-        loads::dispatch_load,
-        loads::in_transit_load,
-        loads::deliver_load,
         loads::invoice_load,
         loads::cancel_load,
         loads::settle_load,
+        trips::create_trip,
+        trips::list_trips,
+        trips::get_trip,
+        trips::update_trip,
+        trips::delete_trip,
+        trip_actions::assign_trip,
+        trip_actions::unassign_trip,
+        trip_actions::dispatch_trip,
+        trip_actions::undispatch_trip,
+        trip_actions::cancel_trip,
+        trip_actions::stop_arrive,
+        trip_actions::stop_depart,
+        trip_actions::stop_late,
+        trip_actions::check_call,
+        loads::load_stop_arrive,
+        loads::load_stop_depart,
         events::list_events,
         events::get_event_handler,
         drivers::create_driver,
@@ -120,6 +132,21 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::UpdateTrailerRequest,
             models::TrailerListItem,
             models::TrailerListResponse,
+            models::TripStatus,
+            models::TripStopType,
+            models::TripStop,
+            models::TripRecord,
+            models::CreateTripRequest,
+            models::UpdateTripRequest,
+            models::TripListItem,
+            models::TripListResponse,
+            trip_actions::AssignTripRequest,
+            trip_actions::StopArriveRequest,
+            trip_actions::StopDepartRequest,
+            trip_actions::StopLateRequest,
+            trip_actions::CheckCallRequest,
+            loads::LoadStopArriveRequest,
+            loads::LoadStopDepartRequest,
         )
     ),
     modifiers(&SecurityAddon),
@@ -216,13 +243,37 @@ are eligible only if actual_arrive ≤ scheduled_arrive + grace_minutes (early =
   PATCH  /api/v1/loads/:id      Update load fields
   DELETE /api/v1/loads/:id      Delete load
 
-  POST   /api/v1/loads/:id/assign      Transition to assigned (from planned)
-  POST   /api/v1/loads/:id/dispatch    Transition to dispatched (from assigned)
-  POST   /api/v1/loads/:id/in_transit  Transition to in_transit
-  POST   /api/v1/loads/:id/deliver     Transition to delivered
   POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
   POST   /api/v1/loads/:id/cancel      Transition to cancelled (body: reason?)
   POST   /api/v1/loads/:id/settle      Transition to settled
+  POST   /api/v1/loads/:id/stops/:seq/arrive   Record actual arrival at stop (body: actual_arrive)
+  POST   /api/v1/loads/:id/stops/:seq/depart   Record actual departure from stop (body: actual_depart)
+
+### Trips — /api/v1/trips, /api/v1/trips/:id
+Trips represent the physical movement of a truck+driver on behalf of a load. A load may have
+multiple trips (relay). Status lifecycle:
+  planned → assigned (via /assign) → dispatched (via /dispatch) → in_transit → delivered
+  (assign/dispatch are reversible; cancel allowed from planned, assigned, dispatched only;
+   in_transit and delivered are terminal for cancel — use relay instead)
+
+When a trip with both load_id and driver_id is created and the linked load is planned,
+the load is automatically transitioned to assigned.
+
+  POST   /api/v1/trips          Create trip (trip_number auto-generated as T-YYYY-NNNN if omitted)
+  GET    /api/v1/trips          List trips (?load_id, ?driver_id, ?status, ?limit, ?offset)
+  GET    /api/v1/trips/:id      Get trip record
+  PATCH  /api/v1/trips/:id      Update trip fields (load_id, sequence, stops, notes)
+  DELETE /api/v1/trips/:id      Soft-delete (transitions to cancelled; blocked if in_transit or delivered)
+
+  POST   /api/v1/trips/:id/assign           Assign driver, truck, trailers (body: driver_id, truck_id, trailer_ids?)
+  POST   /api/v1/trips/:id/unassign         Unassign resources and revert to planned
+  POST   /api/v1/trips/:id/dispatch         Dispatch trip (must be assigned)
+  POST   /api/v1/trips/:id/undispatch       Revert dispatched trip to assigned
+  POST   /api/v1/trips/:id/cancel           Cancel trip (blocked if in_transit or delivered)
+  POST   /api/v1/trips/:id/stops/:seq/arrive  Record actual arrival at stop (body: actual_arrive)
+  POST   /api/v1/trips/:id/stops/:seq/depart  Record actual departure from stop (body: actual_depart); triggers trip/load status cascades
+  POST   /api/v1/trips/:id/stops/:seq/late    Flag stop as late (body: eta?, notes?); returns 204
+  POST   /api/v1/trips/:id/check-call         Record driver check-in (body: location, notes?, eta_next_stop?); returns 204
 
 ### Drivers — /api/v1/drivers, /api/v1/drivers/:id
 Driver records with state machine. Status: available → assigned → dispatched (last two driven by trip events).
@@ -313,13 +364,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/loads/:id", patch(loads::update_load))
         .route("/api/v1/loads/:id", delete(loads::delete_load))
         // Loads — actions
-        .route("/api/v1/loads/:id/assign", post(loads::assign_load))
-        .route("/api/v1/loads/:id/dispatch", post(loads::dispatch_load))
-        .route("/api/v1/loads/:id/in_transit", post(loads::in_transit_load))
-        .route("/api/v1/loads/:id/deliver", post(loads::deliver_load))
         .route("/api/v1/loads/:id/invoice", post(loads::invoice_load))
         .route("/api/v1/loads/:id/cancel", post(loads::cancel_load))
         .route("/api/v1/loads/:id/settle", post(loads::settle_load))
+        .route("/api/v1/loads/:id/stops/:seq/arrive", post(loads::load_stop_arrive))
+        .route("/api/v1/loads/:id/stops/:seq/depart", post(loads::load_stop_depart))
         // Drivers, trucks, trailers, trips, trip actions, events (stubs — filled in by Wave 2/3/4)
         .merge(drivers::router())
         .merge(trucks::router())
