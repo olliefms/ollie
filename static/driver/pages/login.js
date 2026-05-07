@@ -1,5 +1,4 @@
 import { loginWithPin, startPasskeyAuth, finishPasskeyAuth } from '../utils/auth.js';
-import { isAuthenticated } from '../utils/auth.js';
 
 export function renderLogin(container) {
   const html = `
@@ -73,6 +72,11 @@ export function renderLogin(container) {
     const phone = phoneInput.value.trim();
     if (!phone) {
       showError(phoneError, 'Enter your phone number');
+      return;
+    }
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 15) {
+      showError(phoneError, 'Enter a valid phone number');
       return;
     }
     currentPhone = phone;
