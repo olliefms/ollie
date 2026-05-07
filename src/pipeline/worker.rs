@@ -8,7 +8,7 @@ use crate::{
     },
     db::DbClient,
     error::AppError,
-    storage::BlobStore,
+    storage::{extract_store::write_extract, BlobStore},
 };
 use uuid::Uuid;
 
@@ -17,12 +17,17 @@ pub async fn process_blob(
     db: &DbClient,
     store: &BlobStore,
     ai: &OllamaClient,
+    extract_base: &str,
 ) -> Result<(), AppError> {
     db.mark_processing(id).await?;
 
     let record = db.get_by_id(id).await?;
     let data = store.read(&record.checksum).await?;
     let extractable = extract_content(&data, &record.mime_type);
+
+    if let Err(e) = write_extract(extract_base, &record.checksum, &extractable).await {
+        tracing::warn!("failed to write extract cache for {id}: {e}");
+    }
 
     let result: Result<(Option<String>, Option<Vec<f32>>), AppError> = async {
         match extractable {

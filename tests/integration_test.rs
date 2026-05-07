@@ -560,3 +560,83 @@ async fn test_assign_transitions_planned_to_assigned() {
     assert_eq!(resp.status_code(), 200);
     assert_eq!(resp.json::<serde_json::Value>()["status"], "assigned");
 }
+
+// ── Blob query endpoint tests ──────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_query_blob_returns_404_for_missing_blob() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fake_id = uuid::Uuid::new_v4();
+    let resp = server.post(&format!("/api/v1/blobs/{fake_id}/query"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "prompt": "What is this?" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_query_blob_returns_422_when_not_ready() {
+    let (server, _b, _d, _rx) = test_server().await;
+    // Upload a blob — it stays in pending status (no worker running)
+    let upload = server.post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"some document text".to_vec())
+                .file_name("doc.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    assert_eq!(upload.json::<serde_json::Value>()["status"], "pending");
+
+    let resp = server.post(&format!("/api/v1/blobs/{id}/query"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "prompt": "What is this?" }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
+}
+
+#[tokio::test]
+async fn test_query_blob_returns_400_for_empty_prompt() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let upload = server.post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"content".to_vec())
+                .file_name("doc.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.post(&format!("/api/v1/blobs/{id}/query"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "prompt": "" }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_query_blob_returns_400_for_overlong_prompt() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let upload = server.post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"content".to_vec())
+                .file_name("doc.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let long_prompt = "a".repeat(4097);
+    let resp = server.post(&format!("/api/v1/blobs/{id}/query"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "prompt": long_prompt }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_query_blob_returns_401_without_auth() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fake_id = uuid::Uuid::new_v4();
+    let resp = server.post(&format!("/api/v1/blobs/{fake_id}/query"))
+        .json(&serde_json::json!({ "prompt": "What is this?" }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
