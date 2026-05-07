@@ -129,7 +129,7 @@ impl DbClient {
     pub async fn delete_trip(&self, id: Uuid) -> Result<(), AppError> {
         let record = self.get_trip(id).await?;
         match record.status {
-            TripStatus::InTransit | TripStatus::Delivered => {
+            TripStatus::InTransit | TripStatus::Delivered | TripStatus::Completed => {
                 return Err(AppError::Conflict(format!(
                     "cannot cancel trip with status '{}'", record.status.as_str()
                 )));
