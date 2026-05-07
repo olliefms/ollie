@@ -159,16 +159,6 @@ export async function renderTrips(container) {
       progressWrapper.appendChild(bar);
       progressWrapper.appendChild(label);
       card.appendChild(progressWrapper);
-
-      if (trip.stops_completed < trip.stop_count && trip.stops && trip.stops.length > 0) {
-        const nextStop = trip.stops[trip.stops_completed];
-        if (nextStop) {
-          const nextStopEl = document.createElement('div');
-          nextStopEl.className = 'trip-card__next-stop';
-          nextStopEl.textContent = `Next: ${nextStop.location}`;
-          card.appendChild(nextStopEl);
-        }
-      }
     } else {
       // Past and Upcoming tabs show scheduled start date
       const date = document.createElement('div');

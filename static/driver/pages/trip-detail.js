@@ -78,21 +78,28 @@ export async function renderTripDetail(container, tripId) {
     const loadSection = document.createElement('div');
     loadSection.className = 'trip-detail-section';
 
-    const refDiv = document.createElement('div');
-    refDiv.className = 'trip-detail-row';
-    refDiv.textContent = `Ref: ${data.load.customer_ref}`;
-    loadSection.appendChild(refDiv);
+    if (data.load) {
+      const refDiv = document.createElement('div');
+      refDiv.className = 'trip-detail-row';
+      refDiv.textContent = `Ref: ${data.load.customer_ref}`;
+      loadSection.appendChild(refDiv);
 
-    const commodityDiv = document.createElement('div');
-    commodityDiv.className = 'trip-detail-row';
-    commodityDiv.textContent = `${data.load.commodity} • ${formatWeight(data.load.weight_lbs)}`;
-    loadSection.appendChild(commodityDiv);
+      const commodityDiv = document.createElement('div');
+      commodityDiv.className = 'trip-detail-row';
+      commodityDiv.textContent = `${data.load.commodity} • ${formatWeight(data.load.weight_lbs)}`;
+      loadSection.appendChild(commodityDiv);
 
-    if (data.load.notes) {
-      const notesDiv = document.createElement('div');
-      notesDiv.className = 'trip-detail-row trip-detail-notes';
-      notesDiv.textContent = data.load.notes;
-      loadSection.appendChild(notesDiv);
+      if (data.load.notes) {
+        const notesDiv = document.createElement('div');
+        notesDiv.className = 'trip-detail-row trip-detail-notes';
+        notesDiv.textContent = data.load.notes;
+        loadSection.appendChild(notesDiv);
+      }
+    } else {
+      const noLoadDiv = document.createElement('div');
+      noLoadDiv.className = 'trip-detail-row';
+      noLoadDiv.textContent = 'No load assigned';
+      loadSection.appendChild(noLoadDiv);
     }
 
     page.appendChild(loadSection);
