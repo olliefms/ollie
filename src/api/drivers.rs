@@ -1,4 +1,20 @@
 // src/api/drivers.rs
+fn normalize_phone(phone: &str) -> String {
+    let stripped: String = phone.chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '(' | ')'))
+        .collect();
+    if stripped.starts_with('+') {
+        return stripped;
+    }
+    if stripped.len() == 10 && stripped.chars().all(|c| c.is_ascii_digit()) {
+        return format!("+1{stripped}");
+    }
+    if stripped.chars().all(|c| c.is_ascii_digit()) {
+        return format!("+{stripped}");
+    }
+    stripped
+}
+
 use crate::{
     ai::embed::embed_text,
     error::AppError,
@@ -147,10 +163,11 @@ pub async fn update_driver(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let phone = body.phone.as_deref().map(normalize_phone);
     let updated = state.db.update_driver_metadata(
         id,
         body.name,
-        body.phone,
+        phone,
         body.email,
         body.license_number,
         body.license_state,
@@ -184,6 +201,12 @@ pub async fn delete_driver(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     state.db.soft_delete_driver(id).await?;
+    // Invalidate any outstanding JWTs
+    if let Ok(Some(mut creds)) = state.db.get_driver_credentials(id).await {
+        creds.token_version += 1;
+        creds.updated_at = chrono::Utc::now();
+        let _ = state.db.upsert_driver_credentials(&creds).await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

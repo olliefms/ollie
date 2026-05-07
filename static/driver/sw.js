@@ -5,6 +5,8 @@ const STATIC_ASSETS = [
   '/driver/css/base.css',
   '/driver/css/components.css',
   '/driver/pages/login.js',
+  '/driver/pages/trip-detail.js',
+  '/driver/pages/stop-detail.js',
   '/driver/utils/api.js',
   '/driver/utils/auth.js',
   '/driver/manifest.json',
