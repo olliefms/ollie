@@ -47,7 +47,10 @@ pub async fn list_events(
 ) -> Result<impl IntoResponse, AppError> {
     let limit = q.limit.unwrap_or(20).min(100);
     let offset = q.offset.unwrap_or(0);
-    let (total, records) = state.db.query_events(
+    if offset > 10_000 {
+        return Err(AppError::BadRequest("offset must not exceed 10000".into()));
+    }
+    let (_total, records) = state.db.query_events(
         q.entity_id,
         q.entity_type.as_deref(),
         q.event_type.as_deref(),
@@ -57,7 +60,7 @@ pub async fn list_events(
         offset,
     ).await?;
     let items: Vec<EventResponse> = records.into_iter().map(EventResponse::from).collect();
-    Ok(Json(EventListResponse { total, items }))
+    Ok(Json(EventListResponse { returned: items.len(), items }))
 }
 
 #[utoipa::path(

@@ -1,5 +1,6 @@
 // src/db/event_ops.rs
 use crate::{
+    ai::{embed::embed_text, OllamaClient},
     db::{event_schema, DbClient},
     error::AppError,
     models::EventRecord,
@@ -14,6 +15,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 impl DbClient {
+    #[allow(clippy::too_many_arguments)]
     pub async fn append_event(
         &self,
         entity_type: &str,
@@ -22,12 +24,27 @@ impl DbClient {
         payload: Option<serde_json::Value>,
         actor: Option<&str>,
         occurred_at: &str,
+        ai: Option<&OllamaClient>,
     ) -> Result<Uuid, AppError> {
         chrono::DateTime::parse_from_rfc3339(occurred_at)
             .map_err(|_| AppError::BadRequest("occurred_at must be RFC3339 UTC+Z".into()))?;
+        if !occurred_at.ends_with('Z') {
+            return Err(AppError::BadRequest("occurred_at must be RFC3339 UTC+Z".into()));
+        }
 
         let id = Uuid::new_v4();
-        let payload_str = payload.map(|v| v.to_string());
+        let payload_str = payload.as_ref().map(|v| v.to_string());
+
+        let embedding = if let Some(client) = ai {
+            let payload_snippet = payload_str.as_deref().unwrap_or("");
+            let embed_src = format!(
+                "{entity_type} {event_type} {}",
+                &payload_snippet[..payload_snippet.len().min(500)],
+            );
+            embed_text(client, &embed_src).await.ok()
+        } else {
+            None
+        };
 
         let record = EventRecord {
             id,
@@ -37,7 +54,7 @@ impl DbClient {
             payload: payload_str,
             actor: actor.map(|s| s.to_string()),
             occurred_at: occurred_at.to_string(),
-            embedding: None,
+            embedding,
         };
 
         let batch = event_to_batch(&record, self.embed_dim)?;
@@ -72,14 +89,18 @@ impl DbClient {
         limit: usize,
         offset: usize,
     ) -> Result<(usize, Vec<EventRecord>), AppError> {
+        if offset > 10_000 {
+            return Err(AppError::BadRequest("offset must not exceed 10000".into()));
+        }
         let filter = build_event_filter(entity_id, entity_type, event_type, from, to)?;
         let total = self.event_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut q = self.event_table.query().limit(limit + offset);
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
-        let items = batches_to_events(collect_stream(stream).await?)?
-            .into_iter().skip(offset).collect();
+        let mut all = batches_to_events(collect_stream(stream).await?)?;
+        all.sort_by(|a, b| b.occurred_at.cmp(&a.occurred_at));
+        let items = all.into_iter().skip(offset).take(limit).collect();
         Ok((total, items))
     }
 
@@ -231,7 +252,7 @@ mod tests {
         let entity_id = Uuid::new_v4();
         let id = db.append_event(
             "blob", entity_id, "processing_started",
-            None, Some("pipeline"), &now_rfc3339(),
+            None, Some("pipeline"), &now_rfc3339(), None,
         ).await.unwrap();
         let record = db.get_event(id).await.unwrap();
         assert_eq!(record.id, id);
@@ -252,7 +273,7 @@ mod tests {
         let (db, _dir) = test_db().await;
         let result = db.append_event(
             "blob", Uuid::new_v4(), "test",
-            None, None, "not-a-date",
+            None, None, "not-a-date", None,
         ).await;
         assert!(matches!(result, Err(AppError::BadRequest(_))));
     }
@@ -262,9 +283,9 @@ mod tests {
         let (db, _dir) = test_db().await;
         let entity_id = Uuid::new_v4();
         let other_id = Uuid::new_v4();
-        db.append_event("blob", entity_id, "processing_started", None, None, &now_rfc3339()).await.unwrap();
-        db.append_event("blob", entity_id, "processing_completed", None, None, &now_rfc3339()).await.unwrap();
-        db.append_event("blob", other_id, "processing_started", None, None, &now_rfc3339()).await.unwrap();
+        db.append_event("blob", entity_id, "processing_started", None, None, &now_rfc3339(), None).await.unwrap();
+        db.append_event("blob", entity_id, "processing_completed", None, None, &now_rfc3339(), None).await.unwrap();
+        db.append_event("blob", other_id, "processing_started", None, None, &now_rfc3339(), None).await.unwrap();
         let (total, items) = db.query_events(Some(entity_id), None, None, None, None, 100, 0).await.unwrap();
         assert_eq!(total, 2);
         assert_eq!(items.len(), 2);
@@ -275,8 +296,8 @@ mod tests {
     async fn test_query_events_by_event_type() {
         let (db, _dir) = test_db().await;
         let entity_id = Uuid::new_v4();
-        db.append_event("blob", entity_id, "processing_started", None, None, &now_rfc3339()).await.unwrap();
-        db.append_event("blob", entity_id, "processing_failed", None, None, &now_rfc3339()).await.unwrap();
+        db.append_event("blob", entity_id, "processing_started", None, None, &now_rfc3339(), None).await.unwrap();
+        db.append_event("blob", entity_id, "processing_failed", None, None, &now_rfc3339(), None).await.unwrap();
         let (total, items) = db.query_events(None, None, Some("processing_started"), None, None, 100, 0).await.unwrap();
         assert_eq!(total, 1);
         assert_eq!(items[0].event_type, "processing_started");
