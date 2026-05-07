@@ -43,10 +43,14 @@ async fn main() -> anyhow::Result<()> {
         (db.create_vector_index().await, "blobs"),
         (db.create_facility_vector_index().await, "facilities"),
         (db.create_load_vector_index().await, "loads"),
+        (db.create_event_vector_index().await, "events"),
     ] {
         if let Err(e) = result {
             tracing::warn!("vector index not created for {label}: {e}");
         }
+    }
+    if let Err(e) = db.create_event_scalar_indices().await {
+        tracing::warn!("scalar indices not created for events: {e}");
     }
 
     let state = AppState {

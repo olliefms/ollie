@@ -63,8 +63,8 @@ impl DbClient {
             empty_placeholder_batch(schema)
         }).await?;
 
-        let event_table = open_or_create(&conn, "events", placeholder_schema(), |schema| {
-            empty_placeholder_batch(schema)
+        let event_table = open_or_create(&conn, "events", event_schema(embed_dim), |schema| {
+            empty_event_batch(schema, embed_dim)
         }).await?;
 
         Ok(Self {
@@ -219,6 +219,38 @@ fn empty_facility_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordB
         >(nulls, embed_dim as i32)),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn event_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("entity_type", DataType::Utf8, false),
+        Field::new("entity_id", DataType::Utf8, false),
+        Field::new("event_type", DataType::Utf8, false),
+        Field::new("payload", DataType::Utf8, true),
+        Field::new("actor", DataType::Utf8, true),
+        Field::new("occurred_at", DataType::Utf8, false),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+    ]))
+}
+
+fn empty_event_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
