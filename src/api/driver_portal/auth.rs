@@ -65,6 +65,11 @@ pub struct RegisterPasskeyRequest {
 
 // --- Helpers ---
 
+// Static dummy bcrypt hash for timing equalization when no PIN is set.
+// This is a valid bcrypt hash so bcrypt::verify runs to full completion,
+// ensuring constant-time rejection regardless of whether PIN is set.
+const DUMMY_HASH: &str = "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/lewPCVzPa.E6wuBK.";
+
 fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     headers.get("Authorization")
         .and_then(|v| v.to_str().ok())
@@ -170,8 +175,6 @@ pub async fn pin_auth(
     let mut creds = state.db.get_driver_credentials(driver.id).await?
         .ok_or(AppError::Unauthorized)?;
 
-    let pin_hash = creds.pin_hash.clone().ok_or(AppError::Unauthorized)?;
-
     // Check lockout
     if let Some(locked_until) = creds.locked_until {
         if locked_until > Utc::now() {
@@ -185,8 +188,16 @@ pub async fn pin_auth(
         }
     }
 
+    // Equalize timing: if no PIN is set, still run bcrypt against dummy hash
+    let pin_hash = creds.pin_hash.clone().unwrap_or_else(|| DUMMY_HASH.to_string());
     let pin_valid = bcrypt::verify(&req.pin, &pin_hash)
         .map_err(|e| AppError::Internal(format!("bcrypt error: {e}")))?;
+
+    // Ensure we fail if no PIN was actually set
+    if creds.pin_hash.is_none() && pin_valid {
+        // This shouldn't happen (dummy hash won't verify), but be explicit
+        return Err(AppError::Unauthorized);
+    }
 
     if !pin_valid {
         creds.failed_pin_attempts += 1;
