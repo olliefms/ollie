@@ -35,6 +35,23 @@ pub async fn on_trip_delivered(db: &DbClient, trip_id: Uuid) {
     tracing::info!(trip_id = %trip_id, "trip delivered");
 }
 
+pub async fn on_trip_completed(db: &DbClient, trip_id: Uuid, driver_id: Option<Uuid>, truck_id: Option<Uuid>, trailer_ids: &[Uuid]) {
+    let _ = db.append_event("trip", trip_id, "trip_completed", None, None, &now_z(), None).await;
+    tracing::info!(trip_id = %trip_id, "trip completed");
+    if let Some(id) = driver_id {
+        let _ = db.append_event("driver", id, "driver_available", None, None, &now_z(), None).await;
+        tracing::info!(driver_id = %id, "driver available after trip completion");
+    }
+    if let Some(id) = truck_id {
+        let _ = db.append_event("truck", id, "truck_available", None, None, &now_z(), None).await;
+        tracing::info!(truck_id = %id, "truck available after trip completion");
+    }
+    for &trailer_id in trailer_ids {
+        let _ = db.append_event("trailer", trailer_id, "trailer_available", None, None, &now_z(), None).await;
+        tracing::info!(trailer_id = %trailer_id, "trailer available after trip completion");
+    }
+}
+
 pub async fn on_trip_cancelled(db: &DbClient, trip_id: Uuid) {
     let _ = db.append_event("trip", trip_id, "trip.cancelled", None, None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, "trip cancelled");

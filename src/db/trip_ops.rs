@@ -129,7 +129,7 @@ impl DbClient {
     pub async fn delete_trip(&self, id: Uuid) -> Result<(), AppError> {
         let record = self.get_trip(id).await?;
         match record.status {
-            TripStatus::InTransit | TripStatus::Delivered => {
+            TripStatus::InTransit | TripStatus::Delivered | TripStatus::Completed => {
                 return Err(AppError::Conflict(format!(
                     "cannot cancel trip with status '{}'", record.status.as_str()
                 )));
@@ -168,7 +168,7 @@ impl DbClient {
     pub async fn count_active_trips_for_load(&self, load_id: Uuid) -> Result<usize, AppError> {
         let id_str = load_id.to_string();
         let filter = format!(
-            "load_id = '{id_str}' AND status NOT IN ('cancelled', 'delivered')"
+            "load_id = '{id_str}' AND status NOT IN ('cancelled', 'delivered', 'completed')"
         );
         self.trip_table.count_rows(Some(filter)).await
             .map_err(|e| AppError::Internal(e.to_string()))
