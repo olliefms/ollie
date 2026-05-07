@@ -161,10 +161,11 @@ pub async fn list_blobs(
     if let Some(query_text) = q.s {
         let embedding = crate::ai::embed::embed_text(&state.ai, &query_text).await?;
         let items = state.db.search(embedding, q.name.as_deref(), &q.tag, limit).await?;
-        let total = items.len();
-        return Ok(Json(BlobListResponse { total, items }));
+        let returned = items.len();
+        return Ok(Json(BlobListResponse { returned, items }));
     }
 
-    let (total, items) = state.db.list(q.name.as_deref(), &q.tag, limit, offset).await?;
-    Ok(Json(BlobListResponse { total, items }))
+    let (_total, items) = state.db.list(q.name.as_deref(), &q.tag, limit, offset).await?;
+    let returned = items.len();
+    Ok(Json(BlobListResponse { returned, items }))
 }

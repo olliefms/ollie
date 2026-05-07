@@ -90,16 +90,15 @@ impl TripStatus {
     }
 
     pub fn can_transition_to(&self, next: &TripStatus) -> bool {
-        match (self, next) {
-            (Self::Planned, Self::Assigned) => true,
-            (Self::Assigned, Self::Planned) => true,
-            (Self::Assigned, Self::Dispatched) => true,
-            (Self::Dispatched, Self::Assigned) => true,
-            (Self::Dispatched, Self::InTransit) => true,
-            (Self::InTransit, Self::Delivered) => true,
-            (Self::Planned | Self::Assigned | Self::Dispatched, Self::Cancelled) => true,
-            _ => false,
-        }
+        matches!((self, next),
+            (Self::Planned, Self::Assigned)
+            | (Self::Assigned, Self::Planned)
+            | (Self::Assigned, Self::Dispatched)
+            | (Self::Dispatched, Self::Assigned)
+            | (Self::Dispatched, Self::InTransit)
+            | (Self::InTransit, Self::Delivered)
+            | (Self::Planned | Self::Assigned | Self::Dispatched, Self::Cancelled)
+        )
     }
 }
 

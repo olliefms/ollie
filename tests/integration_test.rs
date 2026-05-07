@@ -114,7 +114,7 @@ async fn test_list_blobs() {
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
         .await;
     assert_eq!(list.status_code(), 200);
-    assert!(list.json::<serde_json::Value>()["total"].as_u64().unwrap() >= 1);
+    assert!(list.json::<serde_json::Value>()["returned"].as_u64().unwrap() >= 1);
 }
 
 #[tokio::test]

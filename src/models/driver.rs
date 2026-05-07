@@ -26,13 +26,12 @@ impl DriverStatus {
     /// Returns true if the state machine allows transitioning from self to next.
     /// Note: assigned and dispatched are driven by trip events only; PUT cannot set them.
     pub fn can_transition_to(&self, next: &DriverStatus) -> bool {
-        match (self, next) {
-            (Self::Available, Self::Assigned) => true,
-            (Self::Assigned, Self::Dispatched) => true,
-            (Self::Dispatched, Self::Available) => true,
-            (_, Self::Inactive) => true,
-            _ => false,
-        }
+        matches!((self, next),
+            (Self::Available, Self::Assigned)
+            | (Self::Assigned, Self::Dispatched)
+            | (Self::Dispatched, Self::Available)
+            | (_, Self::Inactive)
+        )
     }
 }
 

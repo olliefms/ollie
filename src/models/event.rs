@@ -47,6 +47,6 @@ impl From<EventRecord> for EventResponse {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct EventListResponse {
-    pub total: usize,
+    pub returned: usize,
     pub items: Vec<EventResponse>,
 }
