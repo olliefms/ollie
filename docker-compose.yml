@@ -14,6 +14,7 @@ services:
       OLLAMA_VISION_MODEL: ${OLLAMA_VISION_MODEL:-moondream}
       OLLAMA_EMBED_DIM: ${OLLAMA_EMBED_DIM:-768}
       PIPELINE_WORKERS: ${PIPELINE_WORKERS:-1}
+      ORS_API_KEY: ${ORS_API_KEY}
       RUST_LOG: ollie=info
     volumes:
       - ./data:/data
