@@ -12,6 +12,7 @@ pub async fn process_facility_geocoding(
     db: &DbClient,
     geocoding: &GeocodingClient,
     ai: &OllamaClient,
+    routing_tx: &async_channel::Sender<Uuid>,
 ) -> Result<(), AppError> {
     let facility = db.get_facility_by_id(id).await?;
 
@@ -34,6 +35,17 @@ pub async fn process_facility_geocoding(
             db.update_facility_embedding(id, embedding).await?;
         }
         Err(e) => tracing::warn!("embedding failed for facility {id}: {e}"),
+    }
+
+    // Re-queue routing for loads that reference this facility and still have no miles
+    match db.list_unrouted_loads_for_facility(id).await {
+        Ok(load_ids) => {
+            for load_id in load_ids {
+                let _ = routing_tx.try_send(load_id);
+                tracing::debug!("re-queued routing for load {load_id} after facility {id} geocoded");
+            }
+        }
+        Err(e) => tracing::warn!("failed to query unrouted loads for facility {id}: {e}"),
     }
 
     Ok(())
@@ -68,8 +80,9 @@ mod tests {
         };
         db.insert_facility(&facility).await.unwrap();
 
+        let (routing_tx, _rx) = async_channel::bounded(10);
         // Process — will fail to geocode (no network or no match)
         // We assert the function completes without panic
-        let _ = process_facility_geocoding(facility.id, &db, &geocoding, &ai).await;
+        let _ = process_facility_geocoding(facility.id, &db, &geocoding, &ai, &routing_tx).await;
     }
 }
