@@ -8,21 +8,34 @@ use crate::{
     },
     db::DbClient,
     error::AppError,
-    storage::BlobStore,
+    storage::{extract_store::write_extract, BlobStore},
 };
+use chrono::SecondsFormat;
 use uuid::Uuid;
+
+fn now_z() -> String {
+    chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
 
 pub async fn process_blob(
     id: Uuid,
     db: &DbClient,
     store: &BlobStore,
     ai: &OllamaClient,
+    extract_base: &str,
 ) -> Result<(), AppError> {
     db.mark_processing(id).await?;
+    if let Err(e) = db.append_event("blob", id, "processing_started", None, Some("pipeline"), &now_z(), Some(ai)).await {
+        tracing::warn!("event append failed for {id} (processing_started): {e}");
+    }
 
     let record = db.get_by_id(id).await?;
     let data = store.read(&record.checksum).await?;
     let extractable = extract_content(&data, &record.mime_type);
+
+    if let Err(e) = write_extract(extract_base, &record.checksum, &extractable).await {
+        tracing::warn!("failed to write extract cache for {id}: {e}");
+    }
 
     let result: Result<(Option<String>, Option<Vec<f32>>), AppError> = async {
         match extractable {
@@ -49,11 +62,22 @@ pub async fn process_blob(
     match result {
         Ok((summary, embedding)) => {
             db.mark_ready(id, summary, embedding).await?;
+            if let Err(e) = db.append_event("blob", id, "processing_completed", None, Some("pipeline"), &now_z(), Some(ai)).await {
+                tracing::warn!("event append failed for {id} (processing_completed): {e}");
+            }
             tracing::info!("pipeline completed for {id}");
         }
         Err(e) => {
             tracing::error!("pipeline failed for {id}: {e}");
-            db.mark_failed(id, e.to_string()).await?;
+            let err_str = e.to_string();
+            db.mark_failed(id, err_str.clone()).await?;
+            if let Err(ev_err) = db.append_event(
+                "blob", id, "processing_failed",
+                Some(serde_json::json!({ "error": err_str })),
+                Some("pipeline"), &now_z(), Some(ai),
+            ).await {
+                tracing::warn!("event append failed for {id} (processing_failed): {ev_err}");
+            }
         }
     }
 

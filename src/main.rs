@@ -33,9 +33,9 @@ async fn main() -> anyhow::Result<()> {
     let geocoding = Arc::new(GeocodingClient::new());
     let ors = Arc::new(RoutingClient::new(&config.ors_api_key));
 
-    let pipeline_tx = spawn_pipeline(config.pipeline_workers, db.clone(), store.clone(), ai.clone());
-    let geocoding_tx = spawn_geocoding_pipeline(config.geocoding_workers, db.clone(), geocoding.clone(), ai.clone());
+    let pipeline_tx = spawn_pipeline(config.pipeline_workers, db.clone(), store.clone(), ai.clone(), config.extract_store_path.clone());
     let routing_tx = spawn_routing_pipeline(1, db.clone(), ors.clone());
+    let geocoding_tx = spawn_geocoding_pipeline(config.geocoding_workers, db.clone(), geocoding.clone(), ai.clone(), routing_tx.clone());
 
     requeue_stale(&db, &pipeline_tx, &geocoding_tx, &routing_tx).await?;
 
@@ -43,10 +43,17 @@ async fn main() -> anyhow::Result<()> {
         (db.create_vector_index().await, "blobs"),
         (db.create_facility_vector_index().await, "facilities"),
         (db.create_load_vector_index().await, "loads"),
+        (db.create_driver_vector_index().await, "drivers"),
+        (db.create_truck_vector_index().await, "trucks"),
+        (db.create_trailer_vector_index().await, "trailers"),
+        (db.create_event_vector_index().await, "events"),
     ] {
         if let Err(e) = result {
             tracing::warn!("vector index not created for {label}: {e}");
         }
+    }
+    if let Err(e) = db.create_event_scalar_indices().await {
+        tracing::warn!("scalar indices not created for events: {e}");
     }
 
     let state = AppState {

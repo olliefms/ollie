@@ -4,6 +4,7 @@ pub mod api;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod events;
 pub mod geocoding;
 pub mod models;
 pub mod pipeline;

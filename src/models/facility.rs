@@ -10,6 +10,7 @@ pub enum GeocodeStatus {
     Pending,
     Ready,
     Failed,
+    PermanentlyFailed,
 }
 
 impl GeocodeStatus {
@@ -18,6 +19,7 @@ impl GeocodeStatus {
             Self::Pending => "pending",
             Self::Ready => "ready",
             Self::Failed => "failed",
+            Self::PermanentlyFailed => "permanently_failed",
         }
     }
 }
@@ -29,6 +31,7 @@ impl std::str::FromStr for GeocodeStatus {
             "pending" => Ok(Self::Pending),
             "ready" => Ok(Self::Ready),
             "failed" => Ok(Self::Failed),
+            "permanently_failed" => Ok(Self::PermanentlyFailed),
             other => Err(format!("unknown geocode status: {other}")),
         }
     }
@@ -53,6 +56,7 @@ pub struct FacilityRecord {
     pub lat: Option<f64>,
     pub lng: Option<f64>,
     pub geocode_status: GeocodeStatus,
+    pub geocode_failure_count: u32,
     pub contacts: Vec<FacilityContact>,
     pub notes: Option<String>,
     pub tags: Vec<String>,
@@ -123,6 +127,7 @@ pub struct FacilityListItem {
     pub lat: Option<f64>,
     pub lng: Option<f64>,
     pub geocode_status: GeocodeStatus,
+    pub geocode_failure_count: u32,
     pub contacts: Vec<FacilityContact>,
     pub notes: Option<String>,
     pub tags: Vec<String>,
@@ -139,6 +144,7 @@ impl From<FacilityRecord> for FacilityListItem {
             id: r.id, owner_id: r.owner_id, name: r.name,
             address: r.address, normalized_address: r.normalized_address,
             lat: r.lat, lng: r.lng, geocode_status: r.geocode_status,
+            geocode_failure_count: r.geocode_failure_count,
             contacts: r.contacts, notes: r.notes, tags: r.tags,
             blob_ids: r.blob_ids, avg_dwell_minutes: r.avg_dwell_minutes,
             created_at: r.created_at, score: None,
@@ -148,7 +154,8 @@ impl From<FacilityRecord> for FacilityListItem {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct FacilityListResponse {
-    pub total: usize,
+    /// Number of records in this response page.
+    pub returned: usize,
     pub items: Vec<FacilityListItem>,
 }
 
@@ -163,6 +170,7 @@ pub struct FacilityCandidate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct FacilityResolutionResponse {
+    pub stop_index: usize,
     pub facility_resolution_required: bool,
     pub candidates: Vec<FacilityCandidate>,
 }
@@ -173,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_geocode_status_roundtrip() {
-        for s in ["pending", "ready", "failed"] {
+        for s in ["pending", "ready", "failed", "permanently_failed"] {
             let status: GeocodeStatus = s.parse().unwrap();
             assert_eq!(status.as_str(), s);
         }
@@ -185,7 +193,7 @@ mod tests {
             id: uuid::Uuid::new_v4(), owner_id: 0,
             name: "Test Facility".into(), address: "Memphis, TN".into(),
             normalized_address: None, lat: None, lng: None,
-            geocode_status: GeocodeStatus::Pending,
+            geocode_status: GeocodeStatus::Pending, geocode_failure_count: 0,
             contacts: vec![], notes: None, tags: vec![],
             blob_ids: vec![], avg_dwell_minutes: None,
             dwell_sample_count: 0, embedding: Some(vec![0.1, 0.2]),
@@ -202,6 +210,7 @@ mod tests {
             name: "ABC Warehouse".into(), address: "Memphis, TN".into(),
             normalized_address: Some("315 Industrial Blvd, Memphis, TN 38118".into()),
             lat: None, lng: None, geocode_status: GeocodeStatus::Pending,
+            geocode_failure_count: 0,
             contacts: vec![FacilityContact {
                 name: "Jane Smith".into(), title: Some("Dock Manager".into()),
                 phone: None, email: None, notes: None,

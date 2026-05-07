@@ -58,14 +58,14 @@ impl DbClient {
             record.lat = None;
             record.lng = None;
             record.geocode_status = GeocodeStatus::Pending;
+            record.geocode_failure_count = 0;
         }
         if let Some(c) = contacts { record.contacts = c; }
         if let Some(n) = notes { record.notes = Some(n); }
         if let Some(t) = tags { record.tags = t; }
         if let Some(b) = blob_ids { record.blob_ids = b; }
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await?;
+        self.upsert_facility(&record).await?;
         Ok(record)
     }
 
@@ -78,16 +78,19 @@ impl DbClient {
         record.normalized_address = Some(normalized_address);
         record.geocode_status = GeocodeStatus::Ready;
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await
+        self.upsert_facility(&record).await
     }
 
     pub async fn mark_facility_geocode_failed(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_facility_by_id(id).await?;
-        record.geocode_status = GeocodeStatus::Failed;
+        record.geocode_failure_count += 1;
+        record.geocode_status = if record.geocode_failure_count >= 3 {
+            GeocodeStatus::PermanentlyFailed
+        } else {
+            GeocodeStatus::Failed
+        };
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await
+        self.upsert_facility(&record).await
     }
 
     pub async fn update_facility_embedding(
@@ -96,8 +99,19 @@ impl DbClient {
         let mut record = self.get_facility_by_id(id).await?;
         record.embedding = Some(embedding);
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await
+        self.upsert_facility(&record).await
+    }
+
+    async fn upsert_facility(&self, record: &FacilityRecord) -> Result<(), AppError> {
+        let batch = facility_to_batch(record, self.embed_dim)?;
+        let schema = facility_schema(self.embed_dim);
+        let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+        let mut op = self.facility_table.merge_insert(&["id"]);
+        op.when_matched_update_all(None).when_not_matched_insert_all();
+        op.execute(reader).await
+            .map(|_| ())
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn list_facilities(
@@ -165,7 +179,7 @@ impl DbClient {
 
     pub async fn list_pending_geocode_facility_ids(&self) -> Result<Vec<Uuid>, AppError> {
         let stream = self.facility_table.query()
-            .only_if("geocode_status = 'pending'")
+            .only_if("geocode_status = 'pending' OR geocode_status = 'failed'")
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(batches_to_facilities(collect_stream(stream).await?)?
@@ -218,6 +232,7 @@ fn facility_to_batch(record: &FacilityRecord, embed_dim: usize) -> Result<Record
         Arc::new(StringArray::from(vec![blob_ids_json.as_str()])),
         Arc::new(Float64Array::from(vec![record.avg_dwell_minutes])),
         Arc::new(Int64Array::from(vec![record.dwell_sample_count])),
+        Arc::new(Int64Array::from(vec![record.geocode_failure_count as i64])),
         embedding_col,
         Arc::new(StringArray::from(vec![record.created_at.to_rfc3339().as_str()])),
         Arc::new(StringArray::from(vec![record.updated_at.to_rfc3339().as_str()])),
@@ -286,6 +301,7 @@ fn row_to_facility(batch: &RecordBatch, i: usize) -> Result<FacilityRecord, AppE
         contacts, notes: opt_str("notes"), tags, blob_ids,
         avg_dwell_minutes: opt_f64("avg_dwell_minutes"),
         dwell_sample_count: i64_col("dwell_sample_count"),
+        geocode_failure_count: i64_col("geocode_failure_count") as u32,
         embedding,
         created_at: str_col("created_at").parse()
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
@@ -332,7 +348,7 @@ mod tests {
             id: uuid::Uuid::new_v4(), owner_id: 0,
             name: "ABC Warehouse".into(), address: "Memphis, TN".into(),
             normalized_address: None, lat: None, lng: None,
-            geocode_status: GeocodeStatus::Pending,
+            geocode_status: GeocodeStatus::Pending, geocode_failure_count: 0,
             contacts: vec![], notes: None, tags: vec!["cold".into()],
             blob_ids: vec![], avg_dwell_minutes: None, dwell_sample_count: 0,
             embedding: None, created_at: now, updated_at: now,

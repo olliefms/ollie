@@ -13,6 +13,7 @@ pub fn spawn_pipeline(
     db: Arc<DbClient>,
     store: Arc<BlobStore>,
     ai: Arc<OllamaClient>,
+    extract_base: String,
 ) -> async_channel::Sender<Uuid> {
     let workers = workers.max(1);
     let (tx, rx) = async_channel::bounded::<Uuid>(256);
@@ -22,10 +23,11 @@ pub fn spawn_pipeline(
         let db = db.clone();
         let store = store.clone();
         let ai = ai.clone();
+        let extract_base = extract_base.clone();
         tokio::spawn(async move {
             tracing::info!("pipeline worker {i} started");
             while let Ok(id) = rx.recv().await {
-                if let Err(e) = worker::process_blob(id, &db, &store, &ai).await {
+                if let Err(e) = worker::process_blob(id, &db, &store, &ai, &extract_base).await {
                     tracing::error!("worker {i} error for {id}: {e}");
                 }
             }
@@ -40,6 +42,7 @@ pub fn spawn_geocoding_pipeline(
     db: Arc<DbClient>,
     geocoding: Arc<crate::geocoding::GeocodingClient>,
     ai: Arc<crate::ai::OllamaClient>,
+    routing_tx: async_channel::Sender<uuid::Uuid>,
 ) -> async_channel::Sender<uuid::Uuid> {
     let workers = workers.max(1);
     let (tx, rx) = async_channel::bounded::<uuid::Uuid>(256);
@@ -48,10 +51,11 @@ pub fn spawn_geocoding_pipeline(
         let db = db.clone();
         let geocoding = geocoding.clone();
         let ai = ai.clone();
+        let routing_tx = routing_tx.clone();
         tokio::spawn(async move {
             tracing::info!("geocoding worker {i} started");
             while let Ok(id) = rx.recv().await {
-                if let Err(e) = geocoding::process_facility_geocoding(id, &db, &geocoding, &ai).await {
+                if let Err(e) = geocoding::process_facility_geocoding(id, &db, &geocoding, &ai, &routing_tx).await {
                     tracing::error!("geocoding worker {i} error for {id}: {e}");
                 }
             }
