@@ -172,10 +172,13 @@ export async function renderTrips(container) {
 
   function formatStatus(status) {
     const labels = {
+      'planned': 'Planned',
+      'assigned': 'Assigned',
+      'dispatched': 'Dispatched',
       'in_transit': 'In Transit',
       'delivered': 'Delivered',
-      'pending': 'Pending',
-      'scheduled': 'Scheduled',
+      'completed': 'Completed',
+      'cancelled': 'Cancelled',
     };
     return labels[status] || status;
   }

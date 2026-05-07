@@ -86,34 +86,80 @@ export async function renderStopDetail(container, tripId, seq) {
 
     page.appendChild(facilitySection);
 
+    // Contacts section (rendered after address, before scheduled)
+    if (data.contacts && data.contacts.length > 0) {
+      const contactsSection = document.createElement('div');
+      contactsSection.className = 'stop-detail-section';
+
+      const contactsLabel = document.createElement('div');
+      contactsLabel.className = 'stop-detail-section-label';
+      contactsLabel.textContent = 'Contacts';
+      contactsSection.appendChild(contactsLabel);
+
+      data.contacts.forEach(contact => {
+        const contactRow = document.createElement('div');
+        contactRow.className = 'stop-detail-row';
+
+        const nameEl = document.createElement('strong');
+        nameEl.textContent = contact.name;
+        contactRow.appendChild(nameEl);
+
+        if (contact.title) {
+          const titleEl = document.createElement('span');
+          titleEl.className = 'contact-title';
+          titleEl.textContent = ` — ${contact.title}`;
+          contactRow.appendChild(titleEl);
+        }
+
+        if (contact.phone) {
+          const phoneRow = document.createElement('div');
+          phoneRow.className = 'stop-detail-row';
+          const phoneLink = document.createElement('a');
+          phoneLink.href = `tel:${contact.phone}`;
+          phoneLink.textContent = contact.phone;
+          phoneRow.appendChild(phoneLink);
+          contactsSection.appendChild(contactRow);
+          contactsSection.appendChild(phoneRow);
+        } else {
+          contactsSection.appendChild(contactRow);
+        }
+      });
+
+      page.appendChild(contactsSection);
+    }
+
     // Scheduled section
-    const scheduledSection = document.createElement('div');
-    scheduledSection.className = 'stop-detail-section';
+    if (data.scheduled_arrive || data.expected_dwell_minutes) {
+      const scheduledSection = document.createElement('div');
+      scheduledSection.className = 'stop-detail-section';
 
-    const scheduledLabel = document.createElement('div');
-    scheduledLabel.className = 'stop-detail-section-label';
-    scheduledLabel.textContent = 'Scheduled';
-    scheduledSection.appendChild(scheduledLabel);
+      const scheduledLabel = document.createElement('div');
+      scheduledLabel.className = 'stop-detail-section-label';
+      scheduledLabel.textContent = 'Scheduled';
+      scheduledSection.appendChild(scheduledLabel);
 
-    const arriveWindow = document.createElement('div');
-    arriveWindow.className = 'stop-detail-row';
-    const start = formatTimeShort(data.scheduled_arrive);
-    const end = data.scheduled_arrive_end ? formatTimeShort(data.scheduled_arrive_end) : null;
-    if (end) {
-      arriveWindow.textContent = `${start} – ${end}`;
-    } else {
-      arriveWindow.textContent = start;
+      if (data.scheduled_arrive) {
+        const arriveWindow = document.createElement('div');
+        arriveWindow.className = 'stop-detail-row';
+        const start = formatTimeShort(data.scheduled_arrive);
+        const end = data.scheduled_arrive_end ? formatTimeShort(data.scheduled_arrive_end) : null;
+        if (end) {
+          arriveWindow.textContent = `${start} – ${end}`;
+        } else {
+          arriveWindow.textContent = start;
+        }
+        scheduledSection.appendChild(arriveWindow);
+      }
+
+      if (data.expected_dwell_minutes) {
+        const dwell = document.createElement('div');
+        dwell.className = 'stop-detail-row';
+        dwell.textContent = `${data.expected_dwell_minutes} min dwell`;
+        scheduledSection.appendChild(dwell);
+      }
+
+      page.appendChild(scheduledSection);
     }
-    scheduledSection.appendChild(arriveWindow);
-
-    if (data.expected_dwell_minutes) {
-      const dwell = document.createElement('div');
-      dwell.className = 'stop-detail-row';
-      dwell.textContent = `${data.expected_dwell_minutes} min dwell`;
-      scheduledSection.appendChild(dwell);
-    }
-
-    page.appendChild(scheduledSection);
 
     // Actual section
     const actualSection = document.createElement('div');
@@ -194,10 +240,13 @@ export async function renderStopDetail(container, tripId, seq) {
 function formatStopType(type) {
   const labels = {
     'origin': 'ORIGIN',
-    'destination': 'DESTINATION',
+    'fuel': 'FUEL',
     'pickup': 'PICKUP',
-    'dropoff': 'DROPOFF',
-    'intermediate': 'STOP',
+    'delivery': 'DELIVERY',
+    'relay': 'RELAY',
+    'empty_move': 'EMPTY MOVE',
+    'maintenance': 'MAINTENANCE',
+    'terminal': 'TERMINAL',
   };
   return labels[type] || type.toUpperCase();
 }
