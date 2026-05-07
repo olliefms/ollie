@@ -4,7 +4,7 @@ import { renderTrips } from './pages/trips.js';
 
 const app = document.getElementById('app');
 
-function route() {
+async function route() {
   const path = window.location.pathname;
 
   if (path === '/driver' || path === '/driver/') {

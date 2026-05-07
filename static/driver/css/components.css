@@ -431,9 +431,20 @@
   border-color: var(--color-primary);
 }
 
+.stop-node--current .stop-node__marker {
+  background: var(--color-warning, #f59e0b);
+  border-color: var(--color-warning, #f59e0b);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
 .stop-node--upcoming .stop-node__marker {
   background: transparent;
   border-color: var(--color-border);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 .stop-node__content {
