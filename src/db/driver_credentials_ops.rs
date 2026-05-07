@@ -227,6 +227,9 @@ mod tests {
         assert_eq!(fetched.token_version, 1);
         assert_eq!(fetched.failed_pin_attempts, 0);
         assert!(fetched.locked_until.is_none());
+        let expected = creds.updated_at.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let actual = fetched.updated_at.format("%Y-%m-%dT%H:%M:%S").to_string();
+        assert_eq!(actual, expected);
     }
 
     #[tokio::test]
