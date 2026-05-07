@@ -83,7 +83,10 @@ pub struct DriverTripDetailResponse {
 
 #[derive(Serialize)]
 pub struct DriverStopAddress {
-    pub full: String,
+    pub street: Option<String>,
+    pub city: Option<String>,
+    pub state: Option<String>,
+    pub zip: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -353,7 +356,12 @@ pub async fn stop_detail(
     );
 
     let facility_name = facility_opt.as_ref().map(|f| f.name.clone());
-    let address = facility_opt.map(|f| DriverStopAddress { full: f.address });
+    let address = facility_opt.map(|f| DriverStopAddress {
+        street: Some(f.address.clone()),
+        city: None,
+        state: None,
+        zip: None,
+    });
 
     Ok(Json(DriverStopDetailResponse {
         sequence: stop.sequence,
