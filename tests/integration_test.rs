@@ -11,11 +11,15 @@ use ollie::{
 };
 use std::sync::Arc;
 use tempfile::TempDir;
+use webauthn_rs::prelude::{Url, WebauthnBuilder};
 
 async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     std::env::set_var("ADMIN_API_KEY", "test-secret");
+    std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
+    std::env::set_var("DRIVER_RP_ID", "localhost");
+    std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
 
     let config = Arc::new(Config::from_env().unwrap());
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
@@ -30,9 +34,20 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     let (geocoding_tx, _grx) = async_channel::bounded(100);
     let (routing_tx, _rrx) = async_channel::bounded(100);
 
+    let rp_origin = Url::parse("http://localhost:3000").unwrap();
+    let webauthn = Arc::new(
+        WebauthnBuilder::new("localhost", &rp_origin)
+            .unwrap()
+            .build()
+            .unwrap(),
+    );
+    let auth_challenge_store = Arc::new(dashmap::DashMap::new());
+    let reg_challenge_store = Arc::new(dashmap::DashMap::new());
+
     let state = AppState {
         db, store, ai, geocoding, ors,
         pipeline_tx, geocoding_tx, routing_tx, config,
+        webauthn, auth_challenge_store, reg_challenge_store,
     };
     let server = TestServer::new(api::router(state)).unwrap();
     (server, blob_dir, db_dir, rx)

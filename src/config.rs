@@ -18,12 +18,24 @@ pub struct Config {
     pub facility_dedup_high_threshold: f64,
     pub facility_dedup_low_threshold: f64,
     pub geocoding_workers: usize,
+    pub driver_jwt_secret: String,
+    pub driver_rp_id: String,
+    pub driver_rp_origin: String,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         let admin_api_key = env::var("ADMIN_API_KEY")
             .map_err(|_| "ADMIN_API_KEY is required")?;
+        let driver_jwt_secret = env::var("DRIVER_JWT_SECRET")
+            .map_err(|_| "DRIVER_JWT_SECRET is required")?;
+        if driver_jwt_secret.len() < 32 {
+            return Err("DRIVER_JWT_SECRET must be at least 32 bytes".into());
+        }
+        let driver_rp_id = env::var("DRIVER_RP_ID")
+            .map_err(|_| "DRIVER_RP_ID is required")?;
+        let driver_rp_origin = env::var("DRIVER_RP_ORIGIN")
+            .map_err(|_| "DRIVER_RP_ORIGIN is required")?;
         Ok(Self {
             admin_api_key,
             port: env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3000),
@@ -56,6 +68,9 @@ impl Config {
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(0.75),
             geocoding_workers: env::var("GEOCODING_WORKERS")
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(1),
+            driver_jwt_secret,
+            driver_rp_id,
+            driver_rp_origin,
         })
     }
 }
@@ -67,10 +82,23 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    fn set_driver_vars() {
+        env::set_var("DRIVER_JWT_SECRET", "a-secret-that-is-at-least-32-bytes-long!");
+        env::set_var("DRIVER_RP_ID", "localhost");
+        env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+    }
+
+    fn remove_driver_vars() {
+        env::remove_var("DRIVER_JWT_SECRET");
+        env::remove_var("DRIVER_RP_ID");
+        env::remove_var("DRIVER_RP_ORIGIN");
+    }
+
     #[test]
     fn test_config_from_env() {
         let _g = ENV_LOCK.lock().unwrap();
         env::set_var("ADMIN_API_KEY", "test-key");
+        set_driver_vars();
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.admin_api_key, "test-key");
         assert_eq!(cfg.port, 3000);
@@ -80,12 +108,14 @@ mod tests {
         assert_eq!(cfg.ollama_vision_model, "moondream");
         assert_eq!(cfg.ollama_embed_dim, 768);
         env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
     }
 
     #[test]
     fn test_config_ors_and_dedup_defaults() {
         let _g = ENV_LOCK.lock().unwrap();
         env::set_var("ADMIN_API_KEY", "test-key");
+        set_driver_vars();
         env::remove_var("ORS_API_KEY");
         let cfg = Config::from_env().unwrap();
         assert_eq!(cfg.ors_api_key, "");
@@ -93,12 +123,58 @@ mod tests {
         assert!((cfg.facility_dedup_low_threshold - 0.75).abs() < f64::EPSILON);
         assert_eq!(cfg.geocoding_workers, 1);
         env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
     }
 
     #[test]
     fn test_config_missing_api_key() {
         let _g = ENV_LOCK.lock().unwrap();
         env::remove_var("ADMIN_API_KEY");
+        set_driver_vars();
         assert!(Config::from_env().is_err());
+        remove_driver_vars();
+    }
+
+    #[test]
+    fn test_config_missing_driver_jwt_secret() {
+        let _g = ENV_LOCK.lock().unwrap();
+        env::set_var("ADMIN_API_KEY", "test-key");
+        env::remove_var("DRIVER_JWT_SECRET");
+        env::set_var("DRIVER_RP_ID", "localhost");
+        env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("DRIVER_JWT_SECRET"), "expected DRIVER_JWT_SECRET in error, got: {msg}");
+        env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
+    }
+
+    #[test]
+    fn test_config_driver_jwt_secret_too_short() {
+        let _g = ENV_LOCK.lock().unwrap();
+        env::set_var("ADMIN_API_KEY", "test-key");
+        env::set_var("DRIVER_JWT_SECRET", "tooshort");
+        env::set_var("DRIVER_RP_ID", "localhost");
+        env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+        let result = Config::from_env();
+        assert!(result.is_err());
+        let msg = result.unwrap_err();
+        assert!(msg.contains("32"), "expected 32 in error, got: {msg}");
+        env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
+    }
+
+    #[test]
+    fn test_config_all_driver_vars_set() {
+        let _g = ENV_LOCK.lock().unwrap();
+        env::set_var("ADMIN_API_KEY", "test-key");
+        set_driver_vars();
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.driver_rp_id, "localhost");
+        assert_eq!(cfg.driver_rp_origin, "http://localhost:3000");
+        assert!(cfg.driver_jwt_secret.len() >= 32);
+        env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
     }
 }
