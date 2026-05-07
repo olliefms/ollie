@@ -392,7 +392,7 @@ pub fn router(state: AppState) -> Router {
 
     // Static file serving for the driver PWA; SPA fallback to index.html
     let driver_static = tower_http::services::ServeDir::new("static/driver")
-        .not_found_service(tower_http::services::ServeFile::new(
+        .fallback(tower_http::services::ServeFile::new(
             "static/driver/index.html",
         ));
 
