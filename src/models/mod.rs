@@ -8,5 +8,6 @@ pub mod trip;
 pub mod truck;
 
 pub use blob::*;
+pub use event::*;
 pub use facility::*;
 pub use load::*;

@@ -46,6 +46,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         loads::invoice_load,
         loads::cancel_load,
         loads::settle_load,
+        events::list_events,
+        events::get_event_handler,
     ),
     components(
         schemas(
@@ -79,6 +81,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::LoadListResponse,
             models::LoadDetailResponse,
             blobs::BlobUploadRequest,
+            models::EventResponse,
+            models::EventListResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -170,6 +174,13 @@ Freight loads with multi-stop routes. Status lifecycle:
   POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
   POST   /api/v1/loads/:id/cancel      Transition to cancelled (body: reason?)
   POST   /api/v1/loads/:id/settle      Transition to settled
+
+### Events — /api/v1/events, /api/v1/events/:id
+Append-only event journal recording entity lifecycle transitions. Written by internal
+pipeline workers; read-only via API. Timestamps are RFC3339 UTC+Z.
+
+  GET    /api/v1/events          List events (?entity_id, ?entity_type, ?event_type, ?from, ?to)
+  GET    /api/v1/events/:id      Get single event
 
 ## Facility Resolution
 
