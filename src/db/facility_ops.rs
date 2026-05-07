@@ -64,8 +64,7 @@ impl DbClient {
         if let Some(t) = tags { record.tags = t; }
         if let Some(b) = blob_ids { record.blob_ids = b; }
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await?;
+        self.upsert_facility(&record).await?;
         Ok(record)
     }
 
@@ -78,16 +77,14 @@ impl DbClient {
         record.normalized_address = Some(normalized_address);
         record.geocode_status = GeocodeStatus::Ready;
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await
+        self.upsert_facility(&record).await
     }
 
     pub async fn mark_facility_geocode_failed(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_facility_by_id(id).await?;
         record.geocode_status = GeocodeStatus::Failed;
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await
+        self.upsert_facility(&record).await
     }
 
     pub async fn update_facility_embedding(
@@ -96,8 +93,19 @@ impl DbClient {
         let mut record = self.get_facility_by_id(id).await?;
         record.embedding = Some(embedding);
         record.updated_at = Utc::now();
-        self.delete_facility_by_id(id).await?;
-        self.insert_facility(&record).await
+        self.upsert_facility(&record).await
+    }
+
+    async fn upsert_facility(&self, record: &FacilityRecord) -> Result<(), AppError> {
+        let batch = facility_to_batch(record, self.embed_dim)?;
+        let schema = facility_schema(self.embed_dim);
+        let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+        let mut op = self.facility_table.merge_insert(&["id"]);
+        op.when_matched_update_all(None).when_not_matched_insert_all();
+        op.execute(reader).await
+            .map(|_| ())
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn list_facilities(

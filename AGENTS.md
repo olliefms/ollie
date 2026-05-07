@@ -60,6 +60,35 @@ The plan was written for an older API. The actual 0.27 API differs:
 
 ## DB Operations Patterns
 
+### Update Pattern — Use merge_insert, never delete+insert
+
+All update operations (status transitions, metadata updates, field mutations) must use LanceDB's `merge_insert` rather than `delete` followed by `insert`. The delete+insert pattern is non-atomic: a crash between the two operations permanently deletes the record.
+
+The canonical pattern is a private `upsert_*` method on `DbClient` in each ops module:
+
+```rust
+async fn upsert_blob(&self, record: &BlobRecord) -> Result<(), AppError> {
+    let batch = record_to_batch(record, self.embed_dim)?;
+    let schema = blob_schema(self.embed_dim);
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    let mut op = self.blob_table.merge_insert(&["id"]);
+    op.when_matched_update_all(None).when_not_matched_insert_all();
+    op.execute(reader).await
+        .map(|_| ())
+        .map_err(|e| AppError::Internal(e.to_string()))
+}
+```
+
+Key points:
+- Match on `&["id"]` — the primary key column
+- `when_matched_update_all(None)` — replace the row on match (no filter condition)
+- `when_not_matched_insert_all()` — insert if somehow absent (safe fallback, rarely triggered)
+- `initial insert` (first-time record creation) still uses `table.add(...).execute()` directly
+- All new tables in v1.2.0+ must follow this pattern from day one — do not copy the old delete+insert pattern
+
+This applies to every ops module: `blob_ops.rs`, `load_ops.rs`, `facility_ops.rs`, and all future `*_ops.rs` files.
+
 ### Dangling &str — Always bind to a local variable
 
 This is wrong and will fail to compile:
@@ -79,7 +108,7 @@ This pattern appears in `record_to_batch` for every field. Follow it.
 
 ### mark_processing preserves existing fields
 
-`mark_processing` uses fetch → modify status only → delete + reinsert. It does NOT touch `summary` or `embedding`. If you need to change this, be careful not to break recovery: a blob that was mid-processing when the server crashed must be re-processable.
+`mark_processing` uses fetch → modify status only → `upsert_blob`. It does NOT touch `summary` or `embedding`. If you need to change this, be careful not to break recovery: a blob that was mid-processing when the server crashed must be re-processable.
 
 ### Status transitions
 
@@ -88,9 +117,9 @@ pending → processing → ready
                      → failed
 ```
 
-- `mark_processing`: fetch record, set status to "processing", delete+reinsert
-- `mark_ready(id, summary, embedding)`: sets all AI output fields, clears error
-- `mark_failed(id, error)`: sets error string, leaves AI fields as-is
+- `mark_processing`: fetch record, set status to "processing", upsert
+- `mark_ready(id, summary, embedding)`: sets all AI output fields, clears error, upsert
+- `mark_failed(id, error)`: sets error string, leaves AI fields as-is, upsert
 
 ## Pipeline Architecture
 
