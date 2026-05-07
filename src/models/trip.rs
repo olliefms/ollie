@@ -74,6 +74,7 @@ pub enum TripStatus {
     Dispatched,
     InTransit,
     Delivered,
+    Completed,
     Cancelled,
 }
 
@@ -85,6 +86,7 @@ impl TripStatus {
             Self::Dispatched => "dispatched",
             Self::InTransit => "in_transit",
             Self::Delivered => "delivered",
+            Self::Completed => "completed",
             Self::Cancelled => "cancelled",
         }
     }
@@ -97,6 +99,7 @@ impl TripStatus {
             | (Self::Dispatched, Self::Assigned)
             | (Self::Dispatched, Self::InTransit)
             | (Self::InTransit, Self::Delivered)
+            | (Self::Delivered, Self::Completed)
             | (Self::Planned | Self::Assigned | Self::Dispatched, Self::Cancelled)
         )
     }
@@ -111,6 +114,7 @@ impl std::str::FromStr for TripStatus {
             "dispatched" => Ok(Self::Dispatched),
             "in_transit" => Ok(Self::InTransit),
             "delivered" => Ok(Self::Delivered),
+            "completed" => Ok(Self::Completed),
             "cancelled" => Ok(Self::Cancelled),
             other => Err(format!("unknown trip status: {other}")),
         }
@@ -228,7 +232,7 @@ mod tests {
 
     #[test]
     fn test_trip_status_roundtrip() {
-        for s in ["planned", "assigned", "dispatched", "in_transit", "delivered", "cancelled"] {
+        for s in ["planned", "assigned", "dispatched", "in_transit", "delivered", "completed", "cancelled"] {
             let st: TripStatus = s.parse().unwrap();
             assert_eq!(st.as_str(), s);
         }
@@ -242,11 +246,14 @@ mod tests {
         assert!(TripStatus::Dispatched.can_transition_to(&TripStatus::Assigned));
         assert!(TripStatus::Dispatched.can_transition_to(&TripStatus::InTransit));
         assert!(TripStatus::InTransit.can_transition_to(&TripStatus::Delivered));
+        assert!(TripStatus::Delivered.can_transition_to(&TripStatus::Completed));
         assert!(TripStatus::Planned.can_transition_to(&TripStatus::Cancelled));
         assert!(TripStatus::Assigned.can_transition_to(&TripStatus::Cancelled));
         assert!(TripStatus::Dispatched.can_transition_to(&TripStatus::Cancelled));
         assert!(!TripStatus::InTransit.can_transition_to(&TripStatus::Cancelled));
         assert!(!TripStatus::Delivered.can_transition_to(&TripStatus::Cancelled));
+        assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Planned));
+        assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Delivered));
         assert!(!TripStatus::Planned.can_transition_to(&TripStatus::Delivered));
         assert!(!TripStatus::Delivered.can_transition_to(&TripStatus::Planned));
     }
