@@ -12,9 +12,10 @@ const STATIC_ASSETS = [
 
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(c => c.addAll(STATIC_ASSETS))
+    caches.open(CACHE_NAME)
+      .then(c => c.addAll(STATIC_ASSETS))
+      .then(() => self.skipWaiting())
   );
-  self.skipWaiting();
 });
 
 self.addEventListener('activate', event => {

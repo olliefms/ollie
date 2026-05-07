@@ -29,7 +29,12 @@ export function clearAuth() {
 export async function loginWithPin(phone, pin) {
   const data = await apiFetch('/auth/pin', { method: 'POST', body: { phone, pin } });
   // Decode JWT to get driver_id (no verification — server already verified)
-  const payload = JSON.parse(atob(data.token.split('.')[1]));
+  let payload;
+  try {
+    payload = JSON.parse(atob(data.token.split('.')[1]));
+  } catch {
+    throw new Error('Invalid token received from server');
+  }
   saveAuth(data.token, payload.driver_id);
   return data;
 }
@@ -45,7 +50,12 @@ export async function finishPasskeyAuth(driverId, publicKeyCredential) {
     method: 'POST',
     body: { driver_id: driverId, response: credentialToJSON(publicKeyCredential) }
   });
-  const payload = JSON.parse(atob(data.token.split('.')[1]));
+  let payload;
+  try {
+    payload = JSON.parse(atob(data.token.split('.')[1]));
+  } catch {
+    throw new Error('Invalid token received from server');
+  }
   saveAuth(data.token, payload.driver_id);
   return data;
 }
