@@ -19,6 +19,8 @@ pub enum AppError {
     Conflict(String),
     #[error("internal error: {0}")]
     Internal(String),
+    #[error("{0}")]
+    UnprocessableEntity(String),
     #[error("facility resolution required")]
     FacilityResolution(Box<Vec<crate::models::FacilityResolutionResponse>>),
 }
@@ -33,6 +35,7 @@ impl IntoResponse for AppError {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::FacilityResolution(_) => unreachable!(),
         };

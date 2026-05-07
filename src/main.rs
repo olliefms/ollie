@@ -33,7 +33,7 @@ async fn main() -> anyhow::Result<()> {
     let geocoding = Arc::new(GeocodingClient::new());
     let ors = Arc::new(RoutingClient::new(&config.ors_api_key));
 
-    let pipeline_tx = spawn_pipeline(config.pipeline_workers, db.clone(), store.clone(), ai.clone());
+    let pipeline_tx = spawn_pipeline(config.pipeline_workers, db.clone(), store.clone(), ai.clone(), config.extract_store_path.clone());
     let routing_tx = spawn_routing_pipeline(1, db.clone(), ors.clone());
     let geocoding_tx = spawn_geocoding_pipeline(config.geocoding_workers, db.clone(), geocoding.clone(), ai.clone(), routing_tx.clone());
 
