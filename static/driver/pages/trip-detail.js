@@ -111,6 +111,12 @@ export async function renderTripDetail(container, tripId) {
       });
 
       stopsSection.appendChild(stopTimeline);
+    } else {
+      const emptyMsg = document.createElement('div');
+      emptyMsg.className = 'trip-detail-row';
+      emptyMsg.style.color = 'var(--color-text-muted)';
+      emptyMsg.textContent = 'No stops assigned yet.';
+      stopsSection.appendChild(emptyMsg);
     }
 
     page.appendChild(stopsSection);
