@@ -139,6 +139,7 @@ pub fn facility_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("blob_ids", DataType::Utf8, false),
         Field::new("avg_dwell_minutes", DataType::Float64, true),
         Field::new("dwell_sample_count", DataType::Int64, false),
+        Field::new("geocode_failure_count", DataType::Int64, false),
         Field::new("embedding", DataType::FixedSizeList(
             Arc::new(Field::new("item", DataType::Float32, true)),
             embed_dim as i32,
@@ -213,6 +214,7 @@ fn empty_facility_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordB
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(FixedSizeListArray::from_iter_primitive::<
             arrow_array::types::Float32Type, _, _

@@ -58,7 +58,7 @@ mod tests {
         let facility = crate::models::FacilityRecord {
             id: fac_id, owner_id: 0, name: "Test".into(), address: "Memphis, TN".into(),
             normalized_address: None, lat: None, lng: None,
-            geocode_status: crate::models::GeocodeStatus::Pending,
+            geocode_status: crate::models::GeocodeStatus::Pending, geocode_failure_count: 0,
             contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
             avg_dwell_minutes: None, dwell_sample_count: 0, embedding: None,
             created_at: now, updated_at: now,
