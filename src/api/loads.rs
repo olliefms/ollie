@@ -178,7 +178,7 @@ pub async fn get_load(
     params(
         ("id" = Uuid, Path, description = "Load UUID")
     ),
-    request_body(content = UpdateLoadRequest, description = "Fields to update — all optional"),
+    request_body(content = UpdateLoadRequest, description = "Fields to update — all optional. Unknown fields in the request body are silently ignored."),
     responses(
         (status = 200, description = "Updated load detail", body = LoadDetailResponse),
         (status = 200, description = "Facility resolution required — ambiguous stop facility", body = Vec<FacilityResolutionResponse>),
