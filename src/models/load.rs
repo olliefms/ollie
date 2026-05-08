@@ -155,12 +155,35 @@ fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>> {
     use chrono::TimeZone as _;
     if let Some(tz_str) = tz {
         let tz: chrono_tz::Tz = tz_str.parse().ok()?;
-        let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok()?;
-        // .single() returns None for DST-ambiguous or nonexistent local times
-        tz.from_local_datetime(&naive).single().map(|dt: chrono::DateTime<chrono_tz::Tz>| dt.with_timezone(&Utc))
+        if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
+            // New format: naive local datetime → convert through IANA tz
+            // .single() returns None for DST-ambiguous or nonexistent local times
+            tz.from_local_datetime(&naive).single().map(|dt: chrono::DateTime<chrono_tz::Tz>| dt.with_timezone(&Utc))
+        } else {
+            // Transition fallback: UTC string stored before v1.3.3 enforcement
+            s.parse::<DateTime<Utc>>().ok()
+        }
     } else {
         s.parse::<DateTime<Utc>>().ok()
     }
+}
+
+/// Validates that `s` is a naive local datetime parseable in `tz_str`, with no UTC offset.
+/// Returns 422 if the format is wrong or the time is DST-ambiguous/nonexistent.
+/// Call only when the stop has a timezone; skip for legacy stops (timezone: None).
+pub fn validate_stop_time_str(s: &str, tz_str: &str, field: &str) -> Result<(), crate::error::AppError> {
+    use chrono::TimeZone as _;
+    let tz: chrono_tz::Tz = tz_str.parse()
+        .map_err(|_| crate::error::AppError::Internal(format!("invalid timezone stored on stop: {tz_str}")))?;
+    let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
+        .map_err(|_| crate::error::AppError::UnprocessableEntity(format!(
+            "{field}: must be a naive local datetime (e.g. \"2026-05-10T09:15:00\") — omit timezone offset"
+        )))?;
+    tz.from_local_datetime(&naive).single()
+        .ok_or_else(|| crate::error::AppError::UnprocessableEntity(format!(
+            "{field}: time is ambiguous or nonexistent in {tz_str} (DST boundary)"
+        )))?;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

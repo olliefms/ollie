@@ -324,6 +324,15 @@ pub async fn stop_arrive(
     Path((id, seq)): Path<(Uuid, u32)>,
     Json(body): Json<StopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let existing = state.db.get_trip(id).await?;
+    let stop_tz = existing.stops.iter()
+        .find(|s| s.sequence == seq)
+        .ok_or(AppError::NotFound)?
+        .timezone
+        .clone();
+    if let Some(tz_str) = stop_tz.as_deref() {
+        crate::models::load::validate_stop_time_str(&body.actual_arrive, tz_str, "actual_arrive")?;
+    }
     let trip = state.db.update_trip_stop(id, seq, Some(body.actual_arrive.clone()), None).await?;
 
     if let Some(load_id) = trip.load_id {
@@ -369,6 +378,15 @@ pub async fn stop_depart(
     Path((id, seq)): Path<(Uuid, u32)>,
     Json(body): Json<StopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let existing = state.db.get_trip(id).await?;
+    let stop_tz = existing.stops.iter()
+        .find(|s| s.sequence == seq)
+        .ok_or(AppError::NotFound)?
+        .timezone
+        .clone();
+    if let Some(tz_str) = stop_tz.as_deref() {
+        crate::models::load::validate_stop_time_str(&body.actual_depart, tz_str, "actual_depart")?;
+    }
     let trip = state.db.update_trip_stop(id, seq, None, Some(body.actual_depart.clone())).await?;
 
     // Cascade actual_depart to load stop if linked
