@@ -84,13 +84,16 @@ pub async fn assign_trip(
         }
     }
 
-    let trip = state.db.transition_trip_status(id, TripStatus::Assigned).await?;
+    state.db.transition_trip_status(id, TripStatus::Assigned).await?;
+    state.db.update_trip_resources(id, Some(body.driver_id), Some(body.truck_id), body.trailer_ids.clone()).await?;
 
     state.db.update_driver_status(body.driver_id, DriverStatus::Assigned).await?;
     state.db.update_truck_status(body.truck_id, TruckStatus::Assigned).await?;
     for &trailer_id in &body.trailer_ids {
         state.db.update_trailer_status(trailer_id, TrailerStatus::Assigned).await?;
     }
+
+    let trip = state.db.get_trip(id).await?;
 
     if let Some(load_id) = trip.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
@@ -123,6 +126,7 @@ pub async fn unassign_trip(
 ) -> Result<impl IntoResponse, AppError> {
     let existing = state.db.get_trip(id).await?;
     let trip = state.db.transition_trip_status(id, TripStatus::Planned).await?;
+    state.db.update_trip_resources(id, None, None, vec![]).await?;
 
     if let Some(driver_id) = existing.driver_id {
         let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
