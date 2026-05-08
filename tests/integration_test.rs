@@ -227,7 +227,7 @@ async fn test_delete_blob_blocked_when_referenced_by_load() {
         "customer_name": "ACME",
         "stops": [{
             "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-            "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+            "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
             "timezone": "America/Chicago"
         }],
         "rate_items": [],
@@ -294,7 +294,7 @@ async fn test_delete_facility_blocked_when_referenced_by_load() {
         .json(&serde_json::json!({
             "customer_name": "ACME",
             "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
                         "timezone": "America/Chicago"}],
             "rate_items": []
         }))
@@ -340,7 +340,7 @@ async fn test_create_load_returns_201() {
             "customer_ref": "PO-123",
             "stops": [{
                 "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
                 "timezone": "America/Chicago"
             }],
             "rate_items": [
@@ -370,7 +370,7 @@ async fn test_create_load_auto_creates_facility_from_name_address() {
                 "sequence": 1, "stop_type": "pickup", "service_type": "pre_loaded",
                 "facility_name": "Brand New Dock",
                 "address": "Tulsa, OK",
-                "scheduled_arrive": "2026-05-10",
+                "scheduled_arrive": "2026-05-10T08:00:00",
                 "force_new_facility": true,
                 "timezone": "America/Chicago"
             }],
@@ -391,7 +391,7 @@ async fn test_load_number_auto_increments() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let stop = serde_json::json!([{
         "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
         "timezone": "America/Chicago"
     }]);
 
@@ -418,7 +418,7 @@ async fn test_get_load_detail_includes_facility_info() {
         .json(&serde_json::json!({
             "customer_name": "XPO",
             "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
                         "timezone": "America/Chicago"}],
             "rate_items": []
         }))
@@ -446,7 +446,7 @@ async fn test_invalid_service_type_for_stop_returns_400() {
             "customer_name": "ACME",
             "stops": [{"sequence": 1, "stop_type": "pickup",
                         "service_type": "live_unload",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
                         "timezone": "America/Chicago"}],
             "rate_items": []
         }))
@@ -463,7 +463,7 @@ async fn test_delete_load_returns_204() {
         .json(&serde_json::json!({
             "customer_name": "ACME",
             "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
                         "timezone": "America/Chicago"}],
             "rate_items": []
         }))

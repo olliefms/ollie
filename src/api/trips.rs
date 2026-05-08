@@ -59,7 +59,7 @@ pub async fn create_trip(
     let stops = if body.stops.is_empty() {
         if let Some(load_id) = body.load_id {
             let load = state.db.get_load_by_id(load_id).await?;
-            load.stops.into_iter().map(|s| TripStop {
+            load.stops.into_iter().enumerate().map(|(idx, s)| TripStop {
                 sequence: s.sequence,
                 stop_type: match s.stop_type {
                     StopType::Pickup => TripStopType::Pickup,
@@ -67,7 +67,7 @@ pub async fn create_trip(
                 },
                 facility_id: Some(s.facility_id),
                 name: None,
-                load_stop_index: Some(s.sequence),
+                load_stop_index: Some(idx as u32),
                 scheduled_arrive: Some(s.scheduled_arrive),
                 scheduled_arrive_end: s.scheduled_arrive_end,
                 actual_arrive: None,

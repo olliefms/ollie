@@ -153,18 +153,13 @@ impl Stop {
 
 fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>> {
     use chrono::TimeZone as _;
-    if let Some(tz_str) = tz {
-        let tz: chrono_tz::Tz = tz_str.parse().ok()?;
-        if let Ok(naive) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S") {
-            // New format: naive local datetime → convert through IANA tz
-            // .single() returns None for DST-ambiguous or nonexistent local times
+    match tz {
+        Some(tz_str) => {
+            let tz: chrono_tz::Tz = tz_str.parse().ok()?;
+            let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok()?;
             tz.from_local_datetime(&naive).single().map(|dt: chrono::DateTime<chrono_tz::Tz>| dt.with_timezone(&Utc))
-        } else {
-            // Transition fallback: UTC string stored before v1.3.3 enforcement
-            s.parse::<DateTime<Utc>>().ok()
         }
-    } else {
-        s.parse::<DateTime<Utc>>().ok()
+        None => s.parse::<DateTime<Utc>>().ok(),
     }
 }
 
