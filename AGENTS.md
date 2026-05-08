@@ -264,6 +264,9 @@ After any change: run `cargo test`, `cargo clippy`, `cargo build` before committ
 - Always dump ultrareview output to disk before triaging (prevents losing findings on crash)
 - **Merge to main before tagging.** The tag must point to a commit on main, not on the release branch. After implementation is complete: `git checkout main && git merge --ff-only vX.Y.Z && git push origin main`, then tag. Tagging the branch tip instead of main leaves main stale and breaks the next release's branch point.
 - **Before starting any release:** verify main is current with the previous release tag: `git log --oneline -1 main` and `git log --oneline -1 vX.Y.Z` should show the same commit.
+- **Subagent commit discipline:** after each subagent completes, run `git diff --stat HEAD` to confirm it committed its changes. If the diff is non-empty, commit manually before proceeding — one subagent silently skipped its commit in v1.3.1.
+- **Close issues after the release:** validate each in-scope issue (check the code/behavior, leave a verification comment) and close it. Don't leave issues open at release; the v1.3.1 orchestrator skipped this step.
+- **Config::from_env() test flakiness is broader than one test:** any unit test that calls `Config::from_env()` can race when the full lib suite runs in parallel (env var mutation). Not just `test_config_from_env` — facility and other integration tests that call config init are also affected. Ignore intermittent failures in isolation; they pass when run alone.
 
 ## Commit Style
 
