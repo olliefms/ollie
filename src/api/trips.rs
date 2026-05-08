@@ -2,7 +2,10 @@
 use crate::{
     ai::embed::embed_text,
     error::AppError,
-    models::trip::{CreateTripRequest, TripListResponse, TripRecord, TripStatus, UpdateTripRequest},
+    models::{
+        load::StopType,
+        trip::{CreateTripRequest, TripListResponse, TripRecord, TripStatus, TripStop, TripStopType, UpdateTripRequest},
+    },
     AppState,
 };
 use axum::{
@@ -53,6 +56,35 @@ pub async fn create_trip(
         None => state.db.next_trip_number(now.year()).await?,
     };
 
+    let stops = if body.stops.is_empty() {
+        if let Some(load_id) = body.load_id {
+            let load = state.db.get_load_by_id(load_id).await?;
+            load.stops.into_iter().map(|s| TripStop {
+                sequence: s.sequence,
+                stop_type: match s.stop_type {
+                    StopType::Pickup => TripStopType::Pickup,
+                    StopType::Delivery => TripStopType::Delivery,
+                },
+                facility_id: Some(s.facility_id),
+                name: None,
+                load_stop_index: Some(s.sequence),
+                scheduled_arrive: Some(s.scheduled_arrive),
+                scheduled_arrive_end: s.scheduled_arrive_end,
+                actual_arrive: None,
+                actual_depart: None,
+                expected_dwell_minutes: s.expected_dwell_minutes,
+                detention_free_minutes: s.detention_free_minutes,
+                detention_grace_minutes: s.detention_grace_minutes,
+                notes: s.notes,
+                timezone: s.timezone,
+            }).collect()
+        } else {
+            body.stops
+        }
+    } else {
+        body.stops
+    };
+
     let mut record = TripRecord {
         id: Uuid::new_v4(),
         trip_number,
@@ -62,7 +94,7 @@ pub async fn create_trip(
         truck_id: body.truck_id,
         trailer_ids: body.trailer_ids,
         status: TripStatus::Planned,
-        stops: body.stops,
+        stops,
         notes: body.notes,
         embedding: None,
         owner_id: 0,

@@ -227,7 +227,8 @@ async fn test_delete_blob_blocked_when_referenced_by_load() {
         "customer_name": "ACME",
         "stops": [{
             "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-            "facility_id": fac_id, "scheduled_arrive": "2026-05-10"
+            "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+            "timezone": "America/Chicago"
         }],
         "rate_items": [],
         "blob_ids": [blob_id]
@@ -293,7 +294,8 @@ async fn test_delete_facility_blocked_when_referenced_by_load() {
         .json(&serde_json::json!({
             "customer_name": "ACME",
             "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10"}],
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "timezone": "America/Chicago"}],
             "rate_items": []
         }))
         .await;
@@ -338,7 +340,8 @@ async fn test_create_load_returns_201() {
             "customer_ref": "PO-123",
             "stops": [{
                 "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                "facility_id": fac_id, "scheduled_arrive": "2026-05-10"
+                "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                "timezone": "America/Chicago"
             }],
             "rate_items": [
                 {"description": "Line Haul", "amount_usd": 1800.0},
@@ -368,7 +371,8 @@ async fn test_create_load_auto_creates_facility_from_name_address() {
                 "facility_name": "Brand New Dock",
                 "address": "Tulsa, OK",
                 "scheduled_arrive": "2026-05-10",
-                "force_new_facility": true
+                "force_new_facility": true,
+                "timezone": "America/Chicago"
             }],
             "rate_items": []
         }))
@@ -387,7 +391,8 @@ async fn test_load_number_auto_increments() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let stop = serde_json::json!([{
         "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-        "facility_id": fac_id, "scheduled_arrive": "2026-05-10"
+        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+        "timezone": "America/Chicago"
     }]);
 
     let r1 = server.post("/api/v1/loads")
@@ -413,7 +418,8 @@ async fn test_get_load_detail_includes_facility_info() {
         .json(&serde_json::json!({
             "customer_name": "XPO",
             "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10"}],
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "timezone": "America/Chicago"}],
             "rate_items": []
         }))
         .await;
@@ -440,7 +446,8 @@ async fn test_invalid_service_type_for_stop_returns_400() {
             "customer_name": "ACME",
             "stops": [{"sequence": 1, "stop_type": "pickup",
                         "service_type": "live_unload",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10"}],
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "timezone": "America/Chicago"}],
             "rate_items": []
         }))
         .await;
@@ -456,7 +463,8 @@ async fn test_delete_load_returns_204() {
         .json(&serde_json::json!({
             "customer_name": "ACME",
             "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10"}],
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10",
+                        "timezone": "America/Chicago"}],
             "rate_items": []
         }))
         .await;
@@ -480,7 +488,8 @@ async fn create_test_load(server: &axum_test::TestServer, fac_id: &str) -> Strin
         .json(&serde_json::json!({
             "customer_name": "ACME",
             "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
-                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10"}],
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                        "timezone": "America/Chicago"}],
             "rate_items": [{"description": "Line Haul", "amount_usd": 1500.0}]
         }))
         .await
@@ -878,6 +887,67 @@ async fn test_assign_sets_trip_resources_and_complete_releases_them() {
         .await
         .json::<serde_json::Value>();
     assert_eq!(driver_after_complete["status"], "available");
+}
+
+#[tokio::test]
+async fn test_trip_inherits_stops_from_load_when_stops_omitted() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Origin Dock", "Chicago, IL").await;
+
+    // Create a load with one stop
+    let load_id = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [{"sequence": 0, "stop_type": "pickup", "service_type": "live_load",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                        "timezone": "America/Chicago"}],
+            "rate_items": []
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create a trip with load_id but no stops
+    let trip_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201);
+    let trip = trip_resp.json::<serde_json::Value>();
+    assert_eq!(trip["stops"].as_array().unwrap().len(), 1, "trip should inherit 1 stop from load");
+    assert_eq!(trip["stops"][0]["stop_type"], "pickup");
+    assert_eq!(trip["stops"][0]["load_stop_index"], 0);
+    assert_eq!(trip["stops"][0]["timezone"], "America/Chicago");
+}
+
+#[tokio::test]
+async fn test_trip_with_missing_load_id_returns_404() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fake_load_id = uuid::Uuid::new_v4();
+
+    let resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": fake_load_id }))
+        .await;
+    assert_eq!(resp.status_code(), 404, "missing load_id with no stops should return 404");
+}
+
+#[tokio::test]
+async fn test_invalid_timezone_returns_422() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
+
+    let resp = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                        "timezone": "Not/ATimezone"}],
+            "rate_items": []
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
 }
 
 #[tokio::test]

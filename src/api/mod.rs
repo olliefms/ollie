@@ -239,11 +239,16 @@ Freight loads with multi-stop routes. Status lifecycle:
   planned → assigned → dispatched → in_transit → delivered → invoiced → settled
   (cancel is allowed from planned, assigned, dispatched, or in_transit)
 
-Stop fields (all optional): scheduled_arrive_end (window close; null = strict appointment),
+Stop required fields: scheduled_arrive (naive local datetime, e.g. "2026-05-10T08:00:00"),
+timezone (IANA tz string, e.g. "America/Chicago"). Both must be present together — a stop
+with time but no timezone, or timezone but no time, is rejected (422).
+Stop optional fields: scheduled_arrive_end (window close; null = strict appointment),
 actual_arrive, actual_depart, expected_dwell_minutes, detention_free_minutes (default 120),
 detention_grace_minutes (default 15). Detention eligibility: FCFS stops (scheduled_arrive_end
 set) are eligible if actual_depart > actual_arrive + detention_free_minutes. Strict stops
 are eligible only if actual_arrive ≤ scheduled_arrive + grace_minutes (early = on-time).
+Time strings are stored as naive local datetimes; timezone is the authoritative offset source.
+Legacy stops (pre-v1.3.3) have timezone: null and times stored as UTC — not silently converted.
 
   POST   /api/v1/loads          Create load
   GET    /api/v1/loads          List or search loads (?s, ?status, ?customer, ?from, ?to, ?tag)

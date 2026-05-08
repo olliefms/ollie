@@ -366,6 +366,7 @@ mod tests {
                     detention_free_minutes: None,
                     detention_grace_minutes: None,
                     notes: None,
+                    timezone: None,
                 },
             ],
             notes: Some("test trip".into()),
@@ -423,5 +424,11 @@ mod tests {
         trip.status = TripStatus::InTransit;
         db.insert_trip(&trip).await.unwrap();
         assert!(matches!(db.delete_trip(trip.id).await, Err(AppError::Conflict(_))));
+    }
+
+    #[tokio::test]
+    async fn test_get_trip_not_found_returns_not_found() {
+        let (db, _dir) = test_db().await;
+        assert!(matches!(db.get_trip(uuid::Uuid::new_v4()).await, Err(AppError::NotFound)));
     }
 }

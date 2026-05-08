@@ -462,6 +462,7 @@ mod tests {
             detention_free_minutes: None,
             detention_grace_minutes: None,
             notes: None,
+            timezone: None,
         }
     }
 

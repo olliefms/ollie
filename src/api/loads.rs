@@ -436,6 +436,13 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             )));
         }
 
+        let _: chrono_tz::Tz = input.timezone.parse().map_err(|_| {
+            AppError::UnprocessableEntity(format!(
+                "stop {}: '{}' is not a valid IANA timezone",
+                input.sequence, input.timezone
+            ))
+        })?;
+
         let facility_id = if let Some(id) = input.facility_id {
             state.db.get_facility_by_id(id).await?;
             id
@@ -472,6 +479,7 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             detention_grace_minutes: input.detention_grace_minutes,
             notes: input.notes,
             blob_ids: input.blob_ids,
+            timezone: Some(input.timezone),
         });
     }
 
@@ -510,6 +518,7 @@ async fn build_detail_response(
             detention_grace_minutes: stop.detention_grace_minutes,
             notes: stop.notes.clone(),
             blob_ids: stop.blob_ids.clone(),
+            timezone: stop.timezone.clone(),
         }
     }).collect();
 
