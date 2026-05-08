@@ -3787,7 +3787,7 @@ dependencies = [
 
 [[package]]
 name = "ollie"
-version = "1.2.0"
+version = "1.3.3"
 dependencies = [
  "anyhow",
  "arrow-array",
@@ -3800,6 +3800,7 @@ dependencies = [
  "bcrypt",
  "bytes",
  "chrono",
+ "chrono-tz",
  "dashmap 5.5.3",
  "dotenvy",
  "futures",

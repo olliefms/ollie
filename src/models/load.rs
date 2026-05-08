@@ -1,5 +1,5 @@
 // src/models/load.rs
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -131,14 +131,15 @@ pub struct Stop {
     pub notes: Option<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 impl Stop {
     pub fn detention_eligible(&self) -> Option<bool> {
-        use chrono::DateTime;
-        let scheduled = self.scheduled_arrive.parse::<DateTime<chrono::Utc>>().ok()?;
-        let actual_arrive = self.actual_arrive.as_deref()?.parse::<DateTime<chrono::Utc>>().ok()?;
-        let actual_depart = self.actual_depart.as_deref()?.parse::<DateTime<chrono::Utc>>().ok()?;
+        let scheduled = parse_stop_time(&self.scheduled_arrive, self.timezone.as_deref())?;
+        let actual_arrive = parse_stop_time(self.actual_arrive.as_deref()?, self.timezone.as_deref())?;
+        let actual_depart = parse_stop_time(self.actual_depart.as_deref()?, self.timezone.as_deref())?;
         let free_mins = self.detention_free_minutes.unwrap_or(120) as i64;
         let grace_mins = self.detention_grace_minutes.unwrap_or(15) as i64;
         let eligible = if self.scheduled_arrive_end.is_some() {
@@ -147,6 +148,18 @@ impl Stop {
             actual_arrive <= scheduled + chrono::Duration::minutes(grace_mins)
         };
         Some(eligible)
+    }
+}
+
+fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>> {
+    use chrono::TimeZone as _;
+    if let Some(tz_str) = tz {
+        let tz: chrono_tz::Tz = tz_str.parse().ok()?;
+        let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok()?;
+        // .single() returns None for DST-ambiguous or nonexistent local times
+        tz.from_local_datetime(&naive).single().map(|dt: chrono::DateTime<chrono_tz::Tz>| dt.with_timezone(&Utc))
+    } else {
+        s.parse::<DateTime<Utc>>().ok()
     }
 }
 
@@ -176,6 +189,7 @@ pub struct StopInput {
     pub notes: Option<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
+    pub timezone: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -198,6 +212,7 @@ pub struct StopResponse {
     pub detention_grace_minutes: Option<u32>,
     pub notes: Option<String>,
     pub blob_ids: Vec<Uuid>,
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -462,68 +477,83 @@ mod tests {
         assert!(stop.expected_dwell_minutes.is_none());
         assert!(stop.detention_free_minutes.is_none());
         assert!(stop.detention_grace_minutes.is_none());
+        assert!(stop.timezone.is_none(), "legacy stops without timezone field must deserialize as None");
     }
 
-    #[test]
-    fn test_detention_eligible_fcfs() {
-        // FCFS: scheduled_arrive_end set → eligible if actual_depart > actual_arrive + free_mins (default 120)
-        let stop = Stop {
+    fn legacy_stop(
+        scheduled_arrive: &str,
+        scheduled_arrive_end: Option<&str>,
+        actual_arrive: Option<&str>,
+        actual_depart: Option<&str>,
+    ) -> Stop {
+        Stop {
             sequence: 0,
             stop_type: StopType::Delivery,
             service_type: ServiceType::LiveUnload,
             facility_id: Uuid::new_v4(),
-            scheduled_arrive: "2026-05-10T08:00:00Z".into(),
-            scheduled_arrive_end: Some("2026-05-10T12:00:00Z".into()),
-            actual_arrive: Some("2026-05-10T09:00:00Z".into()),
-            actual_depart: Some("2026-05-10T12:01:00Z".into()), // 181 min dwell > 120
+            scheduled_arrive: scheduled_arrive.into(),
+            scheduled_arrive_end: scheduled_arrive_end.map(Into::into),
+            actual_arrive: actual_arrive.map(Into::into),
+            actual_depart: actual_depart.map(Into::into),
             expected_dwell_minutes: None,
             detention_free_minutes: None,
             detention_grace_minutes: None,
             notes: None,
             blob_ids: vec![],
-        };
+            timezone: None,
+        }
+    }
+
+    fn tz_stop(
+        scheduled_arrive: &str,
+        scheduled_arrive_end: Option<&str>,
+        actual_arrive: Option<&str>,
+        actual_depart: Option<&str>,
+        tz: &str,
+    ) -> Stop {
+        Stop {
+            timezone: Some(tz.into()),
+            scheduled_arrive: scheduled_arrive.into(),
+            scheduled_arrive_end: scheduled_arrive_end.map(Into::into),
+            actual_arrive: actual_arrive.map(Into::into),
+            actual_depart: actual_depart.map(Into::into),
+            ..legacy_stop(scheduled_arrive, scheduled_arrive_end, actual_arrive, actual_depart)
+        }
+    }
+
+    #[test]
+    fn test_detention_eligible_fcfs() {
+        // FCFS: scheduled_arrive_end set → eligible if actual_depart > actual_arrive + free_mins (default 120)
+        let stop = legacy_stop(
+            "2026-05-10T08:00:00Z",
+            Some("2026-05-10T12:00:00Z"),
+            Some("2026-05-10T09:00:00Z"),
+            Some("2026-05-10T12:01:00Z"), // 181 min dwell > 120
+        );
         assert_eq!(stop.detention_eligible(), Some(true));
     }
 
     #[test]
     fn test_detention_eligible_strict_on_time() {
         // Strict: arrival within grace window → eligible
-        let stop = Stop {
-            sequence: 0,
-            stop_type: StopType::Delivery,
-            service_type: ServiceType::LiveUnload,
-            facility_id: Uuid::new_v4(),
-            scheduled_arrive: "2026-05-10T08:00:00Z".into(),
-            scheduled_arrive_end: None,
-            actual_arrive: Some("2026-05-10T08:10:00Z".into()), // 10 min late ≤ 15 grace
-            actual_depart: Some("2026-05-10T10:30:00Z".into()),
-            expected_dwell_minutes: None,
-            detention_free_minutes: None,
-            detention_grace_minutes: None,
-            notes: None,
-            blob_ids: vec![],
-        };
+        let stop = legacy_stop(
+            "2026-05-10T08:00:00Z",
+            None,
+            Some("2026-05-10T08:10:00Z"), // 10 min late ≤ 15 grace
+            Some("2026-05-10T10:30:00Z"),
+        );
         assert_eq!(stop.detention_eligible(), Some(true));
     }
 
     #[test]
     fn test_detention_eligible_strict_late_ineligible() {
         // Strict: late arrival beyond grace → not eligible
-        let stop = Stop {
-            sequence: 0,
-            stop_type: StopType::Delivery,
-            service_type: ServiceType::LiveUnload,
-            facility_id: Uuid::new_v4(),
-            scheduled_arrive: "2026-05-10T08:00:00Z".into(),
-            scheduled_arrive_end: None,
-            actual_arrive: Some("2026-05-10T08:20:00Z".into()), // 20 min late > 15 grace
-            actual_depart: Some("2026-05-10T10:30:00Z".into()),
-            expected_dwell_minutes: None,
-            detention_free_minutes: None,
-            detention_grace_minutes: None,
-            notes: None,
-            blob_ids: vec![],
-        };
+        let stop = legacy_stop(
+            "2026-05-10T08:00:00Z",
+            None,
+            Some("2026-05-10T08:20:00Z"), // 20 min late > 15 grace
+            Some("2026-05-10T10:30:00Z"),
+        );
         assert_eq!(stop.detention_eligible(), Some(false));
     }
 
@@ -531,20 +561,58 @@ mod tests {
     fn test_detention_eligible_strict_early_arrival() {
         // Strict: early arrival is always on-time (negative lateness passes)
         let stop = Stop {
-            sequence: 0,
             stop_type: StopType::Pickup,
             service_type: ServiceType::LiveLoad,
-            facility_id: Uuid::new_v4(),
-            scheduled_arrive: "2026-05-10T08:00:00Z".into(),
-            scheduled_arrive_end: None,
-            actual_arrive: Some("2026-05-10T07:45:00Z".into()), // 15 min early
-            actual_depart: Some("2026-05-10T10:30:00Z".into()),
-            expected_dwell_minutes: None,
-            detention_free_minutes: None,
-            detention_grace_minutes: None,
-            notes: None,
-            blob_ids: vec![],
+            ..legacy_stop(
+                "2026-05-10T08:00:00Z",
+                None,
+                Some("2026-05-10T07:45:00Z"), // 15 min early
+                Some("2026-05-10T10:30:00Z"),
+            )
         };
         assert_eq!(stop.detention_eligible(), Some(true));
+    }
+
+    #[test]
+    fn test_detention_eligible_with_timezone_strict_on_time() {
+        // Timezone-aware: naive local times + IANA tz → correct UTC conversion
+        let stop = tz_stop(
+            "2026-05-10T08:00:00",
+            None,
+            Some("2026-05-10T08:10:00"), // 10 min late ≤ 15 grace
+            Some("2026-05-10T10:30:00"),
+            "America/Chicago",
+        );
+        assert_eq!(stop.detention_eligible(), Some(true));
+    }
+
+    #[test]
+    fn test_detention_eligible_with_timezone_strict_late_ineligible() {
+        let stop = tz_stop(
+            "2026-05-10T08:00:00",
+            None,
+            Some("2026-05-10T08:20:00"), // 20 min late > 15 grace
+            Some("2026-05-10T10:30:00"),
+            "America/New_York",
+        );
+        assert_eq!(stop.detention_eligible(), Some(false));
+    }
+
+    #[test]
+    fn test_detention_eligible_with_timezone_fcfs() {
+        let stop = tz_stop(
+            "2026-05-10T08:00:00",
+            Some("2026-05-10T12:00:00"),
+            Some("2026-05-10T09:00:00"),
+            Some("2026-05-10T12:01:00"), // 181 min dwell > 120
+            "America/Los_Angeles",
+        );
+        assert_eq!(stop.detention_eligible(), Some(true));
+    }
+
+    #[test]
+    fn test_detention_eligible_returns_none_for_missing_actuals() {
+        let stop = tz_stop("2026-05-10T08:00:00", None, None, None, "America/Chicago");
+        assert_eq!(stop.detention_eligible(), None);
     }
 }

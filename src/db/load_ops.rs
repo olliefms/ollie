@@ -470,11 +470,12 @@ mod tests {
             stop_type: crate::models::StopType::Pickup,
             service_type: crate::models::ServiceType::LiveLoad,
             facility_id: fac_id,
-            scheduled_arrive: "2026-05-10".into(),
+            scheduled_arrive: "2026-05-10T08:00:00".into(),
             scheduled_arrive_end: None, actual_arrive: None, actual_depart: None,
             expected_dwell_minutes: None, detention_free_minutes: None,
             detention_grace_minutes: None,
             notes: None, blob_ids: vec![],
+            timezone: Some("America/Chicago".into()),
         }];
         db.insert_load(&load).await.unwrap();
         assert!(db.any_load_references_facility(fac_id).await.unwrap());

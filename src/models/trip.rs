@@ -64,6 +64,8 @@ pub struct TripStop {
     pub detention_free_minutes: Option<u32>,
     pub detention_grace_minutes: Option<u32>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
@@ -286,6 +288,7 @@ mod tests {
                     detention_free_minutes: None,
                     detention_grace_minutes: None,
                     notes: None,
+                    timezone: None,
                 },
             ],
             notes: Some("urgent".into()),
