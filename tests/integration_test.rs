@@ -779,3 +779,156 @@ async fn test_delete_load_blocked_by_active_trip() {
         .await;
     assert_eq!(del2.status_code(), 204);
 }
+
+#[tokio::test]
+async fn test_assign_sets_trip_resources_and_complete_releases_them() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create driver and truck (both start Available)
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Test Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create trip with no driver/truck (simulates hermes flow)
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Confirm trip has no driver before assign
+    let trip_before = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert!(trip_before["driver_id"].is_null(), "driver_id should be null before assign");
+
+    // POST /assign
+    let assign_resp = server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign_resp.status_code(), 200);
+
+    // Confirm trip now has driver_id
+    let trip_after_assign = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(trip_after_assign["driver_id"].as_str(), Some(driver_id.as_str()),
+        "driver_id must be set on trip after assign");
+    assert_eq!(trip_after_assign["truck_id"].as_str(), Some(truck_id.as_str()),
+        "truck_id must be set on trip after assign");
+
+    // Confirm driver status = assigned
+    let driver_after_assign = server.get(&format!("/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(driver_after_assign["status"], "assigned");
+
+    // Walk through lifecycle: dispatch → depart pickup (→ in_transit) → depart delivery (→ delivered) → complete
+    let dispatch = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    let depart_pickup = server.post(&format!("/api/v1/trips/{trip_id}/stops/0/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-07T10:00:00Z" }))
+        .await;
+    assert_eq!(depart_pickup.status_code(), 200);
+
+    let depart_delivery = server.post(&format!("/api/v1/trips/{trip_id}/stops/1/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-07T14:00:00Z" }))
+        .await;
+    assert_eq!(depart_delivery.status_code(), 200);
+
+    let complete = server.post(&format!("/api/v1/trips/{trip_id}/complete"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(complete.status_code(), 204);
+
+    // Confirm trip is completed and driver_id is still set (historical record)
+    let trip_after_complete = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(trip_after_complete["status"], "completed");
+    assert_eq!(trip_after_complete["driver_id"].as_str(), Some(driver_id.as_str()),
+        "driver_id must still be set after complete (historical record)");
+
+    // Confirm driver is available again
+    let driver_after_complete = server.get(&format!("/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(driver_after_complete["status"], "available");
+}
+
+#[tokio::test]
+async fn test_unassign_clears_trip_resources() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Unassign Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-002" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({}))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Assign
+    let assign = server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign.status_code(), 200);
+
+    // Confirm driver_id is set
+    let trip_assigned = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(trip_assigned["driver_id"].as_str(), Some(driver_id.as_str()));
+
+    // Unassign
+    let unassign = server.post(&format!("/api/v1/trips/{trip_id}/unassign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(unassign.status_code(), 200);
+
+    // Confirm driver_id is cleared
+    let trip_unassigned = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert!(trip_unassigned["driver_id"].is_null(),
+        "driver_id should be null after unassign");
+    assert!(trip_unassigned["truck_id"].is_null(),
+        "truck_id should be null after unassign");
+}

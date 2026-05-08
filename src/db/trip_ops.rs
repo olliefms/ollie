@@ -75,6 +75,21 @@ impl DbClient {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
+    pub async fn update_trip_resources(
+        &self,
+        id: Uuid,
+        driver_id: Option<Uuid>,
+        truck_id: Option<Uuid>,
+        trailer_ids: Vec<Uuid>,
+    ) -> Result<(), AppError> {
+        let mut record = self.get_trip(id).await?;
+        record.driver_id = driver_id;
+        record.truck_id = truck_id;
+        record.trailer_ids = trailer_ids;
+        record.updated_at = chrono::Utc::now();
+        self.upsert_trip(&record).await
+    }
+
     pub async fn update_trip_metadata(
         &self, id: Uuid,
         load_id: Option<Uuid>,
