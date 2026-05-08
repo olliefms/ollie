@@ -363,9 +363,13 @@ pub async fn load_stop_arrive(
     Json(body): Json<LoadStopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let load = state.db.get_load_by_id(id).await?;
-    let stop_exists = load.stops.iter().any(|s| s.sequence == seq);
-    if !stop_exists {
-        return Err(AppError::NotFound);
+    let stop_tz = load.stops.iter()
+        .find(|s| s.sequence == seq)
+        .ok_or(AppError::NotFound)?
+        .timezone
+        .clone();
+    if let Some(tz_str) = stop_tz.as_deref() {
+        crate::models::load::validate_stop_time_str(&body.actual_arrive, tz_str, "actual_arrive")?;
     }
     let mut updated_stops = load.stops.clone();
     for stop in &mut updated_stops {
@@ -405,9 +409,13 @@ pub async fn load_stop_depart(
     Json(body): Json<LoadStopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let load = state.db.get_load_by_id(id).await?;
-    let stop_exists = load.stops.iter().any(|s| s.sequence == seq);
-    if !stop_exists {
-        return Err(AppError::NotFound);
+    let stop_tz = load.stops.iter()
+        .find(|s| s.sequence == seq)
+        .ok_or(AppError::NotFound)?
+        .timezone
+        .clone();
+    if let Some(tz_str) = stop_tz.as_deref() {
+        crate::models::load::validate_stop_time_str(&body.actual_depart, tz_str, "actual_depart")?;
     }
     let mut updated_stops = load.stops.clone();
     for stop in &mut updated_stops {
