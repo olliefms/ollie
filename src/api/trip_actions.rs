@@ -125,7 +125,7 @@ pub async fn unassign_trip(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let existing = state.db.get_trip(id).await?;
-    let trip = state.db.transition_trip_status(id, TripStatus::Planned).await?;
+    state.db.transition_trip_status(id, TripStatus::Planned).await?;
     state.db.update_trip_resources(id, None, None, vec![]).await?;
 
     if let Some(driver_id) = existing.driver_id {
@@ -149,6 +149,7 @@ pub async fn unassign_trip(
         }
     }
 
+    let trip = state.db.get_trip(id).await?;
     events::on_trip_unassigned(&state.db, id).await;
     Ok(Json(trip))
 }
