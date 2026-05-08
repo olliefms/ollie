@@ -451,6 +451,13 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             ))
         })?;
 
+        crate::models::load::validate_stop_time_str(
+            &input.scheduled_arrive, &input.timezone, "scheduled_arrive",
+        )?;
+        if let Some(ref end) = input.scheduled_arrive_end {
+            crate::models::load::validate_stop_time_str(end, &input.timezone, "scheduled_arrive_end")?;
+        }
+
         let facility_id = if let Some(id) = input.facility_id {
             state.db.get_facility_by_id(id).await?;
             id
