@@ -188,7 +188,7 @@
   transition: all 0.15s;
 }
 
-.tab:hover {
+.tab:hover:not(.tab--active) {
   border-color: var(--color-primary);
   color: var(--color-primary);
 }
