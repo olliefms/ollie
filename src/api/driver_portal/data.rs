@@ -219,7 +219,7 @@ pub async fn list_trips(
             let scheduled_start = trip.stops.first().and_then(|s| s.scheduled_arrive.clone());
 
             let next_stop_name = {
-                let next = trip.stops.iter().find(|s| s.actual_depart.is_none());
+                let next = trip.stops.iter().find(|s| s.actual_arrive.is_none());
                 match next {
                     None => None,
                     Some(s) => {
