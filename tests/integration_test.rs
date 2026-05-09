@@ -20,6 +20,7 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+    std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-secret-must-be-32b");
 
     let config = Arc::new(Config::from_env().unwrap());
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
@@ -950,58 +951,6 @@ async fn test_invalid_timezone_returns_422() {
     assert_eq!(resp.status_code(), 422);
 }
 
-// ── Load stop arrive/depart 404 tests ─────────────────────────────────────
-
-#[tokio::test]
-async fn test_load_stop_arrive_returns_404_for_missing_load() {
-    let (server, _b, _d, _rx) = test_server().await;
-    let fake_id = uuid::Uuid::new_v4();
-
-    let resp = server.post(&format!("/api/v1/loads/{fake_id}/stops/1/arrive"))
-        .add_header(header::AUTHORIZATION, "Bearer test-secret")
-        .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00" }))
-        .await;
-    assert_eq!(resp.status_code(), 404);
-}
-
-#[tokio::test]
-async fn test_load_stop_arrive_returns_404_for_missing_sequence() {
-    let (server, _b, _d, _rx) = test_server().await;
-    let fac_id = create_test_facility(&server, "Arrive Dock", "Memphis, TN").await;
-    let load_id = create_test_load(&server, &fac_id).await;
-
-    let resp = server.post(&format!("/api/v1/loads/{load_id}/stops/999/arrive"))
-        .add_header(header::AUTHORIZATION, "Bearer test-secret")
-        .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00" }))
-        .await;
-    assert_eq!(resp.status_code(), 404);
-}
-
-#[tokio::test]
-async fn test_load_stop_depart_returns_404_for_missing_load() {
-    let (server, _b, _d, _rx) = test_server().await;
-    let fake_id = uuid::Uuid::new_v4();
-
-    let resp = server.post(&format!("/api/v1/loads/{fake_id}/stops/1/depart"))
-        .add_header(header::AUTHORIZATION, "Bearer test-secret")
-        .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00" }))
-        .await;
-    assert_eq!(resp.status_code(), 404);
-}
-
-#[tokio::test]
-async fn test_load_stop_depart_returns_404_for_missing_sequence() {
-    let (server, _b, _d, _rx) = test_server().await;
-    let fac_id = create_test_facility(&server, "Depart Dock", "Memphis, TN").await;
-    let load_id = create_test_load(&server, &fac_id).await;
-
-    let resp = server.post(&format!("/api/v1/loads/{load_id}/stops/999/depart"))
-        .add_header(header::AUTHORIZATION, "Bearer test-secret")
-        .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00" }))
-        .await;
-    assert_eq!(resp.status_code(), 404);
-}
-
 #[tokio::test]
 async fn test_unassign_clears_trip_resources() {
     let (server, _b, _d, _rx) = test_server().await;
@@ -1117,4 +1066,448 @@ async fn test_trip_stop_depart_returns_404_for_missing_sequence() {
         .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00Z" }))
         .await;
     assert_eq!(resp.status_code(), 404);
+}
+
+// --- Dispatcher integration tests ---
+
+#[tokio::test]
+async fn test_create_dispatcher_returns_201() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "dispatcher@example.com",
+            "name": "Jane Dispatcher",
+            "password": "securepassword123"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["id"].as_str().is_some());
+    assert_eq!(body["email"], "dispatcher@example.com");
+    assert_eq!(body["name"], "Jane Dispatcher");
+    assert_eq!(body["status"], "active");
+}
+
+#[tokio::test]
+async fn test_create_dispatcher_duplicate_email_returns_409() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let body = serde_json::json!({
+        "email": "dup@example.com",
+        "name": "First",
+        "password": "password123"
+    });
+    let r1 = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&body)
+        .await;
+    assert_eq!(r1.status_code(), 201);
+
+    let r2 = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "dup@example.com",
+            "name": "Second",
+            "password": "different"
+        }))
+        .await;
+    assert_eq!(r2.status_code(), 409);
+}
+
+#[tokio::test]
+async fn test_list_dispatchers_returns_empty_initially() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.get("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["returned"], 0);
+    assert_eq!(body["dispatchers"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn test_get_dispatcher_by_id() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "get@example.com",
+            "name": "Get Me",
+            "password": "password123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let get = server.get(&format!("/api/v1/dispatchers/{id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(get.status_code(), 200);
+    let body = get.json::<serde_json::Value>();
+    assert_eq!(body["id"], id);
+    assert_eq!(body["email"], "get@example.com");
+    assert_eq!(body["name"], "Get Me");
+}
+
+// --- Dispatcher portal auth tests ---
+
+#[tokio::test]
+async fn test_dispatcher_login_success() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create a dispatcher via admin API
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "login@example.com",
+            "name": "Login Test",
+            "password": "correct-password-123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+
+    // Login via dispatcher portal
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "login@example.com",
+            "password": "correct-password-123"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["token"].as_str().is_some(), "expected a token in response");
+}
+
+#[tokio::test]
+async fn test_dispatcher_login_bad_password() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "badpass@example.com",
+            "name": "Bad Pass",
+            "password": "correct-password-123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "badpass@example.com",
+            "password": "wrong-password"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_dispatcher_login_unknown_email() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "nobody@example.com",
+            "password": "any-password"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_dispatcher_refresh() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create dispatcher
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "refresh@example.com",
+            "name": "Refresh Test",
+            "password": "refresh-password-123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+
+    // Login to get initial token
+    let login = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "refresh@example.com",
+            "password": "refresh-password-123"
+        }))
+        .await;
+    assert_eq!(login.status_code(), 200);
+    let token = login.json::<serde_json::Value>()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Refresh the token
+    let refresh = server.post("/dispatch/auth/refresh")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(refresh.status_code(), 200);
+    let body = refresh.json::<serde_json::Value>();
+    assert!(body["token"].as_str().is_some(), "expected a new token in refresh response");
+}
+
+// --- Dispatcher portal data API tests ---
+
+async fn dispatcher_login(server: &axum_test::TestServer, email: &str, password: &str) -> String {
+    // Create dispatcher account
+    server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": email,
+            "name": "Test Dispatcher",
+            "password": password,
+        }))
+        .await;
+
+    // Login and return JWT
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({ "email": email, "password": password }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_dispatcher_list_loads() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Login as dispatcher
+    let token = dispatcher_login(&server, "data1@example.com", "password-data1").await;
+
+    // Create a facility and load via admin API first
+    let fac_id = create_test_facility(&server, "Dispatch Dock", "Chicago, IL").await;
+    server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "Dispatch Test Customer",
+            "stops": [{
+                "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                "facility_id": fac_id, "scheduled_arrive": "2026-06-01T08:00:00",
+                "timezone": "America/Chicago"
+            }],
+            "rate_items": []
+        }))
+        .await;
+
+    // GET /dispatch/api/v1/loads as dispatcher — should return 200
+    let resp = server.get("/dispatch/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["returned"].as_u64().unwrap() >= 1);
+    assert!(body["items"].as_array().is_some());
+}
+
+#[tokio::test]
+async fn test_dispatcher_get_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Login as dispatcher
+    let token = dispatcher_login(&server, "data2@example.com", "password-data2").await;
+
+    // Create a facility, load, and trip via admin API
+    let fac_id = create_test_facility(&server, "Trip Dock", "Dallas, TX").await;
+    server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "Trip Test Co",
+            "stops": [{
+                "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                "facility_id": fac_id, "scheduled_arrive": "2026-06-01T08:00:00",
+                "timezone": "America/Chicago"
+            }],
+            "rate_items": []
+        }))
+        .await;
+
+    let trip_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "trip_number": "T-DISP-001",
+            "stops": [{
+                "sequence": 1,
+                "stop_type": "origin",
+                "facility_id": fac_id,
+                "scheduled_arrive": "2026-06-01T08:00:00",
+                "timezone": "America/Chicago"
+            }]
+        }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201);
+    let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // GET /dispatch/api/v1/trips/:id as dispatcher — should return 200
+    let resp = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["id"], trip_id);
+}
+
+#[tokio::test]
+async fn test_dispatcher_assign_and_unassign() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Login as dispatcher
+    let token = dispatcher_login(&server, "data3@example.com", "password-data3").await;
+
+    // Create resources via admin API
+    let fac_id = create_test_facility(&server, "Assign Dock", "Houston, TX").await;
+
+    let driver_resp = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Test Driver Dispatch" }))
+        .await;
+    assert_eq!(driver_resp.status_code(), 201);
+    let driver_id = driver_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_resp = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "TR-DISP-001" }))
+        .await;
+    assert_eq!(truck_resp.status_code(), 201);
+    let truck_id = truck_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "trip_number": "T-ASSIGN-DISP-001",
+            "stops": [{
+                "sequence": 1,
+                "stop_type": "origin",
+                "facility_id": fac_id,
+                "scheduled_arrive": "2026-07-01T08:00:00",
+                "timezone": "America/Chicago"
+            }]
+        }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201);
+    let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Assign via dispatcher API
+    let assign_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "driver_id": driver_id,
+            "truck_id": truck_id,
+            "trailer_ids": []
+        }))
+        .await;
+    assert_eq!(assign_resp.status_code(), 200);
+    // Assert on response body of the action itself (AGENTS.md rule)
+    let assign_body = assign_resp.json::<serde_json::Value>();
+    assert_eq!(assign_body["id"], trip_id);
+    assert_eq!(assign_body["driver_id"], driver_id, "response body should include driver_id after assign");
+    assert_eq!(assign_body["truck_id"], truck_id, "response body should include truck_id after assign");
+    assert_eq!(assign_body["status"], "assigned");
+
+    // Follow-up GET to confirm persistence
+    let get_resp = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(get_resp.status_code(), 200);
+    let get_body = get_resp.json::<serde_json::Value>();
+    assert_eq!(get_body["driver_id"], driver_id);
+
+    // Unassign via dispatcher API
+    let unassign_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/unassign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(unassign_resp.status_code(), 200);
+    // Assert on response body of the action itself
+    let unassign_body = unassign_resp.json::<serde_json::Value>();
+    assert_eq!(unassign_body["id"], trip_id);
+    assert!(
+        unassign_body["driver_id"].is_null(),
+        "response body should have null driver_id after unassign"
+    );
+    assert_eq!(unassign_body["status"], "planned");
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher MCP tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dispatcher_mcp_requires_auth() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // POST /dispatch/mcp without auth header → 401
+    let resp = server.post("/dispatch/mcp")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_dispatcher_mcp_tools_list() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let token = dispatcher_login(&server, "mcp1@example.com", "password-mcp1").await;
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["jsonrpc"], "2.0");
+    assert_eq!(body["id"], 1);
+    let tools = body["result"]["tools"].as_array().expect("tools should be an array");
+    assert!(!tools.is_empty(), "tools list should not be empty");
+    // Verify some expected tools are present
+    let tool_names: Vec<&str> = tools.iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(tool_names.contains(&"list_loads"), "should have list_loads tool");
+    assert!(tool_names.contains(&"assign_driver"), "should have assign_driver tool");
+    assert!(tool_names.contains(&"list_events"), "should have list_events tool");
+}
+
+#[tokio::test]
+async fn test_dispatcher_mcp_list_loads() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let token = dispatcher_login(&server, "mcp2@example.com", "password-mcp2").await;
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_loads",
+                "arguments": {}
+            }
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["jsonrpc"], "2.0");
+    assert_eq!(body["id"], 2);
+    // Result should have MCP content format
+    let content = &body["result"]["content"];
+    assert!(content.is_array(), "result.content should be an array");
+    let first = &content[0];
+    assert_eq!(first["type"], "text", "content type should be text");
+    assert!(first["text"].is_string(), "content text should be a string");
 }

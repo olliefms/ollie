@@ -432,6 +432,10 @@ pub async fn load_stop_depart(
     Ok(Json(response))
 }
 
+pub async fn resolve_stops_pub(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<Stop>, AppError> {
+    resolve_stops(state, inputs).await
+}
+
 async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<Stop>, AppError> {
     let mut stops = Vec::new();
     let mut resolutions: Vec<FacilityResolutionResponse> = Vec::new();

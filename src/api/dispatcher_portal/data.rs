@@ -1,0 +1,669 @@
+// src/api/dispatcher_portal/data.rs
+//
+// Dispatcher portal data endpoints — protected by require_dispatcher_jwt.
+// All business logic is delegated to the same DB ops used by the admin API.
+// No new DTOs are introduced; admin response shapes are reused throughout.
+
+use axum::{
+    extract::{Path, Query, State},
+    response::IntoResponse,
+    Json,
+};
+use axum::http::StatusCode;
+use serde::Deserialize;
+use uuid::Uuid;
+
+use crate::{
+    AppState,
+    error::AppError,
+    models::{
+        DriverListResponse, DriverStatus,
+        LoadListResponse, LoadDetailResponse,
+        TrailerListResponse,
+        TripListResponse,
+        TruckListResponse,
+        EventListResponse, EventResponse,
+        LoadStatus, TrailerStatus, TripStatus, TruckStatus,
+    },
+    api::loads::{ListLoadsQuery, resolve_stops_pub},
+    events,
+};
+use crate::models::{CreateLoadRequest, UpdateLoadRequest};
+use crate::api::trip_actions::AssignTripRequest;
+
+// ---------------------------------------------------------------------------
+// Loads
+// ---------------------------------------------------------------------------
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/loads",
+    params(
+        ("status" = Option<String>, Query, description = "Filter by status"),
+        ("facility_id" = Option<Uuid>, Query, description = "Filter by facility ID"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 20, max 100)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "List of loads", body = LoadListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn list_loads(
+    State(state): State<AppState>,
+    Query(q): Query<ListLoadsQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let limit = q.limit.unwrap_or(20).min(100);
+    let offset = q.offset.unwrap_or(0);
+
+    let (total, items) = state.db.list_loads(
+        q.status.as_deref(),
+        q.customer.as_deref(),
+        &q.tag,
+        q.from.as_deref(),
+        q.to.as_deref(),
+        limit,
+        offset,
+    ).await?;
+    Ok(Json(LoadListResponse { returned: total, items }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/loads/{id}",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load detail", body = LoadDetailResponse),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn get_load(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.get_load_by_id(id).await?;
+    let response = build_load_detail(&state, record).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/loads",
+    request_body(content = CreateLoadRequest, description = "Load to create"),
+    responses(
+        (status = 201, description = "Created load", body = LoadDetailResponse),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn create_load(
+    State(state): State<AppState>,
+    Json(body): Json<CreateLoadRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    use chrono::Utc;
+    use crate::models::{LoadRecord, LoadStatus};
+
+    let stops = resolve_stops_pub(&state, body.stops).await?;
+    let now = Utc::now();
+
+    let load_number = match body.load_number {
+        Some(n) => n,
+        None => {
+            use chrono::Datelike;
+            state.db.next_load_number(now.year()).await?
+        }
+    };
+
+    let facility_ids: Vec<Uuid> = stops.iter().map(|s| s.facility_id).collect();
+    let facilities = state.db.batch_get_facilities(&facility_ids).await?;
+    let stop_text = stops.iter()
+        .filter_map(|s| facilities.get(&s.facility_id))
+        .map(|f| format!("{} {}", f.name, f.address))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let embed_text_str = format!(
+        "{} {} {} {} {}",
+        body.customer_name,
+        stop_text,
+        body.commodity.as_deref().unwrap_or(""),
+        body.notes.as_deref().unwrap_or(""),
+        body.tags.join(" "),
+    );
+    let embedding = crate::ai::embed::embed_text(&state.ai, &embed_text_str).await.ok();
+
+    let record = LoadRecord {
+        id: Uuid::new_v4(),
+        load_number,
+        owner_id: 0,
+        status: LoadStatus::Planned,
+        customer_name: body.customer_name,
+        customer_ref: body.customer_ref,
+        stops,
+        rate_items: body.rate_items,
+        commodity: body.commodity,
+        weight_lbs: body.weight_lbs,
+        miles: body.miles,
+        notes: body.notes,
+        tags: body.tags,
+        blob_ids: body.blob_ids,
+        invoice_number: None,
+        invoice_date: None,
+        cancellation_reason: None,
+        embedding,
+        created_at: now,
+        updated_at: now,
+    };
+
+    state.db.insert_load(&record).await?;
+
+    if record.miles.is_none() {
+        let _ = state.routing_tx.try_send(record.id);
+    }
+
+    let response = build_load_detail(&state, record).await?;
+    Ok((StatusCode::CREATED, Json(response)))
+}
+
+#[utoipa::path(
+    put,
+    path = "/dispatch/api/v1/loads/{id}",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    request_body(content = UpdateLoadRequest, description = "Fields to update"),
+    responses(
+        (status = 200, description = "Updated load", body = LoadDetailResponse),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn update_load(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateLoadRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let stops_provided = body.stops.is_some();
+    let stops = match body.stops {
+        Some(inputs) => Some(resolve_stops_pub(&state, inputs).await?),
+        None => None,
+    };
+
+    let existing = state.db.get_load_by_id(id).await?;
+    let effective_stops = stops.as_ref().unwrap_or(&existing.stops);
+    let facility_ids: Vec<Uuid> = effective_stops.iter().map(|s| s.facility_id).collect();
+    let facilities = state.db.batch_get_facilities(&facility_ids).await?;
+    let stop_text = effective_stops.iter()
+        .filter_map(|s| facilities.get(&s.facility_id))
+        .map(|f| format!("{} {}", f.name, f.address))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let embed_text_str = format!(
+        "{} {} {} {} {}",
+        body.customer_name.as_deref().unwrap_or(&existing.customer_name),
+        stop_text,
+        body.commodity.as_deref().unwrap_or(existing.commodity.as_deref().unwrap_or("")),
+        body.notes.as_deref().unwrap_or(existing.notes.as_deref().unwrap_or("")),
+        body.tags.as_ref().unwrap_or(&existing.tags).join(" "),
+    );
+    let embedding = crate::ai::embed::embed_text(&state.ai, &embed_text_str).await.ok();
+
+    let mut updated = state.db.update_load_metadata(
+        id,
+        body.customer_name,
+        body.customer_ref,
+        stops,
+        body.rate_items,
+        body.commodity,
+        body.weight_lbs,
+        body.miles,
+        body.notes,
+        body.tags,
+        body.blob_ids,
+        embedding,
+    ).await?;
+
+    if stops_provided && body.miles.is_none() {
+        state.db.clear_load_miles(id).await?;
+        updated.miles = None;
+        let _ = state.routing_tx.try_send(id);
+    }
+
+    let response = build_load_detail(&state, updated).await?;
+    Ok(Json(response))
+}
+
+// ---------------------------------------------------------------------------
+// Trips
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListTripsQuery {
+    pub load_id: Option<Uuid>,
+    pub driver_id: Option<Uuid>,
+    pub status: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/trips",
+    params(
+        ("load_id" = Option<Uuid>, Query, description = "Filter by load ID"),
+        ("driver_id" = Option<Uuid>, Query, description = "Filter by driver ID"),
+        ("status" = Option<String>, Query, description = "Filter by status"),
+    ),
+    responses(
+        (status = 200, description = "List of trips", body = TripListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn list_trips(
+    State(state): State<AppState>,
+    Query(q): Query<ListTripsQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let items = state.db.list_trips(q.load_id, q.driver_id, q.status.as_deref()).await?;
+    let returned = items.len();
+    Ok(Json(TripListResponse { returned, items }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/trips/{id}",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 200, description = "Trip record", body = TripRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn get_trip(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.get_trip(id).await?;
+    Ok(Json(record))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/assign",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    request_body(content = AssignTripRequest, description = "Driver, truck, and optional trailers"),
+    responses(
+        (status = 200, description = "Trip assigned", body = TripRecord),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — driver/truck/trailer not available or invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn assign_trip(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<AssignTripRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::models::DriverStatus;
+
+    let driver = state.db.get_driver_by_id(body.driver_id).await?;
+    if driver.status != DriverStatus::Available {
+        return Err(AppError::Conflict(format!("driver {} is not available", body.driver_id)));
+    }
+
+    let truck = state.db.get_truck_by_id(body.truck_id).await?;
+    if truck.status != TruckStatus::Available {
+        return Err(AppError::Conflict(format!("truck {} is not available", body.truck_id)));
+    }
+
+    for &trailer_id in &body.trailer_ids {
+        let trailer = state.db.get_trailer_by_id(trailer_id).await?;
+        if trailer.status != TrailerStatus::Available {
+            return Err(AppError::Conflict(format!("trailer {} is not available", trailer_id)));
+        }
+    }
+
+    state.db.transition_trip_status(id, TripStatus::Assigned).await?;
+    state.db.update_trip_resources(id, Some(body.driver_id), Some(body.truck_id), body.trailer_ids.clone()).await?;
+
+    state.db.update_driver_status(body.driver_id, DriverStatus::Assigned).await?;
+    state.db.update_truck_status(body.truck_id, TruckStatus::Assigned).await?;
+    for &trailer_id in &body.trailer_ids {
+        state.db.update_trailer_status(trailer_id, TrailerStatus::Assigned).await?;
+    }
+
+    // Re-fetch after all mutations (stale-return rule)
+    let trip = state.db.get_trip(id).await?;
+
+    if let Some(load_id) = trip.load_id {
+        if let Ok(load) = state.db.get_load_by_id(load_id).await {
+            if load.status == LoadStatus::Planned {
+                let _ = state.db.transition_load_status(load_id, LoadStatus::Assigned, None, None, None).await;
+            }
+        }
+    }
+
+    events::on_trip_assigned(&state.db, id).await;
+    Ok(Json(trip))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/unassign",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 200, description = "Trip unassigned", body = TripRecord),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn unassign_trip(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let existing = state.db.get_trip(id).await?;
+    state.db.transition_trip_status(id, TripStatus::Planned).await?;
+    state.db.update_trip_resources(id, None, None, vec![]).await?;
+
+    if let Some(driver_id) = existing.driver_id {
+        let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
+    }
+    if let Some(truck_id) = existing.truck_id {
+        let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
+    }
+    for &trailer_id in &existing.trailer_ids {
+        let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
+    }
+
+    if let Some(load_id) = existing.load_id {
+        let active = state.db.count_active_trips_for_load(load_id).await.unwrap_or(1);
+        if active == 0 {
+            if let Ok(load) = state.db.get_load_by_id(load_id).await {
+                if load.status == LoadStatus::Assigned {
+                    let _ = state.db.transition_load_status(load_id, LoadStatus::Planned, None, None, None).await;
+                }
+            }
+        }
+    }
+
+    // Re-fetch after all mutations (stale-return rule)
+    let trip = state.db.get_trip(id).await?;
+    events::on_trip_unassigned(&state.db, id).await;
+    Ok(Json(trip))
+}
+
+// ---------------------------------------------------------------------------
+// Drivers
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListDriversQuery {
+    pub status: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/drivers",
+    params(
+        ("status" = Option<String>, Query, description = "Filter by status"),
+    ),
+    responses(
+        (status = 200, description = "List of drivers", body = DriverListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn list_drivers(
+    State(state): State<AppState>,
+    Query(q): Query<ListDriversQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let (total, items) = state.db.list_drivers(q.status.as_deref(), 100, 0).await?;
+    Ok(Json(DriverListResponse { returned: total, items }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/drivers/{id}",
+    params(("id" = Uuid, Path, description = "Driver UUID")),
+    responses(
+        (status = 200, description = "Driver record", body = DriverRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn get_driver(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.get_driver_by_id(id).await?;
+    Ok(Json(record))
+}
+
+// ---------------------------------------------------------------------------
+// Trucks
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListTrucksQuery {
+    pub status: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/trucks",
+    params(
+        ("status" = Option<String>, Query, description = "Filter by status"),
+    ),
+    responses(
+        (status = 200, description = "List of trucks", body = TruckListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn list_trucks(
+    State(state): State<AppState>,
+    Query(q): Query<ListTrucksQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let (total, items) = state.db.list_trucks(q.status.as_deref(), 100, 0).await?;
+    Ok(Json(TruckListResponse { returned: total, items }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/trucks/{id}",
+    params(("id" = Uuid, Path, description = "Truck UUID")),
+    responses(
+        (status = 200, description = "Truck record", body = TruckRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn get_truck(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.get_truck_by_id(id).await?;
+    Ok(Json(record))
+}
+
+// ---------------------------------------------------------------------------
+// Trailers
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListTrailersQuery {
+    pub status: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/trailers",
+    params(
+        ("status" = Option<String>, Query, description = "Filter by status"),
+    ),
+    responses(
+        (status = 200, description = "List of trailers", body = TrailerListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn list_trailers(
+    State(state): State<AppState>,
+    Query(q): Query<ListTrailersQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let (total, items) = state.db.list_trailers(q.status.as_deref(), None, 100, 0).await?;
+    Ok(Json(TrailerListResponse { returned: total, items }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/trailers/{id}",
+    params(("id" = Uuid, Path, description = "Trailer UUID")),
+    responses(
+        (status = 200, description = "Trailer record", body = TrailerRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn get_trailer(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.get_trailer_by_id(id).await?;
+    Ok(Json(record))
+}
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListEventsDispatchQuery {
+    pub trip_id: Option<Uuid>,
+    pub driver_id: Option<Uuid>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/events",
+    params(
+        ("trip_id" = Option<Uuid>, Query, description = "Filter by trip ID"),
+        ("driver_id" = Option<Uuid>, Query, description = "Filter by driver ID"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 20, max 100)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "List of events", body = EventListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn list_events(
+    State(state): State<AppState>,
+    Query(q): Query<ListEventsDispatchQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let limit = q.limit.unwrap_or(20).min(100);
+    let offset = q.offset.unwrap_or(0);
+
+    // Use trip_id or driver_id as entity_id filter (trip takes priority)
+    let entity_id = q.trip_id.or(q.driver_id);
+
+    let (_total, records) = state.db.query_events(
+        entity_id,
+        None,
+        None,
+        None,
+        None,
+        limit,
+        offset,
+    ).await?;
+    let items: Vec<EventResponse> = records.into_iter().map(EventResponse::from).collect();
+    Ok(Json(EventListResponse { returned: items.len(), items }))
+}
+
+// ---------------------------------------------------------------------------
+// Internal helpers — mirror build_detail_response from src/api/loads.rs
+// ---------------------------------------------------------------------------
+
+async fn build_load_detail(
+    state: &AppState,
+    record: crate::models::LoadRecord,
+) -> Result<LoadDetailResponse, AppError> {
+    use crate::models::{StopResponse, LoadDetailResponse};
+
+    let facility_ids: Vec<Uuid> = record.stops.iter().map(|s| s.facility_id).collect();
+    let facilities = state.db.batch_get_facilities(&facility_ids).await?;
+
+    let stops: Vec<StopResponse> = record.stops.iter().map(|stop| {
+        let facility = facilities.get(&stop.facility_id);
+        StopResponse {
+            sequence: stop.sequence,
+            stop_type: stop.stop_type.clone(),
+            service_type: stop.service_type.clone(),
+            facility_id: stop.facility_id,
+            facility_name: facility.map(|f| f.name.clone()).unwrap_or_default(),
+            address: facility.map(|f| f.address.clone()).unwrap_or_default(),
+            normalized_address: facility.and_then(|f| f.normalized_address.clone()),
+            lat: facility.and_then(|f| f.lat),
+            lng: facility.and_then(|f| f.lng),
+            scheduled_arrive: stop.scheduled_arrive.clone(),
+            scheduled_arrive_end: stop.scheduled_arrive_end.clone(),
+            actual_arrive: stop.actual_arrive.clone(),
+            actual_depart: stop.actual_depart.clone(),
+            expected_dwell_minutes: stop.expected_dwell_minutes,
+            detention_free_minutes: stop.detention_free_minutes,
+            detention_grace_minutes: stop.detention_grace_minutes,
+            notes: stop.notes.clone(),
+            blob_ids: stop.blob_ids.clone(),
+            timezone: stop.timezone.clone(),
+        }
+    }).collect();
+
+    let total_rate_usd = record.total_rate_usd();
+    Ok(LoadDetailResponse {
+        id: record.id,
+        load_number: record.load_number,
+        status: record.status,
+        customer_name: record.customer_name,
+        customer_ref: record.customer_ref,
+        stops,
+        rate_items: record.rate_items,
+        total_rate_usd,
+        commodity: record.commodity,
+        weight_lbs: record.weight_lbs,
+        miles: record.miles,
+        notes: record.notes,
+        tags: record.tags,
+        blob_ids: record.blob_ids,
+        invoice_number: record.invoice_number,
+        invoice_date: record.invoice_date,
+        cancellation_reason: record.cancellation_reason,
+        created_at: record.created_at,
+        updated_at: record.updated_at,
+    })
+}
