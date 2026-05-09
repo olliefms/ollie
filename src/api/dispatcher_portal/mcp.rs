@@ -1,0 +1,613 @@
+// src/api/dispatcher_portal/mcp.rs
+//
+// MCP transport: hand-rolled JSON-RPC 2.0 over HTTP POST.
+//
+// rmcp (official Rust MCP SDK) was evaluated but targets Axum 0.8, which
+// conflicts with this project's Axum 0.7 dependency. Rather than upgrading
+// Axum (a large breaking change mid-release), we hand-roll the thin JSON-RPC
+// envelope (~150 lines). Tool handlers are thin shims into existing DB ops;
+// no business logic lives here. Switch to rmcp once the project upgrades to
+// Axum 0.8.
+
+use axum::{extract::State, Json};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use uuid::Uuid;
+
+use crate::{
+    AppState,
+    events,
+    models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
+};
+
+// ---------------------------------------------------------------------------
+// JSON-RPC 2.0 envelope types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct JsonRpcRequest {
+    pub jsonrpc: String,
+    pub id: Option<Value>,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+#[derive(Serialize)]
+pub struct JsonRpcResponse {
+    pub jsonrpc: String,
+    pub id: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<JsonRpcError>,
+}
+
+#[derive(Serialize)]
+pub struct JsonRpcError {
+    pub code: i32,
+    pub message: String,
+}
+
+impl JsonRpcResponse {
+    fn ok(id: Option<Value>, result: Value) -> Self {
+        Self { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
+    }
+
+    fn err(id: Option<Value>, code: i32, message: impl Into<String>) -> Self {
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            result: None,
+            error: Some(JsonRpcError { code, message: message.into() }),
+        }
+    }
+}
+
+/// Wrap a serializable value in the MCP content format.
+fn mcp_content(value: impl Serialize) -> Value {
+    let text = serde_json::to_string(&value).unwrap_or_default();
+    json!({ "content": [{ "type": "text", "text": text }] })
+}
+
+// ---------------------------------------------------------------------------
+// tools/list schema
+// ---------------------------------------------------------------------------
+
+fn tools_list() -> Value {
+    json!({
+        "tools": [
+            {
+                "name": "list_loads",
+                "description": "List loads. Optional filters: status (planned/assigned/dispatched/in_transit/delivered/invoiced/settled/cancelled), facility_id (UUID).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string", "enum": ["planned","assigned","dispatched","in_transit","delivered","invoiced","settled","cancelled"] },
+                        "facility_id": { "type": "string", "format": "uuid" }
+                    }
+                }
+            },
+            {
+                "name": "get_load",
+                "description": "Get a single load by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "create_load",
+                "description": "Create a new freight load.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "customer_name": { "type": "string" },
+                        "customer_ref": { "type": "string" },
+                        "stops": { "type": "array", "items": { "type": "object" } },
+                        "rate_items": { "type": "array", "items": { "type": "object" } },
+                        "commodity": { "type": "string" },
+                        "weight_lbs": { "type": "number" },
+                        "miles": { "type": "number" },
+                        "notes": { "type": "string" },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "load_number": { "type": "integer" }
+                    },
+                    "required": ["customer_name", "stops"]
+                }
+            },
+            {
+                "name": "update_load",
+                "description": "Update fields on an existing load.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "customer_name": { "type": "string" },
+                        "customer_ref": { "type": "string" },
+                        "stops": { "type": "array", "items": { "type": "object" } },
+                        "rate_items": { "type": "array", "items": { "type": "object" } },
+                        "commodity": { "type": "string" },
+                        "weight_lbs": { "type": "number" },
+                        "miles": { "type": "number" },
+                        "notes": { "type": "string" },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "list_trips",
+                "description": "List trips. Optional filters: load_id, driver_id, status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "load_id": { "type": "string", "format": "uuid" },
+                        "driver_id": { "type": "string", "format": "uuid" },
+                        "status": { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "get_trip",
+                "description": "Get a single trip by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "assign_driver",
+                "description": "Assign a driver, truck, and trailers to a trip.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "driver_id": { "type": "string", "format": "uuid" },
+                        "truck_id": { "type": "string", "format": "uuid" },
+                        "trailer_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                    },
+                    "required": ["trip_id", "driver_id", "truck_id"]
+                }
+            },
+            {
+                "name": "unassign_driver",
+                "description": "Unassign the driver and equipment from a trip.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "list_drivers",
+                "description": "List drivers. Optional filter: status (available/assigned/dispatched/inactive).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status": { "type": "string", "enum": ["available","assigned","dispatched","inactive"] }
+                    }
+                }
+            },
+            {
+                "name": "get_driver",
+                "description": "Get a single driver by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "list_trucks",
+                "description": "List all trucks.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "list_trailers",
+                "description": "List all trailers.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "list_events",
+                "description": "List events. Optional filters: trip_id, driver_id.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "driver_id": { "type": "string", "format": "uuid" }
+                    }
+                }
+            }
+        ]
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tool dispatch helpers
+// ---------------------------------------------------------------------------
+
+fn parse_uuid(args: &Value, key: &str) -> Result<Uuid, String> {
+    let s = args[key].as_str().ok_or_else(|| format!("missing or non-string field '{key}'"))?;
+    s.parse::<Uuid>().map_err(|_| format!("invalid UUID for field '{key}': {s}"))
+}
+
+fn parse_uuid_opt(args: &Value, key: &str) -> Result<Option<Uuid>, String> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let s = v.as_str().ok_or_else(|| format!("field '{key}' must be a string UUID"))?;
+            Ok(Some(s.parse::<Uuid>().map_err(|_| format!("invalid UUID for field '{key}': {s}"))?))
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Main handler
+// ---------------------------------------------------------------------------
+
+pub async fn handle(
+    State(state): State<AppState>,
+    Json(req): Json<JsonRpcRequest>,
+) -> Json<JsonRpcResponse> {
+    let id = req.id.clone();
+
+    if req.jsonrpc != "2.0" {
+        return Json(JsonRpcResponse::err(id, -32600, "invalid JSON-RPC version"));
+    }
+
+    let result = match req.method.as_str() {
+        "initialize" => handle_initialize(),
+        "tools/list" => Ok(tools_list()),
+        "tools/call" => handle_tool_call(&state, &req.params).await,
+        _ => return Json(JsonRpcResponse::err(id, -32601, format!("method not found: {}", req.method))),
+    };
+
+    match result {
+        Ok(value) => Json(JsonRpcResponse::ok(id, value)),
+        Err(e) => Json(JsonRpcResponse::err(id, -32603, e)),
+    }
+}
+
+fn handle_initialize() -> Result<Value, String> {
+    Ok(json!({
+        "protocolVersion": "2024-11-05",
+        "capabilities": { "tools": {} },
+        "serverInfo": { "name": "ollie-dispatcher", "version": "1.0" }
+    }))
+}
+
+async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, String> {
+    let name = params["name"].as_str().ok_or("missing tool name")?;
+    let args = &params["arguments"];
+
+    match name {
+        "list_loads" => tool_list_loads(state, args).await,
+        "get_load" => tool_get_load(state, args).await,
+        "create_load" => tool_create_load(state, args).await,
+        "update_load" => tool_update_load(state, args).await,
+        "list_trips" => tool_list_trips(state, args).await,
+        "get_trip" => tool_get_trip(state, args).await,
+        "assign_driver" => tool_assign_driver(state, args).await,
+        "unassign_driver" => tool_unassign_driver(state, args).await,
+        "list_drivers" => tool_list_drivers(state, args).await,
+        "get_driver" => tool_get_driver(state, args).await,
+        "list_trucks" => tool_list_trucks(state).await,
+        "list_trailers" => tool_list_trailers(state).await,
+        "list_events" => tool_list_events(state, args).await,
+        _ => Err(format!("unknown tool: {name}")),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool implementations
+// ---------------------------------------------------------------------------
+
+async fn tool_list_loads(state: &AppState, args: &Value) -> Result<Value, String> {
+    let status = args["status"].as_str();
+    let limit = 100usize;
+    let offset = 0usize;
+
+    let (total, items) = state.db.list_loads(
+        status,
+        None, // customer
+        &[],  // tags
+        None, // from
+        None, // to
+        limit,
+        offset,
+    ).await.map_err(|e| e.to_string())?;
+
+    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+}
+
+async fn tool_get_load(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = state.db.get_load_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, String> {
+    use crate::models::CreateLoadRequest;
+    use crate::api::loads::resolve_stops_pub;
+
+    let req: CreateLoadRequest = serde_json::from_value(args.clone())
+        .map_err(|e| format!("invalid create_load arguments: {e}"))?;
+
+    let stops = resolve_stops_pub(state, req.stops).await.map_err(|e| e.to_string())?;
+
+    let now = chrono::Utc::now();
+    let load_number = match req.load_number {
+        Some(n) => n,
+        None => {
+            use chrono::Datelike;
+            state.db.next_load_number(now.year()).await.map_err(|e| e.to_string())?
+        }
+    };
+
+    let facility_ids: Vec<Uuid> = stops.iter().map(|s| s.facility_id).collect();
+    let facilities = state.db.batch_get_facilities(&facility_ids).await.map_err(|e| e.to_string())?;
+    let stop_text = stops.iter()
+        .filter_map(|s| facilities.get(&s.facility_id))
+        .map(|f| format!("{} {}", f.name, f.address))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let embed_text = format!(
+        "{} {} {} {} {}",
+        req.customer_name,
+        stop_text,
+        req.commodity.as_deref().unwrap_or(""),
+        req.notes.as_deref().unwrap_or(""),
+        req.tags.join(" "),
+    );
+    let embedding = crate::ai::embed::embed_text(&state.ai, &embed_text).await.ok();
+
+    let record = crate::models::LoadRecord {
+        id: Uuid::new_v4(),
+        load_number,
+        owner_id: 0,
+        status: LoadStatus::Planned,
+        customer_name: req.customer_name,
+        customer_ref: req.customer_ref,
+        stops,
+        rate_items: req.rate_items,
+        commodity: req.commodity,
+        weight_lbs: req.weight_lbs,
+        miles: req.miles,
+        notes: req.notes,
+        tags: req.tags,
+        blob_ids: req.blob_ids,
+        invoice_number: None,
+        invoice_date: None,
+        cancellation_reason: None,
+        embedding,
+        created_at: now,
+        updated_at: now,
+    };
+
+    state.db.insert_load(&record).await.map_err(|e| e.to_string())?;
+
+    if record.miles.is_none() {
+        let _ = state.routing_tx.try_send(record.id);
+    }
+
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, String> {
+    use crate::models::UpdateLoadRequest;
+    use crate::api::loads::resolve_stops_pub;
+
+    let id = parse_uuid(args, "id")?;
+
+    let req: UpdateLoadRequest = serde_json::from_value(args.clone())
+        .map_err(|e| format!("invalid update_load arguments: {e}"))?;
+
+    let stops_provided = req.stops.is_some();
+    let stops = match req.stops {
+        Some(inputs) => Some(resolve_stops_pub(state, inputs).await.map_err(|e| e.to_string())?),
+        None => None,
+    };
+
+    let existing = state.db.get_load_by_id(id).await.map_err(|e| e.to_string())?;
+    let effective_stops = stops.as_ref().unwrap_or(&existing.stops);
+    let facility_ids: Vec<Uuid> = effective_stops.iter().map(|s| s.facility_id).collect();
+    let facilities = state.db.batch_get_facilities(&facility_ids).await.map_err(|e| e.to_string())?;
+    let stop_text = effective_stops.iter()
+        .filter_map(|s| facilities.get(&s.facility_id))
+        .map(|f| format!("{} {}", f.name, f.address))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let embed_text = format!(
+        "{} {} {} {} {}",
+        req.customer_name.as_deref().unwrap_or(&existing.customer_name),
+        stop_text,
+        req.commodity.as_deref().unwrap_or(existing.commodity.as_deref().unwrap_or("")),
+        req.notes.as_deref().unwrap_or(existing.notes.as_deref().unwrap_or("")),
+        req.tags.as_ref().unwrap_or(&existing.tags).join(" "),
+    );
+    let embedding = crate::ai::embed::embed_text(&state.ai, &embed_text).await.ok();
+
+    let mut updated = state.db.update_load_metadata(
+        id,
+        req.customer_name,
+        req.customer_ref,
+        stops,
+        req.rate_items,
+        req.commodity,
+        req.weight_lbs,
+        req.miles,
+        req.notes,
+        req.tags,
+        req.blob_ids,
+        embedding,
+    ).await.map_err(|e| e.to_string())?;
+
+    if stops_provided && req.miles.is_none() {
+        state.db.clear_load_miles(id).await.map_err(|e| e.to_string())?;
+        updated.miles = None;
+        let _ = state.routing_tx.try_send(id);
+    }
+
+    Ok(mcp_content(updated))
+}
+
+async fn tool_list_trips(state: &AppState, args: &Value) -> Result<Value, String> {
+    let load_id = parse_uuid_opt(args, "load_id")?;
+    let driver_id = parse_uuid_opt(args, "driver_id")?;
+    let status = args["status"].as_str();
+
+    let items = state.db.list_trips(load_id, driver_id, status)
+        .await.map_err(|e| e.to_string())?;
+    let returned = items.len();
+    Ok(mcp_content(serde_json::json!({ "returned": returned, "items": items })))
+}
+
+async fn tool_get_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = state.db.get_trip(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_assign_driver(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let driver_id = parse_uuid(args, "driver_id")?;
+    let truck_id = parse_uuid(args, "truck_id")?;
+    let trailer_ids: Vec<Uuid> = match args.get("trailer_ids") {
+        None | Some(Value::Null) => vec![],
+        Some(v) => serde_json::from_value(v.clone())
+            .map_err(|e| format!("invalid trailer_ids: {e}"))?,
+    };
+
+    let driver = state.db.get_driver_by_id(driver_id).await.map_err(|e| e.to_string())?;
+    if driver.status != DriverStatus::Available {
+        return Err(format!("driver {driver_id} is not available"));
+    }
+
+    let truck = state.db.get_truck_by_id(truck_id).await.map_err(|e| e.to_string())?;
+    if truck.status != TruckStatus::Available {
+        return Err(format!("truck {truck_id} is not available"));
+    }
+
+    for &tid in &trailer_ids {
+        let trailer = state.db.get_trailer_by_id(tid).await.map_err(|e| e.to_string())?;
+        if trailer.status != TrailerStatus::Available {
+            return Err(format!("trailer {tid} is not available"));
+        }
+    }
+
+    state.db.transition_trip_status(trip_id, TripStatus::Assigned).await.map_err(|e| e.to_string())?;
+    state.db.update_trip_resources(trip_id, Some(driver_id), Some(truck_id), trailer_ids.clone())
+        .await.map_err(|e| e.to_string())?;
+
+    state.db.update_driver_status(driver_id, DriverStatus::Assigned).await.map_err(|e| e.to_string())?;
+    state.db.update_truck_status(truck_id, TruckStatus::Assigned).await.map_err(|e| e.to_string())?;
+    for &tid in &trailer_ids {
+        state.db.update_trailer_status(tid, TrailerStatus::Assigned).await.map_err(|e| e.to_string())?;
+    }
+
+    // Re-fetch after all mutations (stale-return rule)
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+
+    if let Some(load_id) = trip.load_id {
+        if let Ok(load) = state.db.get_load_by_id(load_id).await {
+            if load.status == LoadStatus::Planned {
+                let _ = state.db.transition_load_status(load_id, LoadStatus::Assigned, None, None, None).await;
+            }
+        }
+    }
+
+    events::on_trip_assigned(&state.db, trip_id).await;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_unassign_driver(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+
+    let existing = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    state.db.transition_trip_status(trip_id, TripStatus::Planned).await.map_err(|e| e.to_string())?;
+    state.db.update_trip_resources(trip_id, None, None, vec![]).await.map_err(|e| e.to_string())?;
+
+    if let Some(driver_id) = existing.driver_id {
+        let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
+    }
+    if let Some(truck_id) = existing.truck_id {
+        let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
+    }
+    for &tid in &existing.trailer_ids {
+        let _ = state.db.update_trailer_status(tid, TrailerStatus::Available).await;
+    }
+
+    if let Some(load_id) = existing.load_id {
+        let active = state.db.count_active_trips_for_load(load_id).await.unwrap_or(1);
+        if active == 0 {
+            if let Ok(load) = state.db.get_load_by_id(load_id).await {
+                if load.status == LoadStatus::Assigned {
+                    let _ = state.db.transition_load_status(load_id, LoadStatus::Planned, None, None, None).await;
+                }
+            }
+        }
+    }
+
+    // Re-fetch after all mutations (stale-return rule)
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    events::on_trip_unassigned(&state.db, trip_id).await;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_list_drivers(state: &AppState, args: &Value) -> Result<Value, String> {
+    let status = args["status"].as_str();
+    let (total, items) = state.db.list_drivers(status, 100, 0)
+        .await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+}
+
+async fn tool_get_driver(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = state.db.get_driver_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_list_trucks(state: &AppState) -> Result<Value, String> {
+    let (total, items) = state.db.list_trucks(None, 100, 0)
+        .await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+}
+
+async fn tool_list_trailers(state: &AppState) -> Result<Value, String> {
+    let (total, items) = state.db.list_trailers(None, None, 100, 0)
+        .await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+}
+
+async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid_opt(args, "trip_id")?;
+    let driver_id = parse_uuid_opt(args, "driver_id")?;
+    // trip_id takes priority as entity_id filter
+    let entity_id = trip_id.or(driver_id);
+
+    let (_total, records) = state.db.query_events(
+        entity_id,
+        None,
+        None,
+        None,
+        None,
+        20,
+        0,
+    ).await.map_err(|e| e.to_string())?;
+
+    let items: Vec<crate::models::EventResponse> = records.into_iter().map(crate::models::EventResponse::from).collect();
+    Ok(mcp_content(serde_json::json!({ "returned": items.len(), "items": items })))
+}

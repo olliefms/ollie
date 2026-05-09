@@ -2,6 +2,8 @@
 pub mod auth;
 pub mod blob;
 pub mod blobs;
+pub mod dispatchers;
+pub mod dispatcher_portal;
 pub mod driver_portal;
 pub mod drivers;
 pub mod events;
@@ -79,6 +81,28 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         trailers::get_trailer,
         trailers::update_trailer,
         trailers::delete_trailer,
+        dispatchers::create_dispatcher,
+        dispatchers::list_dispatchers,
+        dispatchers::get_dispatcher,
+        dispatchers::update_dispatcher,
+        dispatchers::reset_dispatcher_password,
+        dispatcher_portal::auth::login,
+        dispatcher_portal::auth::refresh,
+        dispatcher_portal::data::list_loads,
+        dispatcher_portal::data::get_load,
+        dispatcher_portal::data::create_load,
+        dispatcher_portal::data::update_load,
+        dispatcher_portal::data::list_trips,
+        dispatcher_portal::data::get_trip,
+        dispatcher_portal::data::assign_trip,
+        dispatcher_portal::data::unassign_trip,
+        dispatcher_portal::data::list_drivers,
+        dispatcher_portal::data::get_driver,
+        dispatcher_portal::data::list_trucks,
+        dispatcher_portal::data::get_truck,
+        dispatcher_portal::data::list_trailers,
+        dispatcher_portal::data::get_trailer,
+        dispatcher_portal::data::list_events,
     ),
     components(
         schemas(
@@ -152,6 +176,15 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
+            models::DispatcherStatus,
+            models::DispatcherRecord,
+            dispatchers::CreateDispatcherRequest,
+            dispatchers::UpdateDispatcherRequest,
+            dispatchers::ResetDispatcherPasswordRequest,
+            dispatchers::DispatcherListResponse,
+            dispatcher_portal::auth::LoginRequest,
+            dispatcher_portal::auth::LoginResponse,
+            dispatcher_portal::auth::LockResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -163,6 +196,9 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
     ),
     tags(
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
+        (name = "dispatch", description = "Dispatcher portal data API — loads, trips, drivers, trucks, trailers, events"),
+        (name = "dispatch-auth", description = "Dispatcher portal authentication — login and JWT refresh"),
+        (name = "dispatchers", description = "Dispatcher admin CRUD and password management"),
         (name = "drivers", description = "Driver management with state machine"),
         (name = "events", description = "Append-only event journal (read-only)"),
         (name = "facilities", description = "Freight facility management with geocoding and semantic search"),
@@ -329,6 +365,16 @@ DELETE soft-deletes (sets status=inactive).
   PUT    /api/v1/trailers/:id      Update trailer fields (out_of_service allowed; assigned/dispatched rejected)
   DELETE /api/v1/trailers/:id      Soft-delete (sets status=inactive)
 
+### Dispatchers — /api/v1/dispatchers, /api/v1/dispatchers/:id
+Dispatcher accounts for admin users. Email is normalized (lowercase + trimmed) and must be unique.
+Passwords are hashed with bcrypt (cost 12). Token version increments on password reset to invalidate JWTs.
+
+  POST   /api/v1/dispatchers              Create dispatcher (body: email, name, password). Returns 409 if email already in use.
+  GET    /api/v1/dispatchers              List all dispatchers. Returns { dispatchers, returned }.
+  GET    /api/v1/dispatchers/:id          Get dispatcher by UUID.
+  PUT    /api/v1/dispatchers/:id          Update name and/or status (body: name?, status?).
+  PUT    /api/v1/dispatchers/:id/password Admin reset password (body: password). Returns 204.
+
 ### Events — /api/v1/events, /api/v1/events/:id
 Append-only event journal recording entity lifecycle transitions. Written by internal
 pipeline workers; read-only via API. Timestamps are RFC3339 UTC+Z.
@@ -351,6 +397,41 @@ GET endpoints that support ?s= return a `returned` field.
 - List mode (no ?s=): `returned` equals the total count of matching records (for pagination).
 - Search mode (?s=query): `returned` equals the number of items in this response (bounded by limit).
 
+## Dispatcher Portal
+
+The dispatcher portal has its own auth namespace at /dispatch/auth/ and a data API
+at /dispatch/api/v1/. These endpoints use JWT auth (not Bearer) and are intended for
+the dispatcher web app — not for admin automation. Auth is email+password based with
+bcrypt verification and exponential backoff lockout after 5 failed attempts
+(15 min × 2^(failures-5), capped at 24h).
+
+Auth endpoints (no auth required):
+  POST /dispatch/auth/login    Authenticate with email+password; returns JWT on success.
+                               Returns 423 with { error, locked_until } if account is locked.
+  POST /dispatch/auth/refresh  Refresh an expiring JWT (must be within 7-day refresh window).
+
+Data endpoints (dispatcher JWT required — same response shapes as admin API):
+  GET  /dispatch/api/v1/loads              List loads (?status, ?customer, ?from, ?to, ?tag, ?limit, ?offset)
+  GET  /dispatch/api/v1/loads/:id          Get load detail
+  POST /dispatch/api/v1/loads              Create load (same fields as admin POST /api/v1/loads)
+  PUT  /dispatch/api/v1/loads/:id          Update load fields
+
+  GET  /dispatch/api/v1/trips              List trips (?load_id, ?driver_id, ?status)
+  GET  /dispatch/api/v1/trips/:id          Get trip record
+  POST /dispatch/api/v1/trips/:id/assign   Assign driver + truck + trailers (body: driver_id, truck_id, trailer_ids?)
+  POST /dispatch/api/v1/trips/:id/unassign Unassign resources and revert trip to planned
+
+  GET  /dispatch/api/v1/drivers            List drivers (?status)
+  GET  /dispatch/api/v1/drivers/:id        Get driver record
+
+  GET  /dispatch/api/v1/trucks             List trucks (?status)
+  GET  /dispatch/api/v1/trucks/:id         Get truck record
+
+  GET  /dispatch/api/v1/trailers           List trailers (?status)
+  GET  /dispatch/api/v1/trailers/:id       Get trailer record
+
+  GET  /dispatch/api/v1/events             List recent events (?trip_id, ?driver_id, ?limit, ?offset)
+
 ## Driver Portal
 
 The driver-facing PWA has its own API namespace at /driver/api/v1/. These endpoints
@@ -370,6 +451,10 @@ Data endpoints (JWT required — driver sees only their own trips):
   GET  /driver/api/v1/trips                  Driver's trips (?tab=current|upcoming|past)
   GET  /driver/api/v1/trips/:id              Trip detail (stops, load summary, equipment)
   GET  /driver/api/v1/trips/:id/stops/:seq   Stop detail (facility contacts, commodity info)
+
+## Dispatcher MCP Server
+
+POST /dispatch/mcp — MCP JSON-RPC endpoint for AI agent tool calls. Requires dispatcher JWT (Authorization: Bearer <token> from POST /dispatch/auth/login). Supports tools: list_loads, get_load, create_load, update_load, list_trips, get_trip, assign_driver, unassign_driver, list_drivers, get_driver, list_trucks, list_trailers, list_events.
 
 ## Full Spec
 
@@ -412,6 +497,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/loads/:id/settle", post(loads::settle_load))
         .route("/api/v1/loads/:id/stops/:seq/arrive", post(loads::load_stop_arrive))
         .route("/api/v1/loads/:id/stops/:seq/depart", post(loads::load_stop_depart))
+        // Dispatchers
+        .merge(dispatchers::router())
         // Drivers, trucks, trailers, trips, trip actions, events (stubs — filled in by Wave 2/3/4)
         .merge(drivers::router())
         .merge(trucks::router())
@@ -424,6 +511,9 @@ pub fn router(state: AppState) -> Router {
             async move { require_bearer(k, req, next).await }
         }));
 
+    // Dispatcher portal: auth + JWT-protected data endpoints
+    let dispatcher_auth = dispatcher_portal::dispatcher_portal_router(&state);
+
     // Driver portal: auth endpoints + JWT-protected data endpoints (#51 adds routes)
     let driver_portal = driver_portal::portal_router(&state);
 
@@ -433,11 +523,19 @@ pub fn router(state: AppState) -> Router {
             "static/driver/index.html",
         ));
 
+    // Static file serving for the dispatcher SPA; SPA fallback to index.html
+    let dispatch_static = tower_http::services::ServeDir::new("static/dispatch")
+        .fallback(tower_http::services::ServeFile::new(
+            "static/dispatch/index.html",
+        ));
+
     Router::new()
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .merge(protected)
+        .merge(dispatcher_auth)
         .merge(driver_portal)
         .nest_service("/driver", driver_static)
+        .nest_service("/dispatch", dispatch_static)
         .with_state(state)
 }

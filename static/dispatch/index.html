@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ollie Dispatch</title>
+  <link rel="stylesheet" href="/dispatch/css/base.css">
+  <link rel="stylesheet" href="/dispatch/css/components.css">
+</head>
+<body>
+  <!-- Login view (shown when not authenticated) -->
+  <div id="login-view" class="login-view">
+    <div class="login-card">
+      <div class="login-card__header">
+        <div class="login-card__title">Ollie Dispatch</div>
+        <div class="login-card__subtitle">Sign in to your dispatcher account</div>
+      </div>
+      <form id="login-form" class="login-card__form" novalidate>
+        <div id="login-alert" hidden></div>
+        <div class="form-group">
+          <label class="form-label" for="login-email">Email</label>
+          <input
+            class="form-input"
+            id="login-email"
+            type="email"
+            autocomplete="email"
+            required
+            placeholder="dispatcher@example.com"
+          >
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="login-password">Password</label>
+          <input
+            class="form-input"
+            id="login-password"
+            type="password"
+            autocomplete="current-password"
+            required
+            placeholder="••••••••"
+          >
+        </div>
+        <button class="btn btn--primary btn--full" type="submit" id="login-submit">
+          Sign in
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- App shell (shown when authenticated) -->
+  <div id="app-shell" class="shell" hidden>
+    <!-- Sidebar navigation -->
+    <nav class="sidebar">
+      <div class="sidebar__logo">Ollie Dispatch</div>
+      <nav class="sidebar__nav">
+        <button class="sidebar__link" data-view="loads">
+          <span>Loads</span>
+        </button>
+        <button class="sidebar__link" data-view="drivers">
+          <span>Drivers</span>
+        </button>
+        <button class="sidebar__link" data-view="events">
+          <span>Events</span>
+        </button>
+      </nav>
+      <div class="sidebar__footer">
+        <button class="btn btn--ghost" id="logout-btn" style="width:100%; justify-content:flex-start; padding-left: 0;">
+          Sign out
+        </button>
+      </div>
+    </nav>
+
+    <!-- Top bar -->
+    <header class="topbar">
+      <span class="topbar__title" id="topbar-title">Loads</span>
+      <div class="topbar__actions">
+        <span class="refresh-indicator" id="refresh-indicator"></span>
+      </div>
+    </header>
+
+    <!-- Main content area -->
+    <main class="content" id="main-content">
+      <div class="state-loading"><div class="spinner"></div></div>
+    </main>
+  </div>
+
+  <script src="/dispatch/app.js"></script>
+</body>
+</html>
