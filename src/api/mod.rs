@@ -515,6 +515,12 @@ pub fn router(state: AppState) -> Router {
             "static/driver/index.html",
         ));
 
+    // Static file serving for the dispatcher SPA; SPA fallback to index.html
+    let dispatch_static = tower_http::services::ServeDir::new("static/dispatch")
+        .fallback(tower_http::services::ServeFile::new(
+            "static/dispatch/index.html",
+        ));
+
     Router::new()
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
@@ -522,5 +528,6 @@ pub fn router(state: AppState) -> Router {
         .merge(dispatcher_auth)
         .merge(driver_portal)
         .nest_service("/driver", driver_static)
+        .nest_service("/dispatch", dispatch_static)
         .with_state(state)
 }
