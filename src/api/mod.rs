@@ -3,6 +3,7 @@ pub mod auth;
 pub mod blob;
 pub mod blobs;
 pub mod dispatchers;
+pub mod dispatcher_portal;
 pub mod driver_portal;
 pub mod drivers;
 pub mod events;
@@ -85,6 +86,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatchers::get_dispatcher,
         dispatchers::update_dispatcher,
         dispatchers::reset_dispatcher_password,
+        dispatcher_portal::auth::login,
+        dispatcher_portal::auth::refresh,
     ),
     components(
         schemas(
@@ -164,6 +167,9 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             dispatchers::UpdateDispatcherRequest,
             dispatchers::ResetDispatcherPasswordRequest,
             dispatchers::DispatcherListResponse,
+            dispatcher_portal::auth::LoginRequest,
+            dispatcher_portal::auth::LoginResponse,
+            dispatcher_portal::auth::LockResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -175,6 +181,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
     ),
     tags(
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
+        (name = "dispatch-auth", description = "Dispatcher portal authentication — login and JWT refresh"),
         (name = "dispatchers", description = "Dispatcher admin CRUD and password management"),
         (name = "drivers", description = "Driver management with state machine"),
         (name = "events", description = "Append-only event journal (read-only)"),
@@ -370,6 +377,18 @@ GET endpoints that support ?s= return a `returned` field.
 - List mode (no ?s=): `returned` equals the total count of matching records (for pagination).
 - Search mode (?s=query): `returned` equals the number of items in this response (bounded by limit).
 
+## Dispatcher Portal
+
+The dispatcher portal has its own auth namespace at /dispatch/auth/. These endpoints
+use JWT auth (not Bearer) and are intended for the dispatcher web app — not for
+admin automation. Auth is email+password based with bcrypt verification and exponential
+backoff lockout after 5 failed attempts (15 min × 2^(failures-5), capped at 24h).
+
+Auth endpoints (no auth required):
+  POST /dispatch/auth/login    Authenticate with email+password; returns JWT on success.
+                               Returns 423 with { error, locked_until } if account is locked.
+  POST /dispatch/auth/refresh  Refresh an expiring JWT (must be within 7-day refresh window).
+
 ## Driver Portal
 
 The driver-facing PWA has its own API namespace at /driver/api/v1/. These endpoints
@@ -445,6 +464,9 @@ pub fn router(state: AppState) -> Router {
             async move { require_bearer(k, req, next).await }
         }));
 
+    // Dispatcher portal: auth endpoints (data/MCP routes added in #91/#93)
+    let dispatcher_auth = dispatcher_portal::auth_router();
+
     // Driver portal: auth endpoints + JWT-protected data endpoints (#51 adds routes)
     let driver_portal = driver_portal::portal_router(&state);
 
@@ -458,6 +480,7 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .merge(protected)
+        .merge(dispatcher_auth)
         .merge(driver_portal)
         .nest_service("/driver", driver_static)
         .with_state(state)
