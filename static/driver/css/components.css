@@ -601,3 +601,17 @@
   color: var(--color-danger);
   text-align: center;
 }
+
+.stop-detail-row--copyable {
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.stop-detail-row--copyable:hover {
+  color: var(--color-primary);
+}
+
+.stop-detail-row--copied {
+  color: var(--color-success);
+  font-weight: 600;
+}

@@ -69,8 +69,10 @@ export async function renderStopDetail(container, tripId, seq) {
     if (data.address) {
       if (data.address.street) {
         const street = document.createElement('div');
-        street.className = 'stop-detail-row';
+        street.className = 'stop-detail-row stop-detail-row--copyable';
         street.textContent = data.address.street;
+        street.title = 'Tap to copy address';
+        street.addEventListener('click', () => copyAddress(street, data.address.street));
         facilitySection.appendChild(street);
       }
       if (data.address.city) {
@@ -236,6 +238,30 @@ export async function renderStopDetail(container, tripId, seq) {
     errorEl.textContent = err.message || 'Failed to load stop';
     page.appendChild(errorEl);
   }
+}
+
+function copyAddress(el, text) {
+  const original = el.textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => {
+      el.textContent = 'Copied!';
+      el.classList.add('stop-detail-row--copied');
+      setTimeout(() => {
+        el.textContent = original;
+        el.classList.remove('stop-detail-row--copied');
+      }, 1500);
+    }).catch(() => selectText(el));
+  } else {
+    selectText(el);
+  }
+}
+
+function selectText(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
 function formatTimeShort(dateStr) {
