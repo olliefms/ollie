@@ -23,6 +23,13 @@ export async function renderTrips(container) {
   h1.textContent = 'My Trips';
   header.appendChild(h1);
 
+  const settingsBtn = document.createElement('button');
+  settingsBtn.className = 'btn-settings';
+  settingsBtn.textContent = '⚙';
+  settingsBtn.title = 'Settings';
+  settingsBtn.addEventListener('click', () => navigate('/driver/settings'));
+  header.appendChild(settingsBtn);
+
   // Tab bar
   const tabBar = document.createElement('div');
   tabBar.className = 'tab-bar';

@@ -2,13 +2,14 @@
 // Format: 'driver-vYYYY-MM-DD' or 'driver-vN'. Failure to bump causes returning
 // users to be served stale JS until the browser evicts the old cache.
 // See release checklist in AGENTS.md.
-const CACHE_NAME = 'driver-v2';
+const CACHE_NAME = 'driver-v3';
 const STATIC_ASSETS = [
   '/driver',
   '/driver/app.js',
   '/driver/css/base.css',
   '/driver/css/components.css',
   '/driver/pages/login.js',
+  '/driver/pages/settings.js',
   '/driver/pages/trip-detail.js',
   '/driver/pages/stop-detail.js',
   '/driver/utils/api.js',

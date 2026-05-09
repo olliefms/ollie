@@ -57,6 +57,16 @@ async function route() {
     return;
   }
 
+  if (path === '/driver/settings') {
+    if (!isAuthenticated()) {
+      replaceNavigate('/driver');
+      return;
+    }
+    const { renderSettings } = await import('./pages/settings.js');
+    renderSettings(app);
+    return;
+  }
+
   const notFoundDiv = document.createElement('div');
   notFoundDiv.style.padding = '2rem';
   const p = document.createElement('p');
