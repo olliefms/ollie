@@ -448,6 +448,10 @@ Data endpoints (JWT required — driver sees only their own trips):
   GET  /driver/api/v1/trips/:id              Trip detail (stops, load summary, equipment)
   GET  /driver/api/v1/trips/:id/stops/:seq   Stop detail (facility contacts, commodity info)
 
+## Dispatcher MCP Server
+
+POST /dispatch/mcp — MCP JSON-RPC endpoint for AI agent tool calls. Requires dispatcher JWT (Authorization: Bearer <token> from POST /dispatch/auth/login). Supports tools: list_loads, get_load, create_load, update_load, list_trips, get_trip, assign_driver, unassign_driver, list_drivers, get_driver, list_trucks, list_trailers, list_events.
+
 ## Full Spec
 
 Machine-readable OpenAPI 3.0 spec: GET /openapi.json
