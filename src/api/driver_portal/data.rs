@@ -41,6 +41,7 @@ pub struct DriverTripListItem {
     pub scheduled_start: Option<String>,
     pub truck_unit: Option<String>,
     pub trailer_units: Vec<String>,
+    pub next_stop_name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -217,6 +218,20 @@ pub async fn list_trips(
             let stops_completed = trip.stops.iter().filter(|s| s.actual_depart.is_some()).count();
             let scheduled_start = trip.stops.first().and_then(|s| s.scheduled_arrive.clone());
 
+            let next_stop_name = {
+                let next = trip.stops.iter().find(|s| s.actual_depart.is_none());
+                match next {
+                    None => None,
+                    Some(s) => {
+                        if let Some(fid) = s.facility_id {
+                            state.db.get_facility_by_id(fid).await.ok().map(|f| f.name)
+                        } else {
+                            s.name.clone()
+                        }
+                    }
+                }
+            };
+
             DriverTripListItem {
                 id: trip.id,
                 trip_number: trip.trip_number.clone(),
@@ -228,6 +243,7 @@ pub async fn list_trips(
                 scheduled_start,
                 truck_unit,
                 trailer_units,
+                next_stop_name,
             }
         }
     }))
