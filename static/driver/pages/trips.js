@@ -160,6 +160,13 @@ export async function renderTrips(container) {
       progressWrapper.appendChild(bar);
       progressWrapper.appendChild(label);
       card.appendChild(progressWrapper);
+
+      if (trip.next_stop_name) {
+        const nextStop = document.createElement('div');
+        nextStop.className = 'trip-card__next-stop';
+        nextStop.textContent = `Next: ${trip.next_stop_name}`;
+        card.appendChild(nextStop);
+      }
     } else {
       // Past and Upcoming tabs show scheduled start date
       const date = document.createElement('div');
