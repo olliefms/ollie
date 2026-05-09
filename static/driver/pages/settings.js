@@ -1,4 +1,4 @@
-import { clearAuth } from '../utils/auth.js';
+import { clearAuth, getDriverId } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
 import { navigate } from '../app.js';
 
@@ -53,7 +53,7 @@ export async function renderSettings(container) {
   header.appendChild(title);
   page.appendChild(header);
 
-  // Profile section placeholder
+  // Profile section
   const profileSection = document.createElement('div');
   profileSection.className = 'stop-detail-section';
 
@@ -62,10 +62,10 @@ export async function renderSettings(container) {
   profileLabel.textContent = 'Profile';
   profileSection.appendChild(profileLabel);
 
-  const nameRow = document.createElement('div');
-  nameRow.className = 'stop-detail-row';
-  nameRow.textContent = 'Loading…';
-  profileSection.appendChild(nameRow);
+  const profileLoading = document.createElement('div');
+  profileLoading.className = 'stop-detail-row';
+  profileLoading.textContent = 'Loading…';
+  profileSection.appendChild(profileLoading);
 
   page.appendChild(profileSection);
 
@@ -82,9 +82,10 @@ export async function renderSettings(container) {
   passkeyRow.className = 'stop-detail-row';
 
   const passkeyStatusMsg = document.createElement('div');
-  passkeyStatusMsg.style.marginTop = '0.5rem';
+  passkeyStatusMsg.className = 'passkey-status';
 
-  if (!navigator.credentials) {
+  // Use window.PublicKeyCredential as the correct WebAuthn capability check
+  if (!window.PublicKeyCredential) {
     passkeyRow.textContent = 'Passkeys not supported on this device';
     securitySection.appendChild(passkeyRow);
   } else {
@@ -93,36 +94,48 @@ export async function renderSettings(container) {
     addPasskeyBtn.textContent = 'Add Passkey';
 
     addPasskeyBtn.addEventListener('click', async () => {
+      const driverId = getDriverId();
+      if (!driverId) {
+        passkeyStatusMsg.textContent = 'Session expired — please log in again';
+        passkeyStatusMsg.className = 'error-msg';
+        return;
+      }
+
       addPasskeyBtn.disabled = true;
       passkeyStatusMsg.textContent = '';
-      passkeyStatusMsg.className = '';
+      passkeyStatusMsg.className = 'passkey-status';
 
       try {
-        // Step 1: Begin registration
-        const options = await apiFetch('/auth/passkey/register/begin', {
+        // Step 1: Begin registration — single endpoint, phase="start"
+        const beginResp = await apiFetch('/auth/register-passkey', {
           method: 'POST',
-          body: {},
+          body: { phase: 'start', driver_id: driverId },
         });
 
-        // Step 2: Decode binary fields
-        options.challenge = base64urlToBuffer(options.challenge);
-        options.user.id = base64urlToBuffer(options.user.id);
+        // Backend returns { challenge: <CCR JSON with publicKey: {...}> }
+        const pkOptions = beginResp.challenge.publicKey;
 
-        // Step 3: Create credential
-        const credential = await navigator.credentials.create({ publicKey: options });
+        // Step 2: Decode binary fields for WebAuthn API
+        pkOptions.challenge = base64urlToBuffer(pkOptions.challenge);
+        pkOptions.user.id = base64urlToBuffer(pkOptions.user.id);
 
-        // Step 4: Finish registration
-        await apiFetch('/auth/passkey/register/finish', {
+        // Step 3: Create credential via browser WebAuthn API
+        const credential = await navigator.credentials.create({ publicKey: pkOptions });
+
+        // Step 4: Finish registration — phase="finish", response=credential JSON
+        await apiFetch('/auth/register-passkey', {
           method: 'POST',
-          body: credentialToJSON(credential),
+          body: {
+            phase: 'finish',
+            driver_id: driverId,
+            response: credentialToJSON(credential),
+          },
         });
 
         // Success
         addPasskeyBtn.style.display = 'none';
         passkeyStatusMsg.textContent = 'Passkey registered! ✓';
-        passkeyStatusMsg.className = '';
-        passkeyStatusMsg.style.color = 'var(--color-success)';
-        passkeyStatusMsg.style.fontWeight = '600';
+        passkeyStatusMsg.className = 'passkey-status--success';
       } catch (err) {
         addPasskeyBtn.disabled = false;
         passkeyStatusMsg.textContent = err.message || 'Failed to register passkey';
@@ -137,7 +150,7 @@ export async function renderSettings(container) {
 
   page.appendChild(securitySection);
 
-  // Danger / logout section
+  // Account / logout section
   const dangerSection = document.createElement('div');
   dangerSection.className = 'stop-detail-section';
 
@@ -163,24 +176,24 @@ export async function renderSettings(container) {
 
   container.appendChild(page);
 
-  // Load driver profile
+  // Load driver profile asynchronously
   try {
     const driver = await apiFetch('/me');
-    nameRow.innerHTML = '';
+    profileLoading.remove();
 
     const nameRowEl = document.createElement('div');
     nameRowEl.className = 'stop-detail-row';
     nameRowEl.textContent = `Name: ${driver.name}`;
     profileSection.appendChild(nameRowEl);
 
-    const phoneRowEl = document.createElement('div');
-    phoneRowEl.className = 'stop-detail-row';
-    phoneRowEl.textContent = `Phone: ${driver.phone}`;
-    profileSection.appendChild(phoneRowEl);
-
-    nameRow.remove();
+    if (driver.phone) {
+      const phoneRowEl = document.createElement('div');
+      phoneRowEl.className = 'stop-detail-row';
+      phoneRowEl.textContent = `Phone: ${driver.phone}`;
+      profileSection.appendChild(phoneRowEl);
+    }
   } catch (err) {
-    nameRow.textContent = err.message || 'Failed to load profile';
-    nameRow.style.color = 'var(--color-danger)';
+    profileLoading.textContent = err.message || 'Failed to load profile';
+    profileLoading.style.color = 'var(--color-danger)';
   }
 }
