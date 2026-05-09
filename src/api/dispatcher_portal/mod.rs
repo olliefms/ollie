@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod data;
 pub mod jwt;
+pub mod mcp;
 pub mod middleware;
 
 use crate::AppState;
@@ -28,6 +29,8 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trailers", get(data::list_trailers))
         .route("/dispatch/api/v1/trailers/:id", get(data::get_trailer))
         .route("/dispatch/api/v1/events", get(data::list_events))
+        // MCP JSON-RPC 2.0 endpoint for AI agent tool calls
+        .route("/dispatch/mcp", post(mcp::handle))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_dispatcher_jwt,

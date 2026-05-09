@@ -1367,3 +1367,83 @@ async fn test_dispatcher_assign_and_unassign() {
     );
     assert_eq!(unassign_body["status"], "planned");
 }
+
+// ---------------------------------------------------------------------------
+// Dispatcher MCP tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dispatcher_mcp_requires_auth() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // POST /dispatch/mcp without auth header → 401
+    let resp = server.post("/dispatch/mcp")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_dispatcher_mcp_tools_list() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let token = dispatcher_login(&server, "mcp1@example.com", "password-mcp1").await;
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/list",
+            "params": {}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["jsonrpc"], "2.0");
+    assert_eq!(body["id"], 1);
+    let tools = body["result"]["tools"].as_array().expect("tools should be an array");
+    assert!(!tools.is_empty(), "tools list should not be empty");
+    // Verify some expected tools are present
+    let tool_names: Vec<&str> = tools.iter()
+        .filter_map(|t| t["name"].as_str())
+        .collect();
+    assert!(tool_names.contains(&"list_loads"), "should have list_loads tool");
+    assert!(tool_names.contains(&"assign_driver"), "should have assign_driver tool");
+    assert!(tool_names.contains(&"list_events"), "should have list_events tool");
+}
+
+#[tokio::test]
+async fn test_dispatcher_mcp_list_loads() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let token = dispatcher_login(&server, "mcp2@example.com", "password-mcp2").await;
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "list_loads",
+                "arguments": {}
+            }
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["jsonrpc"], "2.0");
+    assert_eq!(body["id"], 2);
+    // Result should have MCP content format
+    let content = &body["result"]["content"];
+    assert!(content.is_array(), "result.content should be an array");
+    let first = &content[0];
+    assert_eq!(first["type"], "text", "content type should be text");
+    assert!(first["text"].is_string(), "content text should be a string");
+}
