@@ -1,5 +1,6 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
+import { formatStatus } from '../utils/format.js';
 
 export async function renderTrips(container) {
   if (!isAuthenticated()) {
@@ -168,19 +169,6 @@ export async function renderTrips(container) {
     }
 
     return card;
-  }
-
-  function formatStatus(status) {
-    const labels = {
-      'planned': 'Planned',
-      'assigned': 'Assigned',
-      'dispatched': 'Dispatched',
-      'in_transit': 'In Transit',
-      'delivered': 'Delivered',
-      'completed': 'Completed',
-      'cancelled': 'Cancelled',
-    };
-    return labels[status] || status;
   }
 
   function formatDate(dateStr) {
