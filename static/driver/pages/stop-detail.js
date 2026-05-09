@@ -1,5 +1,6 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
+import { formatStopType, formatWeight } from '../utils/format.js';
 
 export async function renderStopDetail(container, tripId, seq) {
   if (!isAuthenticated()) {
@@ -237,20 +238,6 @@ export async function renderStopDetail(container, tripId, seq) {
   }
 }
 
-function formatStopType(type) {
-  const labels = {
-    'origin': 'ORIGIN',
-    'fuel': 'FUEL',
-    'pickup': 'PICKUP',
-    'delivery': 'DELIVERY',
-    'relay': 'RELAY',
-    'empty_move': 'EMPTY MOVE',
-    'maintenance': 'MAINTENANCE',
-    'terminal': 'TERMINAL',
-  };
-  return labels[type] || type.toUpperCase();
-}
-
 function formatTimeShort(dateStr) {
   if (!dateStr) return '';
   const date = new Date(dateStr);
@@ -262,7 +249,3 @@ function formatTimeShort(dateStr) {
   });
 }
 
-function formatWeight(lbs) {
-  if (!lbs) return '0 lb';
-  return lbs.toLocaleString() + ' lb';
-}

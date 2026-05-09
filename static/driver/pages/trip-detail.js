@@ -1,5 +1,6 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
+import { formatStopType, formatWeight, formatStatus } from '../utils/format.js';
 
 export async function renderTripDetail(container, tripId) {
   if (!isAuthenticated()) {
@@ -189,38 +190,6 @@ function renderStopNode(stop, tripId) {
 
   node.appendChild(content);
   return node;
-}
-
-function formatStatus(status) {
-  const labels = {
-    'planned': 'Planned',
-    'assigned': 'Assigned',
-    'dispatched': 'Dispatched',
-    'in_transit': 'In Transit',
-    'delivered': 'Delivered',
-    'completed': 'Completed',
-    'cancelled': 'Cancelled',
-  };
-  return labels[status] || status;
-}
-
-function formatStopType(type) {
-  const labels = {
-    'origin': 'ORIGIN',
-    'fuel': 'FUEL',
-    'pickup': 'PICKUP',
-    'delivery': 'DELIVERY',
-    'relay': 'RELAY',
-    'empty_move': 'EMPTY MOVE',
-    'maintenance': 'MAINTENANCE',
-    'terminal': 'TERMINAL',
-  };
-  return labels[type] || type.toUpperCase();
-}
-
-function formatWeight(lbs) {
-  if (!lbs) return '0 lb';
-  return lbs.toLocaleString() + ' lb';
 }
 
 function formatTime(dateStr) {
