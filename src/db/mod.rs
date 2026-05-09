@@ -1,5 +1,6 @@
 // src/db/mod.rs
 pub mod blob_ops;
+pub mod dispatcher_ops;
 pub mod driver_credentials_ops;
 pub mod driver_ops;
 pub mod event_ops;
@@ -11,7 +12,7 @@ pub mod truck_ops;
 
 use crate::error::AppError;
 use arrow_array::{
-    FixedSizeListArray, Float64Array, Int64Array, RecordBatch,
+    FixedSizeListArray, Float64Array, Int32Array, Int64Array, RecordBatch,
     RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
@@ -21,6 +22,8 @@ use std::sync::Arc;
 
 pub struct DbClient {
     pub blob_table: Table,
+    pub dispatcher_table: Table,
+    pub dispatcher_credentials_table: Table,
     pub driver_credentials_table: Table,
     pub driver_passkey_credentials_table: Table,
     pub driver_table: Table,
@@ -83,8 +86,24 @@ impl DbClient {
             empty_driver_passkey_credentials_batch,
         ).await?;
 
+        let dispatcher_table = open_or_create(
+            &conn,
+            "dispatchers",
+            dispatcher_schema(),
+            empty_dispatcher_batch,
+        ).await?;
+
+        let dispatcher_credentials_table = open_or_create(
+            &conn,
+            "dispatcher_credentials",
+            dispatcher_credentials_schema(),
+            empty_dispatcher_credentials_batch,
+        ).await?;
+
         Ok(Self {
             blob_table,
+            dispatcher_table,
+            dispatcher_credentials_table,
             driver_credentials_table,
             driver_passkey_credentials_table,
             driver_table,
@@ -530,6 +549,50 @@ fn empty_driver_passkey_credentials_batch(schema: Arc<Schema>) -> Result<RecordB
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
+pub fn dispatcher_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("email", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_dispatcher_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn dispatcher_credentials_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("dispatcher_id", DataType::Utf8, false),
+        Field::new("password_hash", DataType::Utf8, false),
+        Field::new("token_version", DataType::Int64, false),
+        Field::new("failed_attempts", DataType::Int32, false),
+        Field::new("locked_until", DataType::Utf8, true),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_dispatcher_credentials_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
+        Arc::new(Int32Array::from(Vec::<i32>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
 fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
     let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
     RecordBatch::try_new(schema, vec![
@@ -592,5 +655,7 @@ mod tests {
         let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
         assert_eq!(client.driver_credentials_table.count_rows(None).await.unwrap(), 0);
         assert_eq!(client.driver_passkey_credentials_table.count_rows(None).await.unwrap(), 0);
+        assert_eq!(client.dispatcher_table.count_rows(None).await.unwrap(), 0);
+        assert_eq!(client.dispatcher_credentials_table.count_rows(None).await.unwrap(), 0);
     }
 }
