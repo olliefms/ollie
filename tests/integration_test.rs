@@ -20,6 +20,7 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+    std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-secret-must-be-32b");
 
     let config = Arc::new(Config::from_env().unwrap());
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
@@ -1001,4 +1002,86 @@ async fn test_unassign_clears_trip_resources() {
         "driver_id should be null after unassign");
     assert!(trip_unassigned["truck_id"].is_null(),
         "truck_id should be null after unassign");
+}
+
+// --- Dispatcher integration tests ---
+
+#[tokio::test]
+async fn test_create_dispatcher_returns_201() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "dispatcher@example.com",
+            "name": "Jane Dispatcher",
+            "password": "securepassword123"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["id"].as_str().is_some());
+    assert_eq!(body["email"], "dispatcher@example.com");
+    assert_eq!(body["name"], "Jane Dispatcher");
+    assert_eq!(body["status"], "active");
+}
+
+#[tokio::test]
+async fn test_create_dispatcher_duplicate_email_returns_409() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let body = serde_json::json!({
+        "email": "dup@example.com",
+        "name": "First",
+        "password": "password123"
+    });
+    let r1 = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&body)
+        .await;
+    assert_eq!(r1.status_code(), 201);
+
+    let r2 = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "dup@example.com",
+            "name": "Second",
+            "password": "different"
+        }))
+        .await;
+    assert_eq!(r2.status_code(), 409);
+}
+
+#[tokio::test]
+async fn test_list_dispatchers_returns_empty_initially() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.get("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["returned"], 0);
+    assert_eq!(body["dispatchers"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn test_get_dispatcher_by_id() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "get@example.com",
+            "name": "Get Me",
+            "password": "password123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let get = server.get(&format!("/api/v1/dispatchers/{id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(get.status_code(), 200);
+    let body = get.json::<serde_json::Value>();
+    assert_eq!(body["id"], id);
+    assert_eq!(body["email"], "get@example.com");
+    assert_eq!(body["name"], "Get Me");
 }

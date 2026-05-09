@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod blob;
 pub mod blobs;
+pub mod dispatchers;
 pub mod driver_portal;
 pub mod drivers;
 pub mod events;
@@ -79,6 +80,11 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         trailers::get_trailer,
         trailers::update_trailer,
         trailers::delete_trailer,
+        dispatchers::create_dispatcher,
+        dispatchers::list_dispatchers,
+        dispatchers::get_dispatcher,
+        dispatchers::update_dispatcher,
+        dispatchers::reset_dispatcher_password,
     ),
     components(
         schemas(
@@ -152,6 +158,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
+            models::DispatcherStatus,
+            models::DispatcherRecord,
+            dispatchers::CreateDispatcherRequest,
+            dispatchers::UpdateDispatcherRequest,
+            dispatchers::ResetDispatcherPasswordRequest,
+            dispatchers::DispatcherListResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -163,6 +175,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
     ),
     tags(
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
+        (name = "dispatchers", description = "Dispatcher admin CRUD and password management"),
         (name = "drivers", description = "Driver management with state machine"),
         (name = "events", description = "Append-only event journal (read-only)"),
         (name = "facilities", description = "Freight facility management with geocoding and semantic search"),
@@ -325,6 +338,16 @@ DELETE soft-deletes (sets status=inactive).
   PUT    /api/v1/trailers/:id      Update trailer fields (out_of_service allowed; assigned/dispatched rejected)
   DELETE /api/v1/trailers/:id      Soft-delete (sets status=inactive)
 
+### Dispatchers — /api/v1/dispatchers, /api/v1/dispatchers/:id
+Dispatcher accounts for admin users. Email is normalized (lowercase + trimmed) and must be unique.
+Passwords are hashed with bcrypt (cost 12). Token version increments on password reset to invalidate JWTs.
+
+  POST   /api/v1/dispatchers              Create dispatcher (body: email, name, password). Returns 409 if email already in use.
+  GET    /api/v1/dispatchers              List all dispatchers. Returns { dispatchers, returned }.
+  GET    /api/v1/dispatchers/:id          Get dispatcher by UUID.
+  PUT    /api/v1/dispatchers/:id          Update name and/or status (body: name?, status?).
+  PUT    /api/v1/dispatchers/:id/password Admin reset password (body: password). Returns 204.
+
 ### Events — /api/v1/events, /api/v1/events/:id
 Append-only event journal recording entity lifecycle transitions. Written by internal
 pipeline workers; read-only via API. Timestamps are RFC3339 UTC+Z.
@@ -408,6 +431,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/loads/:id/settle", post(loads::settle_load))
         .route("/api/v1/loads/:id/stops/:seq/arrive", post(loads::load_stop_arrive))
         .route("/api/v1/loads/:id/stops/:seq/depart", post(loads::load_stop_depart))
+        // Dispatchers
+        .merge(dispatchers::router())
         // Drivers, trucks, trailers, trips, trip actions, events (stubs — filled in by Wave 2/3/4)
         .merge(drivers::router())
         .merge(trucks::router())
