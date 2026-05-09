@@ -30,7 +30,9 @@ export async function renderTrips(container) {
     { id: 'current', label: 'Current' },
     { id: 'upcoming', label: 'Upcoming' },
   ];
-  let activeTab = 'current';
+  const validTabs = new Set(['past', 'current', 'upcoming']);
+  const initialTab = new URLSearchParams(location.search).get('tab');
+  let activeTab = validTabs.has(initialTab) ? initialTab : 'current';
   const tabEls = {};
 
   tabs.forEach(tab => {
@@ -40,6 +42,7 @@ export async function renderTrips(container) {
     tabBtn.textContent = tab.label;
     tabBtn.addEventListener('click', async () => {
       activeTab = tab.id;
+      history.replaceState({}, '', `/driver/trips?tab=${tab.id}`);
       Object.values(tabEls).forEach(el => el.classList.remove('tab--active'));
       tabBtn.classList.add('tab--active');
       await loadTrips(activeTab);
