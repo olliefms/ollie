@@ -279,6 +279,7 @@ UI changes to `static/driver/` or `static/dispatch/` must be consistent with the
 - **Making a required API field optional is a semver minor change; accepting a new required field is a breaking change.** For internal, controlled consumers that can be updated atomically with the server, this can be shipped as a patch — but call it out explicitly in the release notes so any future external consumers are warned.
 - **Integration test fixtures must satisfy the API's own validation.** Test stop time strings like `"2026-05-10"` that predate validation rules will silently pass until the rule is added — then break en masse. Keep a canonical test constant for the current required format (e.g. `TEST_STOP_TIME = "2026-05-10T08:00:00"`) and reference it everywhere rather than inlining strings.
 - **Use non-zero stop sequences in cascade tests to catch off-by-one bugs.** A stop with `sequence: 1` has `load_stop_index = 0`, which is the same value as `sequence - 1 = 0`. Using `sequence: 0` masks index errors. Always write cascade tests with at least one stop at `sequence ≥ 2` so a 1-based vs 0-based mixup is immediately visible.
+- **Bump `CACHE_NAME` in `static/driver/sw.js` on every Driver PWA release.** The constant controls which cache version returning users load. If you change any file listed in `STATIC_ASSETS` (JS, CSS, icons, manifest), increment the version string (e.g. `driver-v2` → `driver-v3`). Forgetting this silently serves stale assets until the browser evicts the old cache.
 
 ## Commit Style
 

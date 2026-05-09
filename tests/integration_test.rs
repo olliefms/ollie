@@ -950,6 +950,58 @@ async fn test_invalid_timezone_returns_422() {
     assert_eq!(resp.status_code(), 422);
 }
 
+// ── Load stop arrive/depart 404 tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_load_stop_arrive_returns_404_for_missing_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fake_id = uuid::Uuid::new_v4();
+
+    let resp = server.post(&format!("/api/v1/loads/{fake_id}/stops/1/arrive"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_load_stop_arrive_returns_404_for_missing_sequence() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Arrive Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    let resp = server.post(&format!("/api/v1/loads/{load_id}/stops/999/arrive"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_load_stop_depart_returns_404_for_missing_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fake_id = uuid::Uuid::new_v4();
+
+    let resp = server.post(&format!("/api/v1/loads/{fake_id}/stops/1/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_load_stop_depart_returns_404_for_missing_sequence() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Depart Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    let resp = server.post(&format!("/api/v1/loads/{load_id}/stops/999/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
 #[tokio::test]
 async fn test_unassign_clears_trip_resources() {
     let (server, _b, _d, _rx) = test_server().await;
@@ -1001,4 +1053,68 @@ async fn test_unassign_clears_trip_resources() {
         "driver_id should be null after unassign");
     assert!(trip_unassigned["truck_id"].is_null(),
         "truck_id should be null after unassign");
+}
+
+// ── Trip stop arrive/depart 404 tests ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_trip_stop_arrive_returns_404_for_missing_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fake_id = uuid::Uuid::new_v4();
+
+    let resp = server.post(&format!("/api/v1/trips/{fake_id}/stops/0/arrive"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00Z" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_trip_stop_arrive_returns_404_for_missing_sequence() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [{ "sequence": 0, "stop_type": "pickup", "name": "Origin" }]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.post(&format!("/api/v1/trips/{trip_id}/stops/999/arrive"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00Z" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_trip_stop_depart_returns_404_for_missing_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fake_id = uuid::Uuid::new_v4();
+
+    let resp = server.post(&format!("/api/v1/trips/{fake_id}/stops/0/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00Z" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_trip_stop_depart_returns_404_for_missing_sequence() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [{ "sequence": 0, "stop_type": "pickup", "name": "Origin" }]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.post(&format!("/api/v1/trips/{trip_id}/stops/999/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00Z" }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
 }

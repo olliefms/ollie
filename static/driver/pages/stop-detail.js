@@ -1,5 +1,7 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
+import { formatStopType, formatWeight } from '../utils/format.js';
+import { navigate } from '../app.js';
 
 export async function renderStopDetail(container, tripId, seq) {
   if (!isAuthenticated()) {
@@ -22,7 +24,7 @@ export async function renderStopDetail(container, tripId, seq) {
   backBtn.className = 'back-btn stop-detail-back';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', () => {
-    window.location.href = `/driver/trips/${tripId}`;
+    navigate(`/driver/trips/${tripId}`);
   });
 
   const stopTitle = document.createElement('h1');
@@ -68,8 +70,10 @@ export async function renderStopDetail(container, tripId, seq) {
     if (data.address) {
       if (data.address.street) {
         const street = document.createElement('div');
-        street.className = 'stop-detail-row';
+        street.className = 'stop-detail-row stop-detail-row--copyable';
         street.textContent = data.address.street;
+        street.title = 'Tap to copy address';
+        street.addEventListener('click', () => copyAddress(street, data.address.street));
         facilitySection.appendChild(street);
       }
       if (data.address.city) {
@@ -237,18 +241,28 @@ export async function renderStopDetail(container, tripId, seq) {
   }
 }
 
-function formatStopType(type) {
-  const labels = {
-    'origin': 'ORIGIN',
-    'fuel': 'FUEL',
-    'pickup': 'PICKUP',
-    'delivery': 'DELIVERY',
-    'relay': 'RELAY',
-    'empty_move': 'EMPTY MOVE',
-    'maintenance': 'MAINTENANCE',
-    'terminal': 'TERMINAL',
-  };
-  return labels[type] || type.toUpperCase();
+function copyAddress(el, text) {
+  const original = el.textContent;
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(text).then(() => {
+      el.textContent = 'Copied!';
+      el.classList.add('stop-detail-row--copied');
+      setTimeout(() => {
+        el.textContent = original;
+        el.classList.remove('stop-detail-row--copied');
+      }, 1500);
+    }).catch(() => selectText(el));
+  } else {
+    selectText(el);
+  }
+}
+
+function selectText(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
 function formatTimeShort(dateStr) {
@@ -262,7 +276,3 @@ function formatTimeShort(dateStr) {
   });
 }
 
-function formatWeight(lbs) {
-  if (!lbs) return '0 lb';
-  return lbs.toLocaleString() + ' lb';
-}

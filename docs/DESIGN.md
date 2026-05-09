@@ -149,13 +149,16 @@ Focus ring: 3px `rgba(26,86,219,0.15)` outer + 1px `--color-primary` border. Alw
 
 Status is the workhorse of an ops tool. Use a soft-bg + saturated-text pattern so badges don't shout.
 
-| Status        | Background             | Text                  |
-|---------------|------------------------|-----------------------|
-| Active / Info | `--color-info-soft`    | `--color-primary-dark`|
-| Success / Done| `--color-success-soft` | `--color-success`     |
-| Warning / Pending | `--color-warning-soft` | `--color-warning` |
-| Danger / Failed | `--color-danger-soft` | `--color-danger`     |
-| Neutral / Idle | `--color-surface-2`   | `--color-text-muted`  |
+| Status        | Background             | Text                  | Trip statuses |
+|---------------|------------------------|-----------------------|---------------|
+| Active / Info | `--color-info-soft`    | `--color-primary-dark`| `in_transit`, `dispatched` |
+| Success / Done| `--color-success-soft` | `--color-success`     | `delivered`, `completed` |
+| Warning / Pending | `--color-warning-soft` | `--color-warning` | `pending` |
+| Danger / Failed | `--color-danger-soft` | `--color-danger`     | `cancelled` |
+| Neutral / Idle | `--color-surface-2`   | `--color-text-muted`  | `assigned`, `planned` |
+| Scheduled trips | `--color-badge-scheduled-bg` | `--color-badge-scheduled-text` | `scheduled` |
+
+The scheduled pair (`--color-badge-scheduled-bg: #f3e8ff`, `--color-badge-scheduled-text: #6b21a8`) uses a purple hue that has no semantic alias in the core palette. These tokens live in `base.css` and must not be used outside badge context.
 
 Shape: `--radius-pill`, `caption` type, padding 2px 8px. Always include a text label — never color-only.
 

@@ -1,15 +1,22 @@
-const CACHE_NAME = 'driver-v1';
+// CACHE VERSIONING: Bump this string whenever any file in STATIC_ASSETS changes.
+// Format: 'driver-vYYYY-MM-DD' or 'driver-vN'. Failure to bump causes returning
+// users to be served stale JS until the browser evicts the old cache.
+// See release checklist in AGENTS.md.
+const CACHE_NAME = 'driver-v3';
 const STATIC_ASSETS = [
   '/driver',
   '/driver/app.js',
   '/driver/css/base.css',
   '/driver/css/components.css',
   '/driver/pages/login.js',
+  '/driver/pages/settings.js',
   '/driver/pages/trip-detail.js',
   '/driver/pages/stop-detail.js',
   '/driver/utils/api.js',
   '/driver/utils/auth.js',
   '/driver/manifest.json',
+  '/driver/icon-192.png',
+  '/driver/icon-512.png',
 ];
 
 self.addEventListener('install', event => {
