@@ -1,4 +1,5 @@
 import { loginWithPin, startPasskeyAuth, finishPasskeyAuth } from '../utils/auth.js';
+import { navigate } from '../app.js';
 
 export function renderLogin(container) {
   const html = `
@@ -114,7 +115,7 @@ export function renderLogin(container) {
     hideError(authError);
     try {
       await loginWithPin(currentPhone, pin);
-      window.location.href = '/driver/trips';
+      navigate('/driver/trips');
     } catch (err) {
       if (err.status === 423) {
         const locked = err.data?.locked_until ? new Date(err.data.locked_until).toLocaleTimeString() : 'later';

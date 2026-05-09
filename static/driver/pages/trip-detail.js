@@ -1,6 +1,7 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
 import { formatStopType, formatWeight, formatStatus } from '../utils/format.js';
+import { navigate } from '../app.js';
 
 export async function renderTripDetail(container, tripId) {
   if (!isAuthenticated()) {
@@ -23,7 +24,7 @@ export async function renderTripDetail(container, tripId) {
   backBtn.className = 'back-btn trip-detail-back';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', () => {
-    window.location.href = '/driver/trips';
+    navigate('/driver/trips');
   });
 
   const tripNumber = document.createElement('h1');
@@ -185,7 +186,7 @@ function renderStopNode(stop, tripId) {
 
   // Make clickable to navigate to stop detail
   node.addEventListener('click', () => {
-    window.location.href = `/driver/trips/${tripId}/stops/${stop.sequence}`;
+    navigate(`/driver/trips/${tripId}/stops/${stop.sequence}`);
   });
 
   node.appendChild(content);

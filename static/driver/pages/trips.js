@@ -1,6 +1,7 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
 import { formatStatus } from '../utils/format.js';
+import { navigate } from '../app.js';
 
 export async function renderTrips(container) {
   if (!isAuthenticated()) {
@@ -115,7 +116,7 @@ export async function renderTrips(container) {
     const card = document.createElement('div');
     card.className = 'trip-card';
     card.addEventListener('click', () => {
-      window.location.href = `/driver/trips/${trip.id}`;
+      navigate(`/driver/trips/${trip.id}`);
     });
 
     // Header with trip number and status
