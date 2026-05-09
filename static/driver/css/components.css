@@ -263,24 +263,43 @@
   white-space: nowrap;
 }
 
-.badge--in_transit {
-  background: #dbeafe;
-  color: #1e40af;
+/* info / active (blue) */
+.badge--in_transit,
+.badge--dispatched {
+  background: var(--color-info-soft);
+  color: var(--color-primary-dark);
 }
 
-.badge--delivered {
-  background: #dcfce7;
-  color: #166534;
+/* success / done (green) */
+.badge--delivered,
+.badge--completed {
+  background: var(--color-success-soft);
+  color: var(--color-success);
 }
 
+/* warning / pending (amber) */
 .badge--pending {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
 }
 
+/* scheduled (purple — no semantic alias) */
 .badge--scheduled {
-  background: #f3e8ff;
-  color: #6b21a8;
+  background: var(--color-badge-scheduled-bg);
+  color: var(--color-badge-scheduled-text);
+}
+
+/* danger / failed (red) */
+.badge--cancelled {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+/* neutral / idle (gray) */
+.badge--assigned,
+.badge--planned {
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
 }
 
 .trip-card__route {
