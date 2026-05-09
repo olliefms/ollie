@@ -10,6 +10,8 @@ const STATIC_ASSETS = [
   '/driver/utils/api.js',
   '/driver/utils/auth.js',
   '/driver/manifest.json',
+  '/driver/icon-192.png',
+  '/driver/icon-512.png',
 ];
 
 self.addEventListener('install', event => {
