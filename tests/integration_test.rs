@@ -1085,3 +1085,105 @@ async fn test_get_dispatcher_by_id() {
     assert_eq!(body["email"], "get@example.com");
     assert_eq!(body["name"], "Get Me");
 }
+
+// --- Dispatcher portal auth tests ---
+
+#[tokio::test]
+async fn test_dispatcher_login_success() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create a dispatcher via admin API
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "login@example.com",
+            "name": "Login Test",
+            "password": "correct-password-123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+
+    // Login via dispatcher portal
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "login@example.com",
+            "password": "correct-password-123"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["token"].as_str().is_some(), "expected a token in response");
+}
+
+#[tokio::test]
+async fn test_dispatcher_login_bad_password() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "badpass@example.com",
+            "name": "Bad Pass",
+            "password": "correct-password-123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "badpass@example.com",
+            "password": "wrong-password"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_dispatcher_login_unknown_email() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "nobody@example.com",
+            "password": "any-password"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_dispatcher_refresh() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create dispatcher
+    let create = server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "refresh@example.com",
+            "name": "Refresh Test",
+            "password": "refresh-password-123"
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+
+    // Login to get initial token
+    let login = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({
+            "email": "refresh@example.com",
+            "password": "refresh-password-123"
+        }))
+        .await;
+    assert_eq!(login.status_code(), 200);
+    let token = login.json::<serde_json::Value>()["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Refresh the token
+    let refresh = server.post("/dispatch/auth/refresh")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(refresh.status_code(), 200);
+    let body = refresh.json::<serde_json::Value>();
+    assert!(body["token"].as_str().is_some(), "expected a new token in refresh response");
+}
