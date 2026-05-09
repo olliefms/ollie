@@ -272,7 +272,11 @@ multiple trips (relay). Status lifecycle:
 When a trip with both load_id and driver_id is created and the linked load is planned,
 the load is automatically transitioned to assigned.
 
-  POST   /api/v1/trips          Create trip (trip_number auto-generated as T-YYYY-NNNN if omitted)
+  POST   /api/v1/trips          Create trip (trip_number auto-generated as T-YYYY-NNNN if omitted).
+                                BREAKING (v1.3.3): When `stops` is omitted or empty and `load_id`
+                                is provided, stops are automatically inherited from the linked load.
+                                To create a stopless trip linked to a load, provide `stops` with at
+                                least one explicit entry.
   GET    /api/v1/trips          List trips (?load_id, ?driver_id, ?status, ?limit, ?offset)
   GET    /api/v1/trips/:id      Get trip record
   PATCH  /api/v1/trips/:id      Update trip fields (load_id, sequence, stops, notes)

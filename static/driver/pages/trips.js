@@ -1,5 +1,7 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
+import { formatStatus } from '../utils/format.js';
+import { navigate } from '../app.js';
 
 export async function renderTrips(container) {
   if (!isAuthenticated()) {
@@ -21,6 +23,13 @@ export async function renderTrips(container) {
   h1.textContent = 'My Trips';
   header.appendChild(h1);
 
+  const settingsBtn = document.createElement('button');
+  settingsBtn.className = 'btn-settings';
+  settingsBtn.textContent = '⚙';
+  settingsBtn.title = 'Settings';
+  settingsBtn.addEventListener('click', () => navigate('/driver/settings'));
+  header.appendChild(settingsBtn);
+
   // Tab bar
   const tabBar = document.createElement('div');
   tabBar.className = 'tab-bar';
@@ -29,7 +38,9 @@ export async function renderTrips(container) {
     { id: 'current', label: 'Current' },
     { id: 'upcoming', label: 'Upcoming' },
   ];
-  let activeTab = 'current';
+  const validTabs = new Set(['past', 'current', 'upcoming']);
+  const initialTab = new URLSearchParams(location.search).get('tab');
+  let activeTab = validTabs.has(initialTab) ? initialTab : 'current';
   const tabEls = {};
 
   tabs.forEach(tab => {
@@ -39,6 +50,7 @@ export async function renderTrips(container) {
     tabBtn.textContent = tab.label;
     tabBtn.addEventListener('click', async () => {
       activeTab = tab.id;
+      history.replaceState({}, '', `/driver/trips?tab=${tab.id}`);
       Object.values(tabEls).forEach(el => el.classList.remove('tab--active'));
       tabBtn.classList.add('tab--active');
       await loadTrips(activeTab);
@@ -111,7 +123,7 @@ export async function renderTrips(container) {
     const card = document.createElement('div');
     card.className = 'trip-card';
     card.addEventListener('click', () => {
-      window.location.href = `/driver/trips/${trip.id}`;
+      navigate(`/driver/trips/${trip.id}`);
     });
 
     // Header with trip number and status
@@ -159,6 +171,13 @@ export async function renderTrips(container) {
       progressWrapper.appendChild(bar);
       progressWrapper.appendChild(label);
       card.appendChild(progressWrapper);
+
+      if (trip.next_stop_name) {
+        const nextStop = document.createElement('div');
+        nextStop.className = 'trip-card__next-stop';
+        nextStop.textContent = `Next: ${trip.next_stop_name}`;
+        card.appendChild(nextStop);
+      }
     } else {
       // Past and Upcoming tabs show scheduled start date
       const date = document.createElement('div');
@@ -168,19 +187,6 @@ export async function renderTrips(container) {
     }
 
     return card;
-  }
-
-  function formatStatus(status) {
-    const labels = {
-      'planned': 'Planned',
-      'assigned': 'Assigned',
-      'dispatched': 'Dispatched',
-      'in_transit': 'In Transit',
-      'delivered': 'Delivered',
-      'completed': 'Completed',
-      'cancelled': 'Cancelled',
-    };
-    return labels[status] || status;
   }
 
   function formatDate(dateStr) {
