@@ -245,6 +245,10 @@ cargo test --manifest-path /Users/jimp7508/src/ollie/Cargo.toml test_upload_retu
 
 After any change: run `cargo test`, `cargo clippy`, `cargo build` before committing.
 
+## UI / Frontend
+
+UI changes to `static/driver/` or `static/dispatch/` must be consistent with the design system defined in [`docs/DESIGN.md`](docs/DESIGN.md). Reuse the existing CSS tokens in `static/driver/css/base.css`; add a new token there (and document it in `DESIGN.md`) rather than inlining hex values or one-off styles.
+
 ## Release Workflow
 
 ### Minor releases (x.Y.0) — 3 sessions
