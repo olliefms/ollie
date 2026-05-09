@@ -636,3 +636,15 @@
   color: var(--color-success);
   font-weight: 600;
 }
+
+.passkey-status {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+}
+
+.passkey-status--success {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--color-success);
+  font-weight: 600;
+}
