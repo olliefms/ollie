@@ -57,6 +57,8 @@
   --space-8: 48px;
 }
 
+[hidden] { display: none !important; }
+
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
