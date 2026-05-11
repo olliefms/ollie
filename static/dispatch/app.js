@@ -203,7 +203,7 @@ async function renderLoadsView(params = {}) {
     } else {
       rows = loads.map(load => `
         <tr data-load-id="${load.id}">
-          <td style="font-family: var(--font-mono); font-size: 0.8125rem;">${shortId(load.id)}</td>
+          <td style="font-variant-numeric: tabular-nums;">${load.load_number || shortId(load.id)}</td>
           <td>${badge(load.status)}</td>
           <td>${fmtDate(load.created_at)}</td>
         </tr>
@@ -221,7 +221,7 @@ async function renderLoadsView(params = {}) {
         <table class="data-table">
           <thead>
             <tr>
-              <th>Load ID</th>
+              <th>Load #</th>
               <th>Status</th>
               <th>Created</th>
             </tr>
@@ -332,8 +332,8 @@ async function renderLoadDetailView(id) {
     let tripsHtml = '';
     if (trips.length > 0) {
       const tripRows = trips.map(trip => `
-        <tr>
-          <td style="font-family: var(--font-mono); font-size: 0.8125rem;">${shortId(trip.id)}</td>
+        <tr data-trip-id="${trip.id}">
+          <td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td>
           <td>${badge(trip.status)}</td>
           <td>${trip.driver_name || shortId(trip.driver_id) || '—'}</td>
           <td>${trip.truck_number || shortId(trip.truck_id) || '—'}</td>
@@ -347,7 +347,7 @@ async function renderLoadDetailView(id) {
             <table class="data-table">
               <thead>
                 <tr>
-                  <th>Trip ID</th>
+                  <th>Trip #</th>
                   <th>Status</th>
                   <th>Driver</th>
                   <th>Truck</th>
