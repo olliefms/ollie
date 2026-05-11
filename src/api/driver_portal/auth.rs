@@ -115,7 +115,7 @@ pub async fn challenge(
     let challenge_value = serde_json::to_value(&rcr)
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    Ok(Json(json!({ "challenge": challenge_value })))
+    Ok(Json(json!({ "driver_id": driver.id, "challenge": challenge_value })))
 }
 
 pub async fn verify(
