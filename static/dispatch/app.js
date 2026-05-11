@@ -98,6 +98,7 @@ function showApp() {
 const VIEW_TITLES = {
   loads: 'Loads',
   drivers: 'Drivers',
+  'driver-detail': 'Driver Detail',
   trips: 'Trips',
   events: 'Events',
 };
@@ -129,6 +130,9 @@ function navigate(view, params = {}) {
       break;
     case 'drivers':
       renderDriversView();
+      break;
+    case 'driver-detail':
+      renderDriverDetailView(params.id);
       break;
     case 'trips':
       renderTripsView(params);
@@ -450,9 +454,9 @@ async function renderDriversView() {
     } else {
       rows = drivers.map(driver => {
         const isAvailable = driver.status === 'available';
-        const rowClass = isAvailable ? ' class="row--available"' : '';
+        const rowClass = isAvailable ? 'row--available' : '';
         return `
-          <tr${rowClass}>
+          <tr${rowClass ? ` class="${rowClass}"` : ''} data-driver-id="${driver.id}" style="cursor:pointer;">
             <td>${driver.name || '—'}</td>
             <td>${badge(driver.status)}</td>
             <td>${driver.phone || '—'}</td>
@@ -482,6 +486,10 @@ async function renderDriversView() {
     `;
 
     setContent(html);
+
+    document.querySelectorAll('tr[data-driver-id]').forEach(row => {
+      row.addEventListener('click', () => navigate('driver-detail', { id: row.dataset.driverId }));
+    });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load data: ${err.message}</div>`);
@@ -585,6 +593,64 @@ async function renderTripDetailView(id) {
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load trip: ${err.message}</div>`);
+    }
+  }
+}
+
+// ─── Driver detail view ───────────────────────────────────────
+
+async function renderDriverDetailView(id) {
+  const topbarTitle = document.getElementById('topbar-title');
+  if (topbarTitle) topbarTitle.textContent = 'Driver Detail';
+  setContent('<div class="state-loading"><div class="spinner"></div></div>');
+  try {
+    const [driverRes, tripsRes] = await Promise.all([
+      apiFetch(`${API_BASE}/drivers/${id}`),
+      apiFetch(`${API_BASE}/trips?driver_id=${id}`),
+    ]);
+    if (!driverRes.ok) throw new Error(`Driver fetch HTTP ${driverRes.status}`);
+    const driver = await driverRes.json();
+    let trips = [];
+    if (tripsRes.ok) {
+      const tripsData = await tripsRes.json();
+      trips = tripsData.items || tripsData.trips || (Array.isArray(tripsData) ? tripsData : []);
+    }
+
+    const tripRows = trips.map(trip => `
+      <tr data-trip-id="${trip.id}" style="cursor:pointer;">
+        <td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td>
+        <td>${badge(trip.status)}</td>
+        <td>${fmtDate(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null)}</td>
+      </tr>
+    `).join('');
+
+    setContent(`
+      <button class="back-link" id="back-to-drivers">← Back to Drivers</button>
+      <div class="detail-card">
+        <div class="detail-card__title">${driver.name || '—'}</div>
+        <div class="detail-grid">
+          <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(driver.status)}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Phone</div><div class="detail-item__value">${driver.phone || '—'}</div></div>
+        </div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-card__title">Trips</div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead><tr><th>Trip #</th><th>Status</th><th>First Stop Scheduled</th></tr></thead>
+            <tbody id="driver-trips-tbody">${tripRows || '<tr><td colspan="3" style="text-align:center; padding: var(--space-4); color: var(--color-text-muted);">No trips</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('back-to-drivers').addEventListener('click', () => navigate('drivers'));
+    document.querySelectorAll('#driver-trips-tbody tr[data-trip-id]').forEach(row => {
+      row.addEventListener('click', () => navigate('trip-detail', { id: row.dataset.tripId }));
+    });
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      setContent(`<div class="state-error">Failed to load driver: ${err.message}</div>`);
     }
   }
 }
