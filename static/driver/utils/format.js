@@ -29,3 +29,39 @@ export function formatStatus(status) {
   };
   return labels[status] || status;
 }
+
+// Format a UTC ISO string for display in a stop's local timezone.
+// Falls back to browser locale if timezone is absent or unrecognized.
+export function formatStopTime(dateStr, timezone) {
+  if (!dateStr) return '—';
+  const opts = {
+    month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
+  };
+  if (timezone) {
+    try {
+      opts.timeZone = timezone;
+      return new Date(dateStr).toLocaleString('en-US', opts);
+    } catch {
+      // fall through to locale default
+    }
+  }
+  return new Date(dateStr).toLocaleString('en-US', opts);
+}
+
+export function formatShortTime(dateStr, timezone) {
+  if (!dateStr) return '—';
+  const opts = {
+    month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  };
+  if (timezone) {
+    try {
+      opts.timeZone = timezone;
+      return new Date(dateStr).toLocaleString('en-US', opts);
+    } catch {
+      // fall through
+    }
+  }
+  return new Date(dateStr).toLocaleString('en-US', opts);
+}
