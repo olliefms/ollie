@@ -109,7 +109,7 @@ export async function renderSettings(container) {
         // Step 1: Begin registration — single endpoint, phase="start"
         const beginResp = await apiFetch('/auth/register-passkey', {
           method: 'POST',
-          body: { phase: 'start', driver_id: driverId },
+          body: { phase: 'start' },
         });
 
         // Backend returns { challenge: <CCR JSON with publicKey: {...}> }
@@ -127,7 +127,6 @@ export async function renderSettings(container) {
           method: 'POST',
           body: {
             phase: 'finish',
-            driver_id: driverId,
             response: credentialToJSON(credential),
           },
         });
