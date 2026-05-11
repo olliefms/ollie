@@ -21,7 +21,7 @@ export async function renderStopDetail(container, tripId, seq) {
   header.className = 'stop-detail-header';
 
   const backBtn = document.createElement('button');
-  backBtn.className = 'back-btn stop-detail-back';
+  backBtn.className = 'btn-ghost-back stop-detail-back';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', () => {
     navigate(`/driver/trips/${tripId}`);
@@ -216,7 +216,7 @@ export async function renderStopDetail(container, tripId, seq) {
 
       const notesLabel = document.createElement('div');
       notesLabel.className = 'stop-detail-section-label';
-      notesLabel.textContent = 'Notes:';
+      notesLabel.textContent = 'Notes';
       notesSection.appendChild(notesLabel);
 
       const notesContent = document.createElement('div');

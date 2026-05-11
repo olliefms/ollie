@@ -43,6 +43,9 @@ export async function renderTrips(container) {
   let activeTab = validTabs.has(initialTab) ? initialTab : 'current';
   const tabEls = {};
 
+  const tabSeg = document.createElement('div');
+  tabSeg.className = 'tab-seg';
+
   tabs.forEach(tab => {
     const tabBtn = document.createElement('button');
     tabBtn.className = 'tab';
@@ -55,9 +58,10 @@ export async function renderTrips(container) {
       tabBtn.classList.add('tab--active');
       await loadTrips(activeTab);
     });
-    tabBar.appendChild(tabBtn);
+    tabSeg.appendChild(tabBtn);
     tabEls[tab.id] = tabBtn;
   });
+  tabBar.appendChild(tabSeg);
 
   // Trip list
   const tripList = document.createElement('div');

@@ -36,7 +36,11 @@
   --color-border-strong: #d1d5db;
   --color-border-focus: #1a56db;
 
+  --radius-xs: 4px;
+  --radius-sm: 6px;
   --radius: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 9999px;
   --shadow: 0 1px 3px rgba(0,0,0,0.1);
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
