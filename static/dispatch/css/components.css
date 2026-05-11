@@ -108,7 +108,6 @@
 /* ===== Main Content ===== */
 .content {
   grid-area: content;
-  margin-left: 220px;
   margin-top: var(--space-8);
   background: var(--color-bg);
   padding: var(--space-5);
