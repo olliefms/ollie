@@ -169,7 +169,7 @@ fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>> {
 pub fn validate_stop_time_str(s: &str, tz_str: &str, field: &str) -> Result<(), crate::error::AppError> {
     use chrono::TimeZone as _;
     let tz: chrono_tz::Tz = tz_str.parse()
-        .map_err(|_| crate::error::AppError::Internal(format!("invalid timezone stored on stop: {tz_str}")))?;
+        .map_err(|_| crate::error::AppError::UnprocessableEntity(format!("invalid timezone on stop: {tz_str}")))?;
     let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S")
         .map_err(|_| crate::error::AppError::UnprocessableEntity(format!(
             "{field}: must be a naive local datetime (e.g. \"2026-05-10T09:15:00\") — omit timezone offset"

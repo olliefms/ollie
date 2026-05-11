@@ -952,6 +952,25 @@ async fn test_invalid_timezone_returns_422() {
 }
 
 #[tokio::test]
+async fn test_timezone_too_long_returns_422() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
+    let long_tz = "A".repeat(65);
+
+    let resp = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                        "timezone": long_tz}],
+            "rate_items": []
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
+}
+
+#[tokio::test]
 async fn test_unassign_clears_trip_resources() {
     let (server, _b, _d, _rx) = test_server().await;
 

@@ -91,6 +91,7 @@ async fn main() -> anyhow::Result<()> {
     let app = api::router(state);
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
+    tracing::info!("ollie v{}", env!("CARGO_PKG_VERSION"));
     tracing::info!("listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
