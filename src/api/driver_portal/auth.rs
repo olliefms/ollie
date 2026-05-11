@@ -59,7 +59,6 @@ pub struct PinAuthRequest {
 #[derive(Deserialize)]
 pub struct RegisterPasskeyRequest {
     pub phase: String,
-    pub driver_id: Uuid,
     pub response: Option<Value>,
 }
 
@@ -255,17 +254,13 @@ pub async fn register_passkey(
     let jwt_driver_id: Uuid = claims.driver_id.parse()
         .map_err(|_| AppError::Unauthorized)?;
 
-    if jwt_driver_id != req.driver_id {
-        return Err(AppError::Unauthorized);
-    }
-
     // Fix 1: validate token_version and driver status before either phase
-    let reg_creds = state.db.get_driver_credentials(req.driver_id).await?
+    let reg_creds = state.db.get_driver_credentials(jwt_driver_id).await?
         .ok_or(AppError::Unauthorized)?;
     if reg_creds.token_version != claims.token_version {
         return Err(AppError::Unauthorized);
     }
-    let reg_driver = state.db.get_driver_by_id(req.driver_id).await?;
+    let reg_driver = state.db.get_driver_by_id(jwt_driver_id).await?;
     if reg_driver.status == DriverStatus::Inactive {
         return Err(AppError::Unauthorized);
     }
@@ -274,7 +269,7 @@ pub async fn register_passkey(
         "start" => {
             // driver status and token_version already validated above
 
-            let existing = state.db.get_passkey_credentials_for_driver(req.driver_id).await?;
+            let existing = state.db.get_passkey_credentials_for_driver(jwt_driver_id).await?;
             let existing_passkeys: Vec<Passkey> = existing.iter()
                 .filter_map(|r| serde_json::from_str::<Passkey>(&r.public_key).ok())
                 .collect();
@@ -288,14 +283,14 @@ pub async fn register_passkey(
 
             let (ccr, reg_state) = state.webauthn
                 .start_passkey_registration(
-                    req.driver_id,
+                    jwt_driver_id,
                     phone_display,
                     name_display,
                     exclude_opt,
                 )
                 .map_err(|e| AppError::Internal(format!("webauthn start reg error: {e}")))?;
 
-            state.reg_challenge_store.insert(req.driver_id, (reg_state, Instant::now()));
+            state.reg_challenge_store.insert(jwt_driver_id, (reg_state, Instant::now()));
 
             let challenge_value = serde_json::to_value(&ccr)
                 .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -306,7 +301,7 @@ pub async fn register_passkey(
             let cred_value = req.response.ok_or_else(|| AppError::BadRequest("response is required for finish phase".into()))?;
 
             let (reg_state, _ts) = state.reg_challenge_store
-                .remove(&req.driver_id)
+                .remove(&jwt_driver_id)
                 .map(|(_, v)| v)
                 .ok_or(AppError::BadRequest("no pending registration for this driver".into()))?;
 
@@ -326,7 +321,7 @@ pub async fn register_passkey(
 
             let passkey_cred = DriverPasskeyCredential {
                 credential_id,
-                driver_id: req.driver_id,
+                driver_id: jwt_driver_id,
                 public_key,
                 counter: 0,
                 transports: "[]".into(),
@@ -334,7 +329,7 @@ pub async fn register_passkey(
             };
             state.db.upsert_passkey_credential(&passkey_cred).await?;
 
-            tracing::info!(driver_id = %req.driver_id, "driver passkey registered");
+            tracing::info!(driver_id = %jwt_driver_id, "driver passkey registered");
 
             Ok(Json(json!({ "ok": true })).into_response())
         }
