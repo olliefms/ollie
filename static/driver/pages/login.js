@@ -1,4 +1,4 @@
-import { loginWithPin, startPasskeyAuth, finishPasskeyAuth } from '../utils/auth.js';
+import { loginWithPin, startPasskeyAuth, finishPasskeyAuth, base64urlToBuffer } from '../utils/auth.js';
 import { navigate } from '../app.js';
 
 export function renderLogin(container) {
@@ -89,13 +89,30 @@ export function renderLogin(container) {
 
   passkeyBtn.addEventListener('click', async () => {
     setLoading(true);
+    hideError(authError);
     try {
-      await startPasskeyAuth(currentPhone);
-      // TODO: Full passkey auth flow requires driver_id in challenge response.
-      // For v1.3, passkey button directs user to PIN as fallback.
-      showError(authError, 'Passkey auth requires additional backend support. Please use PIN.');
+      const data = await startPasskeyAuth(currentPhone);
+      const pkOptions = data.challenge.publicKey;
+      pkOptions.challenge = base64urlToBuffer(pkOptions.challenge);
+      if (pkOptions.allowCredentials) {
+        pkOptions.allowCredentials = pkOptions.allowCredentials.map(c => ({
+          ...c,
+          id: base64urlToBuffer(c.id),
+        }));
+      }
+      const credential = await navigator.credentials.get({ publicKey: pkOptions });
+      await finishPasskeyAuth(data.driver_id, credential);
+      navigate('/driver/trips');
     } catch (err) {
-      showError(authError, err.message || 'Passkey sign-in failed');
+      if (err.name === 'NotAllowedError') {
+        showError(authError, 'Sign-in was cancelled.');
+      } else if (err.name === 'SecurityError') {
+        showError(authError, 'Passkeys require a secure connection.');
+      } else if (err.name === 'InvalidStateError') {
+        showError(authError, 'No passkey found for this device — use PIN instead.');
+      } else {
+        showError(authError, err.message || 'Passkey sign-in failed — use PIN instead.');
+      }
     } finally {
       setLoading(false);
     }
