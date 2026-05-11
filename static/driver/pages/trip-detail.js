@@ -1,6 +1,6 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
-import { formatStopType, formatWeight, formatStatus } from '../utils/format.js';
+import { formatStopType, formatWeight, formatStatus, formatStopTime } from '../utils/format.js';
 import { navigate } from '../app.js';
 
 export async function renderTripDetail(container, tripId) {
@@ -179,7 +179,7 @@ function renderStopNode(stop, tripId) {
 
   const time = document.createElement('div');
   time.className = 'stop-node__time';
-  time.textContent = formatTime(stop.scheduled_arrive);
+  time.textContent = formatStopTime(stop.scheduled_arrive, stop.timezone);
 
   content.appendChild(title);
   content.appendChild(time);
@@ -193,13 +193,3 @@ function renderStopNode(stop, tripId) {
   return node;
 }
 
-function formatTime(dateStr) {
-  if (!dateStr) return '';
-  const date = new Date(dateStr);
-  return date.toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}

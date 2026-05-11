@@ -1,6 +1,6 @@
 import { isAuthenticated, clearAuth } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
-import { formatStopType, formatWeight } from '../utils/format.js';
+import { formatStopType, formatWeight, formatShortTime } from '../utils/format.js';
 import { navigate } from '../app.js';
 
 export async function renderStopDetail(container, tripId, seq) {
@@ -145,8 +145,8 @@ export async function renderStopDetail(container, tripId, seq) {
       if (data.scheduled_arrive) {
         const arriveWindow = document.createElement('div');
         arriveWindow.className = 'stop-detail-row';
-        const start = formatTimeShort(data.scheduled_arrive);
-        const end = data.scheduled_arrive_end ? formatTimeShort(data.scheduled_arrive_end) : null;
+        const start = formatShortTime(data.scheduled_arrive, data.timezone);
+        const end = data.scheduled_arrive_end ? formatShortTime(data.scheduled_arrive_end, data.timezone) : null;
         if (end) {
           arriveWindow.textContent = `${start} – ${end}`;
         } else {
@@ -180,7 +180,7 @@ export async function renderStopDetail(container, tripId, seq) {
     arrivedText.className = 'stop-detail-actual-label';
     arrivedText.textContent = 'Arrived: ';
     const arrivedTime = document.createElement('span');
-    arrivedTime.textContent = data.actual_arrive ? formatTimeShort(data.actual_arrive) : '—';
+    arrivedTime.textContent = data.actual_arrive ? formatShortTime(data.actual_arrive, data.timezone) : '—';
     arrivedRow.appendChild(arrivedText);
     arrivedRow.appendChild(arrivedTime);
     actualSection.appendChild(arrivedRow);
@@ -191,7 +191,7 @@ export async function renderStopDetail(container, tripId, seq) {
     departedText.className = 'stop-detail-actual-label';
     departedText.textContent = 'Departed: ';
     const departedTime = document.createElement('span');
-    departedTime.textContent = data.actual_depart ? formatTimeShort(data.actual_depart) : '—';
+    departedTime.textContent = data.actual_depart ? formatShortTime(data.actual_depart, data.timezone) : '—';
     departedRow.appendChild(departedText);
     departedRow.appendChild(departedTime);
     actualSection.appendChild(departedRow);
@@ -265,14 +265,4 @@ function selectText(el) {
   sel.addRange(range);
 }
 
-function formatTimeShort(dateStr) {
-  if (!dateStr) return '';
-  const date = new Date(dateStr);
-  return date.toLocaleDateString('en-US', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
 
