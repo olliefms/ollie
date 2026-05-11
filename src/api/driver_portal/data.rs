@@ -69,6 +69,7 @@ pub struct DriverTripStopSummary {
     pub actual_depart: Option<String>,
     pub expected_dwell_minutes: Option<u32>,
     pub notes: Option<String>,
+    pub timezone: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -112,6 +113,7 @@ pub struct DriverStopDetailResponse {
     pub weight_lbs: Option<f64>,
     pub notes: Option<String>,
     pub contacts: Vec<DriverFacilityContact>,
+    pub timezone: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +335,7 @@ pub async fn trip_detail(
                 actual_depart: s.actual_depart.clone(),
                 expected_dwell_minutes: s.expected_dwell_minutes,
                 notes: s.notes.clone(),
+                timezone: s.timezone.clone(),
             }
         })
         .collect();
@@ -416,6 +419,7 @@ pub async fn stop_detail(
         weight_lbs: load_opt.as_ref().and_then(|l| l.weight_lbs),
         notes: stop.notes.clone(),
         contacts,
+        timezone: stop.timezone.clone(),
     }))
 }
 
