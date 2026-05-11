@@ -21,7 +21,7 @@ export async function renderTripDetail(container, tripId) {
   header.className = 'trip-detail-header';
 
   const backBtn = document.createElement('button');
-  backBtn.className = 'back-btn trip-detail-back';
+  backBtn.className = 'btn-ghost-back trip-detail-back';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', () => {
     navigate('/driver/trips');

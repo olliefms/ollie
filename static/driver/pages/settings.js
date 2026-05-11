@@ -41,7 +41,7 @@ export async function renderSettings(container) {
   header.className = 'stop-detail-header';
 
   const backBtn = document.createElement('button');
-  backBtn.className = 'btn btn-secondary stop-detail-back';
+  backBtn.className = 'btn-ghost-back stop-detail-back';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', () => navigate('/driver/trips'));
 

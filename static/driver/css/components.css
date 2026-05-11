@@ -37,6 +37,28 @@
   cursor: not-allowed;
 }
 
+/* Ghost back button — navigation only, not a primary action */
+.btn-ghost-back {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--space-2);
+  background: transparent;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s ease-out;
+  flex-shrink: 0;
+}
+
+.btn-ghost-back:hover {
+  color: var(--color-text);
+}
+
 /* Inputs */
 .input-field {
   display: block;
@@ -90,9 +112,8 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  padding: clamp(48px, 15vh, 96px) var(--space-4) var(--space-4);
   min-height: 100vh;
-  padding: 1.5rem;
 }
 
 .login-header {
@@ -102,7 +123,7 @@
 
 .login-header h1 {
   font-size: 1.75rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-primary);
 }
 
@@ -182,42 +203,51 @@
 
 .trips-header h1 {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-text);
 }
 
-/* Tab bar (segmented control) */
+/* Tab bar — segmented control */
 .tab-bar {
-  display: flex;
-  gap: 0.5rem;
-  padding: 1rem 1.5rem;
+  padding: var(--space-3) var(--space-4);
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
 }
 
+.tab-seg {
+  display: flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
 .tab {
   flex: 1;
-  min-height: 44px;
-  padding: 0.5rem;
-  border: 2px solid var(--color-border);
-  border-radius: var(--radius);
-  background: transparent;
+  min-height: 36px;
+  padding: var(--space-1) var(--space-2);
+  border: none;
+  border-right: 1px solid var(--color-border);
+  background: var(--color-surface);
   color: var(--color-text-muted);
   font-size: 0.875rem;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.15s ease-out, color 0.15s ease-out;
+}
+
+.tab:last-child {
+  border-right: none;
 }
 
 .tab:hover:not(.tab--active) {
-  border-color: var(--color-primary);
-  color: var(--color-primary);
+  background: var(--color-surface-2);
+  color: var(--color-text);
 }
 
 .tab--active {
   background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: #fff;
+  color: var(--color-text-inverse);
+  font-weight: 600;
 }
 
 /* Trip list */
@@ -271,7 +301,7 @@
 }
 
 .trip-card__number {
-  font-weight: 700;
+  font-weight: 600;
   font-size: 1rem;
   color: var(--color-text);
 }
@@ -389,7 +419,7 @@
 
 .trip-detail-number {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-text);
   margin: 0;
 }
@@ -506,7 +536,7 @@
 }
 
 .stop-node__type {
-  font-weight: 700;
+  font-weight: 600;
 }
 
 .stop-node__name {
@@ -543,14 +573,14 @@
 
 .stop-detail-title {
   font-size: 1.5rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-text);
   margin: 0;
 }
 
 .stop-detail-type {
   font-size: 0.875rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-primary);
   align-self: flex-start;
 }
@@ -585,7 +615,7 @@
 }
 
 .stop-detail-row--name {
-  font-weight: 700;
+  font-weight: 600;
   font-size: 1.1rem;
   margin-bottom: 0.25rem;
   border: none;
