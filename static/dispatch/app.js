@@ -98,6 +98,7 @@ function showApp() {
 const VIEW_TITLES = {
   loads: 'Loads',
   drivers: 'Drivers',
+  trips: 'Trips',
   events: 'Events',
 };
 
@@ -128,6 +129,12 @@ function navigate(view, params = {}) {
       break;
     case 'drivers':
       renderDriversView();
+      break;
+    case 'trips':
+      renderTripsView(params);
+      break;
+    case 'trip-detail':
+      renderTripDetailView(params.id);
       break;
     case 'events':
       renderEventsView();
@@ -478,6 +485,106 @@ async function renderDriversView() {
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load data: ${err.message}</div>`);
+    }
+  }
+}
+
+// ─── Trips view ──────────────────────────────────────────────
+
+async function renderTripsView(params = {}) {
+  setContent('<div class="state-loading"><div class="spinner"></div></div>');
+  try {
+    const qs = params.status ? `?status=${encodeURIComponent(params.status)}` : '';
+    const res = await apiFetch(`${API_BASE}/trips${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const trips = data.items || data.trips || (Array.isArray(data) ? data : []);
+
+    const statusOptions = ['', 'planned', 'assigned', 'dispatched', 'in_transit', 'delivered', 'completed', 'cancelled'];
+    const filterStatus = params.status || '';
+    const selectHtml = `<select class="form-select" id="trip-status-filter">${statusOptions.map(s => `<option value="${s}" ${s === filterStatus ? 'selected' : ''}>${s || 'All Statuses'}</option>`).join('')}</select>`;
+
+    let rows = '';
+    if (trips.length === 0) {
+      rows = `<tr><td colspan="4" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No trips found</td></tr>`;
+    } else {
+      rows = trips.map(trip => {
+        const origin = trip.stops && trip.stops[0] ? (trip.stops[0].name || shortId(trip.stops[0].facility_id) || '—') : '—';
+        const dest = trip.stops && trip.stops.length > 1 ? (trip.stops[trip.stops.length - 1].name || shortId(trip.stops[trip.stops.length - 1].facility_id) || '—') : '—';
+        return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td><td>${badge(trip.status)}</td><td>${origin} → ${dest}</td><td>${shortId(trip.driver_id) || '—'}</td></tr>`;
+      }).join('');
+    }
+
+    setContent(`
+      <div class="page-header"><h1 class="page-title">Trips</h1><div class="page-controls">${selectHtml}</div></div>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead><tr><th>Trip #</th><th>Status</th><th>Route</th><th>Driver</th></tr></thead>
+          <tbody id="trips-tbody">${rows}</tbody>
+        </table>
+      </div>
+    `);
+
+    const filterEl = document.getElementById('trip-status-filter');
+    if (filterEl) filterEl.addEventListener('change', () => navigate('trips', { status: filterEl.value }));
+    document.querySelectorAll('#trips-tbody tr[data-trip-id]').forEach(row => {
+      row.addEventListener('click', () => navigate('trip-detail', { id: row.dataset.tripId }));
+    });
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      setContent(`<div class="state-error">Failed to load trips: ${err.message}</div>`);
+    }
+  }
+}
+
+// ─── Trip detail view ─────────────────────────────────────────
+
+async function renderTripDetailView(id) {
+  const topbarTitle = document.getElementById('topbar-title');
+  if (topbarTitle) topbarTitle.textContent = 'Trip Detail';
+  setContent('<div class="state-loading"><div class="spinner"></div></div>');
+  try {
+    const res = await apiFetch(`${API_BASE}/trips/${id}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const trip = await res.json();
+
+    const stopRows = (trip.stops || []).map((stop, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${stop.name || shortId(stop.facility_id) || '—'}</td>
+        <td>${stop.stop_type || '—'}</td>
+        <td>${fmtDate(stop.scheduled_arrive)}</td>
+        <td>${fmtDate(stop.actual_arrive)}</td>
+        <td>${fmtDate(stop.actual_depart)}</td>
+      </tr>
+    `).join('');
+
+    setContent(`
+      <button class="back-link" id="back-to-trips">← Back to Trips</button>
+      <div class="detail-card">
+        <div class="detail-card__title">Trip ${trip.trip_number || shortId(trip.id)}</div>
+        <div class="detail-grid">
+          <div class="detail-item"><div class="detail-item__label">Trip #</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${trip.trip_number || '—'}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(trip.status)}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${shortId(trip.driver_id) || '—'}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${shortId(trip.truck_id) || '—'}</div></div>
+        </div>
+      </div>
+      <div class="detail-card">
+        <div class="detail-card__title">Stops</div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead><tr><th>#</th><th>Facility</th><th>Type</th><th>Scheduled Arrive</th><th>Actual Arrive</th><th>Actual Depart</th></tr></thead>
+            <tbody>${stopRows || '<tr><td colspan="6" style="text-align:center; padding: var(--space-4); color: var(--color-text-muted);">No stops</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('back-to-trips').addEventListener('click', () => navigate('trips'));
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      setContent(`<div class="state-error">Failed to load trip: ${err.message}</div>`);
     }
   }
 }
