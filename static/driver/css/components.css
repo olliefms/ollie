@@ -15,7 +15,7 @@
 
 .btn-primary {
   background: var(--color-primary);
-  color: #fff;
+  color: var(--color-text-inverse);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -158,12 +158,6 @@
   flex: 1;
   height: 1px;
   background: var(--color-border);
-}
-
-.back-btn {
-  background: none;
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
 }
 
 /* Trips page */
@@ -508,8 +502,8 @@
 }
 
 .stop-node--current .stop-node__marker {
-  background: var(--color-warning, #f59e0b);
-  border-color: var(--color-warning, #f59e0b);
+  background: var(--color-warning);
+  border-color: var(--color-warning);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
