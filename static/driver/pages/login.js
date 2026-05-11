@@ -27,7 +27,7 @@ export function renderLogin(container) {
             <button id="pin-btn" class="btn btn-secondary">Sign in with PIN</button>
           </div>
           <p id="auth-error" class="error-msg" hidden></p>
-          <button id="back-btn" class="btn btn-secondary back-btn">← Different number</button>
+          <button id="back-btn" class="btn-ghost-back">← Different number</button>
         </div>
         <div id="login-loading" hidden>
           <div class="spinner"></div>
