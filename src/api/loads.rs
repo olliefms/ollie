@@ -448,6 +448,11 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             )));
         }
 
+        if input.timezone.len() > 64 {
+            return Err(AppError::UnprocessableEntity(
+                "timezone exceeds maximum length of 64 characters".to_string()
+            ));
+        }
         let _: chrono_tz::Tz = input.timezone.parse().map_err(|_| {
             AppError::UnprocessableEntity(format!(
                 "stop {}: '{}' is not a valid IANA timezone",
