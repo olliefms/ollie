@@ -251,25 +251,48 @@ UI changes to `static/driver/` or `static/dispatch/` must be consistent with the
 
 ## Release Workflow
 
-### Minor releases (x.Y.0) — 3 sessions
+All releases use a **single session**: backlog review → sprint planning (with PM) → plan doc + Opus plan review → branch creation → implementation via subagents → Opus code review → AGENTS.md lessons → issue closure → merge → tag → GitHub release.
 
-1. **Plan (PM session):** Create release branch, write plan doc, file issues, run Opus architecture review as a subagent (never a separate session), resolve decisions inline.
-2. **Execute + Review/Fix (orchestrator session):** Single session owns the worktree. Spawns subagents per issue in dependency order — foundational models/scaffolding first. No parallel cross-session worktrees. Runs `cargo build && cargo test && cargo clippy` after every merge. When done: run ultrareview, **dump findings to `docs/superpowers/reviews/vX.Y.0-ultrareview.md` immediately**, triage, fix, land.
-3. **Release (PM session):** Merge branch → main, tag, GitHub release.
+### Version increment
+- **Patch (x.y.Z):** bug fixes only, no new API surface or features
+- **Minor (x.Y.0):** any new feature, endpoint, or UI capability
 
-### Patch releases (x.y.Z) — 2 sessions
+### Steps (in order — do not skip any)
 
-1. **Plan (PM session):** Create release branch, file issues, run Opus review as a subagent (no ultrareview — cheaper, stays in PM session).
-2. **Execute + Release (orchestrator session):** Same orchestrator model. After tests/lint pass, PM merges, tags, releases.
+1. **Backlog review:** fetch open issues, group by theme, present prioritised shortlist to PM. Wait for scope confirmation before proceeding.
+2. **Plan:** use `superpowers:writing-plans` skill. Save to `docs/superpowers/plans/YYYY-MM-DD-vX.Y.Z.md`.
+3. **Opus plan review:** spawn Opus as a subagent to verify file paths, method signatures, error variants, and completeness. Fix BLOCK findings inline; re-run before proceeding.
+4. **Create release branch:** `git checkout main && git pull && git checkout -b vX.Y.Z && git push -u origin vX.Y.Z`. Commit the plan doc.
+5. **Implement:** use `superpowers:subagent-driven-development` skill. After every subagent: `git diff --stat HEAD` (commit manually if skipped) and `cargo test && cargo clippy -- -D warnings` (never proceed red).
+6. **Opus code review:** spawn Opus to review key changed files. Report PASS or BLOCK with file:line. Do not merge until PASS.
+7. **AGENTS.md lessons:** add 2–4 concise lessons (rule + why + how to apply). Commit to the release branch.
+8. **Close issues:** for each in-scope issue, leave a verification comment then `gh issue close N --reason completed`.
+9. **Merge to main (ff-only):**
+   ```bash
+   git log --oneline main..vX.Y.Z        # must show commits
+   git checkout main && git merge --ff-only vX.Y.Z && git push origin main
+   git log --oneline -1 main && git log --oneline -1 vX.Y.Z   # must match
+   ```
+10. **Tag** (refs/tags/ prefix avoids branch/tag ambiguity):
+    ```bash
+    git tag vX.Y.Z && git push origin refs/tags/vX.Y.Z
+    ```
+11. **GitHub release:** `gh release create vX.Y.Z --title "..." --notes "..." --target main`. Group notes by Bug Fixes / Enhancements / Infrastructure; reference issue numbers; note any deferred Opus findings as "tracked in #N".
+12. **Hand back to PM:** output what shipped, what's still open, any issues filed for deferred Opus findings.
+
+### Opus triage rules (applies to both plan review and code review)
+- **BLOCK:** fix inline, retest, re-run Opus before proceeding
+- **Non-blocking, < 30 min fix:** fix inline
+- **Non-blocking, needs more work:** file a GitHub issue (Opus finding as body); reference in release notes
+- **Non-blocking, out of scope / needs design decision:** file a GitHub issue; do not fix this sprint; note as "tracked in #N"
 
 ### Key rules
-- Parallelism lives **inside** one orchestrator via subagents — never across worktree-owning sessions
-- Architecture review is always a subagent call, never a separate session
-- Always dump ultrareview output to disk before triaging (prevents losing findings on crash)
-- **Merge to main before tagging.** The tag must point to a commit on main, not on the release branch. After implementation is complete: `git checkout main && git merge --ff-only vX.Y.Z && git push origin main`, then tag. Tagging the branch tip instead of main leaves main stale and breaks the next release's branch point.
-- **Before starting any release:** verify main is current with the previous release tag: `git log --oneline -1 main` and `git log --oneline -1 vX.Y.Z` should show the same commit.
-- **Subagent commit discipline:** after each subagent completes, run `git diff --stat HEAD` to confirm it committed its changes. If the diff is non-empty, commit manually before proceeding — one subagent silently skipped its commit in v1.3.1.
-- **Close issues after the release:** validate each in-scope issue (check the code/behavior, leave a verification comment) and close it. Don't leave issues open at release; the v1.3.1 orchestrator skipped this step.
+- Parallelism lives **inside** one session via subagents — never across sessions owning the same worktree
+- Opus plan review and Opus code review are both subagent calls, never separate sessions
+- **Merge to main before tagging.** The tag must point to a commit on main. Tagging the branch tip instead of main leaves main stale and breaks the next release's branch point.
+- **Before starting:** verify main is current: `git log --oneline -1 main` should match the previous release tag.
+- **Subagent commit discipline:** after each subagent completes, run `git diff --stat HEAD` to confirm it committed. If the diff is non-empty, commit manually before proceeding.
+- **Close issues with verification comments** — don't leave in-scope issues open at release.
 - **Config::from_env() test flakiness is broader than one test:** any unit test that calls `Config::from_env()` can race when the full lib suite runs in parallel (env var mutation). Not just `test_config_from_env` — facility and other integration tests that call config init are also affected. Ignore intermittent failures in isolation; they pass when run alone.
 - **Action endpoints that chain multiple mutations must re-fetch before returning.** When an action endpoint (assign, unassign, etc.) calls `transition_*` and then one or more additional mutations (e.g. `update_trip_resources`), the record returned by the first call is stale — it predates the later mutations. Always re-fetch via `get_*(id)` after all mutations are applied and before `Ok(Json(...))`. Tests that verify state via a subsequent GET will pass either way; only the response body reveals the bug.
 - **Integration test assertions on action response bodies, not just subsequent GETs.** When testing multi-mutation actions (assign, unassign), assert on the response body of the action itself (e.g. `assign_resp.json()["driver_id"]`) in addition to a follow-up GET. A subsequent GET catches DB correctness but masks a stale-return bug in the handler.
