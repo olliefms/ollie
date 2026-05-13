@@ -101,6 +101,7 @@ const VIEW_TITLES = {
   'driver-detail': 'Driver Detail',
   trips: 'Trips',
   events: 'Events',
+  documents: 'Documents',
 };
 
 function navigate(view, params = {}) {
@@ -143,6 +144,9 @@ function navigate(view, params = {}) {
     case 'events':
       renderEventsView();
       break;
+    case 'documents':
+      renderDocumentsView(params);
+      break;
     default:
       renderLoadsView({});
   }
@@ -172,6 +176,13 @@ function fmtDate(isoStr) {
   } catch {
     return isoStr;
   }
+}
+
+function fmtBytes(n) {
+  if (!n) return '—';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // ─── Utility: set main content ───────────────────────────────
@@ -726,6 +737,112 @@ async function renderEventsView() {
 
   // Auto-refresh every 30s
   eventsRefreshTimer = setInterval(fetchAndRenderEvents, 30_000);
+}
+
+// ─── Documents view ──────────────────────────────────────────
+
+async function renderDocumentsView(params = {}) {
+  setContent('<div class="state-loading"><div class="spinner"></div></div>');
+
+  const offset = params.offset || 0;
+  const filterName = params.name || '';
+
+  try {
+    const qs = new URLSearchParams({ limit: 20, offset });
+    if (filterName) qs.set('name', filterName);
+
+    const resp = await apiFetch(`/dispatch/api/v1/blobs?${qs}`);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const blobs = data.items || [];
+
+    const filterHtml = `
+      <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3);">
+        <input class="form-input" id="doc-filter-name" type="text"
+          placeholder="Filter by name…" value="${filterName}" style="max-width:240px;">
+        <button class="btn btn--secondary" id="doc-filter-apply">Search</button>
+      </div>
+    `;
+
+    let tableHtml = '';
+    if (blobs.length === 0 && offset === 0) {
+      tableHtml = '<div class="state-empty">No documents found</div>';
+    } else {
+      const rows = blobs.map(b => `
+        <tr class="doc-row" data-blob-id="${b.id}" data-blob-name="${b.name || 'download'}" style="cursor:pointer;">
+          <td>${b.name || '—'}</td>
+          <td style="font-size:var(--text-sm);color:var(--color-text-muted);">${(b.mime_type || '').split('/').pop()}</td>
+          <td>${fmtBytes(b.size)}</td>
+          <td>${badge(b.status)}</td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${b.summary || '—'}</td>
+          <td>${(b.tags || []).join(', ') || '—'}</td>
+          <td>${fmtDate(b.created_at)}</td>
+        </tr>
+      `).join('');
+
+      tableHtml = `
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Status</th>
+                <th>Summary</th>
+                <th>Tags</th>
+                <th>Uploaded</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${blobs.length === 20 ? `
+          <div style="text-align:center;margin-top:var(--space-3);">
+            <button class="btn btn--secondary" id="doc-load-more">Load more</button>
+          </div>` : ''}
+      `;
+    }
+
+    setContent(filterHtml + tableHtml);
+
+    document.getElementById('doc-filter-apply')?.addEventListener('click', () => {
+      const name = document.getElementById('doc-filter-name').value.trim();
+      navigate('documents', { name });
+    });
+    document.getElementById('doc-filter-name')?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') navigate('documents', { name: e.target.value.trim() });
+    });
+    document.getElementById('doc-load-more')?.addEventListener('click', () => {
+      navigate('documents', { name: filterName, offset: offset + 20 });
+    });
+
+    document.querySelectorAll('.doc-row').forEach(row => {
+      row.addEventListener('click', async () => {
+        const blobId = row.dataset.blobId;
+        const fileName = row.dataset.blobName;
+        try {
+          const fileResp = await apiFetch(`/dispatch/api/v1/blob/${blobId}`);
+          if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
+          const blob = await fileResp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName;
+          a.click();
+          URL.revokeObjectURL(url);
+        } catch (err) {
+          if (err.message !== 'Unauthorized — please sign in again.') {
+            alert(`Download failed: ${err.message}`);
+          }
+        }
+      });
+    });
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      setContent(`<div class="state-error">Failed to load documents: ${err.message}</div>`);
+    }
+  }
 }
 
 // ─── Login form ──────────────────────────────────────────────
