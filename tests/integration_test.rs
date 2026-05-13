@@ -1695,3 +1695,143 @@ async fn test_dispatch_trip_when_driver_already_dispatched_fails() {
     assert_eq!(dispatch_b.status_code(), 409,
         "dispatching trip B when driver is already dispatched should return 409");
 }
+
+// ---------------------------------------------------------------------------
+// Dispatcher blob API tests (#121)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dispatcher_blob_requires_auth() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.get("/dispatch/api/v1/blobs").await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_dispatcher_upload_blob_returns_202() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobs-up@example.com", "password-blobs-up").await;
+
+    let resp = server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"pod content".to_vec())
+                .file_name("pod.txt").mime_type("text/plain")))
+        .await;
+    assert!(resp.status_code() == 202 || resp.status_code() == 201);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["id"].as_str().is_some());
+    assert_eq!(body["name"], "pod.txt");
+}
+
+#[tokio::test]
+async fn test_dispatcher_list_blobs() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobs-list@example.com", "password-blobs-list").await;
+
+    server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"freight bill".to_vec())
+                .file_name("bill.txt").mime_type("text/plain")))
+        .await;
+
+    let resp = server.get("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["returned"].as_u64().unwrap() >= 1);
+    assert!(body["items"].as_array().is_some());
+}
+
+#[tokio::test]
+async fn test_dispatcher_get_blob_json() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobs-get@example.com", "password-blobs-get").await;
+
+    let upload = server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"get me".to_vec())
+                .file_name("get.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header(header::ACCEPT, "application/json")
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<serde_json::Value>()["id"], id);
+}
+
+#[tokio::test]
+async fn test_dispatcher_get_blob_raw_bytes() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobs-raw@example.com", "password-blobs-raw").await;
+
+    let content = b"raw document for download test";
+    let upload = server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
+                .file_name("download.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // No Accept: application/json → raw bytes
+    let resp = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.as_bytes(), content.as_slice());
+}
+
+#[tokio::test]
+async fn test_dispatcher_update_blob() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobs-upd@example.com", "password-blobs-upd").await;
+
+    let upload = server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"update me".to_vec())
+                .file_name("original.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.put(&format!("/dispatch/api/v1/blob/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "name": "renamed.txt", "tags": ["invoice"] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["name"], "renamed.txt");
+    assert_eq!(body["tags"], serde_json::json!(["invoice"]));
+}
+
+#[tokio::test]
+async fn test_dispatcher_delete_blob() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobs-del@example.com", "password-blobs-del").await;
+
+    let upload = server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"delete me".to_vec())
+                .file_name("delete.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let del_resp = server.delete(&format!("/dispatch/api/v1/blob/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del_resp.status_code(), 204);
+
+    let get_resp = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header(header::ACCEPT, "application/json")
+        .await;
+    assert_eq!(get_resp.status_code(), 404);
+}
