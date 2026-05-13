@@ -509,7 +509,7 @@ async function renderLoadDetailView(id) {
           a.href = url;
           a.download = fileName;
           a.click();
-          setTimeout(() => URL.revokeObjectURL(url), 100);
+          URL.revokeObjectURL(url);
         } catch (err) {
           if (err.message !== 'Unauthorized — please sign in again.') {
             alert(`Download failed: ${err.message}`);
