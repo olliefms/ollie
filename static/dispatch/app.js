@@ -281,9 +281,8 @@ async function renderLoadsView(params = {}) {
 // ─── Load detail view ─────────────────────────────────────────
 
 async function renderLoadDetailView(id) {
-  // Update top-bar title
   const topbarTitle = document.getElementById('topbar-title');
-  if (topbarTitle) topbarTitle.textContent = `Load ${shortId(id)}`;
+  if (topbarTitle) topbarTitle.textContent = 'Load';
 
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
 
@@ -295,6 +294,8 @@ async function renderLoadDetailView(id) {
 
     if (!loadRes.ok) throw new Error(`Load fetch HTTP ${loadRes.status}`);
     const load = await loadRes.json();
+
+    if (topbarTitle) topbarTitle.textContent = `Load ${load.load_number || shortId(id)}`;
 
     let trips = [];
     if (tripsRes.ok) {
@@ -346,8 +347,8 @@ async function renderLoadDetailView(id) {
         <tr data-trip-id="${trip.id}">
           <td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td>
           <td>${badge(trip.status)}</td>
-          <td>${trip.driver_name || shortId(trip.driver_id) || '—'}</td>
-          <td>${trip.truck_number || shortId(trip.truck_id) || '—'}</td>
+          <td>${trip.driver_name || '—'}</td>
+          <td>${trip.truck_unit || '—'}</td>
         </tr>
       `).join('');
 
@@ -385,8 +386,8 @@ async function renderLoadDetailView(id) {
         <div class="detail-card__title">Load Details</div>
         <div class="detail-grid">
           <div class="detail-item">
-            <div class="detail-item__label">Load ID</div>
-            <div class="detail-item__value" style="font-family: var(--font-mono); font-size: 0.875rem;">${load.id || '—'}</div>
+            <div class="detail-item__label">Load #</div>
+            <div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${load.load_number || '—'}</div>
           </div>
           <div class="detail-item">
             <div class="detail-item__label">Status</div>
@@ -394,11 +395,7 @@ async function renderLoadDetailView(id) {
           </div>
           <div class="detail-item">
             <div class="detail-item__label">Customer</div>
-            <div class="detail-item__value">${load.customer || '—'}</div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-item__label">Trip Number</div>
-            <div class="detail-item__value">${load.load_number || '—'}</div>
+            <div class="detail-item__value">${load.customer || load.customer_name || '—'}</div>
           </div>
           <div class="detail-item">
             <div class="detail-item__label">Created</div>
@@ -519,7 +516,7 @@ async function renderTripsView(params = {}) {
       rows = trips.map(trip => {
         const origin = trip.stops && trip.stops[0] ? (trip.stops[0].name || shortId(trip.stops[0].facility_id) || '—') : '—';
         const dest = trip.stops && trip.stops.length > 1 ? (trip.stops[trip.stops.length - 1].name || shortId(trip.stops[trip.stops.length - 1].facility_id) || '—') : '—';
-        return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td><td>${badge(trip.status)}</td><td>${origin} → ${dest}</td><td>${shortId(trip.driver_id) || '—'}</td></tr>`;
+        return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td><td>${badge(trip.status)}</td><td>${origin} → ${dest}</td><td>${trip.driver_name || '—'}</td></tr>`;
       }).join('');
     }
 
@@ -556,10 +553,12 @@ async function renderTripDetailView(id) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const trip = await res.json();
 
+    if (topbarTitle) topbarTitle.textContent = `Trip ${trip.trip_number || shortId(id)}`;
+
     const stopRows = (trip.stops || []).map((stop, i) => `
       <tr>
         <td>${i + 1}</td>
-        <td>${stop.name || shortId(stop.facility_id) || '—'}</td>
+        <td>${stop.name || '—'}</td>
         <td>${stop.stop_type || '—'}</td>
         <td>${fmtDate(stop.scheduled_arrive)}</td>
         <td>${fmtDate(stop.actual_arrive)}</td>
@@ -574,8 +573,8 @@ async function renderTripDetailView(id) {
         <div class="detail-grid">
           <div class="detail-item"><div class="detail-item__label">Trip #</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${trip.trip_number || '—'}</div></div>
           <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(trip.status)}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${shortId(trip.driver_id) || '—'}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${shortId(trip.truck_id) || '—'}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${trip.driver_name || '—'}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${trip.truck_unit || '—'}</div></div>
         </div>
       </div>
       <div class="detail-card">
