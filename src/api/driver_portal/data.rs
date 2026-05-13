@@ -193,7 +193,45 @@ pub async fn list_trips(
     let all_trips = state.db.list_trips(None, Some(driver_id), None).await?;
     let filtered: Vec<TripListItem> = all_trips.into_iter().filter(|t| tab_matches(&tab, t)).collect();
 
-    let items = join_all(filtered.iter().map(|trip| {
+    // Pre-fetch all facilities needed across all trips in a single batch query
+    // (origin stop, destination stop, and next-stop per trip) instead of O(3N) individual calls.
+    let all_fac_ids: Vec<Uuid> = {
+        let mut seen = std::collections::HashSet::new();
+        for trip in &filtered {
+            for stop in trip.stops.first().into_iter().chain(trip.stops.last()) {
+                if let Some(fid) = stop.facility_id {
+                    seen.insert(fid);
+                }
+            }
+            if let Some(next) = trip.stops.iter().find(|s| s.actual_arrive.is_none()) {
+                if let Some(fid) = next.facility_id {
+                    seen.insert(fid);
+                }
+            }
+        }
+        seen.into_iter().collect()
+    };
+    let fac_map = state.db.batch_get_facilities(&all_fac_ids).await.unwrap_or_default();
+
+    // Resolve facility names synchronously from the pre-fetched map (no DB calls needed).
+    let facility_names: Vec<(String, String, Option<String>)> = filtered
+        .iter()
+        .map(|trip| {
+            let origin = resolve_stop_name_sync(&fac_map, trip.stops.first());
+            let destination = resolve_stop_name_sync(&fac_map, trip.stops.last());
+            let next_stop_name = trip.stops.iter().find(|s| s.actual_arrive.is_none()).and_then(|s| {
+                if let Some(fid) = s.facility_id {
+                    fac_map.get(&fid).map(|f| f.name.clone())
+                } else {
+                    s.name.clone()
+                }
+            });
+            (origin, destination, next_stop_name)
+        })
+        .collect();
+
+    // Use join_all only for the remaining async truck/trailer lookups.
+    let async_parts = join_all(filtered.iter().map(|trip| {
         let state = state.clone();
         async move {
             let truck_unit = if let Some(tid) = trip.truck_id {
@@ -214,26 +252,18 @@ pub async fn list_trips(
             .flatten()
             .collect::<Vec<_>>();
 
-            let origin = resolve_stop_name(&state, trip.stops.first()).await;
-            let destination = resolve_stop_name(&state, trip.stops.last()).await;
+            (truck_unit, trailer_units)
+        }
+    }))
+    .await;
 
+    let items = filtered
+        .iter()
+        .zip(facility_names)
+        .zip(async_parts)
+        .map(|((trip, (origin, destination, next_stop_name)), (truck_unit, trailer_units))| {
             let stops_completed = trip.stops.iter().filter(|s| s.actual_depart.is_some()).count();
             let scheduled_start = trip.stops.first().and_then(|s| s.scheduled_arrive.clone());
-
-            let next_stop_name = {
-                let next = trip.stops.iter().find(|s| s.actual_arrive.is_none());
-                match next {
-                    None => None,
-                    Some(s) => {
-                        if let Some(fid) = s.facility_id {
-                            state.db.get_facility_by_id(fid).await.ok().map(|f| f.name)
-                        } else {
-                            s.name.clone()
-                        }
-                    }
-                }
-            };
-
             DriverTripListItem {
                 id: trip.id,
                 trip_number: trip.trip_number.clone(),
@@ -247,9 +277,8 @@ pub async fn list_trips(
                 trailer_units,
                 next_stop_name,
             }
-        }
-    }))
-    .await;
+        })
+        .collect();
 
     Ok(Json(DriverTripListResponse { items }))
 }
@@ -427,11 +456,14 @@ pub async fn stop_detail(
 // Helpers
 // ---------------------------------------------------------------------------
 
-async fn resolve_stop_name(state: &AppState, stop: Option<&crate::models::TripStop>) -> String {
+fn resolve_stop_name_sync(
+    fac_map: &HashMap<Uuid, crate::models::FacilityRecord>,
+    stop: Option<&crate::models::TripStop>,
+) -> String {
     let Some(stop) = stop else { return String::new() };
     if let Some(fid) = stop.facility_id {
-        if let Ok(f) = state.db.get_facility_by_id(fid).await {
-            return f.name;
+        if let Some(f) = fac_map.get(&fid) {
+            return f.name.clone();
         }
     }
     stop.name.clone().unwrap_or_default()
