@@ -408,7 +408,6 @@
 
 .trip-detail-back {
   min-height: 44px;
-  align-self: flex-start;
 }
 
 .trip-detail-number {
@@ -416,10 +415,6 @@
   font-weight: 600;
   color: var(--color-text);
   margin: 0;
-}
-
-.trip-detail-page .badge {
-  align-self: flex-start;
 }
 
 .trip-detail-section {
@@ -667,8 +662,6 @@
 }
 
 .passkey-status--success {
-  margin-top: 0.5rem;
-  font-size: 0.875rem;
   color: var(--color-success);
   font-weight: 600;
 }
