@@ -185,6 +185,11 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function escHtml(s) {
+  if (!s) return '';
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
 // ─── Utility: set main content ───────────────────────────────
 
 function setContent(html) {
@@ -751,7 +756,7 @@ async function renderDocumentsView(params = {}) {
     const qs = new URLSearchParams({ limit: 20, offset });
     if (filterName) qs.set('name', filterName);
 
-    const resp = await apiFetch(`/dispatch/api/v1/blobs?${qs}`);
+    const resp = await apiFetch(`${API_BASE}/blobs?${qs}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     const blobs = data.items || [];
@@ -759,7 +764,7 @@ async function renderDocumentsView(params = {}) {
     const filterHtml = `
       <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3);">
         <input class="form-input" id="doc-filter-name" type="text"
-          placeholder="Filter by name…" value="${filterName}" style="max-width:240px;">
+          placeholder="Filter by name…" value="${escHtml(filterName)}" style="max-width:240px;">
         <button class="btn btn--secondary" id="doc-filter-apply">Search</button>
       </div>
     `;
@@ -769,13 +774,13 @@ async function renderDocumentsView(params = {}) {
       tableHtml = '<div class="state-empty">No documents found</div>';
     } else {
       const rows = blobs.map(b => `
-        <tr class="doc-row" data-blob-id="${b.id}" data-blob-name="${b.name || 'download'}" style="cursor:pointer;">
-          <td>${b.name || '—'}</td>
-          <td style="font-size:var(--text-sm);color:var(--color-text-muted);">${(b.mime_type || '').split('/').pop()}</td>
+        <tr class="doc-row" data-blob-id="${b.id}" data-blob-name="${escHtml(b.name || 'download')}" style="cursor:pointer;">
+          <td>${escHtml(b.name) || '—'}</td>
+          <td style="font-size:var(--text-sm);color:var(--color-text-muted);">${escHtml((b.mime_type || '').split('/').pop())}</td>
           <td>${fmtBytes(b.size)}</td>
           <td>${badge(b.status)}</td>
-          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${b.summary || '—'}</td>
-          <td>${(b.tags || []).join(', ') || '—'}</td>
+          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(b.summary) || '—'}</td>
+          <td>${escHtml((b.tags || []).join(', ')) || '—'}</td>
           <td>${fmtDate(b.created_at)}</td>
         </tr>
       `).join('');
@@ -822,7 +827,7 @@ async function renderDocumentsView(params = {}) {
         const blobId = row.dataset.blobId;
         const fileName = row.dataset.blobName;
         try {
-          const fileResp = await apiFetch(`/dispatch/api/v1/blob/${blobId}`);
+          const fileResp = await apiFetch(`${API_BASE}/blob/${blobId}`);
           if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
           const blob = await fileResp.blob();
           const url = URL.createObjectURL(blob);
