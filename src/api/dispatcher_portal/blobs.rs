@@ -34,7 +34,7 @@ use uuid::Uuid;
         (status = 200, description = "List of blobs (or semantic search results when ?s= provided)", body = BlobListResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    security(("DispatcherJwt" = [])),
+    security(("BearerAuth" = [])),
     tag = "dispatch"
 )]
 pub async fn list_blobs(
@@ -70,7 +70,7 @@ pub async fn list_blobs(
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
     ),
-    security(("DispatcherJwt" = [])),
+    security(("BearerAuth" = [])),
     tag = "dispatch"
 )]
 pub async fn upload_blob(
@@ -207,7 +207,7 @@ pub async fn upload_blob(
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
     ),
-    security(("DispatcherJwt" = [])),
+    security(("BearerAuth" = [])),
     tag = "dispatch"
 )]
 pub async fn get_blob(
@@ -252,7 +252,7 @@ pub async fn get_blob(
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
     ),
-    security(("DispatcherJwt" = [])),
+    security(("BearerAuth" = [])),
     tag = "dispatch"
 )]
 pub async fn update_blob(
@@ -279,7 +279,7 @@ pub async fn update_blob(
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
     ),
-    security(("DispatcherJwt" = [])),
+    security(("BearerAuth" = [])),
     tag = "dispatch"
 )]
 pub async fn delete_blob(
@@ -318,7 +318,7 @@ pub async fn delete_blob(
         (status = 404, description = "Blob not found"),
         (status = 422, description = "Blob not ready or content type not queryable"),
     ),
-    security(("DispatcherJwt" = [])),
+    security(("BearerAuth" = [])),
     tag = "dispatch"
 )]
 pub async fn query_blob(
