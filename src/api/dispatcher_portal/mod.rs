@@ -1,12 +1,16 @@
 // src/api/dispatcher_portal/mod.rs
 pub mod auth;
+pub mod blobs;
 pub mod data;
 pub mod jwt;
 pub mod mcp;
 pub mod middleware;
 
 use crate::AppState;
-use axum::{Router, routing::{get, post}};
+use axum::{
+    Router,
+    routing::{get, post},
+};
 
 pub fn auth_router() -> Router<AppState> {
     Router::new()
@@ -29,6 +33,18 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trailers", get(data::list_trailers))
         .route("/dispatch/api/v1/trailers/:id", get(data::get_trailer))
         .route("/dispatch/api/v1/events", get(data::list_events))
+        // Blob endpoints
+        .route(
+            "/dispatch/api/v1/blobs",
+            get(blobs::list_blobs).post(blobs::upload_blob),
+        )
+        .route(
+            "/dispatch/api/v1/blob/:id",
+            get(blobs::get_blob)
+                .put(blobs::update_blob)
+                .delete(blobs::delete_blob),
+        )
+        .route("/dispatch/api/v1/blobs/:id/query", post(blobs::query_blob))
         // MCP JSON-RPC 2.0 endpoint for AI agent tool calls
         .route("/dispatch/mcp", post(mcp::handle))
         .route_layer(axum::middleware::from_fn_with_state(
