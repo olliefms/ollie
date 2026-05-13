@@ -103,6 +103,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::list_trailers,
         dispatcher_portal::data::get_trailer,
         dispatcher_portal::data::list_events,
+        dispatcher_portal::blobs::list_blobs,
+        dispatcher_portal::blobs::upload_blob,
+        dispatcher_portal::blobs::get_blob,
+        dispatcher_portal::blobs::update_blob,
+        dispatcher_portal::blobs::delete_blob,
+        dispatcher_portal::blobs::query_blob,
     ),
     components(
         schemas(
@@ -259,6 +265,16 @@ summary and a vector embedding. Supports semantic search via ?s=<query>.
                                     Requires blob status=ready. Uses extracted text (text blobs)
                                     or vision model (scanned PDFs). 400 for bad prompt,
                                     422 if not ready or content type not queryable.
+
+### Dispatcher Blobs — /dispatch/api/v1/blobs, /dispatch/api/v1/blob/:id
+Same capabilities as the admin blob API, protected by dispatcher JWT.
+
+  POST   /dispatch/api/v1/blobs              Upload file (multipart/form-data: file, name?, tags?)
+  GET    /dispatch/api/v1/blobs              List or search blobs (?name=, ?s=, ?limit=, ?offset=)
+  GET    /dispatch/api/v1/blob/:id           Download file or JSON record (Accept: application/json)
+  PUT    /dispatch/api/v1/blob/:id           Update name and/or tags
+  DELETE /dispatch/api/v1/blob/:id           Delete (409 if referenced by a load)
+  POST   /dispatch/api/v1/blobs/:id/query    Natural-language question about a document
 
 ### Facilities — /api/v1/facilities, /api/v1/facilities/:id
 Freight facilities (warehouses, loading docks). Address geocoding runs asynchronously.
