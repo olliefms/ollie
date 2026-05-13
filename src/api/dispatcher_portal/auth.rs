@@ -12,10 +12,18 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use std::sync::OnceLock;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use super::jwt::{decode_dispatcher_jwt, encode_dispatcher_jwt};
+
+// Pre-computed dummy hash used to equalise response time for unknown-email logins.
+// Computed once at cost 12 (same as real passwords) so the timing profile matches.
+static DUMMY_HASH: OnceLock<String> = OnceLock::new();
+fn dummy_hash() -> &'static str {
+    DUMMY_HASH.get_or_init(|| bcrypt::hash("dummy-sentinel", 12).expect("bcrypt init failed"))
+}
 
 // --- Request/Response types ---
 
@@ -68,8 +76,16 @@ pub async fn login(
 ) -> Result<impl IntoResponse, AppError> {
     let email = normalize_email(&req.email);
 
-    let dispatcher = state.db.get_dispatcher_by_email(&email).await?
-        .ok_or(AppError::Unauthorized)?;
+    let dispatcher_opt = state.db.get_dispatcher_by_email(&email).await?;
+    let dispatcher = match dispatcher_opt {
+        Some(d) => d,
+        None => {
+            // Run bcrypt on a dummy hash to equalise timing for unknown vs wrong-password (#107).
+            let pwd = req.password.clone();
+            let _ = tokio::task::spawn_blocking(move || bcrypt::verify(&pwd, dummy_hash())).await;
+            return Err(AppError::Unauthorized);
+        }
+    };
 
     if dispatcher.status == DispatcherStatus::Inactive {
         return Err(AppError::Unauthorized);

@@ -57,7 +57,7 @@ pub struct CheckCallRequest {
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — driver/truck/trailer not available or invalid status transition"),
+        (status = 409, description = "Conflict — driver/truck/trailer not eligible for assignment (inactive/out-of-service) or invalid status transition"),
     ),
     security(("BearerAuth" = [])),
     tag = "trips"
@@ -68,29 +68,32 @@ pub async fn assign_trip(
     Json(body): Json<AssignTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let driver = state.db.get_driver_by_id(body.driver_id).await?;
-    if driver.status != DriverStatus::Available {
-        return Err(AppError::Conflict(format!("driver {} is not available", body.driver_id)));
+    if driver.status == DriverStatus::Inactive {
+        return Err(AppError::Conflict(format!("driver {} is not available for assignment", body.driver_id)));
     }
 
     let truck = state.db.get_truck_by_id(body.truck_id).await?;
-    if truck.status != TruckStatus::Available {
-        return Err(AppError::Conflict(format!("truck {} is not available", body.truck_id)));
-    }
-
-    for &trailer_id in &body.trailer_ids {
-        let trailer = state.db.get_trailer_by_id(trailer_id).await?;
-        if trailer.status != TrailerStatus::Available {
-            return Err(AppError::Conflict(format!("trailer {} is not available", trailer_id)));
-        }
+    if matches!(truck.status, TruckStatus::OutOfService | TruckStatus::Inactive) {
+        return Err(AppError::Conflict(format!("truck {} is not available for assignment", body.truck_id)));
     }
 
     state.db.transition_trip_status(id, TripStatus::Assigned).await?;
     state.db.update_trip_resources(id, Some(body.driver_id), Some(body.truck_id), body.trailer_ids.clone()).await?;
 
-    state.db.update_driver_status(body.driver_id, DriverStatus::Assigned).await?;
-    state.db.update_truck_status(body.truck_id, TruckStatus::Assigned).await?;
+    if driver.status == DriverStatus::Available {
+        state.db.update_driver_status(body.driver_id, DriverStatus::Assigned).await?;
+    }
+    if truck.status == TruckStatus::Available {
+        state.db.update_truck_status(body.truck_id, TruckStatus::Assigned).await?;
+    }
     for &trailer_id in &body.trailer_ids {
-        state.db.update_trailer_status(trailer_id, TrailerStatus::Assigned).await?;
+        let trailer = state.db.get_trailer_by_id(trailer_id).await?;
+        if !matches!(trailer.status, TrailerStatus::Available | TrailerStatus::Assigned) {
+            return Err(AppError::Conflict(format!("trailer {} is not available for assignment", trailer_id)));
+        }
+        if trailer.status == TrailerStatus::Available {
+            state.db.update_trailer_status(trailer_id, TrailerStatus::Assigned).await?;
+        }
     }
 
     let trip = state.db.get_trip(id).await?;
@@ -174,6 +177,23 @@ pub async fn dispatch_trip(
     let existing = state.db.get_trip(id).await?;
     if existing.status != TripStatus::Assigned {
         return Err(AppError::Conflict("trip must be in assigned status to dispatch".into()));
+    }
+
+    if let Some(driver_id) = existing.driver_id {
+        let driver = state.db.get_driver_by_id(driver_id).await?;
+        if driver.status == DriverStatus::Dispatched {
+            return Err(AppError::Conflict(
+                "driver is already dispatched on another trip".into()
+            ));
+        }
+    }
+    if let Some(truck_id) = existing.truck_id {
+        let truck = state.db.get_truck_by_id(truck_id).await?;
+        if truck.status == TruckStatus::Dispatched {
+            return Err(AppError::Conflict(
+                "truck is already dispatched on another trip".into()
+            ));
+        }
     }
 
     let trip = state.db.transition_trip_status(id, TripStatus::Dispatched).await?;
@@ -331,6 +351,8 @@ pub async fn stop_arrive(
         .timezone
         .clone();
     if let Some(tz_str) = stop_tz.as_deref() {
+        // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
+        // is theoretically possible but negligible in practice — see #95.
         crate::models::load::validate_stop_time_str(&body.actual_arrive, tz_str, "actual_arrive")?;
     }
     let trip = state.db.update_trip_stop(id, seq, Some(body.actual_arrive.clone()), None).await?;
@@ -385,6 +407,8 @@ pub async fn stop_depart(
         .timezone
         .clone();
     if let Some(tz_str) = stop_tz.as_deref() {
+        // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
+        // is theoretically possible but negligible in practice — see #95.
         crate::models::load::validate_stop_time_str(&body.actual_depart, tz_str, "actual_depart")?;
     }
     let trip = state.db.update_trip_stop(id, seq, None, Some(body.actual_depart.clone())).await?;
