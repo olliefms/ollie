@@ -561,7 +561,7 @@ async fn test_trip_creation_cascades_load_to_assigned() {
     assert_eq!(load_resp.json::<serde_json::Value>()["status"], "assigned");
 }
 
-// ── Trip two-step DELETE ───────────────────────────────────────────────────
+// ── Trip two-step DELETE ────────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_trip_two_step_delete() {
@@ -602,7 +602,7 @@ async fn test_trip_two_step_delete() {
     assert_eq!(get_after.status_code(), 404);
 }
 
-// ── Blob query endpoint tests ──────────────────────────────────────────────
+// ── Blob query endpoint tests ─────────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_query_blob_returns_404_for_missing_blob() {
@@ -682,7 +682,7 @@ async fn test_query_blob_returns_401_without_auth() {
     assert_eq!(resp.status_code(), 401);
 }
 
-// ── Driver PIN management tests ────────────────────────────────────────────
+// ── Driver PIN management tests ─────────────────────────────────────────────────────────────────────────────────
 
 async fn create_test_driver(server: &axum_test::TestServer) -> String {
     server.post("/api/v1/drivers")
@@ -754,7 +754,7 @@ async fn test_set_driver_pin_increments_token_version() {
     // The token_version increment is verified at the DB layer by the handler logic.
 }
 
-// ── DELETE /api/v1/loads/:id FK guard ─────────────────────────────────────
+// ── DELETE /api/v1/loads/:id FK guard ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_delete_load_blocked_by_active_trip() {
@@ -1023,7 +1023,7 @@ async fn test_unassign_clears_trip_resources() {
         "truck_id should be null after unassign");
 }
 
-// ── Trip stop arrive/depart 404 tests ─────────────────────────────────────
+// ── Trip stop arrive/depart 404 tests ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_trip_stop_arrive_returns_404_for_missing_trip() {
@@ -1529,4 +1529,169 @@ async fn test_dispatcher_mcp_list_loads() {
     let first = &content[0];
     assert_eq!(first["type"], "text", "content type should be text");
     assert!(first["text"].is_string(), "content text should be a string");
+}
+
+#[tokio::test]
+async fn test_assign_trip_when_driver_is_dispatched_succeeds() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create driver and truck (both start Available)
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Busy Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-BUSY-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create trip A with stops
+    let trip_a_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin A" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination A" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Assign trip A to driver+truck
+    let assign_a = server.post(&format!("/api/v1/trips/{trip_a_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign_a.status_code(), 200, "assign trip A should succeed");
+
+    // Dispatch trip A → driver becomes Dispatched
+    let dispatch_a = server.post(&format!("/api/v1/trips/{trip_a_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch_a.status_code(), 200, "dispatch trip A should succeed");
+
+    // Confirm driver is now Dispatched
+    let driver_after_dispatch = server.get(&format!("/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(driver_after_dispatch["status"], "dispatched");
+
+    // Create trip B
+    let trip_b_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin B" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination B" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create a second truck for trip B (since truck_id is dispatched)
+    let truck_b_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-BUSY-002" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Assign trip B to the same dispatched driver → should succeed (200)
+    let assign_b = server.post(&format!("/api/v1/trips/{trip_b_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_b_id }))
+        .await;
+    assert_eq!(assign_b.status_code(), 200, "assigning trip B to a dispatched driver should succeed");
+
+    // Confirm trip B has driver_id set
+    let trip_b = server.get(&format!("/api/v1/trips/{trip_b_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(trip_b["driver_id"].as_str(), Some(driver_id.as_str()),
+        "trip B must have driver_id set after assign");
+
+    // Driver status should remain dispatched (not downgraded to assigned)
+    let driver_after_assign_b = server.get(&format!("/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(driver_after_assign_b["status"], "dispatched",
+        "driver status must remain dispatched after assigning to trip B");
+}
+
+#[tokio::test]
+async fn test_dispatch_trip_when_driver_already_dispatched_fails() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Create driver and two trucks
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Double Dispatch Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_a_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-DD-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_b_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-DD-002" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create trips A and B
+    let trip_a_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin A" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination A" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_b_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin B" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination B" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Assign + dispatch trip A → driver becomes Dispatched
+    let assign_a = server.post(&format!("/api/v1/trips/{trip_a_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_a_id }))
+        .await;
+    assert_eq!(assign_a.status_code(), 200, "assign trip A should succeed");
+
+    let dispatch_a = server.post(&format!("/api/v1/trips/{trip_a_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch_a.status_code(), 200, "dispatch trip A should succeed");
+
+    // Assign trip B to same driver (allowed since driver is dispatched, not inactive)
+    let assign_b = server.post(&format!("/api/v1/trips/{trip_b_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_b_id }))
+        .await;
+    assert_eq!(assign_b.status_code(), 200, "assign trip B to dispatched driver should succeed");
+
+    // Attempt to dispatch trip B → should fail with 409
+    let dispatch_b = server.post(&format!("/api/v1/trips/{trip_b_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch_b.status_code(), 409,
+        "dispatching trip B when driver is already dispatched should return 409");
 }
