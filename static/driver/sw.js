@@ -2,7 +2,7 @@
 // Format: 'driver-vYYYY-MM-DD' or 'driver-vN'. Failure to bump causes returning
 // users to be served stale JS until the browser evicts the old cache.
 // See release checklist in AGENTS.md.
-const CACHE_NAME = 'ollie-v1.5.0';
+const CACHE_NAME = 'ollie-v1.6.0';
 const STATIC_ASSETS = [
   '/driver',
   '/driver/app.js',
