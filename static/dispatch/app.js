@@ -310,7 +310,7 @@ async function renderLoadDetailView(id) {
       const stopRows = stops.map((stop, i) => `
         <tr>
           <td>${i + 1}</td>
-          <td>${stop.facility_name || stop.facility_id || '—'}</td>
+          <td>${stop.facility_name || '—'}</td>
           <td>${stop.stop_type || '—'}</td>
           <td>${fmtDate(stop.scheduled_arrive)}</td>
           <td>${fmtDate(stop.actual_arrive)}</td>
@@ -514,8 +514,8 @@ async function renderTripsView(params = {}) {
       rows = `<tr><td colspan="4" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No trips found</td></tr>`;
     } else {
       rows = trips.map(trip => {
-        const origin = trip.stops && trip.stops[0] ? (trip.stops[0].name || shortId(trip.stops[0].facility_id) || '—') : '—';
-        const dest = trip.stops && trip.stops.length > 1 ? (trip.stops[trip.stops.length - 1].name || shortId(trip.stops[trip.stops.length - 1].facility_id) || '—') : '—';
+        const origin = trip.stops && trip.stops[0] ? (trip.stops[0].name || '—') : '—';
+        const dest = trip.stops && trip.stops.length > 1 ? (trip.stops[trip.stops.length - 1].name || '—') : '—';
         return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td><td>${badge(trip.status)}</td><td>${origin} → ${dest}</td><td>${trip.driver_name || '—'}</td></tr>`;
       }).join('');
     }
