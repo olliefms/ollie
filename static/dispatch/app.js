@@ -395,6 +395,57 @@ async function renderLoadDetailView(id) {
       `;
     }
 
+    // Build documents section if load has blob_ids
+    let docsHtml = '';
+    const blobIds = load.blob_ids || [];
+    if (blobIds.length > 0) {
+      const blobResults = await Promise.all(
+        blobIds.map(bid =>
+          apiFetch(`${API_BASE}/blob/${bid}`, {
+            headers: { Accept: 'application/json' },
+          })
+            .then(r => (r.ok ? r.json() : null))
+            .catch(() => null)
+        )
+      );
+      const validBlobs = blobResults.filter(Boolean);
+      if (validBlobs.length > 0) {
+        const docRows = validBlobs
+          .map(
+            b => `
+          <tr class="doc-row" data-blob-id="${b.id}" data-blob-name="${escHtml(b.name || 'download')}" style="cursor:pointer;">
+            <td>${escHtml(b.name) || '—'}</td>
+            <td style="font-size:var(--text-sm);color:var(--color-text-muted);">${escHtml((b.mime_type || '').split('/').pop())}</td>
+            <td>${fmtBytes(b.size)}</td>
+            <td>${badge(b.status)}</td>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(b.summary) || '—'}</td>
+          </tr>
+        `
+          )
+          .join('');
+
+        docsHtml = `
+          <div class="detail-card">
+            <div class="detail-card__title">Documents</div>
+            <div class="table-wrapper">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Type</th>
+                    <th>Size</th>
+                    <th>Status</th>
+                    <th>Summary</th>
+                  </tr>
+                </thead>
+                <tbody>${docRows}</tbody>
+              </table>
+            </div>
+          </div>
+        `;
+      }
+    }
+
     const html = `
       <button class="back-link" id="back-to-loads">← Back to Loads</button>
 
@@ -436,12 +487,35 @@ async function renderLoadDetailView(id) {
 
       ${stopsHtml}
       ${tripsHtml}
+      ${docsHtml}
     `;
 
     setContent(html);
 
     document.getElementById('back-to-loads').addEventListener('click', () => {
       navigate('loads');
+    });
+
+    document.querySelectorAll('.doc-row').forEach(row => {
+      row.addEventListener('click', async () => {
+        const blobId = row.dataset.blobId;
+        const fileName = row.dataset.blobName;
+        try {
+          const fileResp = await apiFetch(`${API_BASE}/blob/${blobId}`);
+          if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
+          const blob = await fileResp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = fileName;
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 100);
+        } catch (err) {
+          if (err.message !== 'Unauthorized — please sign in again.') {
+            alert(`Download failed: ${err.message}`);
+          }
+        }
+      });
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
