@@ -1835,3 +1835,80 @@ async fn test_dispatcher_delete_blob() {
         .await;
     assert_eq!(get_resp.status_code(), 404);
 }
+
+#[tokio::test]
+async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "oos-trailer@example.com", "password-oos-trailer").await;
+
+    let fac_id = create_test_facility(&server, "OOS Dock", "Phoenix, AZ").await;
+
+    let driver_resp = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "OOS Test Driver" }))
+        .await;
+    assert_eq!(driver_resp.status_code(), 201);
+    let driver_id = driver_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_resp = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "TR-OOS-001" }))
+        .await;
+    assert_eq!(truck_resp.status_code(), 201);
+    let truck_id = truck_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create a trailer then mark it out_of_service
+    let trailer_resp = server.post("/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "TRL-OOS-001", "owner": "fleet" }))
+        .await;
+    assert_eq!(trailer_resp.status_code(), 201);
+    let trailer_id = trailer_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    server.put(&format!("/api/v1/trailers/{trailer_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "status": "out_of_service" }))
+        .await;
+
+    let trip_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "trip_number": "T-OOS-001",
+            "stops": [{
+                "sequence": 1, "stop_type": "origin",
+                "facility_id": fac_id, "scheduled_arrive": "2026-08-01T08:00:00",
+                "timezone": "America/Chicago"
+            }]
+        }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201);
+    let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Attempt assign with the OOS trailer — must be 409
+    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "driver_id": driver_id,
+            "truck_id": truck_id,
+            "trailer_ids": [trailer_id]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 409);
+
+    // Trip must remain planned — no partial mutation
+    let trip_check = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(
+        trip_check.json::<serde_json::Value>()["status"], "planned",
+        "trip must not be left in assigned status after a 409"
+    );
+
+    // Driver must remain available
+    let driver_check = server.get(&format!("/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(
+        driver_check.json::<serde_json::Value>()["status"], "available",
+        "driver must not be marked assigned after a 409"
+    );
+}

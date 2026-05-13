@@ -382,8 +382,27 @@ pub async fn assign_trip(
         return Err(AppError::Conflict(format!("truck {} is not available for assignment", body.truck_id)));
     }
 
+    // Pre-validate all trailers before any mutation to prevent partial state
+    let mut trailers = Vec::new();
+    for &trailer_id in &body.trailer_ids {
+        let trailer = state.db.get_trailer_by_id(trailer_id).await?;
+        if !matches!(
+            trailer.status,
+            TrailerStatus::Available | TrailerStatus::Assigned
+        ) {
+            return Err(AppError::Conflict(format!(
+                "trailer {} is not available for assignment",
+                trailer_id
+            )));
+        }
+        trailers.push(trailer);
+    }
+
     state.db.transition_trip_status(id, TripStatus::Assigned).await?;
-    state.db.update_trip_resources(id, Some(body.driver_id), Some(body.truck_id), body.trailer_ids.clone()).await?;
+    state
+        .db
+        .update_trip_resources(id, Some(body.driver_id), Some(body.truck_id), body.trailer_ids.clone())
+        .await?;
 
     if driver.status == DriverStatus::Available {
         state.db.update_driver_status(body.driver_id, DriverStatus::Assigned).await?;
@@ -391,13 +410,9 @@ pub async fn assign_trip(
     if truck.status == TruckStatus::Available {
         state.db.update_truck_status(body.truck_id, TruckStatus::Assigned).await?;
     }
-    for &trailer_id in &body.trailer_ids {
-        let trailer = state.db.get_trailer_by_id(trailer_id).await?;
-        if !matches!(trailer.status, TrailerStatus::Available | TrailerStatus::Assigned) {
-            return Err(AppError::Conflict(format!("trailer {} is not available for assignment", trailer_id)));
-        }
+    for trailer in &trailers {
         if trailer.status == TrailerStatus::Available {
-            state.db.update_trailer_status(trailer_id, TrailerStatus::Assigned).await?;
+            state.db.update_trailer_status(trailer.id, TrailerStatus::Assigned).await?;
         }
     }
 
