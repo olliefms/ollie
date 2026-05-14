@@ -51,7 +51,7 @@ pub async fn get_blob(
 
     // File is always on disk once the blob record exists
     let data = state.store.read(&record.checksum).await?;
-    let disposition = format!("attachment; filename=\"{}\"", record.name);
+    let disposition = format!("attachment; filename=\"{}\"", sanitize_filename(&record.name));
 
     Ok((
         StatusCode::OK,
@@ -249,4 +249,28 @@ pub async fn query_blob(
         model,
         processing_time_ms,
     }))
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars().filter(|c| *c != '\r' && *c != '\n').collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_filename_strips_crlf() {
+        assert_eq!(sanitize_filename("report.pdf\r\nX-Injected: evil"), "report.pdfX-Injected: evil");
+    }
+
+    #[test]
+    fn test_sanitize_filename_passthrough() {
+        assert_eq!(sanitize_filename("invoice 2026-05-14.pdf"), "invoice 2026-05-14.pdf");
+    }
+
+    #[test]
+    fn test_sanitize_filename_empty() {
+        assert_eq!(sanitize_filename(""), "");
+    }
 }
