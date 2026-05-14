@@ -5,7 +5,7 @@ use crate::{
     models::trip::{TripListItem, TripRecord, TripStatus, TripStop},
 };
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array,
+    Array, FixedSizeListArray, Float32Array, Float64Array, Int64Array,
     RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use chrono::Utc;
@@ -194,6 +194,17 @@ impl DbClient {
         self.trip_table.count_rows(Some(filter)).await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
+
+    pub async fn get_last_trip_for_driver(&self, driver_id: Uuid) -> Result<Option<TripRecord>, AppError> {
+        let id_str = driver_id.to_string();
+        let stream = self.trip_table.query()
+            .only_if(format!("driver_id = '{id_str}' AND status != 'cancelled'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut trips = batches_to_trips(collect_stream(stream).await?)?;
+        trips.sort_by_key(|t| std::cmp::Reverse(t.created_at));
+        Ok(trips.into_iter().next())
+    }
 }
 
 // --- Helpers ---
@@ -212,6 +223,8 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
     let truck_id_str = record.truck_id.map(|u| u.to_string());
     let created_at_str = record.created_at.to_rfc3339();
     let updated_at_str = record.updated_at.to_rfc3339();
+    let load_number_str = record.load_number.as_deref();
+    let previous_trip_id_str = record.previous_trip_id.map(|u| u.to_string());
 
     let embedding_col: Arc<dyn arrow_array::Array> = match &record.embedding {
         Some(v) => {
@@ -240,6 +253,10 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
         Arc::new(Int64Array::from(vec![record.owner_id])),
         Arc::new(StringArray::from(vec![created_at_str.as_str()])),
         Arc::new(StringArray::from(vec![updated_at_str.as_str()])),
+        Arc::new(StringArray::from(vec![load_number_str])),
+        Arc::new(StringArray::from(vec![previous_trip_id_str.as_deref()])),
+        Arc::new(Float64Array::from(vec![record.deadhead_miles])),
+        Arc::new(Float64Array::from(vec![record.loaded_miles])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -266,6 +283,11 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
         batch.column_by_name(name)
             .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
             .map(|a| a.value(i)).unwrap_or(0)
+    };
+    let opt_f64 = |name: &str| -> Option<f64> {
+        batch.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
     };
 
     let stops: Vec<TripStop> = serde_json::from_str(&str_col("stops")).unwrap_or_default();
@@ -294,10 +316,12 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         trip_number: str_col("trip_number"),
         load_id,
-        load_number: None,
-        previous_trip_id: None,
-        deadhead_miles: None,
-        loaded_miles: None,
+        load_number: opt_str("load_number"),
+        previous_trip_id: opt_str("previous_trip_id")
+            .map(|s| s.parse::<Uuid>().map_err(|e| AppError::Internal(e.to_string())))
+            .transpose()?,
+        deadhead_miles: opt_f64("deadhead_miles"),
+        loaded_miles: opt_f64("loaded_miles"),
         sequence: i64_col("sequence") as u32,
         driver_id,
         truck_id,
@@ -439,5 +463,51 @@ mod tests {
     async fn test_get_trip_not_found_returns_not_found() {
         let (db, _dir) = test_db().await;
         assert!(matches!(db.get_trip(uuid::Uuid::new_v4()).await, Err(AppError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_get_last_trip_for_driver_returns_most_recent_non_cancelled() {
+        let (db, _dir) = test_db().await;
+        let driver_id = uuid::Uuid::new_v4();
+
+        // First trip
+        let mut t1 = sample_trip();
+        t1.driver_id = Some(driver_id);
+        t1.trip_number = "T-2026-0001".into();
+        t1.created_at = chrono::Utc::now() - chrono::Duration::minutes(10);
+        db.insert_trip(&t1).await.unwrap();
+
+        // Second trip — newer
+        let mut t2 = sample_trip();
+        t2.driver_id = Some(driver_id);
+        t2.trip_number = "T-2026-0002".into();
+        t2.created_at = chrono::Utc::now();
+        db.insert_trip(&t2).await.unwrap();
+
+        let last = db.get_last_trip_for_driver(driver_id).await.unwrap();
+        assert!(last.is_some());
+        assert_eq!(last.unwrap().trip_number, "T-2026-0002");
+    }
+
+    #[tokio::test]
+    async fn test_get_last_trip_for_driver_excludes_cancelled() {
+        let (db, _dir) = test_db().await;
+        let driver_id = uuid::Uuid::new_v4();
+
+        let mut t1 = sample_trip();
+        t1.driver_id = Some(driver_id);
+        t1.status = TripStatus::Cancelled;
+        t1.created_at = chrono::Utc::now();
+        db.insert_trip(&t1).await.unwrap();
+
+        let last = db.get_last_trip_for_driver(driver_id).await.unwrap();
+        assert!(last.is_none(), "cancelled trips should be excluded");
+    }
+
+    #[tokio::test]
+    async fn test_get_last_trip_for_driver_no_trips_returns_none() {
+        let (db, _dir) = test_db().await;
+        let result = db.get_last_trip_for_driver(uuid::Uuid::new_v4()).await.unwrap();
+        assert!(result.is_none());
     }
 }
