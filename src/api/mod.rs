@@ -16,6 +16,7 @@ pub mod trucks;
 
 use crate::{api::auth::require_bearer, models, AppState};
 use axum::{
+    extract::DefaultBodyLimit,
     middleware::from_fn,
     response::IntoResponse,
     routing::{delete, get, patch, post, put},
@@ -489,7 +490,7 @@ pub fn router(state: AppState) -> Router {
 
     let protected = Router::new()
         // Blobs
-        .route("/api/v1/blobs", post(blobs::upload_blob))
+        .route("/api/v1/blobs", post(blobs::upload_blob).layer(DefaultBodyLimit::max(50 * 1024 * 1024)))
         .route("/api/v1/blobs", get(blobs::list_blobs))
         .route("/api/v1/blob/:id", get(blob::get_blob))
         .route("/api/v1/blob/:id", put(blob::update_blob))
