@@ -1926,3 +1926,107 @@ async fn test_upload_large_file_succeeds_under_50mb() {
         .await;
     assert_eq!(resp.status_code(), 202, "3MB upload should succeed with 50MB limit");
 }
+
+#[tokio::test]
+async fn test_trip_stop_name_and_address_populated_from_facility() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Origin Dock", "Chicago, IL").await;
+
+    let load_id = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [{"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                        "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                        "timezone": "America/Chicago"}],
+            "rate_items": []
+        }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await.json::<serde_json::Value>();
+
+    assert_eq!(trip["stops"][0]["name"], "Origin Dock", "stop name should be populated from facility");
+    assert_eq!(trip["stops"][0]["address"], "Chicago, IL", "stop address should be populated from facility");
+}
+
+#[tokio::test]
+async fn test_trip_load_number_denormalized() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    let trip = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await.json::<serde_json::Value>();
+
+    assert!(trip["load_number"].is_string(), "load_number should be set when load_id is provided");
+    assert!(!trip["load_number"].as_str().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_previous_trip_id_auto_populated_from_driver_last_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = create_test_driver(&server).await;
+
+    // First trip for this driver — no previous trip
+    let trip1 = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id }))
+        .await.json::<serde_json::Value>();
+    assert_eq!(trip1["status"], "planned");
+    assert!(trip1["previous_trip_id"].is_null(), "first trip should have no previous_trip_id");
+
+    let trip1_id = trip1["id"].as_str().unwrap();
+
+    // Second trip for same driver — should auto-populate previous_trip_id
+    let trip2 = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id }))
+        .await.json::<serde_json::Value>();
+    assert_eq!(trip2["previous_trip_id"], trip1_id, "second trip should chain to first");
+}
+
+#[tokio::test]
+async fn test_previous_trip_id_dispatcher_override() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = create_test_driver(&server).await;
+
+    // Create two trips first
+    let trip1 = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id }))
+        .await.json::<serde_json::Value>();
+    let trip1_id = trip1["id"].as_str().unwrap();
+
+    server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id }))
+        .await;
+
+    // Third trip with explicit previous_trip_id pointing to trip1 (not trip2)
+    let trip3 = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id, "previous_trip_id": trip1_id }))
+        .await.json::<serde_json::Value>();
+    assert_eq!(trip3["previous_trip_id"], trip1_id, "dispatcher override should be respected");
+}
+
+#[tokio::test]
+async fn test_deadhead_and_loaded_miles_null_without_ors() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    let resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    let trip = resp.json::<serde_json::Value>();
+    assert!(trip["deadhead_miles"].is_null(), "no ORS → deadhead_miles should be null");
+    assert!(trip["loaded_miles"].is_null(), "no ORS → loaded_miles should be null");
+}
