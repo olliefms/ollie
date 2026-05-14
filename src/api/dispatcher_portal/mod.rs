@@ -8,6 +8,7 @@ pub mod middleware;
 
 use crate::AppState;
 use axum::{
+    extract::DefaultBodyLimit,
     Router,
     routing::{get, post},
 };
@@ -36,7 +37,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         // Blob endpoints
         .route(
             "/dispatch/api/v1/blobs",
-            get(blobs::list_blobs).post(blobs::upload_blob),
+            get(blobs::list_blobs).post(blobs::upload_blob).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .route(
             "/dispatch/api/v1/blob/:id",

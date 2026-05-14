@@ -1912,3 +1912,17 @@ async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
         "driver must not be marked assigned after a 409"
     );
 }
+
+#[tokio::test]
+async fn test_upload_large_file_succeeds_under_50mb() {
+    let (server, _b, _d, _rx) = test_server().await;
+    // 3MB synthetic file — larger than the old 2MB default
+    let large_data = vec![0u8; 3 * 1024 * 1024];
+    let resp = server.post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(large_data)
+                .file_name("large.bin").mime_type("application/octet-stream")))
+        .await;
+    assert_eq!(resp.status_code(), 202, "3MB upload should succeed with 50MB limit");
+}
