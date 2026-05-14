@@ -325,6 +325,15 @@ multiple trips (relay). Status lifecycle:
 When a trip with both load_id and driver_id is created and the linked load is planned,
 the load is automatically transitioned to assigned.
 
+Trip responses now include operational data:
+  previous_trip_id — auto-chained to driver's last non-cancelled trip, or dispatcher-provided
+  deadhead_miles, loaded_miles — calculated via ORS HGV routing; null if unavailable or
+    linked facilities lack coordinates
+  load_number — denormalized from linked load at creation time
+
+Trip stops now include:
+  address — populated from linked facility at creation time
+
   POST   /api/v1/trips          Create trip (trip_number auto-generated as T-YYYY-NNNN if omitted).
                                 BREAKING (v1.3.3): When `stops` is omitted or empty and `load_id`
                                 is provided, stops are automatically inherited from the linked load.
