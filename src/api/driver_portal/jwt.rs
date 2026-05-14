@@ -7,7 +7,7 @@ use uuid::Uuid;
 const ISSUER: &str = "ollie-driver";
 const AUDIENCE: &str = "ollie-driver";
 const KID: &str = "v1";
-const EXPIRY_SECS: u64 = 8 * 3600;
+const EXPIRY_SECS: u64 = 14 * 24 * 3600; // 2 weeks
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DriverClaims {
