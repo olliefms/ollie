@@ -133,8 +133,8 @@ pub fn classify_trip(trip: &TripListItem) -> TripTab {
         TripStatus::Assigned => {
             let first_arrive = trip.stops.first().and_then(|s| s.scheduled_arrive.as_deref());
             match first_arrive.and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok()) {
-                Some(dt) if dt > chrono::Utc::now() => TripTab::Upcoming,
-                _ => TripTab::Current,
+                Some(dt) if dt <= chrono::Utc::now() => TripTab::Current,
+                _ => TripTab::Upcoming,
             }
         }
         TripStatus::Planned => TripTab::Upcoming,
@@ -542,6 +542,18 @@ mod tests {
         let past = (Utc::now() - Duration::hours(1)).to_rfc3339();
         let trip = make_trip(TripStatus::Assigned, vec![stop_with_arrive(Some(past))]);
         assert!(matches!(classify_trip(&trip), TripTab::Current));
+    }
+
+    #[test]
+    fn test_classify_assigned_no_stop_is_upcoming() {
+        let trip = make_trip(TripStatus::Assigned, vec![]);
+        assert!(matches!(classify_trip(&trip), TripTab::Upcoming));
+    }
+
+    #[test]
+    fn test_classify_assigned_unparseable_schedule_is_upcoming() {
+        let trip = make_trip(TripStatus::Assigned, vec![stop_with_arrive(Some("not-a-date".into()))]);
+        assert!(matches!(classify_trip(&trip), TripTab::Upcoming));
     }
 
     #[test]
