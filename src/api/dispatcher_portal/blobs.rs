@@ -228,7 +228,7 @@ pub async fn get_blob(
     }
 
     let data = state.store.read(&record.checksum).await?;
-    let disposition = format!("attachment; filename=\"{}\"", record.name);
+    let disposition = format!("attachment; filename=\"{}\"", sanitize_filename(&record.name));
 
     Ok((
         StatusCode::OK,
@@ -401,4 +401,8 @@ pub async fn query_blob(
         model,
         processing_time_ms,
     }))
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars().filter(|c| *c != '\r' && *c != '\n').collect()
 }
