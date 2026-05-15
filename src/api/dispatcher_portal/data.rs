@@ -681,6 +681,92 @@ pub async fn list_events(
 }
 
 // ---------------------------------------------------------------------------
+// KPI count endpoints — each returns { count: N } for the home dashboard
+// ---------------------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+pub struct CountResponse {
+    pub count: usize,
+}
+
+/// Count loads that are not yet in a terminal state (delivered / invoiced / settled / cancelled).
+#[utoipa::path(
+    get, path = "/dispatch/api/v1/loads/count",
+    responses(
+        (status = 200, description = "Open load count"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn count_open_loads(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let filter = Some("status = 'planned' OR status = 'assigned' OR status = 'dispatched' OR status = 'in_transit'".to_string());
+    let count = state.db.load_table.count_rows(filter).await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(CountResponse { count }))
+}
+
+/// Count drivers with active status.
+#[utoipa::path(
+    get, path = "/dispatch/api/v1/drivers/count",
+    responses(
+        (status = 200, description = "Active driver count"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn count_active_drivers(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let filter = Some("status = 'active'".to_string());
+    let count = state.db.driver_table.count_rows(filter).await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(CountResponse { count }))
+}
+
+/// Count blobs with pending status.
+#[utoipa::path(
+    get, path = "/dispatch/api/v1/blobs/count",
+    responses(
+        (status = 200, description = "Pending document count"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn count_pending_documents(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let filter = Some("status = 'pending'".to_string());
+    let count = state.db.blob_table.count_rows(filter).await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(CountResponse { count }))
+}
+
+/// Count events that occurred today (UTC).
+#[utoipa::path(
+    get, path = "/dispatch/api/v1/events/count",
+    responses(
+        (status = 200, description = "Events today count"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn count_events_today(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let today = chrono::Utc::now().date_naive().format("%Y-%m-%dT00:00:00Z").to_string();
+    let filter = Some(format!("occurred_at >= '{today}'"));
+    let count = state.db.event_table.count_rows(filter).await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    Ok(Json(CountResponse { count }))
+}
+
+// ---------------------------------------------------------------------------
 // Internal helpers — mirror build_detail_response from src/api/loads.rs
 // ---------------------------------------------------------------------------
 

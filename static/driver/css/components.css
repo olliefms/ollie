@@ -557,7 +557,6 @@
 
 .stop-detail-back {
   min-height: 44px;
-  align-self: flex-start;
 }
 
 .stop-detail-title {
@@ -571,7 +570,6 @@
   font-size: 0.875rem;
   font-weight: 600;
   color: var(--color-primary);
-  align-self: flex-start;
 }
 
 .stop-detail-section {
