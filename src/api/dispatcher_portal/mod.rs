@@ -34,6 +34,11 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trailers", get(data::list_trailers))
         .route("/dispatch/api/v1/trailers/:id", get(data::get_trailer))
         .route("/dispatch/api/v1/events", get(data::list_events))
+        // KPI count endpoints
+        .route("/dispatch/api/v1/loads/count", get(data::count_open_loads))
+        .route("/dispatch/api/v1/drivers/count", get(data::count_active_drivers))
+        .route("/dispatch/api/v1/blobs/count", get(data::count_pending_documents))
+        .route("/dispatch/api/v1/events/count", get(data::count_events_today))
         // Blob endpoints
         .route(
             "/dispatch/api/v1/blobs",

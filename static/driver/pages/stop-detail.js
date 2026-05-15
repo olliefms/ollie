@@ -88,7 +88,9 @@ export async function renderStopDetail(container, tripId, seq) {
       }
     }
 
-    page.appendChild(facilitySection);
+    if (data.facility_name || data.address) {
+      page.appendChild(facilitySection);
+    }
 
     // Contacts section (rendered after address, before scheduled)
     if (data.contacts && data.contacts.length > 0) {
@@ -201,6 +203,11 @@ export async function renderStopDetail(container, tripId, seq) {
     // Commodity section
     const commoditySection = document.createElement('div');
     commoditySection.className = 'stop-detail-section';
+
+    const commodityLabel = document.createElement('div');
+    commodityLabel.className = 'stop-detail-section-label';
+    commodityLabel.textContent = 'Commodity';
+    commoditySection.appendChild(commodityLabel);
 
     const commodityRow = document.createElement('div');
     commodityRow.className = 'stop-detail-row';

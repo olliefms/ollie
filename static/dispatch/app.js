@@ -10,6 +10,8 @@ const AUTH_BASE = '/dispatch/auth';
 
 // ─── State ──────────────────────────────────────────────────
 let currentView = 'loads';
+let currentParams = {};
+let navHistory = [];
 let eventsRefreshTimer = null;
 
 // ─── Auth helpers ────────────────────────────────────────────
@@ -96,6 +98,7 @@ function showApp() {
 // ─── Navigation ──────────────────────────────────────────────
 
 const VIEW_TITLES = {
+  home: 'Home',
   loads: 'Loads',
   drivers: 'Drivers',
   'driver-detail': 'Driver Detail',
@@ -104,9 +107,25 @@ const VIEW_TITLES = {
   documents: 'Documents',
 };
 
+function goBack() {
+  clearEventsRefresh();
+  const prev = navHistory.pop();
+  if (prev) {
+    _renderView(prev.view, prev.params);
+  } else {
+    _renderView('home', {});
+  }
+}
+
 function navigate(view, params = {}) {
   clearEventsRefresh();
+  navHistory.push({ view: currentView, params: currentParams });
+  _renderView(view, params);
+}
+
+function _renderView(view, params) {
   currentView = view;
+  currentParams = params;
 
   // Update sidebar active state
   document.querySelectorAll('.sidebar__link').forEach(btn => {
@@ -123,6 +142,9 @@ function navigate(view, params = {}) {
   setRefreshIndicator('');
 
   switch (view) {
+    case 'home':
+      renderHomeView();
+      break;
     case 'loads':
       renderLoadsView(params);
       break;
@@ -201,6 +223,44 @@ function setContent(html) {
 function setRefreshIndicator(msg) {
   const el = document.getElementById('refresh-indicator');
   if (el) el.textContent = msg;
+}
+
+// ─── Home view ───────────────────────────────────────────────
+
+async function renderHomeView() {
+  const kpis = [
+    { label: 'Open Loads',        endpoint: `${API_BASE}/loads/count`,   view: 'loads'     },
+    { label: 'Active Drivers',    endpoint: `${API_BASE}/drivers/count`, view: 'drivers'   },
+    { label: 'Pending Documents', endpoint: `${API_BASE}/blobs/count`,   view: 'documents' },
+    { label: 'Events Today',      endpoint: `${API_BASE}/events/count`,  view: 'events'    },
+  ];
+
+  setContent(`
+    <div class="home-view">
+      <div class="kpi-row" id="kpi-row">
+        ${kpis.map((_, i) => `
+          <div class="kpi-tile" id="kpi-tile-${i}">
+            <div class="kpi-tile__count">—</div>
+            <div class="kpi-tile__label">${escHtml(_.label)}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `);
+
+  kpis.forEach(async (kpi, i) => {
+    try {
+      const data = await apiFetch(kpi.endpoint);
+      const tile = document.getElementById(`kpi-tile-${i}`);
+      if (tile) {
+        tile.querySelector('.kpi-tile__count').textContent = data.count ?? '—';
+        tile.style.cursor = 'pointer';
+        tile.addEventListener('click', () => navigate(kpi.view));
+      }
+    } catch {
+      // leave as —
+    }
+  });
 }
 
 // ─── Loads view ──────────────────────────────────────────────
@@ -492,9 +552,7 @@ async function renderLoadDetailView(id) {
 
     setContent(html);
 
-    document.getElementById('back-to-loads').addEventListener('click', () => {
-      navigate('loads');
-    });
+    document.getElementById('back-to-loads').addEventListener('click', goBack);
 
     document.querySelectorAll('.doc-row').forEach(row => {
       row.addEventListener('click', async () => {
@@ -678,7 +736,7 @@ async function renderTripDetailView(id) {
       </div>
     `);
 
-    document.getElementById('back-to-trips').addEventListener('click', () => navigate('trips'));
+    document.getElementById('back-to-trips').addEventListener('click', goBack);
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load trip: ${err.message}</div>`);
@@ -733,7 +791,7 @@ async function renderDriverDetailView(id) {
       </div>
     `);
 
-    document.getElementById('back-to-drivers').addEventListener('click', () => navigate('drivers'));
+    document.getElementById('back-to-drivers').addEventListener('click', goBack);
     document.querySelectorAll('#driver-trips-tbody tr[data-trip-id]').forEach(row => {
       row.addEventListener('click', () => navigate('trip-detail', { id: row.dataset.tripId }));
     });
@@ -1014,7 +1072,7 @@ function boot() {
 
   if (isAuthenticated()) {
     showApp();
-    navigate('loads');
+    navigate('home');
   } else {
     showLogin();
   }
