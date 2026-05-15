@@ -1013,7 +1013,7 @@ function initLoginForm() {
         const data = await res.json();
         saveToken(data.token || data.access_token);
         showApp();
-        navigate('loads');
+        navigate('home');
         return;
       }
 

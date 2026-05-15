@@ -721,7 +721,7 @@ pub async fn count_open_loads(
 pub async fn count_active_drivers(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let filter = Some("status = 'active'".to_string());
+    let filter = Some("status = 'available' OR status = 'assigned' OR status = 'dispatched'".to_string());
     let count = state.db.driver_table.count_rows(filter).await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(CountResponse { count }))
