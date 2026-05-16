@@ -81,6 +81,13 @@ export async function renderTripDetail(container, tripId) {
     loadSection.className = 'trip-detail-section';
 
     if (data.load) {
+      if (data.load.load_number) {
+        const loadNumDiv = document.createElement('div');
+        loadNumDiv.className = 'trip-detail-row';
+        loadNumDiv.textContent = `Load #: ${data.load.load_number}`;
+        loadSection.appendChild(loadNumDiv);
+      }
+
       const refDiv = document.createElement('div');
       refDiv.className = 'trip-detail-row';
       refDiv.textContent = `Ref: ${data.load.customer_ref}`;

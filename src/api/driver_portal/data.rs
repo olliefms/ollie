@@ -51,6 +51,7 @@ pub struct DriverTripListResponse {
 
 #[derive(Serialize)]
 pub struct DriverTripLoadSummary {
+    pub load_number: Option<String>,
     pub customer_ref: Option<String>,
     pub commodity: Option<String>,
     pub weight_lbs: Option<f64>,
@@ -334,6 +335,7 @@ pub async fn trip_detail(
     let trailer_units = trailer_results.into_iter().filter_map(|r| r.ok().map(|t| t.unit_number)).collect();
 
     let load = load_opt.map(|l| DriverTripLoadSummary {
+        load_number: Some(l.load_number.clone()),
         customer_ref: l.customer_ref,
         commodity: l.commodity,
         weight_lbs: l.weight_lbs,
