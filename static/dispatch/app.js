@@ -276,6 +276,7 @@ async function renderHomeView() {
   kpis.forEach(async (kpi, i) => {
     try {
       const res = await apiFetch(kpi.endpoint);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const tile = document.getElementById(`kpi-tile-${i}`);
       if (tile) {
@@ -283,8 +284,8 @@ async function renderHomeView() {
         tile.style.cursor = 'pointer';
         tile.addEventListener('click', () => navigate(kpi.view));
       }
-    } catch {
-      // leave as —
+    } catch (err) {
+      console.error(`KPI fetch failed for ${kpi.label}:`, err);
     }
   });
 }

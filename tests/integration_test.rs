@@ -2071,3 +2071,23 @@ async fn test_dispatcher_loads_list_route_column_has_facility_names() {
     assert_eq!(stops[0]["name"], "Origin Hub");
     assert_eq!(stops[1]["name"], "Dest Hub");
 }
+
+#[tokio::test]
+async fn test_dispatcher_count_endpoints_return_200() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "kpi-test@example.com", "pw-kpi-test").await;
+
+    for path in &[
+        "/dispatch/api/v1/loads/count",
+        "/dispatch/api/v1/drivers/count",
+        "/dispatch/api/v1/blobs/count",
+        "/dispatch/api/v1/events/count",
+    ] {
+        let resp = server.get(*path)
+            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .await;
+        assert_eq!(resp.status_code(), 200, "endpoint {} should return 200", path);
+        let body = resp.json::<serde_json::Value>();
+        assert!(body["count"].is_number(), "endpoint {} should return {{count: N}}", path);
+    }
+}
