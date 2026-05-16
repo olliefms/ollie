@@ -946,7 +946,6 @@ async function renderDocumentsView(params = {}) {
           <td>${fmtBytes(b.size)}</td>
           <td>${badge(b.status)}</td>
           <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(b.summary) || '—'}</td>
-          <td>${escHtml((b.tags || []).join(', ')) || '—'}</td>
           <td>${fmtDate(b.created_at)}</td>
         </tr>
       `).join('');
@@ -961,7 +960,6 @@ async function renderDocumentsView(params = {}) {
                 <th>Size</th>
                 <th>Status</th>
                 <th>Summary</th>
-                <th>Tags</th>
                 <th>Uploaded</th>
               </tr>
             </thead>
