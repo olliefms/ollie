@@ -778,10 +778,11 @@ async function renderTripDetailView(id) {
       <div class="detail-card">
         <div class="detail-card__title">Trip ${trip.trip_number || shortId(trip.id)}</div>
         <div class="detail-grid">
-          <div class="detail-item"><div class="detail-item__label">Trip #</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${trip.trip_number || '—'}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Trip #</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || '—')}</div></div>
           <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(trip.status)}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${trip.driver_name || '—'}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${trip.truck_unit || '—'}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${escHtml(trip.driver_name || '—')}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${escHtml(trip.truck_unit || '—')}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Trailer</div><div class="detail-item__value">${escHtml((trip.trailer_units || []).join(', ') || '—')}</div></div>
         </div>
       </div>
       <div class="detail-card">
