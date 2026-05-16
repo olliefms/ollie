@@ -362,7 +362,6 @@
 .trip-card__route {
   font-size: 0.95rem;
   color: var(--color-text);
-  margin-bottom: 0.75rem;
   overflow-wrap: break-word;
 }
 
