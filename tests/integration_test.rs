@@ -2030,3 +2030,44 @@ async fn test_deadhead_and_loaded_miles_null_without_ors() {
     assert!(trip["deadhead_miles"].is_null(), "no ORS → deadhead_miles should be null");
     assert!(trip["loaded_miles"].is_null(), "no ORS → loaded_miles should be null");
 }
+
+#[tokio::test]
+async fn test_dispatcher_loads_list_route_column_has_facility_names() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "route-test@example.com", "pw-route-test").await;
+
+    let origin_id = create_test_facility(&server, "Origin Hub", "Chicago, IL").await;
+    let dest_id   = create_test_facility(&server, "Dest Hub",   "Dallas, TX").await;
+
+    server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "Route Test Co",
+            "stops": [
+                {
+                    "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                    "facility_id": origin_id, "scheduled_arrive": "2026-06-01T08:00:00",
+                    "timezone": "America/Chicago"
+                },
+                {
+                    "sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                    "facility_id": dest_id, "scheduled_arrive": "2026-06-02T14:00:00",
+                    "timezone": "America/Chicago"
+                }
+            ],
+            "rate_items": []
+        }))
+        .await;
+
+    let resp = server.get("/dispatch/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    let items = body["items"].as_array().unwrap();
+    assert!(!items.is_empty());
+    let stops = items[0]["stops"].as_array().unwrap();
+    assert!(stops.len() >= 2);
+    assert_eq!(stops[0]["name"], "Origin Hub");
+    assert_eq!(stops[1]["name"], "Dest Hub");
+}

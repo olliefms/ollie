@@ -19,7 +19,7 @@ use crate::{
     error::AppError,
     models::{
         DriverListResponse, DriverStatus,
-        LoadListResponse, LoadDetailResponse,
+        LoadDetailResponse,
         TrailerListResponse,
         TruckListResponse,
         EventListResponse, EventResponse,
@@ -52,6 +52,56 @@ pub struct DispatcherTripListItem {
 #[derive(serde::Serialize)]
 pub struct DispatcherTripListResponse {
     pub items: Vec<DispatcherTripListItem>,
+}
+
+#[derive(serde::Serialize)]
+pub struct DispatchStopSummary {
+    pub name: Option<String>,
+    pub scheduled_arrive: String,
+}
+
+#[derive(serde::Serialize)]
+pub struct DispatchLoadListItem {
+    pub id: uuid::Uuid,
+    pub load_number: String,
+    pub status: String,
+    pub customer_name: String,
+    pub stops: Vec<DispatchStopSummary>,
+    pub score: Option<f32>,
+}
+
+#[derive(serde::Serialize)]
+pub struct DispatchLoadListResponse {
+    pub returned: usize,
+    pub items: Vec<DispatchLoadListItem>,
+}
+
+async fn enrich_loads(
+    state: &crate::AppState,
+    items: Vec<crate::models::LoadListItem>,
+) -> Vec<DispatchLoadListItem> {
+    use std::collections::HashSet;
+    let all_fac_ids: Vec<uuid::Uuid> = items.iter()
+        .flat_map(|item| item.stops.iter().map(|s| s.facility_id))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let fac_map = state.db.batch_get_facilities(&all_fac_ids).await.unwrap_or_default();
+
+    items.into_iter().map(|item| {
+        let stops = item.stops.iter().map(|s| DispatchStopSummary {
+            name: fac_map.get(&s.facility_id).map(|f| f.name.clone()),
+            scheduled_arrive: s.scheduled_arrive.clone(),
+        }).collect();
+        DispatchLoadListItem {
+            id: item.id,
+            load_number: item.load_number,
+            status: item.status.as_str().to_string(),
+            customer_name: item.customer_name,
+            stops,
+            score: item.score,
+        }
+    }).collect()
 }
 
 async fn enrich_trip(state: &crate::AppState, trip: crate::models::TripListItem) -> DispatcherTripListItem {
@@ -99,7 +149,7 @@ async fn enrich_trip(state: &crate::AppState, trip: crate::models::TripListItem)
         ("offset" = Option<usize>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "List of loads", body = LoadListResponse),
+        (status = 200, description = "List of loads", body = DispatchLoadListResponse),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
@@ -121,7 +171,8 @@ pub async fn list_loads(
         limit,
         offset,
     ).await?;
-    Ok(Json(LoadListResponse { returned: total, items }))
+    let enriched = enrich_loads(&state, items).await;
+    Ok(Json(DispatchLoadListResponse { returned: total, items: enriched }))
 }
 
 #[utoipa::path(
