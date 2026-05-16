@@ -10,7 +10,6 @@ use axum::{
     Json,
 };
 use axum::http::StatusCode;
-use futures::future::join_all;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -104,18 +103,17 @@ async fn enrich_loads(
     }).collect()
 }
 
-async fn enrich_trip(state: &crate::AppState, trip: crate::models::TripListItem) -> DispatcherTripListItem {
-    let driver_name = if let Some(did) = trip.driver_id {
-        state.db.get_driver_by_id(did).await.ok().map(|d| d.name)
-    } else { None };
-    let truck_unit = if let Some(tid) = trip.truck_id {
-        state.db.get_truck_by_id(tid).await.ok().map(|t| t.unit_number)
-    } else { None };
-    let trailer_units = join_all(trip.trailer_ids.iter().map(|tid| {
-        let state = state.clone();
-        let tid = *tid;
-        async move { state.db.get_trailer_by_id(tid).await.ok().map(|t| t.unit_number) }
-    })).await.into_iter().flatten().collect();
+fn enrich_trip(
+    trip: crate::models::TripListItem,
+    driver_map: &std::collections::HashMap<uuid::Uuid, String>,
+    truck_map: &std::collections::HashMap<uuid::Uuid, String>,
+    trailer_map: &std::collections::HashMap<uuid::Uuid, String>,
+) -> DispatcherTripListItem {
+    let driver_name = trip.driver_id.and_then(|did| driver_map.get(&did).cloned());
+    let truck_unit  = trip.truck_id.and_then(|tid| truck_map.get(&tid).cloned());
+    let trailer_units = trip.trailer_ids.iter()
+        .filter_map(|tid| trailer_map.get(tid).cloned())
+        .collect();
 
     DispatcherTripListItem {
         id: trip.id,
@@ -374,11 +372,35 @@ pub async fn list_trips(
     State(state): State<AppState>,
     Query(q): Query<ListTripsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let raw_items = state.db.list_trips(q.load_id, q.driver_id, q.status.as_deref()).await?;
-    let items = join_all(raw_items.into_iter().map(|trip| {
-        let state = state.clone();
-        async move { enrich_trip(&state, trip).await }
-    })).await;
+    let trips = state.db.list_trips(q.load_id, q.driver_id, q.status.as_deref()).await?;
+
+    let mut driver_ids = std::collections::HashSet::new();
+    let mut truck_ids  = std::collections::HashSet::new();
+    let mut trailer_ids_all = std::collections::HashSet::new();
+    for trip in &trips {
+        if let Some(did) = trip.driver_id { driver_ids.insert(did); }
+        if let Some(tid) = trip.truck_id  { truck_ids.insert(tid); }
+        for tid in &trip.trailer_ids { trailer_ids_all.insert(*tid); }
+    }
+
+    let driver_ids_vec:  Vec<_> = driver_ids.into_iter().collect();
+    let truck_ids_vec:   Vec<_> = truck_ids.into_iter().collect();
+    let trailer_ids_vec: Vec<_> = trailer_ids_all.into_iter().collect();
+
+    let (driver_records, truck_records, trailer_records) = tokio::try_join!(
+        state.db.batch_get_drivers(&driver_ids_vec),
+        state.db.batch_get_trucks(&truck_ids_vec),
+        state.db.batch_get_trailers(&trailer_ids_vec),
+    )?;
+
+    let driver_map:  std::collections::HashMap<_, _> = driver_records.into_iter().map(|(id, r)| (id, r.name)).collect();
+    let truck_map:   std::collections::HashMap<_, _> = truck_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
+    let trailer_map: std::collections::HashMap<_, _> = trailer_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
+
+    let items: Vec<DispatcherTripListItem> = trips.into_iter()
+        .map(|trip| enrich_trip(trip, &driver_map, &truck_map, &trailer_map))
+        .collect();
+
     Ok(Json(DispatcherTripListResponse { items }))
 }
 
@@ -399,7 +421,23 @@ pub async fn get_trip(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let record = state.db.get_trip(id).await?;
-    let enriched = enrich_trip(&state, record.into()).await;
+    let trip: crate::models::TripListItem = record.into();
+
+    let driver_ids_vec:  Vec<_> = trip.driver_id.into_iter().collect();
+    let truck_ids_vec:   Vec<_> = trip.truck_id.into_iter().collect();
+    let trailer_ids_vec: Vec<_> = trip.trailer_ids.clone();
+
+    let (driver_records, truck_records, trailer_records) = tokio::try_join!(
+        state.db.batch_get_drivers(&driver_ids_vec),
+        state.db.batch_get_trucks(&truck_ids_vec),
+        state.db.batch_get_trailers(&trailer_ids_vec),
+    )?;
+
+    let driver_map:  std::collections::HashMap<_, _> = driver_records.into_iter().map(|(id, r)| (id, r.name)).collect();
+    let truck_map:   std::collections::HashMap<_, _> = truck_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
+    let trailer_map: std::collections::HashMap<_, _> = trailer_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
+
+    let enriched = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
     Ok(Json(enriched))
 }
 

@@ -36,6 +36,20 @@ impl DbClient {
             .ok_or(AppError::NotFound)
     }
 
+    pub async fn batch_get_trucks(
+        &self,
+        ids: &[uuid::Uuid],
+    ) -> Result<std::collections::HashMap<uuid::Uuid, crate::models::TruckRecord>, AppError> {
+        if ids.is_empty() { return Ok(std::collections::HashMap::new()); }
+        let id_list = ids.iter().map(|id| format!("'{id}'")).collect::<Vec<_>>().join(", ");
+        let stream = self.truck_table.query()
+            .only_if(format!("id IN ({id_list})"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_trucks(collect_stream(stream).await?)?
+            .into_iter().map(|r| (r.id, r)).collect())
+    }
+
     async fn upsert_truck(&self, record: &TruckRecord) -> Result<(), AppError> {
         let batch = truck_to_batch(record, self.embed_dim)?;
         let schema = truck_schema(self.embed_dim);
