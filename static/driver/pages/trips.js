@@ -118,8 +118,7 @@ export async function renderTrips(container) {
 
         if (shown < allItems.length) {
           const btn = document.createElement('button');
-          btn.className = 'btn btn--secondary load-more-btn';
-          btn.style.cssText = 'display:block;margin:1rem auto;';
+          btn.className = 'btn btn-secondary load-more-btn';
           btn.textContent = `Load more (${allItems.length - shown} remaining)`;
           btn.addEventListener('click', showMore);
           tripList.appendChild(btn);

@@ -32,6 +32,12 @@
   background: var(--color-bg);
 }
 
+.load-more-btn {
+  display: block;
+  width: auto;
+  margin: 1rem auto;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
