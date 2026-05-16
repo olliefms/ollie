@@ -250,7 +250,8 @@ async function renderHomeView() {
 
   kpis.forEach(async (kpi, i) => {
     try {
-      const data = await apiFetch(kpi.endpoint);
+      const res = await apiFetch(kpi.endpoint);
+      const data = await res.json();
       const tile = document.getElementById(`kpi-tile-${i}`);
       if (tile) {
         tile.querySelector('.kpi-tile__count').textContent = data.count ?? '—';
