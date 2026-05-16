@@ -130,12 +130,12 @@ impl DbClient {
         let filter = build_load_filter(status_filter, customer_filter, tag_filter, from_date, to_date)?;
         let total = self.load_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.load_table.query().limit(limit + offset);
+        let mut q = self.load_table.query();
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let mut records = batches_to_loads(collect_stream(stream).await?)?;
         records.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-        let items: Vec<LoadListItem> = records.into_iter().skip(offset).map(LoadListItem::from).collect();
+        let items: Vec<LoadListItem> = records.into_iter().skip(offset).take(limit).map(LoadListItem::from).collect();
         Ok((total, items))
     }
 

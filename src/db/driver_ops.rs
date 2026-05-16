@@ -113,12 +113,12 @@ impl DbClient {
         let filter = build_driver_filter(status_filter);
         let total = self.driver_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.driver_table.query().limit(limit + offset);
+        let mut q = self.driver_table.query();
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let mut records = batches_to_drivers(collect_stream(stream).await?)?;
         records.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-        let items: Vec<DriverListItem> = records.into_iter().skip(offset).map(DriverListItem::from).collect();
+        let items: Vec<DriverListItem> = records.into_iter().skip(offset).take(limit).map(DriverListItem::from).collect();
         Ok((total, items))
     }
 
