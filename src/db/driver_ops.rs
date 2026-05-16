@@ -46,6 +46,20 @@ impl DbClient {
             .ok_or(AppError::NotFound)
     }
 
+    pub async fn batch_get_drivers(
+        &self,
+        ids: &[uuid::Uuid],
+    ) -> Result<std::collections::HashMap<uuid::Uuid, crate::models::DriverRecord>, AppError> {
+        if ids.is_empty() { return Ok(std::collections::HashMap::new()); }
+        let id_list = ids.iter().map(|id| format!("'{id}'")).collect::<Vec<_>>().join(", ");
+        let stream = self.driver_table.query()
+            .only_if(format!("id IN ({id_list})"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_drivers(collect_stream(stream).await?)?
+            .into_iter().map(|r| (r.id, r)).collect())
+    }
+
     async fn upsert_driver(&self, record: &DriverRecord) -> Result<(), AppError> {
         let batch = driver_to_batch(record, self.embed_dim)?;
         let schema = driver_schema(self.embed_dim);

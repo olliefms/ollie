@@ -36,6 +36,20 @@ impl DbClient {
             .ok_or(AppError::NotFound)
     }
 
+    pub async fn batch_get_trailers(
+        &self,
+        ids: &[uuid::Uuid],
+    ) -> Result<std::collections::HashMap<uuid::Uuid, crate::models::TrailerRecord>, AppError> {
+        if ids.is_empty() { return Ok(std::collections::HashMap::new()); }
+        let id_list = ids.iter().map(|id| format!("'{id}'")).collect::<Vec<_>>().join(", ");
+        let stream = self.trailer_table.query()
+            .only_if(format!("id IN ({id_list})"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_trailers(collect_stream(stream).await?)?
+            .into_iter().map(|r| (r.id, r)).collect())
+    }
+
     async fn upsert_trailer(&self, record: &TrailerRecord) -> Result<(), AppError> {
         let batch = trailer_to_batch(record, self.embed_dim)?;
         let schema = trailer_schema(self.embed_dim);
@@ -371,6 +385,28 @@ mod tests {
         assert_eq!(total, 1);
         let (total2, _) = db.list_trailers(None, Some("carrier"), 10, 0).await.unwrap();
         assert_eq!(total2, 0);
+    }
+
+    #[tokio::test]
+    async fn test_batch_get_trailers() {
+        let (db, _dir) = test_db().await;
+        let t1 = sample_trailer();
+        let t2 = {
+            let mut t = sample_trailer();
+            t.id = uuid::Uuid::new_v4();
+            t.unit_number = "TRL-002".into();
+            t
+        };
+        db.insert_trailer(&t1).await.unwrap();
+        db.insert_trailer(&t2).await.unwrap();
+
+        let map = db.batch_get_trailers(&[t1.id, t2.id]).await.unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map[&t1.id].unit_number, t1.unit_number);
+        assert_eq!(map[&t2.id].unit_number, "TRL-002");
+
+        let empty = db.batch_get_trailers(&[]).await.unwrap();
+        assert!(empty.is_empty());
     }
 
     #[tokio::test]
