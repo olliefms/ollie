@@ -212,6 +212,31 @@ function escHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+const BLOB_NOISE_EVENTS = new Set([
+  'processing_started', 'processing_completed', 'processing_failed',
+]);
+
+function humanizeEventType(type) {
+  const map = {
+    'trip.assigned':     'Trip Assigned',
+    'trip.unassigned':   'Trip Unassigned',
+    'trip.dispatched':   'Trip Dispatched',
+    'trip.undispatched': 'Trip Undispatched',
+    'trip.in_transit':   'Trip In Transit',
+    'trip.delivered':    'Trip Delivered',
+    'trip_completed':    'Trip Completed',
+    'trip.cancelled':    'Trip Cancelled',
+    'stop.arrived':      'Stop Arrived',
+    'stop.departed':     'Stop Departed',
+    'stop.late':         'Stop Late',
+    'check_call':        'Check Call',
+    'driver_available':  'Driver Available',
+    'truck_available':   'Truck Available',
+    'trailer_available': 'Trailer Available',
+  };
+  return map[type] || type.replace(/[_.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
 // ─── Utility: set main content ───────────────────────────────
 
 function setContent(html) {
@@ -852,12 +877,12 @@ async function fetchAndRenderEvents() {
     const data = await res.json();
     const events = data.events || data.items || (Array.isArray(data) ? data : []);
 
-    // Most recent first
-    const sorted = [...events].sort((a, b) => {
-      const ta = new Date(a.created_at || a.timestamp || 0).getTime();
-      const tb = new Date(b.created_at || b.timestamp || 0).getTime();
-      return tb - ta;
-    });
+    const filtered = events.filter(ev => !BLOB_NOISE_EVENTS.has(ev.event_type));
+
+    // Most recent first, using occurred_at
+    const sorted = [...filtered].sort((a, b) =>
+      new Date(b.occurred_at || 0).getTime() - new Date(a.occurred_at || 0).getTime()
+    );
 
     setRefreshIndicator(`Updated ${new Date().toLocaleTimeString()}`);
 
@@ -869,13 +894,29 @@ async function fetchAndRenderEvents() {
       return;
     }
 
-    const items = sorted.map(ev => `
+    const items = sorted.map(ev => {
+      const entityType = (ev.entity_type || '').toLowerCase();
+      const entityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
+
+      let payload = {};
+      try {
+        payload = typeof ev.payload === 'string' ? JSON.parse(ev.payload) : (ev.payload || {});
+      } catch (_) {}
+      const stopName = payload.facility_name || payload.stop_name ||
+        (payload.sequence != null ? `Stop ${payload.sequence}` : null);
+      const stopSuffix = stopName ? ` · ${escHtml(stopName)}` : '';
+
+      const badgeHtml = entityType
+        ? `<span class="badge badge--${entityType}">${escHtml(entityLabel)}</span> `
+        : '';
+
+      return `
       <div class="event-item">
-        <span class="event-item__type">${ev.event_type || ev.type || '—'}</span>
-        <span class="event-item__entity">${shortId(ev.entity_id || ev.id)}</span>
-        <span class="event-item__time">${fmtDate(ev.created_at || ev.timestamp)}</span>
+        ${badgeHtml}<span class="event-item__type">${escHtml(humanizeEventType(ev.event_type || ''))}</span>${stopSuffix}
+        <span class="event-item__time">${fmtDate(ev.occurred_at)}</span>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     const listEl = document.getElementById('events-list');
     if (listEl) {
