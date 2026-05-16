@@ -285,17 +285,35 @@ async function renderLoadsView(params = {}) {
       </select>
     `;
 
+    const sorted = [...loads].sort((a, b) => {
+      const ta = a.stops && a.stops[0] ? new Date(a.stops[0].scheduled_arrive || 0).getTime() : 0;
+      const tb = b.stops && b.stops[0] ? new Date(b.stops[0].scheduled_arrive || 0).getTime() : 0;
+      if (ta === 0 && tb === 0) return 0;
+      if (ta === 0) return 1;
+      if (tb === 0) return -1;
+      return tb - ta;
+    });
+
     let rows = '';
-    if (loads.length === 0) {
-      rows = `<tr><td colspan="3" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No loads found</td></tr>`;
+    if (sorted.length === 0) {
+      rows = `<tr><td colspan="6" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No loads found</td></tr>`;
     } else {
-      rows = loads.map(load => `
+      rows = sorted.map(load => {
+        const stops = load.stops || [];
+        const last = stops.length - 1;
+        const origin = stops[0]?.name || '—';
+        const dest = stops[last]?.name || '—';
+        return `
         <tr data-load-id="${load.id}">
-          <td style="font-variant-numeric: tabular-nums;">${load.load_number || shortId(load.id)}</td>
+          <td style="font-variant-numeric: tabular-nums;">${escHtml(load.load_number || shortId(load.id))}</td>
           <td>${badge(load.status)}</td>
-          <td>${fmtDate(load.created_at)}</td>
+          <td>${escHtml(load.customer_name || '—')}</td>
+          <td>${escHtml(origin)} → ${escHtml(dest)}</td>
+          <td>${fmtDate(stops[0]?.scheduled_arrive)}</td>
+          <td>${fmtDate(stops[last]?.scheduled_arrive)}</td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
     }
 
     return `
@@ -311,7 +329,10 @@ async function renderLoadsView(params = {}) {
             <tr>
               <th>Load #</th>
               <th>Status</th>
-              <th>Created</th>
+              <th>Customer</th>
+              <th>Route</th>
+              <th>Pickup</th>
+              <th>Delivery</th>
             </tr>
           </thead>
           <tbody id="loads-tbody">
