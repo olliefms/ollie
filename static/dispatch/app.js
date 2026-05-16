@@ -179,7 +179,7 @@ function _renderView(view, params) {
 function badge(status) {
   if (!status) return '';
   const slug = status.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-  return `<span class="badge badge--${slug}">${status}</span>`;
+  return `<span class="badge badge--${slug}">${escHtml(status)}</span>`;
 }
 
 // ─── Utility: short id ───────────────────────────────────────
@@ -662,7 +662,7 @@ async function renderDriversView() {
         <h1 class="page-title">Drivers</h1>
       </div>
       <div class="table-wrapper">
-        <table class="data-table data-table--compact">
+        <table class="data-table">
           <thead>
             <tr>
               <th>Name</th>
