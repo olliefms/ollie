@@ -679,14 +679,26 @@ async function renderTripsView(params = {}) {
     const filterStatus = params.status || '';
     const selectHtml = `<select class="form-select" id="trip-status-filter">${statusOptions.map(s => `<option value="${s}" ${s === filterStatus ? 'selected' : ''}>${s || 'All Statuses'}</option>`).join('')}</select>`;
 
+    const sorted = [...trips].sort((a, b) => {
+      const ta = a.stops && a.stops[0] ? new Date(a.stops[0].scheduled_arrive || 0).getTime() : 0;
+      const tb = b.stops && b.stops[0] ? new Date(b.stops[0].scheduled_arrive || 0).getTime() : 0;
+      if (ta === 0 && tb === 0) return 0;
+      if (ta === 0) return 1;
+      if (tb === 0) return -1;
+      return tb - ta;
+    });
+
     let rows = '';
-    if (trips.length === 0) {
-      rows = `<tr><td colspan="4" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No trips found</td></tr>`;
+    if (sorted.length === 0) {
+      rows = `<tr><td colspan="7" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No trips found</td></tr>`;
     } else {
-      rows = trips.map(trip => {
+      rows = sorted.map(trip => {
+        const lastStop = trip.stops && trip.stops.length > 0 ? trip.stops[trip.stops.length - 1] : null;
         const origin = trip.stops && trip.stops[0] ? (trip.stops[0].name || '—') : '—';
-        const dest = trip.stops && trip.stops.length > 1 ? (trip.stops[trip.stops.length - 1].name || '—') : '—';
-        return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td><td>${badge(trip.status)}</td><td>${origin} → ${dest}</td><td>${trip.driver_name || '—'}</td></tr>`;
+        const dest = lastStop ? (lastStop.name || '—') : '—';
+        const pickup = fmtDate(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null);
+        const delivery = fmtDate(lastStop ? lastStop.scheduled_arrive : null);
+        return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td><td>${escHtml(trip.load_number || '—')}</td><td>${badge(trip.status)}</td><td>${escHtml(trip.driver_name || '—')}</td><td>${escHtml(origin)} → ${escHtml(dest)}</td><td>${pickup}</td><td>${delivery}</td></tr>`;
       }).join('');
     }
 
@@ -694,7 +706,7 @@ async function renderTripsView(params = {}) {
       <div class="page-header"><h1 class="page-title">Trips</h1><div class="page-controls">${selectHtml}</div></div>
       <div class="table-wrapper">
         <table class="data-table">
-          <thead><tr><th>Trip #</th><th>Status</th><th>Route</th><th>Driver</th></tr></thead>
+          <thead><tr><th>Trip #</th><th>Load #</th><th>Status</th><th>Driver</th><th>Route</th><th>Pickup</th><th>Delivery</th></tr></thead>
           <tbody id="trips-tbody">${rows}</tbody>
         </table>
       </div>
