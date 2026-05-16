@@ -112,12 +112,12 @@ impl DbClient {
         let filter = build_trailer_filter(status_filter, owner_filter);
         let total = self.trailer_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.trailer_table.query().limit(limit + offset);
+        let mut q = self.trailer_table.query();
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let mut records = batches_to_trailers(collect_stream(stream).await?)?;
         records.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-        let items: Vec<TrailerListItem> = records.into_iter().skip(offset).map(TrailerListItem::from).collect();
+        let items: Vec<TrailerListItem> = records.into_iter().skip(offset).take(limit).map(TrailerListItem::from).collect();
         Ok((total, items))
     }
 

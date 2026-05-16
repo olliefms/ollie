@@ -105,12 +105,12 @@ impl DbClient {
         let filter = build_truck_filter(status_filter);
         let total = self.truck_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.truck_table.query().limit(limit + offset);
+        let mut q = self.truck_table.query();
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let mut records = batches_to_trucks(collect_stream(stream).await?)?;
         records.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-        let items: Vec<TruckListItem> = records.into_iter().skip(offset).map(TruckListItem::from).collect();
+        let items: Vec<TruckListItem> = records.into_iter().skip(offset).take(limit).map(TruckListItem::from).collect();
         Ok((total, items))
     }
 

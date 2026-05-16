@@ -108,12 +108,12 @@ impl DbClient {
         let filter = build_filter(name_filter, tag_filter, None);
         let total = self.blob_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.blob_table.query().limit(limit + offset);
+        let mut q = self.blob_table.query();
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let mut records = batches_to_records(collect_stream(stream).await?)?;
         records.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-        let items: Vec<BlobListItem> = records.into_iter().skip(offset).map(BlobListItem::from).collect();
+        let items: Vec<BlobListItem> = records.into_iter().skip(offset).take(limit).map(BlobListItem::from).collect();
         Ok((total, items))
     }
 
