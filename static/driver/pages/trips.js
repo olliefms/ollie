@@ -102,7 +102,7 @@ export async function renderTrips(container) {
         return;
       }
 
-      const PAGE_SIZE = 10;
+      const PAGE_SIZE = tab === 'past' ? 5 : 10;
       let shown = 0;
 
       function showMore() {
