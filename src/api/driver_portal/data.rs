@@ -258,7 +258,7 @@ pub async fn list_trips(
     }))
     .await;
 
-    let items = filtered
+    let mut items: Vec<DriverTripListItem> = filtered
         .iter()
         .zip(facility_names)
         .zip(async_parts)
@@ -280,6 +280,14 @@ pub async fn list_trips(
             }
         })
         .collect();
+
+    // Sort past trips by scheduled_start descending (most recent first).
+    // ISO-8601 strings are lexicographically ordered, so string comparison is correct.
+    if matches!(tab, TripTab::Past) {
+        items.sort_by(|a, b| {
+            b.scheduled_start.as_deref().unwrap_or("").cmp(a.scheduled_start.as_deref().unwrap_or(""))
+        });
+    }
 
     Ok(Json(DriverTripListResponse { items }))
 }
