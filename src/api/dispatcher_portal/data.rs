@@ -44,6 +44,7 @@ pub struct DispatcherTripListItem {
     pub trailer_units: Vec<String>,
     pub stops: Vec<crate::models::TripStop>,
     pub load_id: Option<uuid::Uuid>,
+    pub load_number: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -78,6 +79,7 @@ async fn enrich_trip(state: &crate::AppState, trip: crate::models::TripListItem)
         trailer_units,
         stops: trip.stops,
         load_id: trip.load_id,
+        load_number: trip.load_number,
         created_at: trip.created_at,
         updated_at: trip.updated_at,
     }
