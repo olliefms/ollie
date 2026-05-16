@@ -80,7 +80,6 @@ export async function renderTrips(container) {
     currentTab = tab;
     tripList.innerHTML = '';
 
-    // Loading state
     const loadingEl = document.createElement('div');
     loadingEl.className = 'trips-loading';
     const spinner = document.createElement('div');
@@ -90,13 +89,12 @@ export async function renderTrips(container) {
 
     try {
       const data = await apiFetch(`/trips?tab=${tab}`);
-
-      // Discard response if user switched tabs while fetching
       if (currentTab !== tab) return;
 
       tripList.innerHTML = '';
 
-      if (!data.items || data.items.length === 0) {
+      const allItems = (data && data.items) ? data.items : [];
+      if (allItems.length === 0) {
         const emptyEl = document.createElement('div');
         emptyEl.className = 'trips-empty';
         emptyEl.textContent = tab === 'current' ? 'No current trips' : `No ${tab} trips`;
@@ -104,17 +102,37 @@ export async function renderTrips(container) {
         return;
       }
 
-      data.items.forEach(trip => {
-        const card = renderTripCard(trip, tab);
-        tripList.appendChild(card);
-      });
+      const PAGE_SIZE = 10;
+      let shown = 0;
+
+      function showMore() {
+        const slice = allItems.slice(shown, shown + PAGE_SIZE);
+        slice.forEach(trip => {
+          const card = renderTripCard(trip, tab);
+          tripList.appendChild(card);
+        });
+        shown += slice.length;
+
+        const existingBtn = tripList.querySelector('.load-more-btn');
+        if (existingBtn) existingBtn.remove();
+
+        if (shown < allItems.length) {
+          const btn = document.createElement('button');
+          btn.className = 'btn btn--secondary load-more-btn';
+          btn.style.cssText = 'display:block;margin:1rem auto;';
+          btn.textContent = `Load more (${allItems.length - shown} remaining)`;
+          btn.addEventListener('click', showMore);
+          tripList.appendChild(btn);
+        }
+      }
+
+      showMore();
     } catch (err) {
       if (err.status === 401) {
         clearAuth();
         window.location.replace('/driver');
         return;
       }
-
       tripList.innerHTML = '';
       const errorEl = document.createElement('div');
       errorEl.className = 'trips-error';
@@ -183,11 +201,13 @@ export async function renderTrips(container) {
         card.appendChild(nextStop);
       }
     } else {
-      // Past and Upcoming tabs show scheduled start date
-      const date = document.createElement('div');
-      date.className = 'trip-card__date';
-      date.textContent = formatDate(trip.scheduled_start);
-      card.appendChild(date);
+      const dateText = formatDate(trip.scheduled_start);
+      if (dateText) {
+        const date = document.createElement('div');
+        date.className = 'trip-card__date';
+        date.textContent = dateText;
+        card.appendChild(date);
+      }
     }
 
     return card;
