@@ -234,7 +234,7 @@ function humanizeEventType(type) {
     'truck_available':   'Truck Available',
     'trailer_available': 'Trailer Available',
   };
-  return map[type] || type.replace(/[_.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  return map[type] || String(type).replace(/[_.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
 // ─── Utility: set main content ───────────────────────────────
@@ -895,7 +895,7 @@ async function fetchAndRenderEvents() {
     }
 
     const items = sorted.map(ev => {
-      const entityType = (ev.entity_type || '').toLowerCase();
+      const entityType = (ev.entity_type || '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
       const entityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
 
       let payload = {};
