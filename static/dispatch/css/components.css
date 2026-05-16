@@ -263,13 +263,17 @@
   background: var(--color-surface);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 .data-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 0.875rem;
+}
+
+.data-table--compact {
+  width: auto;
 }
 
 .data-table thead tr {

@@ -616,7 +616,7 @@ async function renderDriversView() {
         <h1 class="page-title">Drivers</h1>
       </div>
       <div class="table-wrapper">
-        <table class="data-table">
+        <table class="data-table data-table--compact">
           <thead>
             <tr>
               <th>Name</th>
