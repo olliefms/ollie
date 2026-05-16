@@ -1,4 +1,10 @@
 // src/db/load_ops.rs
+
+/// Maximum rows fetched from LanceDB per list_loads call.
+/// LanceDB 0.27 has no ORDER BY, so we sort in memory after fetching.
+/// This cap prevents unbounded memory growth while keeping typical page depths correct.
+const LOAD_SCAN_CAP: usize = 2_000;
+
 use crate::{
     db::{load_schema, DbClient},
     error::AppError,
@@ -130,7 +136,7 @@ impl DbClient {
         let filter = build_load_filter(status_filter, customer_filter, tag_filter, from_date, to_date)?;
         let total = self.load_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.load_table.query();
+        let mut q = self.load_table.query().limit(LOAD_SCAN_CAP);
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let mut records = batches_to_loads(collect_stream(stream).await?)?;
