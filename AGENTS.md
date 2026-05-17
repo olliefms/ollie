@@ -229,6 +229,7 @@ PDFs use `lopdf::Document::load_mem()`. If lopdf can't extract ≥50 words, the 
 | `OLLAMA_VISION_MODEL` | No | `moondream` | Vision/image description model |
 | `OLLAMA_EMBED_DIM` | No | `768` | Embedding dimension (must match model) |
 | `PIPELINE_WORKERS` | No | `1` | Concurrent pipeline workers |
+| TERMINAL_TIMEZONE | No | America/New_York | IANA timezone for pay-period weeks (driver-portal Past tab). Replaced by per-terminal data in a future release (#185). |
 
 ## Running Tests
 
