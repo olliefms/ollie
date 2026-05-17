@@ -10,7 +10,7 @@ use crate::{
     api::blobs::ListQuery,
     api::utils::sanitize_filename,
     error::AppError,
-    models::{BlobListResponse, BlobRecord, BlobStatus, UpdateBlobRequest},
+    models::{BlobListResponse, BlobRecord, BlobStatus, BlobVisibility, UpdateBlobRequest},
     storage::extract_store::{delete_extract, read_extract, write_extract, ExtractForQuery},
     AppState,
 };
@@ -83,6 +83,7 @@ pub async fn upload_blob(
     let mut file_content_type: Option<String> = None;
     let mut display_name: Option<String> = None;
     let mut tags: Vec<String> = vec![];
+    let mut visibility: Option<BlobVisibility> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -116,6 +117,16 @@ pub async fn upload_blob(
                     .map_err(|e| AppError::BadRequest(e.to_string()))?;
                 tags = serde_json::from_str(&raw)
                     .map_err(|_| AppError::BadRequest("tags must be a JSON array of strings".into()))?;
+            }
+            "visibility" => {
+                let raw = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                visibility = Some(
+                    raw.parse::<BlobVisibility>()
+                        .map_err(|e| AppError::BadRequest(format!("invalid visibility: {e}")))?,
+                );
             }
             _ => {}
         }
@@ -160,7 +171,7 @@ pub async fn upload_blob(
             embedding,
             created_at: now,
             updated_at: now,
-            visibility: Default::default(),
+            visibility: visibility.unwrap_or_default(),
             uploaded_by: None,
         };
         state.db.insert(&record).await?;
@@ -188,7 +199,7 @@ pub async fn upload_blob(
             embedding: None,
             created_at: now,
             updated_at: now,
-            visibility: Default::default(),
+            visibility: visibility.unwrap_or_default(),
             uploaded_by: None,
         };
         state.db.insert(&record).await?;
