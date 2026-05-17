@@ -1,228 +1,69 @@
-import { isAuthenticated, clearAuth } from '../utils/auth.js';
-import { apiFetch } from '../utils/api.js';
-import { formatStatus } from '../utils/format.js';
-import { navigate } from '../app.js';
+import { isAuthenticated } from '../utils/auth.js';
+import { renderAppBar } from '../components/app-bar.js';
+import { renderBottomNav } from '../components/bottom-nav.js';
+import { renderPastPane } from './trips-past.js';
+import { renderCurrentPane } from './trips-current.js';
+import { renderUpcomingPane } from './trips-upcoming.js';
+
+const VALID_TABS = new Set(['past', 'current', 'upcoming']);
 
 export async function renderTrips(container) {
-  if (!isAuthenticated()) {
-    window.location.replace('/driver');
-    return;
-  }
+  if (!isAuthenticated()) { window.location.replace('/driver'); return; }
+  container.replaceChildren();
+  const params = new URLSearchParams(location.search);
+  const initial = VALID_TABS.has(params.get('tab')) ? params.get('tab') : 'current';
+  let activeTab = initial;
 
-  // Clear container
-  container.innerHTML = '';
-
-  // Page layout
   const page = document.createElement('div');
-  page.className = 'trips-page';
+  page.className = 'page-with-nav';
+  page.appendChild(renderAppBar({ title: 'My Trips' }));
 
-  // Header
-  const header = document.createElement('div');
-  header.className = 'trips-header';
-  const h1 = document.createElement('h1');
-  h1.textContent = 'My Trips';
-  header.appendChild(h1);
-
-  const settingsBtn = document.createElement('button');
-  settingsBtn.className = 'btn-settings';
-  settingsBtn.textContent = '⚙';
-  settingsBtn.title = 'Settings';
-  settingsBtn.addEventListener('click', () => navigate('/driver/settings'));
-  header.appendChild(settingsBtn);
-
-  // Tab bar
   const tabBar = document.createElement('div');
   tabBar.className = 'tab-bar';
-  const tabs = [
-    { id: 'past', label: 'Past' },
-    { id: 'current', label: 'Current' },
-    { id: 'upcoming', label: 'Upcoming' },
-  ];
-  const validTabs = new Set(['past', 'current', 'upcoming']);
-  const initialTab = new URLSearchParams(location.search).get('tab');
-  let activeTab = validTabs.has(initialTab) ? initialTab : 'current';
+  const seg = document.createElement('div');
+  seg.className = 'tab-seg';
   const tabEls = {};
-
-  const tabSeg = document.createElement('div');
-  tabSeg.className = 'tab-seg';
-
-  tabs.forEach(tab => {
-    const tabBtn = document.createElement('button');
-    tabBtn.className = 'tab';
-    if (tab.id === activeTab) tabBtn.classList.add('tab--active');
-    tabBtn.textContent = tab.label;
-    tabBtn.addEventListener('click', async () => {
-      activeTab = tab.id;
-      history.replaceState({}, '', `/driver/trips?tab=${tab.id}`);
-      Object.values(tabEls).forEach(el => el.classList.remove('tab--active'));
-      tabBtn.classList.add('tab--active');
-      await loadTrips(activeTab);
-    });
-    tabSeg.appendChild(tabBtn);
-    tabEls[tab.id] = tabBtn;
-  });
-  tabBar.appendChild(tabSeg);
-
-  // Trip list
-  const tripList = document.createElement('div');
-  tripList.className = 'trip-list';
-
-  page.appendChild(header);
+  for (const id of ['past', 'current', 'upcoming']) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tab' + (id === activeTab ? ' tab--active' : '');
+    btn.textContent = id.charAt(0).toUpperCase() + id.slice(1);
+    btn.addEventListener('click', () => switchTab(id));
+    tabEls[id] = btn;
+    seg.appendChild(btn);
+  }
+  tabBar.appendChild(seg);
   page.appendChild(tabBar);
-  page.appendChild(tripList);
+
+  const pane = document.createElement('div');
+  pane.className = 'trips-pane';
+  page.appendChild(pane);
+
+  page.appendChild(renderBottomNav('trips'));
   container.appendChild(page);
 
-  // Track current tab to guard against stale responses
-  let currentTab;
-
-  // Load initial trips
-  async function loadTrips(tab) {
-    currentTab = tab;
-    tripList.innerHTML = '';
-
-    const loadingEl = document.createElement('div');
-    loadingEl.className = 'trips-loading';
-    const spinner = document.createElement('div');
-    spinner.className = 'spinner';
-    loadingEl.appendChild(spinner);
-    tripList.appendChild(loadingEl);
-
-    try {
-      const data = await apiFetch(`/trips?tab=${tab}`);
-      if (currentTab !== tab) return;
-
-      tripList.innerHTML = '';
-
-      const allItems = (data && data.items) ? data.items : [];
-      if (allItems.length === 0) {
-        const emptyEl = document.createElement('div');
-        emptyEl.className = 'trips-empty';
-        emptyEl.textContent = tab === 'current' ? 'No current trips' : `No ${tab} trips`;
-        tripList.appendChild(emptyEl);
-        return;
-      }
-
-      const PAGE_SIZE = tab === 'past' ? 5 : 10;
-      let shown = 0;
-
-      function showMore() {
-        const slice = allItems.slice(shown, shown + PAGE_SIZE);
-        slice.forEach(trip => {
-          const card = renderTripCard(trip, tab);
-          tripList.appendChild(card);
-        });
-        shown += slice.length;
-
-        const existingBtn = tripList.querySelector('.load-more-btn');
-        if (existingBtn) existingBtn.remove();
-
-        if (shown < allItems.length) {
-          const btn = document.createElement('button');
-          btn.className = 'btn btn-secondary load-more-btn';
-          btn.textContent = `Load more (${allItems.length - shown} remaining)`;
-          btn.addEventListener('click', showMore);
-          tripList.appendChild(btn);
-        }
-      }
-
-      showMore();
-    } catch (err) {
-      if (err.status === 401) {
-        clearAuth();
-        window.location.replace('/driver');
-        return;
-      }
-      tripList.innerHTML = '';
-      const errorEl = document.createElement('div');
-      errorEl.className = 'trips-error';
-      errorEl.textContent = err.message || 'Failed to load trips';
-      tripList.appendChild(errorEl);
-    }
+  async function switchTab(id) {
+    if (id === activeTab) return;
+    activeTab = id;
+    Object.values(tabEls).forEach(el => el.classList.remove('tab--active'));
+    tabEls[id].classList.add('tab--active');
+    const u = new URL(location.href);
+    u.searchParams.set('tab', id);
+    if (id !== 'past') u.searchParams.delete('week_start');
+    history.replaceState({}, '', u.pathname + '?' + u.searchParams.toString());
+    await mount();
   }
 
-  function renderTripCard(trip, tab) {
-    const card = document.createElement('div');
-    card.className = 'trip-card';
-    card.addEventListener('click', () => {
-      navigate(`/driver/trips/${trip.id}`);
-    });
-
-    // Header with trip number and status
-    const cardHeader = document.createElement('div');
-    cardHeader.className = 'trip-card__header';
-
-    const tripNum = document.createElement('div');
-    tripNum.className = 'trip-card__number';
-    tripNum.textContent = trip.trip_number;
-
-    const status = document.createElement('div');
-    status.className = `badge badge--${trip.status}`;
-    status.textContent = formatStatus(trip.status);
-
-    cardHeader.appendChild(tripNum);
-    cardHeader.appendChild(status);
-    card.appendChild(cardHeader);
-
-    // Route info
-    const route = document.createElement('div');
-    route.className = 'trip-card__route';
-    const arrow = document.createTextNode(' → ');
-    route.appendChild(document.createTextNode(trip.origin));
-    route.appendChild(arrow);
-    route.appendChild(document.createTextNode(trip.destination));
-    card.appendChild(route);
-
-    // Tab-specific content
-    if (tab === 'current') {
-      const progressWrapper = document.createElement('div');
-      progressWrapper.className = 'trip-card__progress';
-
-      const bar = document.createElement('div');
-      bar.className = 'progress-bar';
-      const fill = document.createElement('div');
-      fill.className = 'progress-bar__fill';
-      const pct = trip.stop_count > 0 ? (trip.stops_completed / trip.stop_count) * 100 : 0;
-      fill.style.width = `${pct}%`;
-      bar.appendChild(fill);
-
-      const label = document.createElement('span');
-      label.className = 'progress-bar__label';
-      label.textContent = `${trip.stops_completed} / ${trip.stop_count} stops`;
-
-      progressWrapper.appendChild(bar);
-      progressWrapper.appendChild(label);
-      card.appendChild(progressWrapper);
-
-      if (trip.next_stop_name) {
-        const nextStop = document.createElement('div');
-        nextStop.className = 'trip-card__next-stop';
-        nextStop.textContent = `Next: ${trip.next_stop_name}`;
-        card.appendChild(nextStop);
-      }
+  async function mount() {
+    if (activeTab === 'past') {
+      const weekStart = new URLSearchParams(location.search).get('week_start') || null;
+      await renderPastPane(pane, { weekStart });
+    } else if (activeTab === 'current') {
+      await renderCurrentPane(pane);
     } else {
-      const dateText = formatDate(trip.scheduled_start);
-      if (dateText) {
-        const date = document.createElement('div');
-        date.className = 'trip-card__date';
-        date.textContent = dateText;
-        card.appendChild(date);
-      }
+      await renderUpcomingPane(pane);
     }
-
-    return card;
   }
 
-  function formatDate(dateStr) {
-    if (!dateStr) return '';
-    const date = new Date(dateStr);
-    return date.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  }
-
-  // Initial load
-  await loadTrips(activeTab);
+  await mount();
 }
