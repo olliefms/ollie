@@ -2375,3 +2375,126 @@ async fn test_patch_last_stop_depart_transitions_to_delivered() {
     let body: serde_json::Value = serde_json::from_slice(resp.as_bytes()).unwrap();
     assert_eq!(body["trip_status"], "delivered");
 }
+
+#[tokio::test]
+async fn test_driver_upload_lists_own_document() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+    let form = axum_test::multipart::MultipartForm::new()
+        .add_text("doctype", "bol")
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"hi".to_vec())
+                .file_name("bol.txt")
+                .mime_type("text/plain"),
+        );
+    let upload = server
+        .post(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .multipart(form)
+        .await;
+    let sc = upload.status_code().as_u16();
+    assert!(sc == 201 || sc == 202, "got {sc}");
+    let list = server
+        .get(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    let items: Vec<serde_json::Value> = serde_json::from_slice(list.as_bytes()).unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["visibility"], "driver");
+}
+
+#[tokio::test]
+async fn test_driver_cannot_see_private_doc() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+    let form = axum_test::multipart::MultipartForm::new()
+        .add_text("visibility", "private")
+        .add_text("tags", format!(r#"["trip:{trip_id}"]"#))
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"rate-con".to_vec())
+                .file_name("rate-con.pdf")
+                .mime_type("application/pdf"),
+        );
+    let _ = server
+        .post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(form)
+        .await;
+    let list = server
+        .get(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    let items: Vec<serde_json::Value> = serde_json::from_slice(list.as_bytes()).unwrap();
+    assert_eq!(items.len(), 0, "driver should NOT see private doc");
+}
+
+#[tokio::test]
+async fn test_driver_sees_dispatch_uploaded_driver_visible_doc() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+    let form = axum_test::multipart::MultipartForm::new()
+        .add_text("visibility", "driver")
+        .add_text("tags", format!(r#"["trip:{trip_id}"]"#))
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"bol".to_vec())
+                .file_name("bol.pdf")
+                .mime_type("application/pdf"),
+        );
+    let _ = server
+        .post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(form)
+        .await;
+    let list = server
+        .get(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    let items: Vec<serde_json::Value> = serde_json::from_slice(list.as_bytes()).unwrap();
+    assert_eq!(items.len(), 1);
+}
+
+#[tokio::test]
+async fn test_driver_cannot_delete_others_doc() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+    let form = axum_test::multipart::MultipartForm::new()
+        .add_text("visibility", "driver")
+        .add_text("tags", format!(r#"["trip:{trip_id}"]"#))
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"doc".to_vec())
+                .file_name("d.txt")
+                .mime_type("text/plain"),
+        );
+    let upload = server
+        .post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(form)
+        .await;
+    let blob_id = upload.json::<serde_json::Value>()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let del = server
+        .delete(&format!(
+            "/driver/api/v1/trips/{trip_id}/documents/{blob_id}"
+        ))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(del.status_code(), 403);
+}
+
+#[tokio::test]
+async fn test_driver_unrelated_404_on_other_trip() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (token_a, _trip_a) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+    let (_token_b, trip_b) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+    let resp = server
+        .get(&format!("/driver/api/v1/trips/{trip_b}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token_a}"))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}

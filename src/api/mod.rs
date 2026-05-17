@@ -112,6 +112,10 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::blobs::delete_blob,
         dispatcher_portal::blobs::query_blob,
         driver_portal::data::update_stop_times,
+        driver_portal::documents::upload_document,
+        driver_portal::documents::list_documents,
+        driver_portal::documents::get_document_content,
+        driver_portal::documents::delete_document,
     ),
     components(
         schemas(
