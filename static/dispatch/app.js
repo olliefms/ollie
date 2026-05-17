@@ -434,7 +434,7 @@ async function renderLoadDetailView(id) {
       const stopRows = stops.map((stop, i) => `
         <tr>
           <td>${i + 1}</td>
-          <td>${stop.facility_name || '—'}</td>
+          <td>${escHtml(stop.facility_name || '—')}</td>
           <td>${stop.stop_type || '—'}</td>
           <td>${fmtDate(stop.scheduled_arrive)}</td>
           <td>${fmtDate(stop.actual_arrive)}</td>
@@ -469,10 +469,10 @@ async function renderLoadDetailView(id) {
     if (trips.length > 0) {
       const tripRows = trips.map(trip => `
         <tr data-trip-id="${trip.id}">
-          <td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td>
+          <td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td>
           <td>${badge(trip.status)}</td>
-          <td>${trip.driver_name || '—'}</td>
-          <td>${trip.truck_unit || '—'}</td>
+          <td>${escHtml(trip.driver_name || '—')}</td>
+          <td>${escHtml(trip.truck_unit || '—')}</td>
         </tr>
       `).join('');
 
@@ -562,7 +562,7 @@ async function renderLoadDetailView(id) {
         <div class="detail-grid">
           <div class="detail-item">
             <div class="detail-item__label">Load #</div>
-            <div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${load.load_number || '—'}</div>
+            <div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${escHtml(load.load_number || '—')}</div>
           </div>
           <div class="detail-item">
             <div class="detail-item__label">Status</div>
@@ -570,7 +570,7 @@ async function renderLoadDetailView(id) {
           </div>
           <div class="detail-item">
             <div class="detail-item__label">Customer</div>
-            <div class="detail-item__value">${load.customer || load.customer_name || '—'}</div>
+            <div class="detail-item__value">${escHtml(load.customer || load.customer_name || '—')}</div>
           </div>
           <div class="detail-item">
             <div class="detail-item__label">Created</div>
@@ -583,12 +583,12 @@ async function renderLoadDetailView(id) {
           ${load.invoice_number ? `
           <div class="detail-item">
             <div class="detail-item__label">Invoice #</div>
-            <div class="detail-item__value">${load.invoice_number}</div>
+            <div class="detail-item__value">${escHtml(load.invoice_number)}</div>
           </div>` : ''}
           ${load.cancel_reason ? `
           <div class="detail-item">
             <div class="detail-item__label">Cancel Reason</div>
-            <div class="detail-item__value">${load.cancel_reason}</div>
+            <div class="detail-item__value">${escHtml(load.cancel_reason)}</div>
           </div>` : ''}
         </div>
       </div>
