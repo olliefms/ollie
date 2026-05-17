@@ -9,7 +9,7 @@ export function navigate(path) {
   route();
 }
 
-function replaceNavigate(path) {
+export function replaceNavigate(path) {
   history.replaceState({}, '', path);
   route();
 }
