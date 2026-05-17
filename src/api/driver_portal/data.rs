@@ -42,6 +42,10 @@ pub struct DriverTripListItem {
     pub truck_unit: Option<String>,
     pub trailer_units: Vec<String>,
     pub next_stop_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivered_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delivered_tz: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -265,6 +269,9 @@ pub async fn list_trips(
         .map(|((trip, (origin, destination, next_stop_name)), (truck_unit, trailer_units))| {
             let stops_completed = trip.stops.iter().filter(|s| s.actual_depart.is_some()).count();
             let scheduled_start = trip.stops.first().and_then(|s| s.scheduled_arrive.clone());
+            let last_stop = trip.stops.last();
+            let delivered_at = last_stop.and_then(|s| s.actual_depart.clone());
+            let delivered_tz = last_stop.and_then(|s| s.timezone.clone());
             DriverTripListItem {
                 id: trip.id,
                 trip_number: trip.trip_number.clone(),
@@ -277,6 +284,8 @@ pub async fn list_trips(
                 truck_unit,
                 trailer_units,
                 next_stop_name,
+                delivered_at,
+                delivered_tz,
             }
         })
         .collect();
