@@ -54,6 +54,44 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     (server, blob_dir, db_dir, rx)
 }
 
+async fn test_server_with_state() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>, AppState) {
+    let blob_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    std::env::set_var("ADMIN_API_KEY", "test-secret");
+    std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
+    std::env::set_var("DRIVER_RP_ID", "localhost");
+    std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+    std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-secret-must-be-32b");
+
+    let config = Arc::new(Config::from_env().unwrap());
+    let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
+    let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
+    let ai = Arc::new(OllamaClient::new(
+        "http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream",
+    ));
+    let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
+    let ors = Arc::new(ollie::routing::RoutingClient::new(""));
+
+    let (pipeline_tx, rx) = async_channel::bounded(100);
+    let (geocoding_tx, _grx) = async_channel::bounded(100);
+    let (routing_tx, _rrx) = async_channel::bounded(100);
+
+    let rp_origin = Url::parse("http://localhost:3000").unwrap();
+    let webauthn = Arc::new(
+        WebauthnBuilder::new("localhost", &rp_origin).unwrap().build().unwrap(),
+    );
+    let auth_challenge_store = Arc::new(dashmap::DashMap::new());
+    let reg_challenge_store = Arc::new(dashmap::DashMap::new());
+
+    let state = AppState {
+        db, store, ai, geocoding, ors,
+        pipeline_tx, geocoding_tx, routing_tx, config,
+        webauthn, auth_challenge_store, reg_challenge_store,
+    };
+    let server = TestServer::new(api::router(state.clone())).unwrap();
+    (server, blob_dir, db_dir, rx, state)
+}
+
 #[tokio::test]
 async fn test_upload_returns_202_with_uuid() {
     let (server, _b, _d, _rx) = test_server().await;
@@ -2112,4 +2150,81 @@ async fn test_dispatcher_count_endpoints_return_200() {
         let body = resp.json::<serde_json::Value>();
         assert!(body["count"].is_number(), "endpoint {} should return {{count: N}}", path);
     }
+}
+
+async fn setup_driver_with_delivered_trip(server: &TestServer, state: &AppState) -> String {
+    let driver_id_str = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Past Trip Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let driver_id: uuid::Uuid = driver_id_str.parse().unwrap();
+
+    // Seed driver_credentials so middleware accepts a JWT for this driver.
+    let creds = ollie::models::DriverCredentials {
+        driver_id,
+        pin_hash: None,
+        token_version: 1,
+        failed_pin_attempts: 0,
+        locked_until: None,
+        updated_at: chrono::Utc::now(),
+    };
+    state.db.upsert_driver_credentials(&creds).await.unwrap();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-PAST-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let assign = server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign.status_code(), 200);
+
+    let dispatch = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    let depart_pickup = server.post(&format!("/api/v1/trips/{trip_id}/stops/0/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
+        .await;
+    assert_eq!(depart_pickup.status_code(), 200);
+
+    // Last-stop depart sets trip → delivered and populates delivered_at via stop.actual_depart.
+    let depart_delivery = server.post(&format!("/api/v1/trips/{trip_id}/stops/1/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-12T14:00:00Z" }))
+        .await;
+    assert_eq!(depart_delivery.status_code(), 200);
+
+    let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
+    ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap()
+}
+
+#[tokio::test]
+async fn test_driver_past_trips_with_week_start() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let driver_token = setup_driver_with_delivered_trip(&server, &state).await;
+    let resp = server.get("/driver/api/v1/trips?tab=past&week_start=2026-05-10")
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = serde_json::from_slice(resp.as_bytes()).unwrap();
+    assert_eq!(body["week"]["start"], "2026-05-10");
+    assert_eq!(body["week"]["end"], "2026-05-16");
 }
