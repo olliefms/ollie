@@ -51,12 +51,14 @@ mod tests {
             name: "f.txt".into(), mime_type: "text/plain".into(), size: 1,
             status: BlobStatus::Pending, error: None, summary: None,
             tags: vec![], embedding: None, created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
         };
         let ready = BlobRecord {
             id: Uuid::new_v4(), owner_id: 0, checksum: "c2".into(),
             name: "g.txt".into(), mime_type: "text/plain".into(), size: 1,
             status: BlobStatus::Ready, error: None, summary: None,
             tags: vec![], embedding: None, created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
         };
         db.insert(&pending).await.unwrap();
         db.insert(&ready).await.unwrap();

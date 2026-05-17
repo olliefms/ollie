@@ -37,6 +37,34 @@ impl std::str::FromStr for BlobStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum BlobVisibility {
+    Private,
+    Driver,
+}
+
+impl BlobVisibility {
+    pub fn as_str(&self) -> &'static str {
+        match self { Self::Private => "private", Self::Driver => "driver" }
+    }
+}
+
+impl Default for BlobVisibility {
+    fn default() -> Self { Self::Private }
+}
+
+impl std::str::FromStr for BlobVisibility {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "private" => Ok(Self::Private),
+            "driver" => Ok(Self::Driver),
+            other => Err(format!("unknown visibility: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BlobRecord {
     pub id: Uuid,
@@ -56,6 +84,10 @@ pub struct BlobRecord {
     pub embedding: Option<Vec<f32>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub visibility: BlobVisibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploaded_by: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -79,6 +111,10 @@ pub struct BlobListItem {
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+    #[serde(default)]
+    pub visibility: BlobVisibility,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uploaded_by: Option<Uuid>,
 }
 
 impl From<BlobRecord> for BlobListItem {
@@ -88,6 +124,8 @@ impl From<BlobRecord> for BlobListItem {
             mime_type: r.mime_type, size: r.size, status: r.status,
             summary: r.summary, tags: r.tags, created_at: r.created_at,
             score: None,
+            visibility: r.visibility,
+            uploaded_by: r.uploaded_by,
         }
     }
 }
@@ -101,6 +139,16 @@ pub struct BlobListResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_blob_visibility_roundtrip() {
+        use std::str::FromStr;
+        for v in [BlobVisibility::Private, BlobVisibility::Driver] {
+            let s = v.as_str();
+            assert_eq!(BlobVisibility::from_str(s).unwrap(), v);
+        }
+        assert_eq!(BlobVisibility::default(), BlobVisibility::Private);
+    }
 
     #[test]
     fn test_status_roundtrip() {
@@ -119,6 +167,8 @@ mod tests {
             tags: vec!["a".into()],
             embedding: Some(vec![0.1, 0.2, 0.3]),
             created_at: Utc::now(), updated_at: Utc::now(),
+            visibility: BlobVisibility::Private,
+            uploaded_by: None,
         };
         let json = serde_json::to_value(&record).unwrap();
         assert!(json.get("embedding").is_none(), "embedding must not appear in JSON output");

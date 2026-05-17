@@ -171,6 +171,8 @@ fn record_to_batch(record: &BlobRecord, embed_dim: usize) -> Result<RecordBatch,
     let created = record.created_at.to_rfc3339();
     let updated = record.updated_at.to_rfc3339();
     let status_str = record.status.as_str().to_string();
+    let visibility_str = record.visibility.as_str();
+    let uploaded_by_str = record.uploaded_by.map(|u| u.to_string());
 
     let embedding_col: Arc<dyn arrow_array::Array> = match &record.embedding {
         Some(v) => {
@@ -204,6 +206,8 @@ fn record_to_batch(record: &BlobRecord, embed_dim: usize) -> Result<RecordBatch,
             embedding_col,
             Arc::new(StringArray::from(vec![created.as_str()])),
             Arc::new(StringArray::from(vec![updated.as_str()])),
+            Arc::new(StringArray::from(vec![visibility_str])),
+            Arc::new(StringArray::from(vec![uploaded_by_str.as_deref()])),
         ],
     )
     .map_err(|e| AppError::Internal(e.to_string()))
@@ -248,6 +252,13 @@ fn row_to_record(batch: &RecordBatch, i: usize) -> Result<BlobRecord, AppError> 
                 .map(|fa| (0..fa.len()).map(|j| fa.value(j)).collect::<Vec<f32>>())
         });
 
+    let visibility = opt_str_col("visibility")
+        .as_deref()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_default();
+    let uploaded_by = opt_str_col("uploaded_by")
+        .and_then(|s| Uuid::parse_str(&s).ok());
+
     Ok(BlobRecord {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         owner_id: i64_col("owner_id"),
@@ -264,6 +275,8 @@ fn row_to_record(batch: &RecordBatch, i: usize) -> Result<BlobRecord, AppError> 
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
         updated_at: str_col("updated_at").parse()
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
+        visibility,
+        uploaded_by,
     })
 }
 
@@ -300,6 +313,7 @@ mod tests {
             status: BlobStatus::Pending, error: None, summary: None,
             tags: vec!["tag1".into()], embedding: None,
             created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
         }
     }
 

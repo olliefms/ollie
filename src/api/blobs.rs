@@ -117,6 +117,7 @@ pub async fn upload_blob(
             id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
             size: data.len() as i64, status, error: None, summary, tags,
             embedding, created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
         };
         state.db.insert(&record).await?;
         if matches!(record.status, BlobStatus::Pending) {
@@ -130,6 +131,7 @@ pub async fn upload_blob(
             id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
             size: data.len() as i64, status: BlobStatus::Pending, error: None,
             summary: None, tags, embedding: None, created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
         };
         state.db.insert(&record).await?;
         state.pipeline_tx.send(record.id).await

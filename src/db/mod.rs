@@ -42,9 +42,7 @@ impl DbClient {
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
 
-        let blob_table = open_or_create(&conn, "blobs", blob_schema(embed_dim), |schema| {
-            empty_blob_batch(schema, embed_dim)
-        }).await?;
+        let blob_table = open_or_create_blob(&conn, embed_dim).await?;
 
         let facility_table = open_or_create_facility(&conn, embed_dim).await?;
 
@@ -172,6 +170,35 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
     }
 }
 
+async fn open_or_create_blob(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = blob_schema(embed_dim);
+    match conn.open_table("blobs").execute().await {
+        Err(_) => {
+            let batch = empty_blob_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("blobs", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            if existing.field_with_name("visibility").is_err() {
+                transforms.push(("visibility".into(), "'private'".into()));
+            }
+            if existing.field_with_name("uploaded_by").is_err() {
+                transforms.push(("uploaded_by".into(), "CAST(NULL AS utf8)".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating blobs table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("blob schema migration failed: {e}")))?;
+            }
+            Ok(table)
+        }
+    }
+}
+
 async fn open_or_create_facility(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
     let schema = facility_schema(embed_dim);
     match conn.open_table("facilities").execute().await {
@@ -221,6 +248,8 @@ pub fn blob_schema(embed_dim: usize) -> Arc<Schema> {
         ), true),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("visibility", DataType::Utf8, false),
+        Field::new("uploaded_by", DataType::Utf8, true),
     ]))
 }
 
@@ -336,6 +365,8 @@ fn empty_blob_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(FixedSizeListArray::from_iter_primitive::<
             arrow_array::types::Float32Type, _, _
         >(nulls, embed_dim as i32)),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
     ]).map_err(|e| AppError::Internal(e.to_string()))
