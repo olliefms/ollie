@@ -297,7 +297,13 @@ async function renderLoadsView(params = {}) {
 
   let filterStatus = params.status || '';
 
-  const buildContent = (loads, filterStatus) => {
+  const buildContent = (loads, filterStatus, capTotal = null) => {
+    const capBanner = capTotal !== null
+      ? `<div style="background:var(--color-warning-bg,#fffbeb);border:1px solid var(--color-warning,#f59e0b);border-radius:var(--radius);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text);">
+           Showing the most recent ${escHtml(String(loads.length))} of ${escHtml(String(capTotal))} loads. Use the status filter to narrow results.
+         </div>`
+      : '';
+
     const statusOptions = [
       '', 'planned', 'assigned', 'dispatched', 'in_transit',
       'delivered', 'invoiced', 'settled', 'cancelled',
@@ -343,7 +349,7 @@ async function renderLoadsView(params = {}) {
     }
 
     return `
-      <div class="page-header">
+      ${capBanner}<div class="page-header">
         <h1 class="page-title">Loads</h1>
         <div class="page-controls">
           ${selectHtml}
@@ -376,7 +382,9 @@ async function renderLoadsView(params = {}) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const loads = data.loads || data.items || (Array.isArray(data) ? data : []);
-      setContent(buildContent(loads, status));
+      const returned = typeof data.returned === 'number' ? data.returned : null;
+      const capTotal = returned !== null && returned > loads.length ? returned : null;
+      setContent(buildContent(loads, status, capTotal));
 
       // Bind filter change
       const filterEl = document.getElementById('status-filter');
