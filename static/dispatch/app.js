@@ -435,7 +435,7 @@ async function renderLoadDetailView(id) {
         <tr>
           <td>${i + 1}</td>
           <td>${escHtml(stop.facility_name || '—')}</td>
-          <td>${stop.stop_type || '—'}</td>
+          <td>${escHtml(stop.stop_type || '—')}</td>
           <td>${fmtDate(stop.scheduled_arrive)}</td>
           <td>${fmtDate(stop.actual_arrive)}</td>
           <td>${fmtDate(stop.actual_depart)}</td>
