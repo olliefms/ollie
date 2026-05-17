@@ -57,13 +57,28 @@ async function route() {
     return;
   }
 
-  if (path === '/driver/settings') {
+  if (path === '/driver/settings' || path === '/driver/settings/') {
+    replaceNavigate('/driver/account');
+    return;
+  }
+
+  if (path === '/driver/pay' || path === '/driver/pay/') {
     if (!isAuthenticated()) {
       replaceNavigate('/driver');
       return;
     }
-    const { renderSettings } = await import('./pages/settings.js');
-    renderSettings(app);
+    const { renderPay } = await import('./pages/pay.js');
+    renderPay(app);
+    return;
+  }
+
+  if (path === '/driver/account' || path === '/driver/account/') {
+    if (!isAuthenticated()) {
+      replaceNavigate('/driver');
+      return;
+    }
+    const { renderAccount } = await import('./pages/account.js');
+    renderAccount(app);
     return;
   }
 
