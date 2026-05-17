@@ -8,6 +8,7 @@ use crate::{
     ai::extract::{bytes_to_base64, extract_content, Extractable},
     api::blob::{BlobQueryRequest, BlobQueryResponse},
     api::blobs::ListQuery,
+    api::utils::sanitize_filename,
     error::AppError,
     models::{BlobListResponse, BlobRecord, BlobStatus, UpdateBlobRequest},
     storage::extract_store::{delete_extract, read_extract, write_extract, ExtractForQuery},
@@ -403,6 +404,3 @@ pub async fn query_blob(
     }))
 }
 
-fn sanitize_filename(name: &str) -> String {
-    name.chars().filter(|c| *c != '\r' && *c != '\n').collect()
-}

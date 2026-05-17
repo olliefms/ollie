@@ -1,6 +1,7 @@
 // src/api/mod.rs
 pub mod auth;
 pub mod blob;
+pub mod utils;
 pub mod blobs;
 pub mod dispatchers;
 pub mod dispatcher_portal;
