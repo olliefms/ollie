@@ -37,9 +37,10 @@ impl std::str::FromStr for BlobStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum BlobVisibility {
+    #[default]
     Private,
     Driver,
 }
@@ -48,10 +49,6 @@ impl BlobVisibility {
     pub fn as_str(&self) -> &'static str {
         match self { Self::Private => "private", Self::Driver => "driver" }
     }
-}
-
-impl Default for BlobVisibility {
-    fn default() -> Self { Self::Private }
 }
 
 impl std::str::FromStr for BlobVisibility {
