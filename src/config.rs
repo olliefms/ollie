@@ -22,6 +22,7 @@ pub struct Config {
     pub driver_rp_id: String,
     pub driver_rp_origin: String,
     pub dispatcher_jwt_secret: String,
+    pub terminal_timezone: String,
 }
 
 impl Config {
@@ -42,6 +43,10 @@ impl Config {
             .map_err(|_| "DRIVER_RP_ID is required")?;
         let driver_rp_origin = env::var("DRIVER_RP_ORIGIN")
             .map_err(|_| "DRIVER_RP_ORIGIN is required")?;
+        let terminal_timezone = env::var("TERMINAL_TIMEZONE")
+            .unwrap_or_else(|_| "America/New_York".into());
+        terminal_timezone.parse::<chrono_tz::Tz>()
+            .map_err(|_| format!("TERMINAL_TIMEZONE '{terminal_timezone}' is not a valid IANA timezone"))?;
         Ok(Self {
             admin_api_key,
             port: env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3000),
@@ -78,6 +83,7 @@ impl Config {
             driver_rp_id,
             driver_rp_origin,
             dispatcher_jwt_secret,
+            terminal_timezone,
         })
     }
 }
@@ -187,5 +193,33 @@ mod tests {
         assert!(cfg.driver_jwt_secret.len() >= 32);
         env::remove_var("ADMIN_API_KEY");
         remove_driver_vars();
+    }
+
+    #[test]
+    fn test_terminal_timezone_default() {
+        let prior = std::env::var("TERMINAL_TIMEZONE").ok();
+        std::env::remove_var("TERMINAL_TIMEZONE");
+        std::env::set_var("ADMIN_API_KEY", "k");
+        std::env::set_var("DRIVER_JWT_SECRET", "x".repeat(32));
+        std::env::set_var("DISPATCHER_JWT_SECRET", "x".repeat(32));
+        std::env::set_var("DRIVER_RP_ID", "localhost");
+        std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost");
+        let cfg = Config::from_env().expect("default config should load");
+        assert_eq!(cfg.terminal_timezone, "America/New_York");
+        if let Some(v) = prior { std::env::set_var("TERMINAL_TIMEZONE", v); }
+    }
+
+    #[test]
+    fn test_terminal_timezone_invalid_rejects() {
+        let prior = std::env::var("TERMINAL_TIMEZONE").ok();
+        std::env::set_var("TERMINAL_TIMEZONE", "Not/A/Zone");
+        std::env::set_var("ADMIN_API_KEY", "k");
+        std::env::set_var("DRIVER_JWT_SECRET", "x".repeat(32));
+        std::env::set_var("DISPATCHER_JWT_SECRET", "x".repeat(32));
+        std::env::set_var("DRIVER_RP_ID", "localhost");
+        std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost");
+        let result = Config::from_env();
+        assert!(result.is_err(), "invalid tz should error");
+        if let Some(v) = prior { std::env::set_var("TERMINAL_TIMEZONE", v); } else { std::env::remove_var("TERMINAL_TIMEZONE"); }
     }
 }
