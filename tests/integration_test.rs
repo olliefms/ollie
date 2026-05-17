@@ -2228,3 +2228,150 @@ async fn test_driver_past_trips_with_week_start() {
     assert_eq!(body["week"]["start"], "2026-05-10");
     assert_eq!(body["week"]["end"], "2026-05-16");
 }
+
+async fn setup_driver_with_intransit_trip_two_stops(
+    server: &TestServer,
+    state: &AppState,
+) -> (String, String) {
+    let driver_id_str = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "InTransit Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let driver_id: uuid::Uuid = driver_id_str.parse().unwrap();
+
+    let creds = ollie::models::DriverCredentials {
+        driver_id,
+        pin_hash: None,
+        token_version: 1,
+        failed_pin_attempts: 0,
+        locked_until: None,
+        updated_at: chrono::Utc::now(),
+    };
+    state.db.upsert_driver_credentials(&creds).await.unwrap();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-IT-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Use sequences 1 and 2 (per AGENTS.md line 332) so off-by-one bugs surface.
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                {
+                    "sequence": 1,
+                    "stop_type": "pickup",
+                    "name": "Origin",
+                    "timezone": "America/Los_Angeles"
+                },
+                {
+                    "sequence": 2,
+                    "stop_type": "delivery",
+                    "name": "Destination",
+                    "timezone": "America/Los_Angeles"
+                }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let assign = server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign.status_code(), 200);
+
+    let dispatch = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    // Transition directly to InTransit without departing any stop, so the PATCH
+    // tests start with clean actual_arrive/actual_depart on both stops.
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    state.db.transition_trip_status(trip_uuid, ollie::models::TripStatus::InTransit).await.unwrap();
+
+    let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
+    let token = ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap();
+    (token, trip_id)
+}
+
+#[tokio::test]
+async fn test_patch_stop_arrive_then_depart() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let arrive_resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-09T08:00:00" }))
+        .await;
+    assert_eq!(arrive_resp.status_code(), 200);
+
+    let depart_resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-05-09T09:00:00" }))
+        .await;
+    assert_eq!(depart_resp.status_code(), 200);
+}
+
+#[tokio::test]
+async fn test_patch_stop_rejects_z_suffix() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-09T08:00:00Z" }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
+}
+
+#[tokio::test]
+async fn test_patch_stop_depart_before_arrive_rejected() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let arrive = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-09T10:00:00" }))
+        .await;
+    assert_eq!(arrive.status_code(), 200);
+
+    let resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-05-09T09:00:00" }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
+}
+
+#[tokio::test]
+async fn test_patch_last_stop_depart_transitions_to_delivered() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let r1 = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T08:00:00",
+            "actual_depart": "2026-05-09T09:00:00"
+        }))
+        .await;
+    assert_eq!(r1.status_code(), 200);
+
+    let r2 = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/2"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-09T12:00:00" }))
+        .await;
+    assert_eq!(r2.status_code(), 200);
+
+    let resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/2"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-05-09T13:00:00" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = serde_json::from_slice(resp.as_bytes()).unwrap();
+    assert_eq!(body["trip_status"], "delivered");
+}

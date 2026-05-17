@@ -21,7 +21,7 @@ pub fn portal_router(state: &AppState) -> Router<AppState> {
         .route("/me", get(data::me))
         .route("/trips", get(data::list_trips))
         .route("/trips/:id", get(data::trip_detail))
-        .route("/trips/:id/stops/:seq", get(data::stop_detail))
+        .route("/trips/:id/stops/:seq", get(data::stop_detail).patch(data::update_stop_times))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_driver_jwt,

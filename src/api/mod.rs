@@ -111,6 +111,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::blobs::update_blob,
         dispatcher_portal::blobs::delete_blob,
         dispatcher_portal::blobs::query_blob,
+        driver_portal::data::update_stop_times,
     ),
     components(
         schemas(
@@ -184,6 +185,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
+            driver_portal::data::UpdateStopTimesRequest,
             models::DispatcherStatus,
             models::DispatcherRecord,
             dispatchers::CreateDispatcherRequest,
