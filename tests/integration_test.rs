@@ -71,6 +71,28 @@ async fn test_upload_returns_202_with_uuid() {
 }
 
 #[tokio::test]
+async fn test_upload_with_visibility_field() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let form = axum_test::multipart::MultipartForm::new()
+        .add_text("visibility", "driver")
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"hello".to_vec())
+                .file_name("x.txt")
+                .mime_type("text/plain"),
+        );
+    let resp = server
+        .post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(form)
+        .await;
+    let code = resp.status_code().as_u16();
+    assert!([201, 202].contains(&code), "got {code}");
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["visibility"], "driver");
+}
+
+#[tokio::test]
 async fn test_upload_without_auth_returns_401() {
     let (server, _b, _d, _rx) = test_server().await;
     let resp = server.post("/api/v1/blobs").await;

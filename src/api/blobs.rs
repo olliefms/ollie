@@ -1,7 +1,7 @@
 // src/api/blobs.rs
 use crate::{
     error::AppError,
-    models::{BlobListResponse, BlobRecord, BlobStatus},
+    models::{BlobListResponse, BlobRecord, BlobStatus, BlobVisibility},
     AppState,
 };
 use axum::{
@@ -44,6 +44,9 @@ pub struct BlobUploadRequest {
     pub name: Option<String>,
     /// JSON-encoded array of tag strings, e.g. `["invoice","2024"]`
     pub tags: Option<String>,
+    /// Visibility — `private` (default) or `driver`
+    #[schema(value_type = String, example = "private")]
+    pub visibility: Option<BlobVisibility>,
 }
 
 #[utoipa::path(
@@ -72,6 +75,7 @@ pub async fn upload_blob(
     let mut file_content_type: Option<String> = None;
     let mut display_name: Option<String> = None;
     let mut tags: Vec<String> = vec![];
+    let mut visibility: Option<BlobVisibility> = None;
 
     while let Some(field) = multipart.next_field().await
         .map_err(|e| AppError::BadRequest(e.to_string()))?
@@ -93,6 +97,12 @@ pub async fn upload_blob(
                     .map_err(|e| AppError::BadRequest(e.to_string()))?;
                 tags = serde_json::from_str(&raw)
                     .map_err(|_| AppError::BadRequest("tags must be a JSON array of strings".into()))?;
+            }
+            "visibility" => {
+                let raw = field.text().await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                visibility = Some(raw.parse::<BlobVisibility>()
+                    .map_err(|e| AppError::BadRequest(format!("invalid visibility: {e}")))?);
             }
             _ => {}
         }
@@ -117,7 +127,7 @@ pub async fn upload_blob(
             id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
             size: data.len() as i64, status, error: None, summary, tags,
             embedding, created_at: now, updated_at: now,
-            visibility: Default::default(), uploaded_by: None,
+            visibility: visibility.unwrap_or_default(), uploaded_by: None,
         };
         state.db.insert(&record).await?;
         if matches!(record.status, BlobStatus::Pending) {
@@ -131,7 +141,7 @@ pub async fn upload_blob(
             id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
             size: data.len() as i64, status: BlobStatus::Pending, error: None,
             summary: None, tags, embedding: None, created_at: now, updated_at: now,
-            visibility: Default::default(), uploaded_by: None,
+            visibility: visibility.unwrap_or_default(), uploaded_by: None,
         };
         state.db.insert(&record).await?;
         state.pipeline_tx.send(record.id).await
