@@ -51,6 +51,18 @@ pub struct DriverTripListItem {
 #[derive(Serialize)]
 pub struct DriverTripListResponse {
     pub items: Vec<DriverTripListItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub week: Option<PastWeekInfo>,
+}
+
+#[derive(Serialize)]
+pub struct PastWeekInfo {
+    pub start: String,
+    pub end: String,
+    pub has_prev: bool,
+    pub has_next: bool,
+    pub earliest_week_start: Option<String>,
+    pub latest_week_start: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -162,6 +174,52 @@ fn tab_matches(tab: &TripTab, trip: &TripListItem) -> bool {
 #[derive(Deserialize)]
 pub struct TripsQuery {
     pub tab: Option<String>,
+    pub week_start: Option<String>,
+}
+
+fn trip_anchor_utc(trip: &TripListItem) -> Option<chrono::DateTime<chrono::Utc>> {
+    use crate::models::load::parse_stop_time;
+    if let Some(s) = trip.stops.last() {
+        if let Some(d) = s.actual_depart.as_deref() {
+            if let Some(dt) = parse_stop_time(d, s.timezone.as_deref()) {
+                return Some(dt);
+            }
+        }
+    }
+    if let Some(s) = trip.stops.first() {
+        if let Some(sa) = s.scheduled_arrive.as_deref() {
+            if let Some(dt) = parse_stop_time(sa, s.timezone.as_deref()) {
+                return Some(dt);
+            }
+        }
+    }
+    if matches!(trip.status, crate::models::TripStatus::Cancelled) {
+        return Some(trip.updated_at);
+    }
+    None
+}
+
+fn parse_week_start(
+    s: &str,
+    tz: chrono_tz::Tz,
+) -> Result<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, chrono::NaiveDate), AppError> {
+    use chrono::TimeZone as _;
+    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .map_err(|_| AppError::BadRequest(format!("week_start must be YYYY-MM-DD, got '{s}'")))?;
+    let dt_naive = d.and_hms_opt(0, 0, 0).unwrap();
+    let lo = tz
+        .from_local_datetime(&dt_naive)
+        .single()
+        .ok_or_else(|| AppError::BadRequest(format!("week_start '{s}' is ambiguous/nonexistent in terminal tz")))?
+        .with_timezone(&chrono::Utc);
+    let hi = lo + chrono::Duration::days(7);
+    Ok((lo, hi, d))
+}
+
+fn sunday_of(d: chrono::NaiveDate) -> chrono::NaiveDate {
+    use chrono::Datelike as _;
+    let dow = d.weekday().num_days_from_sunday();
+    d - chrono::Duration::days(dow as i64)
 }
 
 // ---------------------------------------------------------------------------
@@ -195,8 +253,73 @@ pub async fn list_trips(
         _ => TripTab::Current,
     };
 
+    let terminal_tz: chrono_tz::Tz = state
+        .config
+        .terminal_timezone
+        .parse()
+        .map_err(|_| AppError::Internal("invalid terminal timezone in config".into()))?;
+
     let all_trips = state.db.list_trips(None, Some(driver_id), None).await?;
-    let filtered: Vec<TripListItem> = all_trips.into_iter().filter(|t| tab_matches(&tab, t)).collect();
+
+    let (filtered, week_info): (Vec<TripListItem>, Option<PastWeekInfo>) = match tab {
+        TripTab::Past => {
+            let past_only: Vec<&TripListItem> = all_trips
+                .iter()
+                .filter(|t| matches!(classify_trip(t), TripTab::Past))
+                .collect();
+            let mut anchors: Vec<(chrono::DateTime<chrono::Utc>, &TripListItem)> = past_only
+                .iter()
+                .filter_map(|t| trip_anchor_utc(t).map(|a| (a, *t)))
+                .collect();
+            anchors.sort_by_key(|(a, _)| *a);
+
+            let now_local = chrono::Utc::now().with_timezone(&terminal_tz).date_naive();
+            let default_start = sunday_of(now_local);
+            let start_str = params
+                .week_start
+                .clone()
+                .unwrap_or_else(|| default_start.format("%Y-%m-%d").to_string());
+            let (lo, hi, start_date) = parse_week_start(&start_str, terminal_tz)?;
+            let end_date = start_date + chrono::Duration::days(6);
+
+            let in_week: Vec<TripListItem> = anchors
+                .iter()
+                .filter(|(a, _)| *a >= lo && *a < hi)
+                .map(|(_, t)| (*t).clone())
+                .collect();
+
+            let has_prev = anchors.iter().any(|(a, _)| *a < lo);
+            let has_next = anchors.iter().any(|(a, _)| *a >= hi);
+
+            let bound_week = |a: &chrono::DateTime<chrono::Utc>| -> chrono::NaiveDate {
+                sunday_of(a.with_timezone(&terminal_tz).date_naive())
+            };
+            let earliest = anchors
+                .first()
+                .map(|(a, _)| bound_week(a).format("%Y-%m-%d").to_string());
+            let latest = anchors
+                .last()
+                .map(|(a, _)| bound_week(a).format("%Y-%m-%d").to_string());
+
+            let info = PastWeekInfo {
+                start: start_date.format("%Y-%m-%d").to_string(),
+                end: end_date.format("%Y-%m-%d").to_string(),
+                has_prev,
+                has_next,
+                earliest_week_start: earliest,
+                latest_week_start: latest,
+            };
+            (in_week, Some(info))
+        }
+        _ => {
+            let filtered: Vec<TripListItem> = all_trips
+                .iter()
+                .filter(|t| tab_matches(&tab, t))
+                .cloned()
+                .collect();
+            (filtered, None)
+        }
+    };
 
     // Pre-fetch all facilities needed across all trips in a single batch query
     // (origin stop, destination stop, and next-stop per trip) instead of O(3N) individual calls.
@@ -290,15 +413,14 @@ pub async fn list_trips(
         })
         .collect();
 
-    // Sort past trips by scheduled_start descending (most recent first).
-    // ISO-8601 strings are lexicographically ordered, so string comparison is correct.
+    // Sort past trips by delivered_at descending (newest delivered first).
     if matches!(tab, TripTab::Past) {
         items.sort_by(|a, b| {
-            b.scheduled_start.as_deref().unwrap_or("").cmp(a.scheduled_start.as_deref().unwrap_or(""))
+            b.delivered_at.as_deref().unwrap_or("").cmp(a.delivered_at.as_deref().unwrap_or(""))
         });
     }
 
-    Ok(Json(DriverTripListResponse { items }))
+    Ok(Json(DriverTripListResponse { items, week: week_info }))
 }
 
 pub async fn trip_detail(
@@ -584,5 +706,46 @@ mod tests {
     fn test_classify_planned_no_stops_is_upcoming() {
         let trip = make_trip(TripStatus::Planned, vec![]);
         assert!(matches!(classify_trip(&trip), TripTab::Upcoming));
+    }
+
+    fn make_stop(seq: u32, actual_depart: Option<&str>, tz: Option<&str>) -> TripStop {
+        TripStop {
+            sequence: seq,
+            stop_type: TripStopType::Pickup,
+            name: Some("X".into()),
+            facility_id: None,
+            address: None,
+            load_stop_index: None,
+            scheduled_arrive: Some("2026-05-01T08:00:00".into()),
+            scheduled_arrive_end: None,
+            actual_arrive: None,
+            actual_depart: actual_depart.map(String::from),
+            expected_dwell_minutes: None,
+            detention_free_minutes: None,
+            detention_grace_minutes: None,
+            notes: None,
+            timezone: tz.map(String::from),
+        }
+    }
+
+    #[test]
+    fn test_trip_anchor_uses_last_stop_actual_depart() {
+        let trip = make_trip(
+            TripStatus::Delivered,
+            vec![
+                make_stop(1, None, Some("America/Los_Angeles")),
+                make_stop(2, Some("2026-05-09T23:00:00"), Some("America/Los_Angeles")),
+            ],
+        );
+        let utc = trip_anchor_utc(&trip).unwrap();
+        let eastern: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let local = utc.with_timezone(&eastern);
+        assert_eq!(local.date_naive(), chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap());
+    }
+
+    #[test]
+    fn test_sunday_of_a_wednesday() {
+        let d = chrono::NaiveDate::from_ymd_opt(2026, 5, 13).unwrap();
+        assert_eq!(sunday_of(d), chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap());
     }
 }

@@ -151,7 +151,7 @@ impl Stop {
     }
 }
 
-fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>> {
+pub(crate) fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>> {
     use chrono::TimeZone as _;
     match tz {
         Some(tz_str) => {
