@@ -1,8 +1,14 @@
 // src/db/load_ops.rs
 
-/// Maximum rows fetched from LanceDB per list_loads call.
-/// LanceDB 0.27 has no ORDER BY, so we sort in memory after fetching.
-/// This cap prevents unbounded memory growth while keeping typical page depths correct.
+/// Maximum rows fetched from LanceDB in a single `list_loads` scan.
+/// LanceDB 0.27 has no ORDER BY, so all matching rows are fetched into memory,
+/// sorted by `created_at DESC`, then paginated with `skip/take`.
+///
+/// **Pagination divergence:** `count_rows` returns the total number of matching rows
+/// in the table (unbounded), while this cap limits how many rows are actually fetched.
+/// Any offset >= LOAD_SCAN_CAP will return an empty page even though `returned` in
+/// the API response still reflects the full count. If load volume grows past ~2 000
+/// filtered records, raise this constant or switch to cursor-based pagination.
 const LOAD_SCAN_CAP: usize = 2_000;
 
 use crate::{
