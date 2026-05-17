@@ -1,7 +1,10 @@
-import { isAuthenticated, clearAuth } from '../utils/auth.js';
+import { isAuthenticated, clearAuth, getToken } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
 import { formatStopType, formatWeight, formatStatus, formatStopTime } from '../utils/format.js';
 import { navigate } from '../app.js';
+import { renderAppBar } from '../components/app-bar.js';
+import { renderBottomNav } from '../components/bottom-nav.js';
+import { pdfIcon, photoIcon } from '../components/icons.js';
 
 export async function renderTripDetail(container, tripId) {
   if (!isAuthenticated()) {
@@ -9,56 +12,51 @@ export async function renderTripDetail(container, tripId) {
     return;
   }
 
-  // Clear container
-  container.innerHTML = '';
+  container.replaceChildren();
 
-  // Page layout
+  let currentDriverId = null;
+  try {
+    const me = await apiFetch('/me');
+    currentDriverId = me.id;
+  } catch (_) { /* ignore */ }
+
   const page = document.createElement('div');
   page.className = 'trip-detail-page';
 
-  // Header with back button
-  const header = document.createElement('div');
-  header.className = 'trip-detail-header';
-
   const backBtn = document.createElement('button');
+  backBtn.type = 'button';
   backBtn.className = 'btn-ghost-back trip-detail-back';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', () => {
-    navigate('/driver/trips');
+    if (history.length > 1) history.back();
+    else navigate('/driver/trips');
   });
 
-  const tripNumber = document.createElement('h1');
-  tripNumber.className = 'trip-detail-number';
-  tripNumber.textContent = '';
+  const appBar = renderAppBar({ title: 'Loading…', right: backBtn });
+  page.appendChild(appBar);
 
-  header.appendChild(backBtn);
-  header.appendChild(tripNumber);
-
-  // Loading state
   const loadingEl = document.createElement('div');
   loadingEl.className = 'trip-detail-loading';
   const spinner = document.createElement('div');
   spinner.className = 'spinner';
   loadingEl.appendChild(spinner);
-
-  page.appendChild(header);
   page.appendChild(loadingEl);
+
   container.appendChild(page);
 
   try {
     const data = await apiFetch(`/trips/${tripId}`);
 
-    // Clear loading state
     loadingEl.remove();
 
-    // Update header
-    tripNumber.textContent = data.trip_number;
+    const titleEl = appBar.querySelector('.app-bar__title');
+    if (titleEl) titleEl.textContent = data.trip_number;
+
     const statusBadge = document.createElement('div');
     statusBadge.className = `badge badge--${data.status}`;
     statusBadge.textContent = formatStatus(data.status);
-    header.appendChild(statusBadge);
+    appBar.appendChild(statusBadge);
 
-    // Equipment row
     const equipmentSection = document.createElement('div');
     equipmentSection.className = 'trip-detail-section';
 
@@ -76,7 +74,6 @@ export async function renderTripDetail(container, tripId) {
 
     page.appendChild(equipmentSection);
 
-    // Load info row
     const loadSection = document.createElement('div');
     loadSection.className = 'trip-detail-section';
 
@@ -113,7 +110,6 @@ export async function renderTripDetail(container, tripId) {
 
     page.appendChild(loadSection);
 
-    // Stop timeline
     const stopsSection = document.createElement('div');
     stopsSection.className = 'trip-detail-section trip-detail-stops';
 
@@ -135,6 +131,161 @@ export async function renderTripDetail(container, tripId) {
     }
 
     page.appendChild(stopsSection);
+
+    // Documents card
+    const docsSection = document.createElement('section');
+    docsSection.className = 'docs-card';
+
+    const docsHeader = document.createElement('div');
+    docsHeader.className = 'docs-card__header';
+    const docsTitle = document.createElement('h2');
+    docsTitle.textContent = 'Documents';
+    const uploadBtn = document.createElement('button');
+    uploadBtn.type = 'button';
+    uploadBtn.className = 'btn btn-secondary docs-card__upload';
+    uploadBtn.textContent = '+ Upload';
+    docsHeader.appendChild(docsTitle);
+    docsHeader.appendChild(uploadBtn);
+    docsSection.appendChild(docsHeader);
+
+    const docsList = document.createElement('div');
+    docsList.className = 'docs-list';
+    docsSection.appendChild(docsList);
+
+    const fileInput = document.createElement('input');
+    fileInput.type = 'file';
+    fileInput.accept = 'image/*,application/pdf';
+    fileInput.capture = 'environment';
+    fileInput.style.display = 'none';
+    docsSection.appendChild(fileInput);
+
+    let pendingDoctype = 'other';
+
+    uploadBtn.addEventListener('click', () => openDoctypeSheet(dt => {
+      pendingDoctype = dt;
+      fileInput.click();
+    }));
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+      const form = new FormData();
+      form.append('file', file);
+      form.append('doctype', pendingDoctype);
+      try {
+        const r = await fetch(`/driver/api/v1/trips/${tripId}/documents`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${getToken()}` },
+          body: form,
+        });
+        if (!r.ok) throw new Error(`Upload failed (${r.status})`);
+        await refreshDocs();
+      } catch (err) {
+        alert(err.message || 'Upload failed');
+      } finally {
+        fileInput.value = '';
+      }
+    });
+
+    async function refreshDocs() {
+      try {
+        const docs = await apiFetch(`/trips/${tripId}/documents`);
+        docsList.replaceChildren();
+        if (docs.length === 0) {
+          const empty = document.createElement('div');
+          empty.className = 'docs-empty';
+          empty.textContent = 'No documents yet.';
+          docsList.appendChild(empty);
+          return;
+        }
+        docs.forEach(doc => docsList.appendChild(renderDocRow(doc)));
+      } catch (e) { /* silent */ }
+    }
+
+    function renderDocRow(doc) {
+      const row = document.createElement('div');
+      row.className = 'docs-row';
+      const iconWrap = document.createElement('span');
+      iconWrap.className = 'docs-row__icon';
+      iconWrap.appendChild(doc.mime_type === 'application/pdf' ? pdfIcon() : photoIcon());
+      const meta = document.createElement('div');
+      meta.className = 'docs-row__meta';
+      const title = document.createElement('div');
+      const doctypeTag = (doc.tags || []).find(t => t.startsWith('doctype:'));
+      const dtypeLabel = doctypeTag ? doctypeTag.split(':')[1].toUpperCase() : '';
+      title.textContent = dtypeLabel ? `${dtypeLabel} — ${doc.name}` : doc.name;
+      const time = document.createElement('div');
+      time.className = 'docs-row__time';
+      time.textContent = new Date(doc.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      meta.appendChild(title);
+      meta.appendChild(time);
+      row.appendChild(iconWrap);
+      row.appendChild(meta);
+      row.addEventListener('click', () => openDocPreview(doc));
+      if (doc.uploaded_by === currentDriverId) {
+        const kebab = document.createElement('button');
+        kebab.type = 'button';
+        kebab.className = 'docs-row__kebab';
+        kebab.textContent = '⋯';
+        kebab.setAttribute('aria-label', 'Delete document');
+        kebab.addEventListener('click', async e => {
+          e.stopPropagation();
+          if (!confirm('Delete this document?')) return;
+          await fetch(`/driver/api/v1/trips/${tripId}/documents/${doc.id}`, {
+            method: 'DELETE',
+            headers: { 'Authorization': `Bearer ${getToken()}` },
+          });
+          await refreshDocs();
+        });
+        row.appendChild(kebab);
+      }
+      return row;
+    }
+
+    function openDocPreview(doc) {
+      const overlay = document.createElement('div');
+      overlay.className = 'doc-preview';
+      const frame = document.createElement('iframe');
+      frame.sandbox = '';
+      frame.src = `/driver/api/v1/trips/${tripId}/documents/${doc.id}/content`;
+      const close = document.createElement('button');
+      close.type = 'button';
+      close.className = 'doc-preview__close';
+      close.textContent = '×';
+      close.setAttribute('aria-label', 'Close preview');
+      close.addEventListener('click', () => document.body.removeChild(overlay));
+      overlay.appendChild(close);
+      overlay.appendChild(frame);
+      document.body.appendChild(overlay);
+    }
+
+    function openDoctypeSheet(onPick) {
+      const sheet = document.createElement('div');
+      sheet.className = 'sheet';
+      const inner = document.createElement('div');
+      inner.className = 'sheet__inner';
+      const title = document.createElement('div');
+      title.className = 'sheet__title';
+      title.textContent = 'What kind of document?';
+      inner.appendChild(title);
+      [['bol','BOL'],['pod','POD'],['scale_ticket','Scale Ticket'],['other','Other']].forEach(([id, label]) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-secondary sheet__option';
+        b.textContent = label;
+        b.addEventListener('click', () => {
+          document.body.removeChild(sheet);
+          onPick(id);
+        });
+        inner.appendChild(b);
+      });
+      sheet.appendChild(inner);
+      sheet.addEventListener('click', e => { if (e.target === sheet) document.body.removeChild(sheet); });
+      document.body.appendChild(sheet);
+    }
+
+    await refreshDocs();
+    page.appendChild(docsSection);
   } catch (err) {
     if (err.status === 401) {
       clearAuth();
@@ -148,12 +299,13 @@ export async function renderTripDetail(container, tripId) {
     errorEl.textContent = err.message || 'Failed to load trip';
     page.appendChild(errorEl);
   }
+
+  page.appendChild(renderBottomNav('trips'));
 }
 
 function renderStopNode(stop, tripId) {
   const node = document.createElement('div');
 
-  // Determine stop state
   let state = 'upcoming';
   if (stop.actual_depart) {
     state = 'completed';
@@ -191,7 +343,6 @@ function renderStopNode(stop, tripId) {
   content.appendChild(title);
   content.appendChild(time);
 
-  // Make clickable to navigate to stop detail
   node.addEventListener('click', () => {
     navigate(`/driver/trips/${tripId}/stops/${stop.sequence}`);
   });
@@ -199,4 +350,3 @@ function renderStopNode(stop, tripId) {
   node.appendChild(content);
   return node;
 }
-
