@@ -679,9 +679,9 @@ async function renderDriversView() {
         const rowClass = isAvailable ? 'row--available' : '';
         return `
           <tr${rowClass ? ` class="${rowClass}"` : ''} data-driver-id="${driver.id}" style="cursor:pointer;">
-            <td>${driver.name || '—'}</td>
+            <td>${escHtml(driver.name || '—')}</td>
             <td>${badge(driver.status)}</td>
-            <td>${driver.phone || '—'}</td>
+            <td>${escHtml(driver.phone || '—')}</td>
           </tr>
         `;
       }).join('');
@@ -795,8 +795,8 @@ async function renderTripDetailView(id) {
     const stopRows = (trip.stops || []).map((stop, i) => `
       <tr>
         <td>${i + 1}</td>
-        <td>${stop.name || '—'}</td>
-        <td>${stop.stop_type || '—'}</td>
+        <td>${escHtml(stop.name || '—')}</td>
+        <td>${escHtml(stop.stop_type || '—')}</td>
         <td>${fmtDate(stop.scheduled_arrive)}</td>
         <td>${fmtDate(stop.actual_arrive)}</td>
         <td>${fmtDate(stop.actual_depart)}</td>
@@ -806,7 +806,7 @@ async function renderTripDetailView(id) {
     setContent(`
       <button class="back-link" id="back-to-trips">← Back to Trips</button>
       <div class="detail-card">
-        <div class="detail-card__title">Trip ${trip.trip_number || shortId(trip.id)}</div>
+        <div class="detail-card__title">Trip ${escHtml(trip.trip_number || shortId(trip.id))}</div>
         <div class="detail-grid">
           <div class="detail-item"><div class="detail-item__label">Trip #</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || '—')}</div></div>
           <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(trip.status)}</div></div>
@@ -855,7 +855,7 @@ async function renderDriverDetailView(id) {
 
     const tripRows = trips.map(trip => `
       <tr data-trip-id="${trip.id}" style="cursor:pointer;">
-        <td style="font-variant-numeric: tabular-nums;">${trip.trip_number || shortId(trip.id)}</td>
+        <td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td>
         <td>${badge(trip.status)}</td>
         <td>${fmtDate(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null)}</td>
       </tr>
@@ -864,10 +864,10 @@ async function renderDriverDetailView(id) {
     setContent(`
       <button class="back-link" id="back-to-drivers">← Back to Drivers</button>
       <div class="detail-card">
-        <div class="detail-card__title">${driver.name || '—'}</div>
+        <div class="detail-card__title">${escHtml(driver.name || '—')}</div>
         <div class="detail-grid">
           <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(driver.status)}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Phone</div><div class="detail-item__value">${driver.phone || '—'}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Phone</div><div class="detail-item__value">${escHtml(driver.phone || '—')}</div></div>
         </div>
       </div>
       <div class="detail-card">
