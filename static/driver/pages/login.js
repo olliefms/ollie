@@ -4,6 +4,7 @@ import { navigate } from '../app.js';
 export function renderLogin(container) {
   const html = `
     <div class="login-screen">
+      <img class="login-icon" src="/driver/icon-192.png" alt="" />
       <div class="login-header">
         <h1>Driver Portal</h1>
         <p class="subtitle">Sign in to view your trips</p>
