@@ -100,12 +100,37 @@ function showApp() {
 const VIEW_TITLES = {
   home: 'Home',
   loads: 'Loads',
+  'load-detail': 'Load Detail',
   drivers: 'Drivers',
   'driver-detail': 'Driver Detail',
   trips: 'Trips',
+  'trip-detail': 'Trip Detail',
   events: 'Events',
   documents: 'Documents',
+  document: 'Document',
 };
+
+// ─── Hash routing ────────────────────────────────────────────
+
+let activeObjectUrl = null;
+
+function encodeViewHash(view, params) {
+  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
+  const qs = entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
+  return qs ? `#${view}?${qs}` : `#${view}`;
+}
+
+function decodeViewHash(hash) {
+  if (!hash || hash === '#' || hash === '') return { view: 'home', params: {} };
+  const noHash = hash.startsWith('#') ? hash.slice(1) : hash;
+  const qMark = noHash.indexOf('?');
+  const view = qMark === -1 ? noHash : noHash.slice(0, qMark);
+  const params = {};
+  if (qMark !== -1) {
+    new URLSearchParams(noHash.slice(qMark + 1)).forEach((v, k) => { params[k] = v; });
+  }
+  return { view: view || 'home', params };
+}
 
 function goBack() {
   clearEventsRefresh();
@@ -126,6 +151,15 @@ function navigate(view, params = {}) {
 function _renderView(view, params) {
   currentView = view;
   currentParams = params;
+
+  const hash = encodeViewHash(view, params);
+  if (window.location.hash !== hash) {
+    history.replaceState(null, '', hash);
+  }
+  if (activeObjectUrl) {
+    URL.revokeObjectURL(activeObjectUrl);
+    activeObjectUrl = null;
+  }
 
   // Update sidebar active state
   document.querySelectorAll('.sidebar__link').forEach(btn => {
@@ -1155,7 +1189,8 @@ function boot() {
 
   if (isAuthenticated()) {
     showApp();
-    navigate('home');
+    const { view, params } = decodeViewHash(window.location.hash);
+    _renderView(view, params);
   } else {
     showLogin();
   }
