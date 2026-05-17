@@ -115,6 +115,14 @@ pub struct DriverFacilityContact {
     pub phone: String,
 }
 
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct UpdateStopTimesRequest {
+    #[serde(default)]
+    pub actual_arrive: Option<String>,
+    #[serde(default)]
+    pub actual_depart: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct DriverStopDetailResponse {
     pub sequence: u32,
@@ -591,6 +599,96 @@ pub async fn stop_detail(
         contacts,
         timezone: stop.timezone.clone(),
     }))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/driver/api/v1/trips/{id}/stops/{seq}",
+    request_body = UpdateStopTimesRequest,
+    responses(
+        (status = 200, description = "Stop updated"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Trip or stop not found"),
+        (status = 422, description = "Validation failed"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "driver"
+)]
+pub async fn update_stop_times(
+    State(state): State<AppState>,
+    Extension(claims): Extension<DriverClaims>,
+    Path((id, seq)): Path<(Uuid, u32)>,
+    Json(req): Json<UpdateStopTimesRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    use crate::models::load::{parse_stop_time, validate_stop_time_str};
+    let driver_id = claims.driver_id.parse::<Uuid>().map_err(|_| AppError::Unauthorized)?;
+    let trip = state.db.get_trip(id).await?;
+    if trip.driver_id != Some(driver_id) {
+        return Err(AppError::NotFound);
+    }
+
+    // Stop sequence is 1-based; array index is 0-based (AGENTS.md line 327).
+    let stop_idx = trip.stops.iter().position(|s| s.sequence == seq).ok_or(AppError::NotFound)?;
+    let tz = trip.stops[stop_idx].timezone.clone();
+
+    if let Some(tz_str) = tz.as_deref() {
+        if let Some(a) = req.actual_arrive.as_deref() {
+            validate_stop_time_str(a, tz_str, "actual_arrive")?;
+        }
+        if let Some(d) = req.actual_depart.as_deref() {
+            validate_stop_time_str(d, tz_str, "actual_depart")?;
+        }
+    }
+
+    let next_arrive = req.actual_arrive.clone().or_else(|| trip.stops[stop_idx].actual_arrive.clone());
+    let next_depart = req.actual_depart.clone().or_else(|| trip.stops[stop_idx].actual_depart.clone());
+
+    if next_depart.is_some() && next_arrive.is_none() {
+        return Err(AppError::UnprocessableEntity("actual_depart requires actual_arrive".into()));
+    }
+
+    if let (Some(a), Some(d)) = (next_arrive.as_deref(), next_depart.as_deref()) {
+        let a_utc = parse_stop_time(a, tz.as_deref())
+            .ok_or_else(|| AppError::UnprocessableEntity("unparseable actual_arrive".into()))?;
+        let d_utc = parse_stop_time(d, tz.as_deref())
+            .ok_or_else(|| AppError::UnprocessableEntity("unparseable actual_depart".into()))?;
+        if d_utc < a_utc {
+            return Err(AppError::UnprocessableEntity("actual_depart must be >= actual_arrive".into()));
+        }
+    }
+
+    let skew_check = |s: &str| -> Result<(), AppError> {
+        let dt = parse_stop_time(s, tz.as_deref())
+            .ok_or_else(|| AppError::UnprocessableEntity("unparseable timestamp".into()))?;
+        if dt > chrono::Utc::now() + chrono::Duration::hours(24) {
+            return Err(AppError::UnprocessableEntity("timestamp is more than 24h in the future".into()));
+        }
+        Ok(())
+    };
+    if let Some(a) = next_arrive.as_deref() { skew_check(a)?; }
+    if let Some(d) = next_depart.as_deref() { skew_check(d)?; }
+
+    let is_last = stop_idx + 1 == trip.stops.len();
+    let should_deliver = is_last
+        && next_depart.is_some()
+        && matches!(trip.status, crate::models::TripStatus::InTransit);
+
+    state.db.update_trip_stop(id, seq, next_arrive.clone(), next_depart.clone()).await?;
+    if should_deliver {
+        state.db.transition_trip_status(trip.id, crate::models::TripStatus::Delivered).await?;
+    }
+
+    // Re-fetch (AGENTS.md line 325 — chained mutations always re-fetch before returning).
+    let final_trip = state.db.get_trip(id).await?;
+    let stop = final_trip.stops.iter().find(|s| s.sequence == seq).ok_or(AppError::NotFound)?;
+
+    Ok(Json(serde_json::json!({
+        "sequence": stop.sequence,
+        "actual_arrive": stop.actual_arrive,
+        "actual_depart": stop.actual_depart,
+        "timezone": stop.timezone,
+        "trip_status": final_trip.status.as_str(),
+    })))
 }
 
 // ---------------------------------------------------------------------------
