@@ -1,7 +1,10 @@
-import { isAuthenticated, clearAuth } from '../utils/auth.js';
+import { isAuthenticated, clearAuth, getToken } from '../utils/auth.js';
 import { apiFetch } from '../utils/api.js';
 import { formatStopType, formatWeight, formatShortTime } from '../utils/format.js';
 import { navigate } from '../app.js';
+import { renderAppBar } from '../components/app-bar.js';
+import { renderBottomNav } from '../components/bottom-nav.js';
+import { nowInZone, convertNaive } from '../utils/time.js';
 
 export async function renderStopDetail(container, tripId, seq) {
   if (!isAuthenticated()) {
@@ -17,22 +20,15 @@ export async function renderStopDetail(container, tripId, seq) {
   page.className = 'stop-detail-page';
 
   // Header with back button
-  const header = document.createElement('div');
-  header.className = 'stop-detail-header';
-
   const backBtn = document.createElement('button');
   backBtn.className = 'btn-ghost-back stop-detail-back';
   backBtn.textContent = '← Back';
   backBtn.addEventListener('click', () => {
-    navigate(`/driver/trips/${tripId}`);
+    if (history.length > 1) history.back();
+    else navigate(`/driver/trips/${tripId}`);
   });
 
-  const stopTitle = document.createElement('h1');
-  stopTitle.className = 'stop-detail-title';
-  stopTitle.textContent = '';
-
-  header.appendChild(backBtn);
-  header.appendChild(stopTitle);
+  const header = renderAppBar({ title: `Stop ${seq}`, right: backBtn });
 
   // Loading state
   const loadingEl = document.createElement('div');
@@ -51,12 +47,11 @@ export async function renderStopDetail(container, tripId, seq) {
     // Clear loading state
     loadingEl.remove();
 
-    // Update header
-    stopTitle.textContent = `Stop ${data.sequence}`;
+    // Stop type subtitle
     const stopTypeLabel = document.createElement('div');
     stopTypeLabel.className = 'stop-detail-type';
     stopTypeLabel.textContent = formatStopType(data.stop_type);
-    header.appendChild(stopTypeLabel);
+    page.appendChild(stopTypeLabel);
 
     // Facility info section
     const facilitySection = document.createElement('div');
@@ -167,37 +162,10 @@ export async function renderStopDetail(container, tripId, seq) {
       page.appendChild(scheduledSection);
     }
 
-    // Actual section
-    const actualSection = document.createElement('div');
-    actualSection.className = 'stop-detail-section';
-
-    const actualLabel = document.createElement('div');
-    actualLabel.className = 'stop-detail-section-label';
-    actualLabel.textContent = 'Actual';
-    actualSection.appendChild(actualLabel);
-
-    const arrivedRow = document.createElement('div');
-    arrivedRow.className = 'stop-detail-row';
-    const arrivedText = document.createElement('span');
-    arrivedText.className = 'stop-detail-actual-label';
-    arrivedText.textContent = 'Arrived: ';
-    const arrivedTime = document.createElement('span');
-    arrivedTime.textContent = data.actual_arrive ? formatShortTime(data.actual_arrive, data.timezone) : '—';
-    arrivedRow.appendChild(arrivedText);
-    arrivedRow.appendChild(arrivedTime);
-    actualSection.appendChild(arrivedRow);
-
-    const departedRow = document.createElement('div');
-    departedRow.className = 'stop-detail-row';
-    const departedText = document.createElement('span');
-    departedText.className = 'stop-detail-actual-label';
-    departedText.textContent = 'Departed: ';
-    const departedTime = document.createElement('span');
-    departedTime.textContent = data.actual_depart ? formatShortTime(data.actual_depart, data.timezone) : '—';
-    departedRow.appendChild(departedText);
-    departedRow.appendChild(departedTime);
-    actualSection.appendChild(departedRow);
-
+    // Actual section (editable)
+    const actualSection = renderActualSection(data, tripId, async () => {
+      await renderStopDetail(container, tripId, seq);
+    });
     page.appendChild(actualSection);
 
     // Commodity section
@@ -246,6 +214,109 @@ export async function renderStopDetail(container, tripId, seq) {
     errorEl.textContent = err.message || 'Failed to load stop';
     page.appendChild(errorEl);
   }
+
+  page.appendChild(renderBottomNav('trips'));
+}
+
+function renderActualSection(stop, tripId, onChange) {
+  const section = document.createElement('div');
+  section.className = 'stop-detail-section';
+
+  const label = document.createElement('div');
+  label.className = 'stop-detail-section-label';
+  label.textContent = 'Actual';
+  section.appendChild(label);
+
+  const arrivedRow = document.createElement('div');
+  arrivedRow.className = 'stop-detail-row stop-actual-row';
+  arrivedRow.appendChild(renderActualLine('Arrived', stop.actual_arrive, stop.timezone, async (newVal) => {
+    await patchStop(tripId, stop.sequence, { actual_arrive: newVal });
+    onChange();
+  }, !stop.actual_arrive));
+  section.appendChild(arrivedRow);
+
+  const departedRow = document.createElement('div');
+  departedRow.className = 'stop-detail-row stop-actual-row';
+  if (stop.actual_arrive) {
+    departedRow.appendChild(renderActualLine('Departed', stop.actual_depart, stop.timezone, async (newVal) => {
+      await patchStop(tripId, stop.sequence, { actual_depart: newVal });
+      onChange();
+    }, !stop.actual_depart));
+  } else {
+    const placeholder = document.createElement('span');
+    placeholder.className = 'stop-detail-actual-disabled';
+    placeholder.textContent = 'Departed: arrive first';
+    departedRow.appendChild(placeholder);
+  }
+  section.appendChild(departedRow);
+
+  return section;
+}
+
+function renderActualLine(label, currentValue, tz, onSave, primary) {
+  const wrap = document.createElement('span');
+  const lbl = document.createElement('span');
+  lbl.className = 'stop-detail-actual-label';
+  lbl.textContent = `${label}: `;
+  wrap.appendChild(lbl);
+
+  if (!currentValue && primary) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn-primary stop-actual-action';
+    btn.textContent = `${label} now`;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try { await onSave(nowInZone(tz)); }
+      catch (err) { btn.disabled = false; alert(err.message || 'Save failed'); }
+    });
+    wrap.appendChild(btn);
+  } else if (currentValue) {
+    const time = document.createElement('span');
+    time.textContent = formatShortTime(currentValue, tz);
+    wrap.appendChild(time);
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'stop-actual-edit';
+    edit.textContent = '✎';
+    edit.setAttribute('aria-label', `Edit ${label}`);
+    const dt = document.createElement('input');
+    dt.type = 'datetime-local';
+    dt.className = 'stop-actual-editor';
+    const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const display = convertNaive(currentValue, tz, deviceTz);
+    dt.value = display ? display.slice(0, 16) : '';
+    dt.addEventListener('change', async () => {
+      if (!dt.value) return;
+      const newVal = dt.value + ':00';
+      const back = convertNaive(newVal, deviceTz, tz);
+      try { await onSave(back); }
+      catch (err) { alert(err.message || 'Save failed'); }
+    });
+    edit.addEventListener('click', () => {
+      if (typeof dt.showPicker === 'function') dt.showPicker();
+      else dt.focus();
+    });
+    wrap.appendChild(edit);
+    wrap.appendChild(dt);
+  }
+  return wrap;
+}
+
+async function patchStop(tripId, seq, body) {
+  const r = await fetch(`/driver/api/v1/trips/${tripId}/stops/${seq}`, {
+    method: 'PATCH',
+    headers: {
+      'Authorization': `Bearer ${getToken()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(text || `Save failed: ${r.status}`);
+  }
+  return r.json();
 }
 
 function copyAddress(el, text) {
