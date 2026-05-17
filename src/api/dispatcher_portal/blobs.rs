@@ -160,6 +160,8 @@ pub async fn upload_blob(
             embedding,
             created_at: now,
             updated_at: now,
+            visibility: Default::default(),
+            uploaded_by: None,
         };
         state.db.insert(&record).await?;
         if matches!(record.status, BlobStatus::Pending) {
@@ -186,6 +188,8 @@ pub async fn upload_blob(
             embedding: None,
             created_at: now,
             updated_at: now,
+            visibility: Default::default(),
+            uploaded_by: None,
         };
         state.db.insert(&record).await?;
         state
