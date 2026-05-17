@@ -2,18 +2,20 @@
 // Format: 'driver-vYYYY-MM-DD' or 'driver-vN'. Failure to bump causes returning
 // users to be served stale JS until the browser evicts the old cache.
 // See release checklist in AGENTS.md.
-const CACHE_NAME = 'ollie-v1.10.0';
+const CACHE_NAME = 'ollie-v1.12.0';
 const STATIC_ASSETS = [
   '/driver',
-  '/driver/app.js?v=1.10.0',
-  '/driver/css/base.css?v=1.10.0',
-  '/driver/css/components.css?v=1.10.0',
-  '/driver/pages/login.js',
-  '/driver/pages/settings.js',
-  '/driver/pages/trip-detail.js',
-  '/driver/pages/stop-detail.js',
-  '/driver/utils/api.js',
-  '/driver/utils/auth.js',
+  '/driver/app.js?v=1.12.0',
+  '/driver/css/base.css?v=1.12.0',
+  '/driver/css/components.css?v=1.12.0',
+  '/driver/pages/login.js?v=1.12.0',
+  '/driver/pages/settings.js?v=1.12.0',
+  '/driver/pages/trips.js?v=1.12.0',
+  '/driver/pages/trip-detail.js?v=1.12.0',
+  '/driver/pages/stop-detail.js?v=1.12.0',
+  '/driver/utils/api.js?v=1.12.0',
+  '/driver/utils/auth.js?v=1.12.0',
+  '/driver/utils/format.js?v=1.12.0',
   '/driver/manifest.json',
   '/driver/icon-192.png',
   '/driver/icon-512.png',
