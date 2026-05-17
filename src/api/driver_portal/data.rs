@@ -220,7 +220,16 @@ fn parse_week_start(
         .single()
         .ok_or_else(|| AppError::BadRequest(format!("week_start '{s}' is ambiguous/nonexistent in terminal tz")))?
         .with_timezone(&chrono::Utc);
-    let hi = lo + chrono::Duration::days(7);
+    // Compute the upper bound from the next Sunday's local midnight rather than
+    // lo + 168h so DST transition weeks (one Saturday/spring, one Saturday/fall)
+    // bucket correctly. Fall back to the naive 7-day delta only if the next
+    // Sunday is somehow ambiguous in this tz.
+    let next_naive = (d + chrono::Duration::days(7)).and_hms_opt(0, 0, 0).unwrap();
+    let hi = tz
+        .from_local_datetime(&next_naive)
+        .single()
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or(lo + chrono::Duration::days(7));
     Ok((lo, hi, d))
 }
 
