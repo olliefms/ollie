@@ -336,7 +336,7 @@ async function renderLoadsView(params = {}) {
 
   const buildContent = (loads, filterStatus, capTotal = null) => {
     const capBanner = capTotal !== null
-      ? `<div style="background:var(--color-warning-bg,#fffbeb);border:1px solid var(--color-warning,#f59e0b);border-radius:var(--radius);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text);">
+      ? `<div style="background:var(--color-warning-soft);border:1px solid var(--color-warning);border-radius:var(--radius);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text);">
            Showing the most recent ${escHtml(String(loads.length))} of ${escHtml(String(capTotal))} loads. Use the status filter to narrow results.
          </div>`
       : '';
@@ -1180,6 +1180,7 @@ async function renderDocumentDetailView(id) {
         activeObjectUrl = url;
         const iframe = document.createElement('iframe');
         iframe.src = url;
+        iframe.sandbox = '';
         iframe.style.cssText = 'width:100%;height:600px;border:none;';
         iframe.title = doc.name || 'preview';
         viewerEl.textContent = '';
