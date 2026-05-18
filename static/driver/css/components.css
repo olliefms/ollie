@@ -596,9 +596,16 @@
 }
 
 .stop-detail-type {
-  font-size: 0.875rem;
-  font-weight: 600;
+  display: inline-block;
+  margin: var(--space-3) var(--space-4) 0;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: var(--color-primary-soft);
   color: var(--color-primary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .stop-detail-section {
