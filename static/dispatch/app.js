@@ -420,7 +420,11 @@ async function renderLoadsView(params = {}) {
       const data = await res.json();
       const loads = data.loads || data.items || (Array.isArray(data) ? data : []);
       const returned = typeof data.returned === 'number' ? data.returned : null;
-      const capTotal = returned !== null && returned > loads.length ? returned : null;
+      // The server caps scans at LOAD_SCAN_CAP (2000). Only show the cap
+      // banner when we're actually at that ceiling — otherwise it fires on
+      // every normal paginated result where total exceeds page size.
+      const LOAD_SCAN_CAP = 2000;
+      const capTotal = returned !== null && returned >= LOAD_SCAN_CAP ? returned : null;
       setContent(buildContent(loads, status, capTotal));
 
       // Bind filter change
@@ -566,7 +570,7 @@ async function renderLoadDetailView(id) {
         const docRows = validBlobs
           .map(
             b => `
-          <tr class="doc-row" data-blob-id="${b.id}" data-blob-name="${escHtml(b.name || 'download')}" style="cursor:pointer;">
+          <tr class="doc-row" data-blob-id="${b.id}" style="cursor:pointer;">
             <td>${escHtml(b.name) || '—'}</td>
             <td style="font-size:var(--text-sm);color:var(--color-text-muted);">${escHtml((b.mime_type || '').split('/').pop())}</td>
             <td>${fmtBytes(b.size)}</td>
@@ -1012,7 +1016,7 @@ async function renderDocumentsView(params = {}) {
       tableHtml = '<div class="state-empty">No documents found</div>';
     } else {
       const rows = blobs.map(b => `
-        <tr class="doc-row" data-blob-id="${b.id}" data-blob-name="${escHtml(b.name || 'download')}" style="cursor:pointer;">
+        <tr class="doc-row" data-blob-id="${b.id}" style="cursor:pointer;">
           <td>${escHtml(b.name) || '—'}</td>
           <td style="font-size:var(--text-sm);color:var(--color-text-muted);">${escHtml((b.mime_type || '').split('/').pop())}</td>
           <td>${fmtBytes(b.size)}</td>
