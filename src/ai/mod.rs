@@ -65,19 +65,24 @@ impl OllamaClient {
     }
 
     pub async fn generate(&self, model: &str, prompt: &str, image_b64: Option<String>) -> Result<String, AppError> {
-        let resp: GenerateResponse = self.client
+        let resp = self.client
             .post(format!("{}/api/generate", self.base_url))
             .json(&GenerateRequest {
                 model, prompt, stream: false,
                 images: image_b64.map(|b| vec![b]),
             })
             .send().await
-            .map_err(|e| AppError::Internal(format!("ollama generate: {e}")))?
-            .error_for_status()
-            .map_err(|e| AppError::Internal(format!("ollama generate status: {e}")))?
-            .json().await
+            .map_err(|e| AppError::Internal(format!("ollama generate: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(AppError::Internal(format!(
+                "ollama generate status: {status} — {body}"
+            )));
+        }
+        let parsed: GenerateResponse = resp.json().await
             .map_err(|e| AppError::Internal(format!("ollama generate parse: {e}")))?;
-        Ok(resp.response)
+        Ok(parsed.response)
     }
 }
 

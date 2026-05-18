@@ -17,6 +17,11 @@ fn now_z() -> String {
     chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
+/// Maximum binary payload sent to the Ollama vision model. Anything larger
+/// overflows moondream's ~8K-token context window and Ollama returns an
+/// opaque 500. ~500 KB binary ≈ 670 KB base64.
+const MAX_VISION_BYTES: usize = 500_000;
+
 pub async fn process_blob(
     id: Uuid,
     db: &DbClient,
@@ -46,14 +51,32 @@ pub async fn process_blob(
                 Ok((Some(summary), Some(embedding)))
             }
             Extractable::ScannedPdf(bytes, raw_text) => {
-                let description = describe_scanned_pdf(ai, &bytes, &raw_text).await?;
+                let description = if bytes.len() > MAX_VISION_BYTES {
+                    tracing::info!(
+                        "PDF {} bytes exceeds vision threshold {}; using text fallback",
+                        bytes.len(),
+                        MAX_VISION_BYTES
+                    );
+                    summarize_text(ai, &raw_text).await?
+                } else {
+                    describe_scanned_pdf(ai, &bytes, &raw_text).await?
+                };
                 let embedding = embed_text(ai, &description).await?;
                 Ok((Some(description), Some(embedding)))
             }
             Extractable::ImageBytes(bytes) => {
-                let description = describe_image(ai, &bytes).await?;
-                let embedding = embed_text(ai, &description).await?;
-                Ok((Some(description), Some(embedding)))
+                if bytes.len() > MAX_VISION_BYTES {
+                    tracing::info!(
+                        "image {} bytes exceeds vision threshold {}; skipping AI description",
+                        bytes.len(),
+                        MAX_VISION_BYTES
+                    );
+                    Ok((None, None))
+                } else {
+                    let description = describe_image(ai, &bytes).await?;
+                    let embedding = embed_text(ai, &description).await?;
+                    Ok((Some(description), Some(embedding)))
+                }
             }
             Extractable::Unsupported => Ok((None, None)),
         }
