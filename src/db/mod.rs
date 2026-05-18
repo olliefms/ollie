@@ -149,10 +149,10 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
             let existing = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
             let mut transforms: Vec<(String, String)> = Vec::new();
             if existing.field_with_name("load_number").is_err() {
-                transforms.push(("load_number".into(), "CAST(NULL AS utf8)".into()));
+                transforms.push(("load_number".into(), "CAST(NULL AS string)".into()));
             }
             if existing.field_with_name("previous_trip_id").is_err() {
-                transforms.push(("previous_trip_id".into(), "CAST(NULL AS utf8)".into()));
+                transforms.push(("previous_trip_id".into(), "CAST(NULL AS string)".into()));
             }
             if existing.field_with_name("deadhead_miles").is_err() {
                 transforms.push(("deadhead_miles".into(), "CAST(NULL AS float64)".into()));
@@ -187,7 +187,7 @@ async fn open_or_create_blob(conn: &lancedb::Connection, embed_dim: usize) -> Re
                 transforms.push(("visibility".into(), "'private'".into()));
             }
             if existing.field_with_name("uploaded_by").is_err() {
-                transforms.push(("uploaded_by".into(), "CAST(NULL AS utf8)".into()));
+                transforms.push(("uploaded_by".into(), "CAST(NULL AS string)".into()));
             }
             if !transforms.is_empty() {
                 tracing::info!("migrating blobs table: adding {} column(s)", transforms.len());
