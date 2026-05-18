@@ -36,6 +36,15 @@
   --color-border-strong: #d1d5db;
   --color-border-focus: #1a56db;
 
+  /* Spacing scale — per docs/DESIGN.md */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-8: 48px;
+
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius: 8px;
