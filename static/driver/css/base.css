@@ -45,6 +45,8 @@
   --space-6: 32px;
   --space-8: 48px;
 
+  --bottom-nav-height: calc(64px + env(safe-area-inset-bottom));
+
   --radius-xs: 4px;
   --radius-sm: 6px;
   --radius: 8px;
