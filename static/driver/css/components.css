@@ -948,7 +948,8 @@
 
 /* Documents card (trip detail) */
 .docs-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius); padding: var(--space-4); margin: var(--space-4); }
-.docs-card__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: var(--space-3); }
+.docs-card__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
+.docs-card__upload { flex-shrink: 0; }
 .docs-card__header h2 { font-size: 1.125rem; font-weight: 600; margin: 0; }
 .docs-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .docs-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2); border-radius: var(--radius); cursor: pointer; min-height: 44px; }
@@ -956,6 +957,11 @@
 .docs-row__icon { width: 32px; display: inline-flex; align-items: center; justify-content: center; color: var(--color-text-muted); }
 .docs-row__icon svg { width: 20px; height: 20px; }
 .docs-row__meta { flex: 1; min-width: 0; }
+.docs-row__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .docs-row__time { font-size: 0.75rem; color: var(--color-text-muted); }
 .docs-row__kebab { background: none; border: none; font-size: 1.25rem; padding: var(--space-1) var(--space-2); cursor: pointer; min-height: 44px; min-width: 44px; }
 .docs-empty { color: var(--color-text-muted); font-size: 0.875rem; text-align: center; padding: var(--space-4); }
