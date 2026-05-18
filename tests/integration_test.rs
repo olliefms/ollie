@@ -2498,3 +2498,152 @@ async fn test_driver_unrelated_404_on_other_trip() {
         .await;
     assert_eq!(resp.status_code(), 404);
 }
+
+// ---------------------------------------------------------------------------
+// Helper: create a driver + truck + N delivered trips, one per historical week.
+// Stops have no timezone so the dispatch depart endpoint accepts UTC Z-suffix
+// strings. Returns (driver_token, truck_id, driver_id_str).
+// ---------------------------------------------------------------------------
+async fn setup_driver_with_three_historical_trips(
+    server: &TestServer,
+    state: &AppState,
+) -> String {
+    let driver_id_str = server
+        .post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Multi-Week Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let driver_id: uuid::Uuid = driver_id_str.parse().unwrap();
+
+    let creds = ollie::models::DriverCredentials {
+        driver_id,
+        pin_hash: None,
+        token_version: 1,
+        failed_pin_attempts: 0,
+        locked_until: None,
+        updated_at: chrono::Utc::now(),
+    };
+    state.db.upsert_driver_credentials(&creds).await.unwrap();
+
+    // Deliver 3 trips across 3 distinct calendar weeks (Sunday-aligned, America/New_York).
+    // Week of 2026-05-10: deliver Tuesday 2026-05-12 14:00 UTC (10am ET)
+    // Week of 2026-04-26: deliver Monday 2026-04-27 14:00 UTC (10am ET)
+    // Week of 2026-04-12: deliver Tuesday 2026-04-14 14:00 UTC (10am ET)
+    let depart_times = [
+        ("2026-05-12T14:00:00Z", "2026-05-12T18:00:00Z"),
+        ("2026-04-27T14:00:00Z", "2026-04-27T18:00:00Z"),
+        ("2026-04-14T14:00:00Z", "2026-04-14T18:00:00Z"),
+    ];
+
+    for (i, (pickup_depart, delivery_depart)) in depart_times.iter().enumerate() {
+        // Each trip uses its own truck so truck status doesn't block subsequent dispatches.
+        let truck_id = server
+            .post("/api/v1/trucks")
+            .add_header(header::AUTHORIZATION, "Bearer test-secret")
+            .json(&serde_json::json!({ "unit_number": format!("T-MULTI-{i:03}") }))
+            .await
+            .json::<serde_json::Value>()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let trip_id = server
+            .post("/api/v1/trips")
+            .add_header(header::AUTHORIZATION, "Bearer test-secret")
+            .json(&serde_json::json!({
+                "stops": [
+                    { "sequence": 0, "stop_type": "pickup", "name": format!("Origin-{i}") },
+                    { "sequence": 1, "stop_type": "delivery", "name": format!("Dest-{i}") }
+                ]
+            }))
+            .await
+            .json::<serde_json::Value>()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let assign = server
+            .post(&format!("/api/v1/trips/{trip_id}/assign"))
+            .add_header(header::AUTHORIZATION, "Bearer test-secret")
+            .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
+            .await;
+        assert_eq!(assign.status_code(), 200, "assign trip {i}");
+
+        let dispatch = server
+            .post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+            .add_header(header::AUTHORIZATION, "Bearer test-secret")
+            .await;
+        assert_eq!(dispatch.status_code(), 200, "dispatch trip {i}");
+
+        let r = server
+            .post(&format!("/api/v1/trips/{trip_id}/stops/0/depart"))
+            .add_header(header::AUTHORIZATION, "Bearer test-secret")
+            .json(&serde_json::json!({ "actual_depart": pickup_depart }))
+            .await;
+        assert_eq!(r.status_code(), 200, "depart pickup trip {i}");
+
+        let r = server
+            .post(&format!("/api/v1/trips/{trip_id}/stops/1/depart"))
+            .add_header(header::AUTHORIZATION, "Bearer test-secret")
+            .json(&serde_json::json!({ "actual_depart": delivery_depart }))
+            .await;
+        assert_eq!(r.status_code(), 200, "depart delivery trip {i}");
+
+        // Reset driver to Available so the next trip can be dispatched (on_trip_delivered
+        // only logs an event; on_trip_completed resets statuses, but it's not called
+        // automatically on the standalone-trip flow tested here).
+        state
+            .db
+            .update_driver_status(driver_id, ollie::models::DriverStatus::Available)
+            .await
+            .unwrap();
+    }
+
+    let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
+    ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap()
+}
+
+#[tokio::test]
+async fn test_past_trips_paginates_beyond_last_week() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let driver_token = setup_driver_with_three_historical_trips(&server, &state).await;
+
+    // Query "this week" (2026-05-17) — all 3 trips are in the past, so has_prev must be true
+    // and earliest_week_start must reflect the oldest trip (week of 2026-04-12).
+    let resp = server
+        .get("/driver/api/v1/trips?tab=past&week_start=2026-05-17")
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = serde_json::from_slice(resp.as_bytes()).unwrap();
+    assert_eq!(body["week"]["has_prev"], true, "week 2026-05-17: has_prev should be true");
+    assert_eq!(
+        body["week"]["earliest_week_start"],
+        "2026-04-12",
+        "week 2026-05-17: earliest_week_start should be 2026-04-12"
+    );
+
+    // Query the middle week (2026-04-26) — the 5-weeks-ago trip still exists, has_prev = true.
+    let resp = server
+        .get("/driver/api/v1/trips?tab=past&week_start=2026-04-26")
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = serde_json::from_slice(resp.as_bytes()).unwrap();
+    assert_eq!(body["week"]["has_prev"], true, "week 2026-04-26: has_prev should be true");
+
+    // Query the oldest week (2026-04-12) — no older trips, has_prev = false, items.len() == 1.
+    let resp = server
+        .get("/driver/api/v1/trips?tab=past&week_start=2026-04-12")
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = serde_json::from_slice(resp.as_bytes()).unwrap();
+    assert_eq!(body["week"]["has_prev"], false, "week 2026-04-12: has_prev should be false");
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "week 2026-04-12: should have exactly 1 trip");
+}
