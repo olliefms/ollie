@@ -2647,3 +2647,24 @@ async fn test_past_trips_paginates_beyond_last_week() {
     let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 1, "week 2026-04-12: should have exactly 1 trip");
 }
+
+#[tokio::test]
+async fn test_version_endpoint_returns_cargo_version() {
+    let (server, _db_dir, _blob_dir, _rx) = test_server().await;
+
+    let resp = server.get("/version").await;
+    resp.assert_status_ok();
+
+    let body: serde_json::Value = resp.json();
+    let version = body["version"].as_str().expect("version field missing");
+
+    assert_eq!(version, env!("CARGO_PKG_VERSION"));
+}
+
+#[tokio::test]
+async fn test_version_endpoint_is_unauthenticated() {
+    let (server, _db_dir, _blob_dir, _rx) = test_server().await;
+
+    let resp = server.get("/version").await;
+    resp.assert_status_ok();
+}
