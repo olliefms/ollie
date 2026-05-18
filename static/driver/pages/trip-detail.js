@@ -55,7 +55,12 @@ export async function renderTripDetail(container, tripId) {
     const statusBadge = document.createElement('div');
     statusBadge.className = `badge badge--${data.status}`;
     statusBadge.textContent = formatStatus(data.status);
-    appBar.appendChild(statusBadge);
+    const rightSlot = appBar.querySelector('.app-bar__right');
+    if (rightSlot) {
+      rightSlot.insertBefore(statusBadge, rightSlot.firstChild);
+    } else {
+      appBar.appendChild(statusBadge);
+    }
 
     const equipmentSection = document.createElement('div');
     equipmentSection.className = 'trip-detail-section';
