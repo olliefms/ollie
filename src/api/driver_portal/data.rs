@@ -152,13 +152,20 @@ pub enum TripTab {
 }
 
 pub fn classify_trip(trip: &TripListItem) -> TripTab {
+    use crate::models::load::parse_stop_time;
     match &trip.status {
         TripStatus::Delivered | TripStatus::Completed | TripStatus::Cancelled => TripTab::Past,
         TripStatus::Dispatched | TripStatus::InTransit => TripTab::Current,
         TripStatus::Assigned => {
-            let first_arrive = trip.stops.first().and_then(|s| s.scheduled_arrive.as_deref());
-            match first_arrive.and_then(|s| s.parse::<chrono::DateTime<chrono::Utc>>().ok()) {
+            let first_stop = trip.stops.first();
+            let parsed = first_stop.and_then(|s| {
+                s.scheduled_arrive
+                    .as_deref()
+                    .and_then(|sa| parse_stop_time(sa, s.timezone.as_deref()))
+            });
+            match parsed {
                 Some(dt) if dt <= chrono::Utc::now() => TripTab::Current,
+                // Safe default per AGENTS.md: pre-departure trips go to Upcoming.
                 _ => TripTab::Upcoming,
             }
         }
@@ -807,6 +814,23 @@ mod tests {
     fn test_classify_assigned_unparseable_schedule_is_upcoming() {
         let trip = make_trip(TripStatus::Assigned, vec![stop_with_arrive(Some("not-a-date".into()))]);
         assert!(matches!(classify_trip(&trip), TripTab::Upcoming));
+    }
+
+    #[test]
+    fn test_classify_assigned_naive_tz_past_scheduled_is_current() {
+        // Canonical naive-tz format: scheduled_arrive has no Z/offset, timezone is set.
+        // Without parse_stop_time, the RFC3339-only parser failed and this fell through
+        // to Upcoming. With parse_stop_time it correctly classifies as Current.
+        let tz: chrono_tz::Tz = "America/New_York".parse().unwrap();
+        let past_naive = (Utc::now() - Duration::hours(1))
+            .with_timezone(&tz)
+            .naive_local()
+            .format("%Y-%m-%dT%H:%M:%S")
+            .to_string();
+        let mut stop = stop_with_arrive(Some(past_naive));
+        stop.timezone = Some("America/New_York".into());
+        let trip = make_trip(TripStatus::Assigned, vec![stop]);
+        assert!(matches!(classify_trip(&trip), TripTab::Current));
     }
 
     #[test]
