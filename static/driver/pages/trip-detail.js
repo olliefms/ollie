@@ -12,6 +12,9 @@ export async function renderTripDetail(container, tripId) {
     return;
   }
 
+  const renderToken = Symbol('trip-detail-render');
+  container.__renderToken = renderToken;
+
   container.replaceChildren();
 
   let currentDriverId = null;
@@ -19,6 +22,8 @@ export async function renderTripDetail(container, tripId) {
     const me = await apiFetch('/me');
     currentDriverId = me.id;
   } catch (_) { /* ignore */ }
+
+  if (container.__renderToken !== renderToken) return;
 
   const page = document.createElement('div');
   page.className = 'trip-detail-page';
@@ -46,6 +51,7 @@ export async function renderTripDetail(container, tripId) {
 
   try {
     const data = await apiFetch(`/trips/${tripId}`);
+    if (container.__renderToken !== renderToken) return;
 
     loadingEl.remove();
 
@@ -290,6 +296,7 @@ export async function renderTripDetail(container, tripId) {
     }
 
     await refreshDocs();
+    if (container.__renderToken !== renderToken) return;
     page.appendChild(docsSection);
   } catch (err) {
     if (err.status === 401) {
