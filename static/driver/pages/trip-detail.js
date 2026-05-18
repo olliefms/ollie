@@ -222,14 +222,15 @@ export async function renderTripDetail(container, tripId) {
       const meta = document.createElement('div');
       meta.className = 'docs-row__meta';
       const title = document.createElement('div');
+      title.className = 'docs-row__title';
       const doctypeTag = (doc.tags || []).find(t => t.startsWith('doctype:'));
       const dtypeLabel = doctypeTag ? doctypeTag.split(':')[1].toUpperCase() : '';
-      title.textContent = dtypeLabel ? `${dtypeLabel} — ${doc.name}` : doc.name;
-      const time = document.createElement('div');
-      time.className = 'docs-row__time';
-      time.textContent = new Date(doc.created_at).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const captured = new Date(doc.created_at).toLocaleString('en-US', {
+        month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      });
+      title.textContent = dtypeLabel ? `${dtypeLabel} — ${captured}` : doc.name;
+      title.title = doc.name;
       meta.appendChild(title);
-      meta.appendChild(time);
       row.appendChild(iconWrap);
       row.appendChild(meta);
       row.addEventListener('click', () => openDocPreview(doc));
