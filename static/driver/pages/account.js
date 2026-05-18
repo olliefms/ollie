@@ -114,6 +114,12 @@ export async function renderAccount(container) {
 
         pkOptions.challenge = base64urlToBuffer(pkOptions.challenge);
         pkOptions.user.id = base64urlToBuffer(pkOptions.user.id);
+        if (pkOptions.excludeCredentials) {
+          pkOptions.excludeCredentials = pkOptions.excludeCredentials.map(c => ({
+            ...c,
+            id: base64urlToBuffer(c.id),
+          }));
+        }
 
         const credential = await navigator.credentials.create({ publicKey: pkOptions });
 
