@@ -254,21 +254,60 @@ export async function renderTripDetail(container, tripId) {
       return row;
     }
 
-    function openDocPreview(doc) {
+    async function openDocPreview(doc) {
       const overlay = document.createElement('div');
       overlay.className = 'doc-preview';
-      const frame = document.createElement('iframe');
-      frame.sandbox = '';
-      frame.src = `/driver/api/v1/trips/${tripId}/documents/${doc.id}/content`;
+
       const close = document.createElement('button');
       close.type = 'button';
       close.className = 'doc-preview__close';
       close.textContent = '×';
       close.setAttribute('aria-label', 'Close preview');
-      close.addEventListener('click', () => document.body.removeChild(overlay));
+
+      let blobUrl = null;
+      const teardown = () => {
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
+        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+      };
+      close.addEventListener('click', teardown);
+
+      const spinner = document.createElement('div');
+      spinner.className = 'doc-preview__spinner';
+
       overlay.appendChild(close);
-      overlay.appendChild(frame);
+      overlay.appendChild(spinner);
       document.body.appendChild(overlay);
+
+      try {
+        const r = await fetch(
+          `/driver/api/v1/trips/${tripId}/documents/${doc.id}/content`,
+          { headers: { 'Authorization': `Bearer ${getToken()}` } }
+        );
+        if (!r.ok) throw new Error(`Preview failed (${r.status})`);
+        const blob = await r.blob();
+        blobUrl = URL.createObjectURL(blob);
+
+        spinner.remove();
+
+        if (doc.mime_type === 'application/pdf') {
+          const frame = document.createElement('iframe');
+          frame.sandbox = '';
+          frame.src = blobUrl;
+          overlay.appendChild(frame);
+        } else {
+          const img = document.createElement('img');
+          img.className = 'doc-preview__img';
+          img.alt = doc.name;
+          img.src = blobUrl;
+          overlay.appendChild(img);
+        }
+      } catch (err) {
+        spinner.remove();
+        const errEl = document.createElement('div');
+        errEl.className = 'doc-preview__error';
+        errEl.textContent = err.message || 'Failed to load document';
+        overlay.appendChild(errEl);
+      }
     }
 
     function openDoctypeSheet(onPick) {
