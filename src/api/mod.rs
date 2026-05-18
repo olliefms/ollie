@@ -2,6 +2,7 @@
 pub mod auth;
 pub mod blob;
 pub mod utils;
+pub mod version;
 pub mod blobs;
 pub mod dispatchers;
 pub mod dispatcher_portal;
@@ -116,6 +117,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         driver_portal::documents::list_documents,
         driver_portal::documents::get_document_content,
         driver_portal::documents::delete_document,
+        version::get_version,
     ),
     components(
         schemas(
@@ -199,6 +201,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             dispatcher_portal::auth::LoginRequest,
             dispatcher_portal::auth::LoginResponse,
             dispatcher_portal::auth::LockResponse,
+            version::VersionResponse,
         )
     ),
     modifiers(&SecurityAddon),
@@ -206,9 +209,10 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         title = "ollie API",
         version = "1.0.0",
         description = "RAG-enabled blob store and freight load management API. \
-            All endpoints require Bearer auth except /openapi.json and /llms.txt."
+            All endpoints require Bearer auth except /openapi.json, /llms.txt, and /version."
     ),
     tags(
+        (name = "meta", description = "Server metadata endpoints (unauthenticated)"),
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
         (name = "dispatch", description = "Dispatcher portal data API — loads, trips, drivers, trucks, trailers, events"),
         (name = "dispatch-auth", description = "Dispatcher portal authentication — login and JWT refresh"),
@@ -247,7 +251,10 @@ ollie is a REST API for freight load management with RAG-enabled document blob s
 
 ## Authentication
 
-All endpoints except /openapi.json and /llms.txt require:
+Public/unauthenticated endpoints:
+  GET /version — Returns {"version":"x.y.z"} matching the server build (no auth).
+
+All other endpoints except /openapi.json and /llms.txt require:
   Authorization: Bearer <ADMIN_API_KEY>
 
 Missing or incorrect key returns 401 Unauthorized.
@@ -565,6 +572,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
+        .route("/version", get(version::get_version))
         .merge(protected)
         .merge(dispatcher_auth)
         .merge(driver_portal)
