@@ -3,8 +3,7 @@ import { apiFetch } from '../utils/api.js';
 import { renderAppBar } from '../components/app-bar.js';
 import { renderBottomNav } from '../components/bottom-nav.js';
 import { navigate } from '../app.js';
-
-const APP_VERSION = 'v1.13.0';
+import { getAppVersion } from '../utils/version.js';
 
 function base64urlToBuffer(base64url) {
   const base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
@@ -169,7 +168,8 @@ export async function renderAccount(container) {
   versionLabel.textContent = 'Version';
   const versionValue = document.createElement('span');
   versionValue.className = 'account-row__value';
-  versionValue.textContent = APP_VERSION;
+  versionValue.textContent = '…';
+  getAppVersion().then(v => { versionValue.textContent = v; });
   versionRow.appendChild(versionLabel);
   versionRow.appendChild(versionValue);
   settingsList.appendChild(versionRow);
