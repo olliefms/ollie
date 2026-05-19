@@ -250,76 +250,40 @@ After any change: run `cargo test`, `cargo clippy`, `cargo build` before committ
 
 UI changes to `static/driver/` or `static/dispatch/` must be consistent with the design system defined in [`docs/DESIGN.md`](docs/DESIGN.md). Reuse the existing CSS tokens in `static/driver/css/base.css`; add a new token there (and document it in `DESIGN.md`) rather than inlining hex values or one-off styles.
 
+## Shippability Bar
+
+"Done" means **all** of:
+- No correctness, security, or data-loss bugs
+- Critical paths covered by tests
+- No broken contracts (API, schema, public types)
+
+Style, taste, micro-optimizations, and refactor opportunities are **not** shippability blockers. They get noted in the PR description under `## Notes` if worth mentioning, then discarded. They do **not** become GitHub issues unless the user explicitly files one. The backlog is not a landfill for robot homework.
+
+## Triage Rules
+
+Every review finding (self-review or Opus subagent) is classified:
+
+- **blocker** — violates the Shippability Bar. Must fix before merge.
+- **significant** — meaningful issue that affects maintainability or correctness in edge cases. Fix in-PR if < 30 min; otherwise stop and discuss with the user. Never defer with a "tracked elsewhere" handwave.
+- **nit** — style, taste, micro-opt, refactor opportunity. Note in PR `## Notes` if a pattern, otherwise discard. Never file as an issue.
+
+**Hard cap: 2 Opus review iterations.** If iteration 2 still finds blockers, stop and escalate to the user. Looping further is a sign the change needs human eyes.
+
 ## Release Workflow
 
-Releases use a **3-session model** with the PM as a checkpoint between planning and release. This keeps a human in the loop at the two highest-risk moments (scope lock and merge/tag) while letting the orchestrator run autonomously in between.
+Trunk-based. Three skills cover the workflow:
+
+- **`/work-issue <N>`** — default unit of work. One issue → branch off main → PR back to main → self-merge if Shippability Bar is met.
+- **`/sprint-plan`** — exception, for cross-cutting work that must land atomically. Plans + executes on a feature branch, one PR to main.
+- **`/cut-release`** — when main has accumulated enough work to ship. Bumps version, tags, generates release notes. No release branch involved.
 
 ### Version increment
 - **Patch (x.y.Z):** bug fixes only, no new API surface or features
 - **Minor (x.Y.0):** any new feature, endpoint, or UI capability
 
----
-
-### Session 1 — PM: Triage & Plan
-
-1. **Backlog review:** `gh issue list --state open --limit 50 --json number,title,labels,body`. Group by theme, note effort/risk/dependencies, present prioritised shortlist to PM. Wait for scope confirmation before proceeding.
-2. **Plan:** use `superpowers:writing-plans` skill. Save to `docs/superpowers/plans/YYYY-MM-DD-vX.Y.Z.md`.
-3. **Opus plan review:** spawn Opus as a subagent to verify file paths, method signatures, error variants, and completeness. Fix BLOCK findings inline; re-run before proceeding. File non-blocking out-of-scope findings as GitHub issues ("tracked in #N").
-4. **Create release branch:**
-   ```bash
-   git checkout main && git pull
-   git checkout -b vX.Y.Z && git push -u origin vX.Y.Z
-   ```
-5. Commit the plan doc to the branch.
-6. **Hand off to orchestrator** — output the orchestrator briefing prompt (see template below).
-
----
-
-### Session 2 — Orchestrator: Implement & Review
-
-1. Read `AGENTS.md` and the plan doc in full before spawning any subagents.
-2. **Implement:** use `superpowers:subagent-driven-development` skill, task by task. After every subagent: `git diff --stat HEAD` (commit manually if skipped) and `cargo test && cargo clippy -- -D warnings`. Never proceed with a red build.
-3. **Opus code review:** spawn Opus as a subagent to review key changed files. Brief: "Report PASS or BLOCK with specific file:line." Apply triage rules below. Do not open the PR until PASS.
-4. **AGENTS.md lessons:** add 2–4 concise lessons (rule + why + how to apply). Commit to the release branch.
-5. **Open PR:** `gh pr create --base main --head vX.Y.Z --title "..." --body "..."`. List any GitHub issues filed for non-blocking Opus findings in the PR body as "tracked in #N".
-6. **Hand back to PM** — output the PM release prompt (see template below).
-
----
-
-### Session 3 — PM: Verify & Release
-
-1. Review the open PR.
-2. **Verify build:** confirm `cargo test && cargo clippy -- -D warnings` are green on the branch.
-3. **Close in-scope issues:** for each, leave a verification comment then `gh issue close N --reason completed`.
-4. **Merge to main (ff-only):**
-   ```bash
-   git log --oneline main..vX.Y.Z          # must show commits
-   git checkout main && git merge --ff-only vX.Y.Z && git push origin main
-   git log --oneline -1 main && git log --oneline -1 vX.Y.Z   # must match
-   ```
-5. **Tag** (refs/tags/ prefix avoids branch/tag ambiguity):
-   ```bash
-   git tag vX.Y.Z && git push origin refs/tags/vX.Y.Z
-   ```
-6. **GitHub release:**
-   ```bash
-   gh release create vX.Y.Z --title "vX.Y.Z — <headline>" --target main --notes "..."
-   ```
-   Notes format: group by Bug Fixes / Enhancements / Infrastructure. Reference issue numbers. Include "tracked in #N" for any deferred Opus findings.
-
----
-
-### Opus triage rules (applies to both plan review and code review)
-- **BLOCK:** fix inline, retest, re-run Opus before proceeding
-- **Non-blocking, < 30 min fix:** fix inline
-- **Non-blocking, needs more work:** file a GitHub issue (Opus finding as body); reference in PR/release notes
-- **Non-blocking, out of scope / needs design decision:** file a GitHub issue; do not fix this sprint; note as "tracked in #N"
-
 ### Key rules
-- Parallelism lives **inside** the orchestrator session via subagents — never across sessions owning the same worktree
-- Opus plan review and Opus code review are subagent calls, never separate sessions
-- **Merge to main before tagging.** The tag must point to a commit on main. Tagging the branch tip instead of main leaves main stale and breaks the next release's branch point.
-- **Before starting Session 1:** verify main is current: `git log --oneline -1 main` should match the previous release tag.
+- **Bump version, then tag.** The tag points to the bump commit on main.
+- **Use `refs/tags/vX.Y.Z` when pushing tags** to avoid branch/tag ambiguity.
 - **Subagent commit discipline:** after each subagent completes, run `git diff --stat HEAD` to confirm it committed. If the diff is non-empty, commit manually before proceeding — one subagent silently skipped its commit in v1.3.1.
 - **Close issues with verification comments** — don't leave in-scope issues open after release.
 - **Config::from_env() test flakiness is broader than one test:** any unit test that calls `Config::from_env()` can race when the full lib suite runs in parallel (env var mutation). Not just `test_config_from_env` — facility and other integration tests that call config init are also affected. Ignore intermittent failures in isolation; they pass when run alone.
