@@ -1,0 +1,60 @@
+# .github/workflows/setup-labels.yml
+# One-time (idempotent) workflow to create or update all automation labels.
+# Trigger manually from the Actions tab: Actions → Setup Labels → Run workflow.
+
+name: Setup Labels
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  setup-labels:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create automation labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          create() {
+            gh label create "$1" --color "$2" --description "$3" --repo "$REPO" --force
+          }
+
+          # triage:*
+          create "triage:approved"            "5C6AC4" "Approved for implementation"
+          create "triage:rejected"            "B60205" "Out of scope, won't fix, or not actionable"
+          create "triage:needs-clarification" "E4E669" "Awaiting additional information from the reporter"
+          create "triage:flag-human"          "F9D0C4" "Agent deferred — requires maintainer judgment"
+
+          # kind:*
+          create "kind:simple-bug"     "D73A4A" "Reproducible bug with an isolated fix"
+          create "kind:feature"        "0075CA" "New capability, endpoint, or user-facing behavior"
+          create "kind:breaking-change" "E99695" "Changes API shape, schema, or contracts"
+          create "kind:security"       "B60205" "Security vulnerability or hardening"
+          create "kind:chore"          "C5DEF5" "Dependency update, tooling, cleanup"
+          create "kind:docs"           "C5DEF5" "Documentation only"
+          create "kind:perf"           "BFD4F2" "Performance improvement"
+
+          # trust:*
+          create "trust:maintainer"   "0E8A16" "Repository maintainer — full automation trust"
+          create "trust:trusted"      "2CBE4E" "Known contributor with merged history"
+          create "trust:contributor"  "91CA55" "External contributor with prior interaction"
+          create "trust:new"          "E4E669" "First-time or unrecognized contributor"
+          create "trust:blocked"      "B60205" "Blocked — automation skips entirely"
+
+          # work:* (Phase 2+)
+          create "work:in-progress"      "0075CA" "Agent is actively implementing"
+          create "work:ready-for-review" "6E40C9" "Agent work complete — awaiting human review"
+          create "work:blocked"          "FBCA04" "Work blocked on external input or decision"
+
+          # review:* (Phase 2+)
+          create "review:approved"           "0E8A16" "Reviewer approved — ready to merge"
+          create "review:changes-requested"  "D4C5F9" "Changes required before merge"
+
+          # circuit breaker
+          create "pause:agents" "B60205" "Circuit breaker — all agent automation skips while present"
+
+          echo "All labels created or updated."

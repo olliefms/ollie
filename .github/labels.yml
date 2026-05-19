@@ -1,0 +1,107 @@
+# .github/labels.yml
+# Label definitions for all agent automation label families.
+# This file is the source of truth — run setup-labels workflow to sync to GitHub.
+#
+# Color scheme by family:
+#   triage:*    — indigo
+#   kind:*      — varied by severity
+#   trust:*     — green spectrum
+#   work:*      — blue (Phase 2+)
+#   review:*    — purple (Phase 2+)
+#   pause:*     — red
+
+labels:
+
+  # ── triage:* ─────────────────────────────────────────────────────────────
+  - name: "triage:approved"
+    color: "5C6AC4"
+    description: "Approved for implementation"
+
+  - name: "triage:rejected"
+    color: "B60205"
+    description: "Out of scope, won't fix, or not actionable"
+
+  - name: "triage:needs-clarification"
+    color: "E4E669"
+    description: "Awaiting additional information from the reporter"
+
+  - name: "triage:flag-human"
+    color: "F9D0C4"
+    description: "Agent deferred — requires maintainer judgment"
+
+  # ── kind:* ───────────────────────────────────────────────────────────────
+  - name: "kind:simple-bug"
+    color: "D73A4A"
+    description: "Reproducible bug with an isolated fix"
+
+  - name: "kind:feature"
+    color: "0075CA"
+    description: "New capability, endpoint, or user-facing behavior"
+
+  - name: "kind:breaking-change"
+    color: "E99695"
+    description: "Changes API shape, schema, or contracts"
+
+  - name: "kind:security"
+    color: "B60205"
+    description: "Security vulnerability or hardening"
+
+  - name: "kind:chore"
+    color: "C5DEF5"
+    description: "Dependency update, tooling, cleanup"
+
+  - name: "kind:docs"
+    color: "C5DEF5"
+    description: "Documentation only"
+
+  - name: "kind:perf"
+    color: "BFD4F2"
+    description: "Performance improvement"
+
+  # ── trust:* ──────────────────────────────────────────────────────────────
+  - name: "trust:maintainer"
+    color: "0E8A16"
+    description: "Repository maintainer — full automation trust"
+
+  - name: "trust:trusted"
+    color: "2CBE4E"
+    description: "Known contributor with merged history"
+
+  - name: "trust:contributor"
+    color: "91CA55"
+    description: "External contributor with prior interaction"
+
+  - name: "trust:new"
+    color: "E4E669"
+    description: "First-time or unrecognized contributor"
+
+  - name: "trust:blocked"
+    color: "B60205"
+    description: "Blocked — automation skips entirely"
+
+  # ── work:* (Phase 2+) ────────────────────────────────────────────────────
+  - name: "work:in-progress"
+    color: "0075CA"
+    description: "Agent is actively implementing"
+
+  - name: "work:ready-for-review"
+    color: "6E40C9"
+    description: "Agent work complete — awaiting human review"
+
+  - name: "work:blocked"
+    color: "FBCA04"
+    description: "Work blocked on external input or decision"
+
+  # ── review:* (Phase 2+) ──────────────────────────────────────────────────
+  - name: "review:approved"
+    color: "0E8A16"
+    description: "Reviewer approved — ready to merge"
+
+  - name: "review:changes-requested"
+    color: "D4C5F9"
+    description: "Changes required before merge"
+
+  # ── circuit breaker ───────────────────────────────────────────────────────
+  - name: "pause:agents"
+    color: "B60205"
+    description: "Circuit breaker — all agent automation skips while present"
