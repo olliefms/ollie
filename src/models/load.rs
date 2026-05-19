@@ -156,7 +156,11 @@ pub(crate) fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>
     match tz {
         Some(tz_str) => {
             let tz: chrono_tz::Tz = tz_str.parse().ok()?;
-            let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok()?;
+            // Legacy data from pre-v1.3.3 stored timestamps as UTC with a trailing `Z`.
+            // Strip it so the naive parse succeeds; the resulting ~hours shift never
+            // crosses a Sunday→Saturday week boundary used for bucketing in Past Trips.
+            let clean = s.strip_suffix('Z').unwrap_or(s);
+            let naive = NaiveDateTime::parse_from_str(clean, "%Y-%m-%dT%H:%M:%S").ok()?;
             tz.from_local_datetime(&naive).single().map(|dt: chrono::DateTime<chrono_tz::Tz>| dt.with_timezone(&Utc))
         }
         None => s.parse::<DateTime<Utc>>().ok(),
@@ -632,5 +636,25 @@ mod tests {
     fn test_detention_eligible_returns_none_for_missing_actuals() {
         let stop = tz_stop("2026-05-10T08:00:00", None, None, None, "America/Chicago");
         assert_eq!(stop.detention_eligible(), None);
+    }
+
+    #[test]
+    fn test_parse_stop_time_legacy_utc_with_timezone() {
+        // Legacy data: timestamp has trailing Z but timezone is also set.
+        // Pre-fix: returned None, causing trips to vanish from Past Trips tab (#208).
+        let got = parse_stop_time("2026-04-27T10:15:00Z", Some("America/Chicago"));
+        assert!(got.is_some(), "legacy Z-suffixed timestamps must parse when tz is Some");
+    }
+
+    #[test]
+    fn test_parse_stop_time_naive_with_timezone_still_works() {
+        let got = parse_stop_time("2026-05-10T08:00:00", Some("America/Chicago"));
+        assert!(got.is_some());
+    }
+
+    #[test]
+    fn test_parse_stop_time_utc_string_without_timezone() {
+        let got = parse_stop_time("2026-04-27T10:15:00Z", None);
+        assert!(got.is_some());
     }
 }
