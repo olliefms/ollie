@@ -1,0 +1,103 @@
+# .github/workflows/setup-project.yml
+# Creates and configures the Ollie automation GitHub Project.
+#
+# REQUIREMENTS before running:
+#   1. Create a PAT with scopes: project, repo (read)
+#   2. Add it as repo secret: GH_PROJECT_TOKEN
+#      (Settings → Secrets and variables → Actions → New repository secret)
+#
+# WHAT THIS DOES:
+#   - Creates the "Ollie" project under the ergofobe account (idempotent)
+#   - Links the ollie repo to the project
+#   - Creates custom fields: Stage, Class, Confidence
+#
+# WHAT STILL NEEDS THE BROWSER (~2 min):
+#   - Add a Board view grouped by Stage  (for Kanban)
+#   - Add a Table view with Stage/Class/Confidence columns
+#   - (Optional) Add a Insights chart view
+
+name: Setup Project
+
+on:
+  workflow_dispatch:
+
+jobs:
+  setup-project:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create project and configure fields
+        env:
+          GH_TOKEN: ${{ secrets.GH_PROJECT_TOKEN }}
+          OWNER: ergofobe
+          REPO: ergofobe/ollie
+          PROJECT_TITLE: Ollie
+        run: |
+          # ── Check if project already exists ──────────────────────────────────
+          EXISTING=$(gh project list --owner "$OWNER" --format json \
+            | jq -r --arg title "$PROJECT_TITLE" \
+              '.projects[] | select(.title == $title) | .number' 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ]; then
+            echo "Project '$PROJECT_TITLE' already exists as #$EXISTING — skipping creation."
+            PROJECT_NUMBER="$EXISTING"
+          else
+            # ── Create project ──────────────────────────────────────────────────
+            echo "Creating project '$PROJECT_TITLE'..."
+            PROJECT_NUMBER=$(gh project create \
+              --owner "$OWNER" \
+              --title "$PROJECT_TITLE" \
+              --format json | jq -r '.number')
+            echo "Created project #$PROJECT_NUMBER."
+          fi
+
+          echo "PROJECT_NUMBER=$PROJECT_NUMBER" >> "$GITHUB_ENV"
+
+          # ── Link repo ────────────────────────────────────────────────────────
+          echo "Linking repo $REPO..."
+          gh project link "$PROJECT_NUMBER" --owner "$OWNER" --repo "$REPO" || \
+            echo "(Repo may already be linked — continuing.)"
+
+          # ── Custom fields ────────────────────────────────────────────────────
+          # GitHub auto-creates a "Status" field. We use "Stage" for our
+          # Kanban columns to avoid colliding with the default field.
+
+          echo "Creating Stage field..."
+          gh project field-create "$PROJECT_NUMBER" \
+            --owner "$OWNER" \
+            --name "Stage" \
+            --data-type "SINGLE_SELECT" \
+            --single-select-options "Triage Queue,Approved,In Work,PR Open,Merged,Released" \
+            || echo "(Stage field may already exist — continuing.)"
+
+          echo "Creating Class field..."
+          gh project field-create "$PROJECT_NUMBER" \
+            --owner "$OWNER" \
+            --name "Class" \
+            --data-type "SINGLE_SELECT" \
+            --single-select-options "simple-bug,feature,breaking-change,security,chore,docs,perf" \
+            || echo "(Class field may already exist — continuing.)"
+
+          echo "Creating Confidence field..."
+          gh project field-create "$PROJECT_NUMBER" \
+            --owner "$OWNER" \
+            --name "Confidence" \
+            --data-type "SINGLE_SELECT" \
+            --single-select-options "high,medium,low" \
+            || echo "(Confidence field may already exist — continuing.)"
+
+          # ── Summary ──────────────────────────────────────────────────────────
+          PROJECT_URL=$(gh project view "$PROJECT_NUMBER" \
+            --owner "$OWNER" --format json | jq -r '.url')
+
+          echo ""
+          echo "=========================================="
+          echo "Project ready: $PROJECT_URL"
+          echo "=========================================="
+          echo ""
+          echo "Remaining manual steps (browser, ~2 min):"
+          echo "  1. Open the project URL above"
+          echo "  2. Click '+ New view' → choose 'Board' layout → group by 'Stage'"
+          echo "     Label the view: Kanban"
+          echo "  3. Click '+ New view' → choose 'Table' layout"
+          echo "     Label the view: Backlog"
+          echo "     Add columns: Stage, Class, Confidence"
