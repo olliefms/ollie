@@ -949,7 +949,7 @@
 /* Documents card (trip detail) */
 .docs-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius); padding: var(--space-4); margin: var(--space-4); }
 .docs-card__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-3); }
-.docs-card__upload { flex-shrink: 0; }
+.docs-card__upload { width: auto; flex-shrink: 0; }
 .docs-card__header h2 { font-size: 1.125rem; font-weight: 600; margin: 0; }
 .docs-list { display: flex; flex-direction: column; gap: var(--space-2); }
 .docs-row { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2); border-radius: var(--radius); cursor: pointer; min-height: 44px; }
