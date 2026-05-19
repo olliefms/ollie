@@ -39,7 +39,7 @@ Adapted from the Agent-Driven Development Lifecycle (ADLC) discourse, with consu
 
 1. **Bottleneck inversion.** Optimize for reviewer cost and governance overhead, not writer cost. Cheap to generate, expensive to verify.
 2. **Observe is continuous, not terminal.** Don't try to gate everything at PR time. Use post-merge signals (revert rate, follow-up issues, production behavior) as the truth signal.
-3. **Intent + guardrails replace step approval.** Shippability bar is defined once in `CLAUDE.md` and applies to every session, not negotiated per-PR.
+3. **Intent + guardrails replace step approval.** Shippability bar is defined once in `AGENTS.md` and applies to every session, not negotiated per-PR.
 4. **Prompts and skills are infrastructure.** Versioned, tested, treated with the same rigor as production code.
 5. **GitHub is the substrate.** No external services. State, audit trail, and dashboard all use GitHub primitives.
 
@@ -162,9 +162,9 @@ The weekly metrics workflow aggregates `AGENT_META` blocks from comments and wri
 
 ---
 
-## 10. Shippability Bar (in CLAUDE.md)
+## 10. Shippability Bar (in AGENTS.md)
 
-The standard for "done" is defined once in the repo's `CLAUDE.md` and applies to all sessions, agent-driven or interactive:
+The standard for "done" is defined once in the repo's `AGENTS.md` and applies to all sessions, agent-driven or interactive:
 
 - **Blockers** (must fix before merge): correctness, security, data-loss, broken contracts, missing tests on critical paths.
 - **Significants** (fix this PR if reasonable, otherwise file follow-up): real bugs in non-critical paths, missing tests on non-critical paths, regressions in covered behavior.
@@ -180,7 +180,7 @@ The standard for "done" is defined once in the repo's `CLAUDE.md` and applies to
 
 The architecture is enabled incrementally. Each phase validates the prior before unlocking the next.
 
-**Phase 1: Triage-only.** Triage workflow runs on every new issue, classifies, posts decision comment, applies labels. No auto-work, no auto-merge. Human (operator) still drives implementation. Goal: validate triage accuracy, calibrate trust tiers, tune the shippability bar in `CLAUDE.md`.
+**Phase 1: Triage-only.** Triage workflow runs on every new issue, classifies, posts decision comment, applies labels. No auto-work, no auto-merge. Human (operator) still drives implementation. Goal: validate triage accuracy, calibrate trust tiers, tune the shippability bar in `AGENTS.md`.
 
 **Exit criteria:** ~30 days or ~50 issues triaged with acceptable false-approval and false-rejection rates.
 
@@ -212,7 +212,7 @@ The architecture is enabled incrementally. Each phase validates the prior before
 4. **Project board fields and views** — concrete configuration.
 5. **Workflow YAML** — three files plus optional metrics.
 6. **Routine prompts** — the per-workflow prompt text, written for self-contained autonomous execution.
-7. **CLAUDE.md updates** — the shippability bar content, integrated with any existing CLAUDE.md.
+7. **AGENTS.md updates** — the shippability bar content, integrated with any existing AGENTS.md.
 8. **GitHub App identity** — one-time setup for the bot account.
 
 These are the deliverables of the next implementation session.
@@ -226,11 +226,11 @@ This architecture is designed to be reused across SMB fractional CTO engagements
 - **Execution layer:** Identical GHA workflows, with `anthropic_api_key` replacing `claude_code_oauth_token`. Client pays for and owns their inference billing.
 - **Identity:** A new GitHub App is provisioned within the client's GitHub org, named for their context. All agent actions appear under the client's bot identity, not the operator's.
 - **Trust list:** Initialized with the client's maintainers; tier definitions ported as-is.
-- **CLAUDE.md:** Shippability principles port verbatim; project-specific specifics layered on top.
+- **AGENTS.md:** Shippability principles port verbatim; project-specific specifics layered on top.
 - **Project board:** Template structure ported; populated with client's labels and milestones.
 - **Operator role:** Configuration, calibration, periodic audit of metrics, evolution of the shippability bar. The operator does not run the client's automation; the client's infrastructure does.
 
-The repeatable artifacts are this design document, the workflow YAML templates, the `CLAUDE.md` template, the trust-list schema, and the Project board template. These constitute the fractional CTO playbook.
+The repeatable artifacts are this design document, the workflow YAML templates, the `AGENTS.md` template, the trust-list schema, and the Project board template. These constitute the fractional CTO playbook.
 
 ---
 
