@@ -1,44 +1,173 @@
-name: Claude Code Review
+# .github/workflows/claude-code-review.yml
+# Agent PR review — shadow mode (comments and labels only, never merges).
+# Fires on every PR open/update. Applies the Ollie shippability bar from
+# AGENTS.md and posts a structured review comment with AGENT_META block.
+
+name: Agent Review
 
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+
+concurrency:
+  group: review-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true  # newer push supersedes in-flight review
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
-      issues: read
-      id-token: write
 
     steps:
-      - name: Checkout repository
+      # ── 1. Circuit breaker ──────────────────────────────────────────────────
+      - name: Check for pause:agents circuit breaker
+        id: circuit_breaker
+        env:
+          LABELS: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          PAUSED=$(echo "$LABELS" | jq -r '[.[].name] | contains(["pause:agents"])')
+          echo "paused=$PAUSED" >> "$GITHUB_OUTPUT"
+          if [ "$PAUSED" = "true" ]; then
+            echo "Circuit breaker active — skipping review."
+          fi
+
+      # ── 2. Checkout (full — agent needs to read AGENTS.md and diff) ─────────
+      - name: Checkout
+        if: steps.circuit_breaker.outputs.paused != 'true'
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
-      - name: Run Claude Code Review
-        id: claude-review
+      # ── 3. Resolve trust tier ───────────────────────────────────────────────
+      - name: Resolve trust tier
+        if: steps.circuit_breaker.outputs.paused != 'true'
+        id: trust
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          YQ_VERSION="v4.44.1"
+          wget -qO /usr/local/bin/yq \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+
+          TIER="new"
+          for candidate in maintainer trusted contributor blocked; do
+            USERS=$(yq e ".${candidate}.users[]" .github/trust-list.yml 2>/dev/null || true)
+            if echo "$USERS" | grep -qx "$AUTHOR"; then
+              TIER="$candidate"
+              break
+            fi
+          done
+
+          echo "tier=$TIER" >> "$GITHUB_OUTPUT"
+          echo "Resolved '$AUTHOR' → $TIER"
+
+      # ── 4. Run review agent ─────────────────────────────────────────────────
+      - name: Run review agent
+        if: |
+          steps.circuit_breaker.outputs.paused != 'true' &&
+          steps.trust.outputs.tier != 'blocked'
         uses: anthropics/claude-code-action@v1
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          TRUST_TIER: ${{ steps.trust.outputs.tier }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          prompt: |
+            You are the Ollie review agent. Your identifier is: `🤖 [agent:review]`
 
+            ## Your Task
+
+            Review the pull request described below against the Ollie shippability
+            bar. You will:
+            1. Read AGENTS.md for the full technical shippability bar and codebase rules
+            2. Review the PR diff for blockers, significants, and nits
+            3. Post a structured review comment
+            4. Apply exactly one `review:*` label based on your findings
+
+            You will NOT merge the PR, approve it formally, or request changes via
+            the GitHub review system. Post one comment and apply one label only.
+
+            ## Injected Context
+
+            - PR number: ${{ github.event.pull_request.number }}
+            - PR author: ${{ github.event.pull_request.user.login }}
+            - Author trust tier: ${{ steps.trust.outputs.tier }}
+            - PR title: ${{ github.event.pull_request.title }}
+
+            ## Shippability Bar (authoritative version is in AGENTS.md — read it first)
+
+            **Blockers** — must fix before merge:
+            - Correctness bug: wrong output, wrong status code, wrong DB state
+            - Security bug: auth bypass, injection, data leakage, unvalidated input
+            - Data-loss risk: non-atomic mutation, missing upsert, delete without guard
+            - Broken contract: API shape change without migration, public type removed
+
+            **Significants** — flag but do not block:
+            - Real bugs in non-critical paths
+            - Missing test coverage on non-critical paths
+            - Edge-case correctness issues (DST, off-by-one, etc.)
+
+            **Nits** — note in comment only, never block, never file as issues:
+            - Style, taste, micro-optimisations
+            - Refactor opportunities unrelated to the change
+
+            **Loop termination:** This is the review agent. If you find blockers,
+            say so clearly. The human decides whether to fix or override. Do not
+            re-review unless a new commit is pushed (the workflow handles that).
+
+            **No robot homework:** Do not create follow-up issues. Do not add TODO
+            comments. Note nits inline in the comment only.
+
+            ## Review Labels
+
+            Apply exactly one:
+            - `review:approved` — no blockers, significants are minor or absent
+            - `review:changes-requested` — one or more blockers found
+
+            ## Comment Format
+
+            Post exactly one comment:
+
+            ```
+            🤖 [agent:review]
+
+            [1–3 sentence summary of the overall assessment.]
+
+            ### Blockers
+            [List each blocker with file:line reference. "None." if clean.]
+
+            ### Significants
+            [List each significant. "None." if clean.]
+
+            ### Nits
+            [List nits briefly. "None." if clean.]
+
+            <!-- AGENT_META {"v":1,"agent":"review","ts":"UTC_NOW","trust_tier":"TIER","decision":"approved|changes-requested","blocker_count":N,"significant_count":N,"iteration":1} -->
+            ```
+
+            Rules:
+            - No hedging. No em-dashes. Direct.
+            - For `maintainer` tier: skip nits entirely unless they're systematic.
+            - File:line references are required for every blocker and significant.
+            - Keep the JSON compact in the AGENT_META block.
+
+            ## Steps
+
+            1. Run: `gh pr diff ${{ github.event.pull_request.number }} --repo ergofobe/ollie`
+               to get the diff.
+            2. Read AGENTS.md for codebase-specific rules (version constraints,
+               DB patterns, test patterns, OpenAPI requirements, etc.).
+            3. Review the diff against the shippability bar.
+            4. Post the comment.
+            5. Apply the label:
+               `gh pr edit ${{ github.event.pull_request.number }} --add-label "review:DECISION" --repo ergofobe/ollie`
+
+            Now perform the review.
