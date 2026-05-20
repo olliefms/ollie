@@ -4,7 +4,7 @@ import { formatStopType, formatWeight, formatStatus, formatStopTime } from '../u
 import { navigate } from '../app.js';
 import { renderAppBar } from '../components/app-bar.js';
 import { renderBottomNav } from '../components/bottom-nav.js';
-import { pdfIcon, photoIcon } from '../components/icons.js';
+import { pdfIcon, photoIcon, trashIcon } from '../components/icons.js';
 
 export async function renderTripDetail(container, tripId) {
   if (!isAuthenticated()) {
@@ -235,12 +235,12 @@ export async function renderTripDetail(container, tripId) {
       row.appendChild(meta);
       row.addEventListener('click', () => openDocPreview(doc));
       if (doc.uploaded_by === currentDriverId) {
-        const kebab = document.createElement('button');
-        kebab.type = 'button';
-        kebab.className = 'docs-row__kebab';
-        kebab.textContent = '⋯';
-        kebab.setAttribute('aria-label', 'Delete document');
-        kebab.addEventListener('click', async e => {
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'docs-row__delete';
+        del.appendChild(trashIcon());
+        del.setAttribute('aria-label', 'Delete document');
+        del.addEventListener('click', async e => {
           e.stopPropagation();
           if (!confirm('Delete this document?')) return;
           await fetch(`/driver/api/v1/trips/${tripId}/documents/${doc.id}`, {
@@ -249,7 +249,7 @@ export async function renderTripDetail(container, tripId) {
           });
           await refreshDocs();
         });
-        row.appendChild(kebab);
+        row.appendChild(del);
       }
       return row;
     }

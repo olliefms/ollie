@@ -963,7 +963,8 @@
   white-space: nowrap;
 }
 .docs-row__time { font-size: 0.75rem; color: var(--color-text-muted); }
-.docs-row__kebab { background: none; border: none; font-size: 1.25rem; padding: var(--space-1) var(--space-2); cursor: pointer; min-height: 44px; min-width: 44px; }
+.docs-row__delete { background: none; border: none; padding: var(--space-1) var(--space-2); cursor: pointer; min-height: 44px; min-width: 44px; color: var(--color-text-muted); display: inline-flex; align-items: center; justify-content: center; }
+.docs-row__delete svg { width: 20px; height: 20px; }
 .docs-empty { color: var(--color-text-muted); font-size: 0.875rem; text-align: center; padding: var(--space-4); }
 
 .sheet { position: fixed; inset: 0; background: rgba(17,24,39,0.4); display: flex; align-items: flex-end; z-index: 100; }
