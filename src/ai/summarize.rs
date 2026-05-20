@@ -6,6 +6,9 @@ use crate::{
 use bytes::Bytes;
 
 pub async fn summarize_text(client: &OllamaClient, text: &str) -> Result<String, AppError> {
+    if text.trim().is_empty() {
+        return Ok(String::new());
+    }
     let truncated = if text.len() > 4000 { &text[..4000] } else { text };
     let prompt = format!(
         "Provide a concise 1-2 sentence summary of the following content. \
@@ -41,6 +44,16 @@ pub async fn describe_scanned_pdf(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn test_summarize_text_short_circuits_on_empty() {
+        use super::*;
+        use crate::ai::OllamaClient;
+        // Unreachable URL — if the guard fails, the HTTP call will error.
+        let client = OllamaClient::new("http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream");
+        assert_eq!(summarize_text(&client, "").await.unwrap(), "");
+        assert_eq!(summarize_text(&client, "   \n\t  ").await.unwrap(), "");
+    }
+
     #[tokio::test]
     #[ignore] // requires live Ollama
     async fn test_summarize_text_returns_non_empty() {
