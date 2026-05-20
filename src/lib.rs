@@ -9,6 +9,7 @@ pub mod geocoding;
 pub mod models;
 pub mod pipeline;
 pub mod routing;
+pub mod services;
 pub mod storage;
 
 use ai::OllamaClient;
