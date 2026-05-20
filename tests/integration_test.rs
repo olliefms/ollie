@@ -2894,6 +2894,82 @@ async fn test_driver_upload_lists_own_document() {
 }
 
 #[tokio::test]
+async fn test_driver_upload_attaches_blob_to_load() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+
+    // Build a load + trip linked to that load, assigned + dispatched + InTransit.
+    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    let driver_id_str = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Doc Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let driver_id: uuid::Uuid = driver_id_str.parse().unwrap();
+    let creds = ollie::models::DriverCredentials {
+        driver_id,
+        pin_hash: None,
+        token_version: 1,
+        failed_pin_attempts: 0,
+        locked_until: None,
+        updated_at: chrono::Utc::now(),
+    };
+    state.db.upsert_driver_credentials(&creds).await.unwrap();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-DOC-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let _ = server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
+        .await;
+    let _ = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    state.db.transition_trip_status(trip_uuid, ollie::models::TripStatus::InTransit).await.unwrap();
+
+    let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
+    let driver_token = ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap();
+
+    let form = axum_test::multipart::MultipartForm::new()
+        .add_text("doctype", "bol")
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"bol-bytes".to_vec())
+                .file_name("bol.txt")
+                .mime_type("text/plain"),
+        );
+    let upload = server
+        .post(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .multipart(form)
+        .await;
+    let sc = upload.status_code().as_u16();
+    assert!(sc == 201 || sc == 202, "got {sc}");
+    let blob_id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let load_resp = server.get(&format!("/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    let blob_ids = load_resp.json::<serde_json::Value>()["blob_ids"].clone();
+    let ids: Vec<String> = blob_ids.as_array().unwrap()
+        .iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    assert!(ids.contains(&blob_id),
+        "load.blob_ids should contain driver-uploaded blob; got {ids:?}");
+}
+
+#[tokio::test]
 async fn test_driver_cannot_see_private_doc() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
     let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
