@@ -692,6 +692,10 @@ pub async fn update_stop_times(
     state.db.update_trip_stop(id, seq, next_arrive.clone(), next_depart.clone()).await?;
     if should_deliver {
         state.db.transition_trip_status(trip.id, crate::models::TripStatus::Delivered).await?;
+        crate::events::on_trip_delivered(&state.db, trip.id).await;
+        if let Some(driver_id) = trip.driver_id {
+            crate::api::trip_actions::try_auto_dispatch_next_for_driver(&state, driver_id, trip.id).await;
+        }
     }
 
     // Re-fetch (AGENTS.md line 325 — chained mutations always re-fetch before returning).

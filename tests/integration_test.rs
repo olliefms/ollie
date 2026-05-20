@@ -2639,6 +2639,124 @@ async fn test_patch_last_stop_depart_transitions_to_delivered() {
 }
 
 #[tokio::test]
+async fn test_final_stop_depart_auto_dispatches_next_assigned_trip() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    // Read the driver_id and truck_id off the in-transit trip so we can build a
+    // second Assigned trip for the same driver.
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    let in_transit = state.db.get_trip(trip_uuid).await.unwrap();
+    let driver_id_str = in_transit.driver_id.unwrap().to_string();
+    let truck_id_str = in_transit.truck_id.unwrap().to_string();
+
+    // Create trip B with a later scheduled origin arrive and assign same driver/truck.
+    let trip_b_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "B-Origin",
+                  "scheduled_arrive": "2026-05-10T08:00:00", "timezone": "America/Los_Angeles" },
+                { "sequence": 2, "stop_type": "delivery", "name": "B-Dest",
+                  "scheduled_arrive": "2026-05-10T18:00:00", "timezone": "America/Los_Angeles" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let assign_b = server.post(&format!("/api/v1/trips/{trip_b_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id_str }))
+        .await;
+    assert_eq!(assign_b.status_code(), 200);
+
+    // Drive trip A to delivered via the driver portal.
+    let r1 = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T08:00:00",
+            "actual_depart": "2026-05-09T09:00:00"
+        }))
+        .await;
+    assert_eq!(r1.status_code(), 200);
+    let r2 = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/2"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T12:00:00",
+            "actual_depart": "2026-05-09T13:00:00"
+        }))
+        .await;
+    assert_eq!(r2.status_code(), 200);
+    let body: serde_json::Value = serde_json::from_slice(r2.as_bytes()).unwrap();
+    assert_eq!(body["trip_status"], "delivered");
+
+    // Trip B must now be Dispatched.
+    let trip_b_uuid: uuid::Uuid = trip_b_id.parse().unwrap();
+    let trip_b = state.db.get_trip(trip_b_uuid).await.unwrap();
+    assert_eq!(trip_b.status, ollie::models::TripStatus::Dispatched,
+        "next assigned trip should be auto-dispatched when prior trip delivers");
+}
+
+#[tokio::test]
+async fn test_complete_trip_does_not_release_driver_already_on_next_trip() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    let in_transit = state.db.get_trip(trip_uuid).await.unwrap();
+    let driver_id = in_transit.driver_id.unwrap();
+    let truck_id = in_transit.truck_id.unwrap();
+
+    let trip_b_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "B-Origin",
+                  "scheduled_arrive": "2026-05-10T08:00:00", "timezone": "America/Los_Angeles" },
+                { "sequence": 2, "stop_type": "delivery", "name": "B-Dest",
+                  "scheduled_arrive": "2026-05-10T18:00:00", "timezone": "America/Los_Angeles" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let _ = server.post(&format!("/api/v1/trips/{trip_b_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "driver_id": driver_id.to_string(),
+            "truck_id": truck_id.to_string()
+        }))
+        .await;
+
+    // Deliver trip A — should auto-dispatch trip B onto same driver/truck.
+    let _ = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T08:00:00",
+            "actual_depart": "2026-05-09T09:00:00"
+        }))
+        .await;
+    let _ = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/2"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T12:00:00",
+            "actual_depart": "2026-05-09T13:00:00"
+        }))
+        .await;
+
+    // Now complete trip A — driver/truck must stay Dispatched (they're on trip B).
+    let complete = server.post(&format!("/api/v1/trips/{trip_id}/complete"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(complete.status_code(), 204);
+
+    let driver = state.db.get_driver_by_id(driver_id).await.unwrap();
+    assert_eq!(driver.status, ollie::models::DriverStatus::Dispatched,
+        "driver still on next trip should remain Dispatched, not released to Available");
+    let truck = state.db.get_truck_by_id(truck_id).await.unwrap();
+    assert_eq!(truck.status, ollie::models::TruckStatus::Dispatched,
+        "truck still on next trip should remain Dispatched");
+}
+
+#[tokio::test]
 async fn test_driver_upload_lists_own_document() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
     let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
