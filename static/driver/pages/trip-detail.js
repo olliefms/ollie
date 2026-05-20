@@ -183,6 +183,9 @@ export async function renderTripDetail(container, tripId) {
       const form = new FormData();
       form.append('file', file);
       form.append('doctype', pendingDoctype);
+      uploadBtn.disabled = true;
+      const originalLabel = uploadBtn.textContent;
+      uploadBtn.textContent = 'Uploading…';
       try {
         const r = await fetch(`/driver/api/v1/trips/${tripId}/documents`, {
           method: 'POST',
@@ -195,6 +198,8 @@ export async function renderTripDetail(container, tripId) {
         alert(err.message || 'Upload failed');
       } finally {
         fileInput.value = '';
+        uploadBtn.disabled = false;
+        uploadBtn.textContent = originalLabel;
       }
     });
 
