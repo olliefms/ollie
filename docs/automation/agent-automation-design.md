@@ -62,7 +62,7 @@ The system reads from and writes to a small set of GitHub-native primitives. The
 
 ## 5. Execution Layer: GitHub Actions + OAuth
 
-Decision: Use `anthropics/claude-code-action@v1` triggered by GitHub Actions, authenticated via `CLAUDE_CODE_OAUTH_TOKEN` against a Max subscription.
+Decision: Use `anthropics/claude-code-action@v1` triggered by GitHub Actions, authenticated via `ANTHROPIC_API_KEY` (set up via `/install-github-app` in Claude Code).
 
 **Why not Claude Code Routines:**
 
@@ -75,7 +75,7 @@ Decision: Use `anthropics/claude-code-action@v1` triggered by GitHub Actions, au
 **Why not API key:**
 
 - Max OAuth is functionally identical for single-user workloads and uses already-paid subscription quota.
-- API key path is one line of YAML away when needed (replacing `claude_code_oauth_token` with `anthropic_api_key`), so this is not a lock-in decision.
+- Switching between OAuth and direct API key is one line of YAML, so this is not a lock-in decision.
 
 **Portability note:** For client deployments, this workflow architecture is identical; only the secret name and identity change. Clients deploy with their own API key on their own GitHub org with their own GitHub App identity for the bot.
 
