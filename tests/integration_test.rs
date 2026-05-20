@@ -2697,6 +2697,115 @@ async fn test_final_stop_depart_auto_dispatches_next_assigned_trip() {
 }
 
 #[tokio::test]
+async fn test_final_stop_depart_no_op_when_no_next_assigned_trip() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let _ = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T08:00:00",
+            "actual_depart": "2026-05-09T09:00:00"
+        }))
+        .await;
+    let r2 = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/2"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T12:00:00",
+            "actual_depart": "2026-05-09T13:00:00"
+        }))
+        .await;
+    assert_eq!(r2.status_code(), 200);
+    let body: serde_json::Value = serde_json::from_slice(r2.as_bytes()).unwrap();
+    assert_eq!(body["trip_status"], "delivered");
+    // Nothing else to dispatch — endpoint should still return cleanly.
+}
+
+#[tokio::test]
+async fn test_final_stop_depart_skips_auto_dispatch_when_truck_busy_elsewhere() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let trip_a_uuid: uuid::Uuid = trip_a_id.parse().unwrap();
+    let trip_a = state.db.get_trip(trip_a_uuid).await.unwrap();
+    let driver_a = trip_a.driver_id.unwrap();
+
+    // Build a SECOND independent driver + a busy truck that's InTransit on
+    // that driver's trip. Then create Trip B for driver A but referencing
+    // the busy truck — auto-dispatch should refuse.
+    let driver_b_id_str = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Other Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let busy_truck_id_str = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-BUSY" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    // Trip C: driver B on the busy truck, drive to InTransit.
+    let trip_c_id_str = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "C-Origin", "timezone": "America/Los_Angeles" },
+                { "sequence": 2, "stop_type": "delivery", "name": "C-Dest", "timezone": "America/Los_Angeles" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let _ = server.post(&format!("/api/v1/trips/{trip_c_id_str}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_b_id_str, "truck_id": busy_truck_id_str }))
+        .await;
+    let _ = server.post(&format!("/api/v1/trips/{trip_c_id_str}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    let trip_c_uuid: uuid::Uuid = trip_c_id_str.parse().unwrap();
+    state.db.transition_trip_status(trip_c_uuid, ollie::models::TripStatus::InTransit).await.unwrap();
+
+    // Trip B: driver A on the SAME busy truck — assigned only.
+    let trip_b_id_str = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "B-Origin",
+                  "scheduled_arrive": "2026-05-10T08:00:00", "timezone": "America/Los_Angeles" },
+                { "sequence": 2, "stop_type": "delivery", "name": "B-Dest",
+                  "scheduled_arrive": "2026-05-10T18:00:00", "timezone": "America/Los_Angeles" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let _ = server.post(&format!("/api/v1/trips/{trip_b_id_str}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_a.to_string(), "truck_id": busy_truck_id_str }))
+        .await;
+
+    // Deliver trip A.
+    let _ = server.patch(&format!("/driver/api/v1/trips/{trip_a_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T08:00:00",
+            "actual_depart": "2026-05-09T09:00:00"
+        }))
+        .await;
+    let _ = server.patch(&format!("/driver/api/v1/trips/{trip_a_id}/stops/2"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-09T12:00:00",
+            "actual_depart": "2026-05-09T13:00:00"
+        }))
+        .await;
+
+    // Trip B must stay Assigned — the truck is busy on trip C.
+    let trip_b_uuid: uuid::Uuid = trip_b_id_str.parse().unwrap();
+    let trip_b = state.db.get_trip(trip_b_uuid).await.unwrap();
+    assert_eq!(trip_b.status, ollie::models::TripStatus::Assigned,
+        "auto-dispatch must not silently double-book a truck already on another active trip");
+}
+
+#[tokio::test]
 async fn test_complete_trip_does_not_release_driver_already_on_next_trip() {
     let (server, _db, _blob, _rx, state) = test_server_with_state().await;
     let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;

@@ -575,18 +575,19 @@ pub async fn complete_trip(
 
     // Only release a resource to Available if it has NOT already been rebound
     // to another active trip (e.g. via auto-dispatch when this trip delivered).
+    let active = list_active_trips(&state).await.unwrap_or_default();
     if let Some(driver_id) = existing.driver_id {
-        if !resource_on_other_active_trip(&state, id, Some(driver_id), None, None).await {
+        if !resource_on_other_active_trip(&active, id, Some(driver_id), None, None) {
             let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
         }
     }
     if let Some(truck_id) = existing.truck_id {
-        if !resource_on_other_active_trip(&state, id, None, Some(truck_id), None).await {
+        if !resource_on_other_active_trip(&active, id, None, Some(truck_id), None) {
             let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
         }
     }
     for &trailer_id in &existing.trailer_ids {
-        if !resource_on_other_active_trip(&state, id, None, None, Some(trailer_id)).await {
+        if !resource_on_other_active_trip(&active, id, None, None, Some(trailer_id)) {
             let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
         }
     }
@@ -595,20 +596,47 @@ pub async fn complete_trip(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Fetches all trips currently in Dispatched or InTransit status.
+async fn list_active_trips(state: &AppState) -> Result<Vec<crate::models::trip::TripListItem>, AppError> {
+    let mut out = state.db.list_trips(None, None, Some("dispatched")).await?;
+    out.extend(state.db.list_trips(None, None, Some("in_transit")).await?);
+    Ok(out)
+}
+
+/// Returns true if any trip in `active` (other than `exclude_trip_id`)
+/// references `resource_id` via the resource-matching closure.
+fn resource_on_other_active_trip(
+    active: &[crate::models::trip::TripListItem],
+    exclude_trip_id: Uuid,
+    driver_id: Option<Uuid>,
+    truck_id: Option<Uuid>,
+    trailer_id: Option<Uuid>,
+) -> bool {
+    active.iter().any(|t| {
+        if t.id == exclude_trip_id { return false; }
+        if let Some(d) = driver_id { if t.driver_id == Some(d) { return true; } }
+        if let Some(tk) = truck_id { if t.truck_id == Some(tk) { return true; } }
+        if let Some(tr) = trailer_id { if t.trailer_ids.contains(&tr) { return true; } }
+        false
+    })
+}
+
 /// After a trip transitions to Delivered, find the driver's next Assigned trip
-/// and auto-dispatch it. Best-effort: errors are swallowed so a hiccup here
-/// does not break the calling endpoint.
+/// and auto-dispatch it. Best-effort: errors are logged and swallowed so a
+/// hiccup here does not break the calling endpoint.
 ///
-/// Resource conflict checks from `dispatch_trip` are intentionally skipped:
-/// the driver/truck were just on the trip that delivered, so their statuses
-/// will still read `Dispatched` here. The subsequent `update_*_status` calls
-/// are idempotent in that case.
+/// `dispatch_trip`'s resource-conflict checks are not reused as-is because the
+/// driver and truck from the just-delivered trip will still read `Dispatched`.
+/// Instead this helper checks whether the candidate trip's truck/trailers are
+/// bound to ANOTHER active trip (not the one that just delivered) — if so, it
+/// declines to auto-dispatch and leaves the trip Assigned for the dispatcher.
 pub(crate) async fn try_auto_dispatch_next_for_driver(
     state: &AppState,
     driver_id: Uuid,
     just_delivered_trip_id: Uuid,
 ) {
     let Ok(trips) = state.db.list_trips(None, Some(driver_id), Some("assigned")).await else {
+        tracing::warn!(%driver_id, "auto-dispatch: failed to list assigned trips");
         return;
     };
     let mut candidates: Vec<_> = trips.into_iter()
@@ -619,8 +647,13 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
     candidates.sort_by_key(|t| {
         let origin = t.stops.iter().min_by_key(|s| s.sequence);
         let scheduled = origin.and_then(|s| {
-            s.scheduled_arrive.as_deref()
-                .and_then(|sa| crate::models::load::parse_stop_time(sa, s.timezone.as_deref()))
+            s.scheduled_arrive.as_deref().and_then(|sa| {
+                let parsed = crate::models::load::parse_stop_time(sa, s.timezone.as_deref());
+                if parsed.is_none() {
+                    tracing::warn!(trip_id = %t.id, sched = %sa, "auto-dispatch: unparseable scheduled_arrive");
+                }
+                parsed
+            })
         });
         (scheduled.unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC), t.created_at)
     });
@@ -628,7 +661,31 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
     let next = &candidates[0];
     let trip_id = next.id;
 
-    if state.db.transition_trip_status(trip_id, TripStatus::Dispatched).await.is_err() {
+    // Refuse to bind a truck or trailer that is already active on another trip.
+    // The driver is exempt — they were on the just-delivered trip; their status
+    // still reads Dispatched but that does not count as a different trip.
+    let active = match list_active_trips(state).await {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!(%trip_id, error = %e, "auto-dispatch: failed to list active trips");
+            return;
+        }
+    };
+    if let Some(truck_id) = next.truck_id {
+        if resource_on_other_active_trip(&active, just_delivered_trip_id, None, Some(truck_id), None) {
+            tracing::warn!(%trip_id, %truck_id, "auto-dispatch: truck busy on another active trip, skipping");
+            return;
+        }
+    }
+    for &trailer_id in &next.trailer_ids {
+        if resource_on_other_active_trip(&active, just_delivered_trip_id, None, None, Some(trailer_id)) {
+            tracing::warn!(%trip_id, %trailer_id, "auto-dispatch: trailer busy on another active trip, skipping");
+            return;
+        }
+    }
+
+    if let Err(e) = state.db.transition_trip_status(trip_id, TripStatus::Dispatched).await {
+        tracing::warn!(%trip_id, error = %e, "auto-dispatch: trip state transition failed");
         return;
     }
 
@@ -650,31 +707,8 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
         }
     }
 
+    tracing::info!(prev_trip = %just_delivered_trip_id, next_trip = %trip_id, %driver_id, "auto-dispatched next trip");
     events::on_trip_dispatched(&state.db, trip_id).await;
-}
-
-/// Returns true if `resource_id` is referenced by another trip (other than
-/// `exclude_trip_id`) that is in Dispatched or InTransit status. Used by
-/// `complete_trip` to avoid clobbering a resource that has already been
-/// rebound to the next trip by `try_auto_dispatch_next_for_driver`.
-async fn resource_on_other_active_trip(
-    state: &AppState,
-    exclude_trip_id: Uuid,
-    driver_id: Option<Uuid>,
-    truck_id: Option<Uuid>,
-    trailer_id: Option<Uuid>,
-) -> bool {
-    let Ok(all) = state.db.list_trips(None, None, None).await else { return false; };
-    all.iter().any(|t| {
-        if t.id == exclude_trip_id { return false; }
-        if !matches!(t.status, TripStatus::Dispatched | TripStatus::InTransit) {
-            return false;
-        }
-        if let Some(d) = driver_id { if t.driver_id == Some(d) { return true; } }
-        if let Some(tk) = truck_id { if t.truck_id == Some(tk) { return true; } }
-        if let Some(tr) = trailer_id { if t.trailer_ids.contains(&tr) { return true; } }
-        false
-    })
 }
 
 pub fn router() -> Router<AppState> {
