@@ -23,6 +23,8 @@ const ICON_PDF = parse('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 
 
 const ICON_PHOTO = parse('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/></svg>');
 
+const ICON_TRASH = parse('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2"/></svg>');
+
 export const truckIcon = () => ICON_TRUCK.cloneNode(true);
 export const dollarIcon = () => ICON_DOLLAR.cloneNode(true);
 export const userIcon = () => ICON_USER.cloneNode(true);
@@ -30,3 +32,4 @@ export const chevronLeftIcon = () => ICON_CHEV_L.cloneNode(true);
 export const chevronRightIcon = () => ICON_CHEV_R.cloneNode(true);
 export const pdfIcon = () => ICON_PDF.cloneNode(true);
 export const photoIcon = () => ICON_PHOTO.cloneNode(true);
+export const trashIcon = () => ICON_TRASH.cloneNode(true);
