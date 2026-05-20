@@ -25,11 +25,19 @@ async fn assert_trip_belongs_to_driver(
     trip_id: Uuid,
     driver_id: Uuid,
 ) -> Result<(), AppError> {
+    load_id_for_driver_trip(state, trip_id, driver_id).await.map(|_| ())
+}
+
+async fn load_id_for_driver_trip(
+    state: &AppState,
+    trip_id: Uuid,
+    driver_id: Uuid,
+) -> Result<Option<Uuid>, AppError> {
     let trip = state.db.get_trip(trip_id).await?;
     if trip.driver_id != Some(driver_id) {
         return Err(AppError::NotFound);
     }
-    Ok(())
+    Ok(trip.load_id)
 }
 
 #[utoipa::path(
@@ -60,7 +68,7 @@ pub async fn upload_document(
         .driver_id
         .parse::<Uuid>()
         .map_err(|_| AppError::Unauthorized)?;
-    assert_trip_belongs_to_driver(&state, trip_id, driver_id).await?;
+    let load_id = load_id_for_driver_trip(&state, trip_id, driver_id).await?;
 
     let mut file_bytes: Option<Bytes> = None;
     let mut filename: Option<String> = None;
@@ -171,6 +179,18 @@ pub async fn upload_document(
         let _ = state.pipeline_tx.send(record.id).await;
         (StatusCode::ACCEPTED, record)
     };
+
+    if let Some(load_id) = load_id {
+        let load = state.db.get_load_by_id(load_id).await?;
+        if !load.blob_ids.contains(&record.id) {
+            let mut new_ids = load.blob_ids.clone();
+            new_ids.push(record.id);
+            state.db.update_load_metadata(
+                load_id, None, None, None, None, None, None, None,
+                None, None, Some(new_ids), None,
+            ).await?;
+        }
+    }
 
     Ok((status_code, Json(record)))
 }
