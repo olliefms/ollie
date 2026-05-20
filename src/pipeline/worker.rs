@@ -45,10 +45,15 @@ pub async fn process_blob(
     let result: Result<(Option<String>, Option<Vec<f32>>), AppError> = async {
         match extractable {
             Extractable::Text(text) => {
-                let summary = summarize_text(ai, &text).await?;
-                let embed_source = if summary.is_empty() { &text } else { &summary };
-                let embedding = embed_text(ai, embed_source).await?;
-                Ok((Some(summary), Some(embedding)))
+                if text.trim().is_empty() {
+                    tracing::info!("extracted text for {id} is empty; skipping summarization");
+                    Ok((None, None))
+                } else {
+                    let summary = summarize_text(ai, &text).await?;
+                    let embed_source = if summary.is_empty() { &text } else { &summary };
+                    let embedding = embed_text(ai, embed_source).await?;
+                    Ok((Some(summary), Some(embedding)))
+                }
             }
             Extractable::ScannedPdf(bytes, raw_text) => {
                 let description = if bytes.len() > MAX_VISION_BYTES {
