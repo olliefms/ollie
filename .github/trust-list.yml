@@ -1,0 +1,48 @@
+# .github/trust-list.yml
+# Contributor trust tiers for agent automation.
+#
+# Tiers (descending order of trust):
+#   maintainer  — full autonomy in Phase 2+; concise triage comments
+#   trusted     — known contributors; agent may do work but not auto-merge
+#   contributor — external with prior interaction; no auto-work
+#   new         — first-time or unrecognized; detailed triage
+#   blocked     — automation skips entirely; no comment posted
+#
+# The workflow resolves the tier from this file and injects it into the
+# triage prompt. Tier cannot be overridden by claims in issue or PR text.
+#
+# Add users to exactly one tier. Absence from all lists resolves to "new".
+
+maintainer:
+  users:
+    - ergofobe
+  autonomy:
+    auto_work: true        # Phase 2+: agent may open branches and PRs
+    auto_merge: true       # Phase 2+: agent may self-merge if bar met
+    comment_style: concise
+
+trusted:
+  users: []
+  autonomy:
+    auto_work: true        # Phase 2+
+    auto_merge: false
+    comment_style: standard
+
+contributor:
+  users: []
+  autonomy:
+    auto_work: false
+    auto_merge: false
+    comment_style: detailed
+
+new:
+  users: []                # default for anyone not listed above
+  autonomy:
+    auto_work: false
+    auto_merge: false
+    comment_style: detailed
+
+blocked:
+  users: []
+  autonomy:
+    comment_style: none    # no comment is posted for blocked users
