@@ -28,7 +28,10 @@ use crate::{
     events,
 };
 use crate::models::{CreateLoadRequest, UpdateLoadRequest};
-use crate::api::trip_actions::AssignTripRequest;
+use crate::api::trip_actions::{
+    self, AssignTripRequest, CheckCallRequest, StopArriveRequest, StopDepartRequest,
+    StopLateRequest,
+};
 
 #[derive(serde::Serialize)]
 pub struct DispatcherTripListItem {
@@ -568,6 +571,187 @@ pub async fn unassign_trip(
     let trip = state.db.get_trip(id).await?;
     events::on_trip_unassigned(&state.db, id).await;
     Ok(Json(trip))
+}
+
+// ---------------------------------------------------------------------------
+// Trip lifecycle actions — thin wrappers around admin trip_actions handlers.
+// Same business logic; separate utoipa annotations to surface under the
+// dispatcher path/tag.
+// ---------------------------------------------------------------------------
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/dispatch",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 200, description = "Trip dispatched", body = TripRecord),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip must be in assigned status"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn dispatch_trip(
+    state: State<AppState>,
+    id: Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::dispatch_trip(state, id).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/undispatch",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 200, description = "Trip undispatched back to assigned", body = TripRecord),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip must be in dispatched status (not in_transit or beyond)"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn undispatch_trip(
+    state: State<AppState>,
+    id: Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::undispatch_trip(state, id).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/cancel",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 200, description = "Trip cancelled", body = TripRecord),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — cannot cancel a trip that is in_transit or delivered"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn cancel_trip(
+    state: State<AppState>,
+    id: Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::cancel_trip(state, id).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/complete",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 204, description = "Trip completed and resources released"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip must be in delivered status"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn complete_trip(
+    state: State<AppState>,
+    id: Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::complete_trip(state, id).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/stops/{seq}/arrive",
+    params(
+        ("id" = Uuid, Path, description = "Trip UUID"),
+        ("seq" = u32, Path, description = "Stop sequence number"),
+    ),
+    request_body(content = StopArriveRequest, description = "Actual arrival time"),
+    responses(
+        (status = 200, description = "Stop arrival recorded", body = TripRecord),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn stop_arrive(
+    state: State<AppState>,
+    path: Path<(Uuid, u32)>,
+    body: Json<StopArriveRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::stop_arrive(state, path, body).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/stops/{seq}/depart",
+    params(
+        ("id" = Uuid, Path, description = "Trip UUID"),
+        ("seq" = u32, Path, description = "Stop sequence number"),
+    ),
+    request_body(content = StopDepartRequest, description = "Actual departure time"),
+    responses(
+        (status = 200, description = "Stop departure recorded", body = TripRecord),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn stop_depart(
+    state: State<AppState>,
+    path: Path<(Uuid, u32)>,
+    body: Json<StopDepartRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::stop_depart(state, path, body).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/stops/{seq}/late",
+    params(
+        ("id" = Uuid, Path, description = "Trip UUID"),
+        ("seq" = u32, Path, description = "Stop sequence number"),
+    ),
+    request_body(content = StopLateRequest, description = "ETA and optional notes"),
+    responses(
+        (status = 204, description = "Late flag recorded"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn stop_late(
+    state: State<AppState>,
+    path: Path<(Uuid, u32)>,
+    body: Json<StopLateRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::stop_late(state, path, body).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips/{id}/check-call",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    request_body(content = CheckCallRequest, description = "Location, notes, and optional next-stop ETA"),
+    responses(
+        (status = 204, description = "Check call recorded"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn check_call(
+    state: State<AppState>,
+    id: Path<Uuid>,
+    body: Json<CheckCallRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    trip_actions::check_call(state, id, body).await
 }
 
 // ---------------------------------------------------------------------------
