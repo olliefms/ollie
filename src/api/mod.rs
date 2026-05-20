@@ -99,6 +99,14 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::get_trip,
         dispatcher_portal::data::assign_trip,
         dispatcher_portal::data::unassign_trip,
+        dispatcher_portal::data::dispatch_trip,
+        dispatcher_portal::data::undispatch_trip,
+        dispatcher_portal::data::cancel_trip,
+        dispatcher_portal::data::complete_trip,
+        dispatcher_portal::data::stop_arrive,
+        dispatcher_portal::data::stop_depart,
+        dispatcher_portal::data::stop_late,
+        dispatcher_portal::data::check_call,
         dispatcher_portal::data::list_drivers,
         dispatcher_portal::data::get_driver,
         dispatcher_portal::data::list_trucks,
@@ -458,8 +466,16 @@ Data endpoints (dispatcher JWT required — same response shapes as admin API):
 
   GET  /dispatch/api/v1/trips              List trips (?load_id, ?driver_id, ?status)
   GET  /dispatch/api/v1/trips/:id          Get trip record
-  POST /dispatch/api/v1/trips/:id/assign   Assign driver + truck + trailers (body: driver_id, truck_id, trailer_ids?)
-  POST /dispatch/api/v1/trips/:id/unassign Unassign resources and revert trip to planned
+  POST /dispatch/api/v1/trips/:id/assign     Assign driver + truck + trailers (body: driver_id, truck_id, trailer_ids?)
+  POST /dispatch/api/v1/trips/:id/unassign   Unassign resources and revert trip to planned
+  POST /dispatch/api/v1/trips/:id/dispatch   Dispatch trip (must be assigned)
+  POST /dispatch/api/v1/trips/:id/undispatch Revert dispatched trip to assigned
+  POST /dispatch/api/v1/trips/:id/cancel     Cancel trip (blocked if in_transit or delivered)
+  POST /dispatch/api/v1/trips/:id/complete   Complete trip (must be delivered; releases driver/truck/trailers); returns 204
+  POST /dispatch/api/v1/trips/:id/stops/:seq/arrive  Record actual arrival at stop (body: actual_arrive)
+  POST /dispatch/api/v1/trips/:id/stops/:seq/depart  Record actual departure (body: actual_depart); triggers trip/load status cascades
+  POST /dispatch/api/v1/trips/:id/stops/:seq/late    Flag stop as late (body: eta?, notes?); returns 204
+  POST /dispatch/api/v1/trips/:id/check-call         Record driver check-in (body: location, notes?, eta_next_stop?); returns 204
 
   GET  /dispatch/api/v1/drivers            List drivers (?status)
   GET  /dispatch/api/v1/drivers/:id        Get driver record
@@ -494,7 +510,7 @@ Data endpoints (JWT required — driver sees only their own trips):
 
 ## Dispatcher MCP Server
 
-POST /dispatch/mcp — MCP JSON-RPC endpoint for AI agent tool calls. Requires dispatcher JWT (Authorization: Bearer <token> from POST /dispatch/auth/login). Supports tools: list_loads, get_load, create_load, update_load, list_trips, get_trip, assign_driver, unassign_driver, list_drivers, get_driver, list_trucks, list_trailers, list_events.
+POST /dispatch/mcp — MCP JSON-RPC endpoint for AI agent tool calls. Requires dispatcher JWT (Authorization: Bearer <token> from POST /dispatch/auth/login). Supports tools: list_loads, get_load, create_load, update_load, list_trips, get_trip, assign_driver, unassign_driver, dispatch_trip, undispatch_trip, cancel_trip, complete_trip, stop_arrive, stop_depart, stop_late, check_call, list_drivers, get_driver, list_trucks, list_trailers, list_events.
 
 ## Full Spec
 
