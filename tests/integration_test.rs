@@ -3157,3 +3157,143 @@ async fn test_version_endpoint_is_unauthenticated() {
     let resp = server.get("/version").await;
     resp.assert_status_ok();
 }
+
+// ---------------------------------------------------------------------------
+// Issue #220 — driver PATCH must cascade actuals to load stop and fire status
+// transitions, mirroring the dispatcher stop_arrive/stop_depart handlers.
+// ---------------------------------------------------------------------------
+
+async fn setup_driver_with_dispatched_load_trip(
+    server: &TestServer,
+    state: &AppState,
+) -> (String, String, String) {
+    let driver_id_str = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Cascade Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let driver_id: uuid::Uuid = driver_id_str.parse().unwrap();
+
+    let creds = ollie::models::DriverCredentials {
+        driver_id,
+        pin_hash: None,
+        token_version: 1,
+        failed_pin_attempts: 0,
+        locked_until: None,
+        updated_at: chrono::Utc::now(),
+    };
+    state.db.upsert_driver_credentials(&creds).await.unwrap();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-CSC-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let origin_fac = create_test_facility(server, "Origin", "Chicago, IL").await;
+    let dest_fac = create_test_facility(server, "Dest", "Memphis, TN").await;
+
+    let load_id = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                 "facility_id": origin_fac, "scheduled_arrive": "2026-05-10T08:00:00",
+                 "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": dest_fac, "scheduled_arrive": "2026-05-10T18:00:00",
+                 "timezone": "America/Chicago"},
+            ],
+            "rate_items": [{"description": "Line Haul", "amount_usd": 1500.0}]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let assign = server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign.status_code(), 200);
+
+    let dispatch = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
+    let token = ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap();
+    (token, trip_id, load_id)
+}
+
+#[tokio::test]
+async fn test_220_driver_patch_cascades_to_load_and_transitions_status() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id, load_id) =
+        setup_driver_with_dispatched_load_trip(&server, &state).await;
+    let load_uuid: uuid::Uuid = load_id.parse().unwrap();
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Driver arrives at the pickup stop.
+    let r = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-10T08:00:00" }))
+        .await;
+    assert_eq!(r.status_code(), 200);
+
+    let load = state.db.get_load_by_id(load_uuid).await.unwrap();
+    assert_eq!(load.stops[0].actual_arrive.as_deref(), Some("2026-05-10T08:00:00"),
+        "#220: driver-recorded arrive must cascade to load stop");
+
+    // Driver departs the pickup → trip + load should advance to InTransit.
+    let r = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-05-10T09:00:00" }))
+        .await;
+    assert_eq!(r.status_code(), 200);
+
+    let load = state.db.get_load_by_id(load_uuid).await.unwrap();
+    assert_eq!(load.stops[0].actual_depart.as_deref(), Some("2026-05-10T09:00:00"),
+        "#220: driver-recorded depart must cascade to load stop");
+    assert_eq!(load.status, ollie::models::LoadStatus::InTransit,
+        "#220: first-pickup depart on driver path must transition load to InTransit");
+    let trip = state.db.get_trip(trip_uuid).await.unwrap();
+    assert_eq!(trip.status, ollie::models::TripStatus::InTransit,
+        "#220: first-pickup depart on driver path must transition trip to InTransit");
+
+    // Driver delivers the load.
+    let r = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/2"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({
+            "actual_arrive": "2026-05-10T17:30:00",
+            "actual_depart": "2026-05-10T18:15:00"
+        }))
+        .await;
+    assert_eq!(r.status_code(), 200);
+
+    let load = state.db.get_load_by_id(load_uuid).await.unwrap();
+    assert_eq!(load.stops[1].actual_arrive.as_deref(), Some("2026-05-10T17:30:00"));
+    assert_eq!(load.stops[1].actual_depart.as_deref(), Some("2026-05-10T18:15:00"));
+    assert_eq!(load.status, ollie::models::LoadStatus::Delivered,
+        "#220: final stop depart on driver path must cascade load to Delivered");
+
+    // Confirm stop.arrived / stop.departed events were appended for the driver path.
+    let (_, events) = state.db.query_events(
+        Some(trip_uuid), Some("trip"), None, None, None, 100, 0,
+    ).await.unwrap();
+    let kinds: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+    assert!(kinds.contains(&"stop.arrived"),
+        "#220: driver path must fire stop.arrived event");
+    assert!(kinds.contains(&"stop.departed"),
+        "#220: driver path must fire stop.departed event");
+    assert!(kinds.contains(&"trip.in_transit"),
+        "#220: driver path must fire trip.in_transit event");
+    assert!(kinds.contains(&"trip.delivered"),
+        "#220: driver path must fire trip.delivered event");
+}

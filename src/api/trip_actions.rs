@@ -2,7 +2,6 @@ use crate::{
     error::AppError,
     events,
     models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
-    models::trip::TripStopType,
     AppState,
 };
 use axum::{
@@ -365,31 +364,12 @@ pub async fn stop_arrive(
         .ok_or(AppError::NotFound)?
         .timezone
         .clone();
-    if let Some(tz_str) = stop_tz.as_deref() {
-        // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
-        // is theoretically possible but negligible in practice — see #95.
-        crate::models::load::validate_stop_time_str(&body.actual_arrive, tz_str, "actual_arrive")?;
-    }
-    let trip = state.db.update_trip_stop(id, seq, Some(body.actual_arrive.clone()), None).await?;
-
-    if let Some(load_id) = trip.load_id {
-        if let Some(stop) = trip.stops.iter().find(|s| s.sequence == seq) {
-            if let Some(load_stop_idx) = stop.load_stop_index {
-                if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                    let mut updated_stops = load.stops.clone();
-                    if (load_stop_idx as usize) < updated_stops.len() {
-                        updated_stops[load_stop_idx as usize].actual_arrive = Some(body.actual_arrive.clone());
-                        let _ = state.db.update_load_metadata(
-                            load_id, None, None, Some(updated_stops),
-                            None, None, None, None, None, None, None, None,
-                        ).await;
-                    }
-                }
-            }
-        }
-    }
-
-    events::on_stop_arrived(&state.db, id, seq).await;
+    // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
+    // is theoretically possible but negligible in practice — see #95.
+    crate::services::trip_stops::validate_arrive(&body.actual_arrive, stop_tz.as_deref())?;
+    let trip = crate::services::trip_stops::record_stop_arrive(
+        &state, id, seq, body.actual_arrive,
+    ).await?;
     Ok(Json(trip))
 }
 
@@ -421,82 +401,13 @@ pub async fn stop_depart(
         .ok_or(AppError::NotFound)?
         .timezone
         .clone();
-    if let Some(tz_str) = stop_tz.as_deref() {
-        // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
-        // is theoretically possible but negligible in practice — see #95.
-        crate::models::load::validate_stop_time_str(&body.actual_depart, tz_str, "actual_depart")?;
-    }
-    let trip = state.db.update_trip_stop(id, seq, None, Some(body.actual_depart.clone())).await?;
-
-    // Cascade actual_depart to load stop if linked
-    if let Some(load_id) = trip.load_id {
-        if let Some(stop) = trip.stops.iter().find(|s| s.sequence == seq) {
-            if let Some(load_stop_idx) = stop.load_stop_index {
-                if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                    let mut updated_stops = load.stops.clone();
-                    if (load_stop_idx as usize) < updated_stops.len() {
-                        updated_stops[load_stop_idx as usize].actual_depart = Some(body.actual_depart.clone());
-                        let _ = state.db.update_load_metadata(
-                            load_id, None, None, Some(updated_stops),
-                            None, None, None, None, None, None, None, None,
-                        ).await;
-                    }
-                }
-            }
-
-            // If this is a pickup stop and trip is dispatched → trip goes in_transit
-            let is_pickup = stop.stop_type == TripStopType::Pickup;
-            if is_pickup && trip.status == TripStatus::Dispatched {
-                if let Ok(updated_trip) = state.db.transition_trip_status(id, TripStatus::InTransit).await {
-                    // Cascade load to in_transit if load is dispatched
-                    if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                        if load.status == LoadStatus::Dispatched {
-                            let _ = state.db.transition_load_status(load_id, LoadStatus::InTransit, None, None, None).await;
-                        }
-                    }
-                    events::on_trip_in_transit(&state.db, id).await;
-                    let _ = updated_trip; // trip variable already used above
-                }
-            }
-        }
-    } else if let Some(stop) = trip.stops.iter().find(|s| s.sequence == seq) {
-        // No load_id branch — still check pickup for in_transit
-        let is_pickup = stop.stop_type == TripStopType::Pickup;
-        if is_pickup && trip.status == TripStatus::Dispatched {
-            let _ = state.db.transition_trip_status(id, TripStatus::InTransit).await;
-            events::on_trip_in_transit(&state.db, id).await;
-        }
-    }
-
-    // Re-fetch current trip state to check for final stop
-    let current_trip = state.db.get_trip(id).await?;
-    let max_seq = current_trip.stops.iter().map(|s| s.sequence).max();
-    if Some(seq) == max_seq && current_trip.status == TripStatus::InTransit {
-        if let Ok(delivered_trip) = state.db.transition_trip_status(id, TripStatus::Delivered).await {
-            events::on_trip_delivered(&state.db, id).await;
-
-            // Check if all trips for load are delivered → cascade load
-            if let Some(load_id) = delivered_trip.load_id {
-                if let Ok(all_trips) = state.db.list_trips_for_load(load_id).await {
-                    let all_delivered = all_trips.iter().all(|t| t.status == TripStatus::Delivered);
-                    if all_delivered {
-                        if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                            if load.status == LoadStatus::InTransit {
-                                let _ = state.db.transition_load_status(load_id, LoadStatus::Delivered, None, None, None).await;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if let Some(driver_id) = delivered_trip.driver_id {
-                try_auto_dispatch_next_for_driver(&state, driver_id, id).await;
-            }
-        }
-    }
-
-    events::on_stop_departed(&state.db, id, seq).await;
-    Ok(Json(current_trip))
+    // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
+    // is theoretically possible but negligible in practice — see #95.
+    crate::services::trip_stops::validate_depart(&body.actual_depart, stop_tz.as_deref())?;
+    let trip = crate::services::trip_stops::record_stop_depart(
+        &state, id, seq, body.actual_depart,
+    ).await?;
+    Ok(Json(trip))
 }
 
 #[utoipa::path(
