@@ -42,7 +42,7 @@ impl RoutingClient {
             .collect();
         let body = OrsRequest { coordinates, units: "mi" };
         let resp = self.client
-            .post("https://api.openrouteservice.org/v2/directions/driving-hgv")
+            .post("https://api.heigit.org/openrouteservice/v2/directions/driving-hgv")
             .bearer_auth(&self.api_key)
             .json(&body)
             .timeout(std::time::Duration::from_secs(15))
