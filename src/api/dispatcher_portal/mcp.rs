@@ -9,15 +9,21 @@
 // no business logic lives here. Switch to rmcp once the project upgrades to
 // Axum 0.8.
 
-use axum::{extract::State, Json};
+use axum::{
+    extract::{Path, State},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
-    AppState,
+    api::trip_actions::{
+        self, CheckCallRequest, StopArriveRequest, StopDepartRequest, StopLateRequest,
+    },
     events,
     models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
+    AppState,
 };
 
 // ---------------------------------------------------------------------------
@@ -190,6 +196,96 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "dispatch_trip",
+                "description": "Dispatch a trip (assigned → dispatched). Trip must be in assigned status; driver/truck must not already be dispatched elsewhere.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "trip_id": { "type": "string", "format": "uuid" } },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "undispatch_trip",
+                "description": "Revert a dispatched trip back to assigned. Trip must be in dispatched status (not in_transit or beyond).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "trip_id": { "type": "string", "format": "uuid" } },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "cancel_trip",
+                "description": "Cancel a trip. Blocked if the trip is in_transit or delivered.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "trip_id": { "type": "string", "format": "uuid" } },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "complete_trip",
+                "description": "Complete a delivered trip and release the driver, truck, and trailers back to available. Trip must be in delivered status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "trip_id": { "type": "string", "format": "uuid" } },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "stop_arrive",
+                "description": "Record actual arrival at a trip stop. Cascades the actual_arrive to the linked load stop when present.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "sequence": { "type": "integer", "minimum": 1 },
+                        "actual_arrive": { "type": "string", "description": "Naive local datetime when the stop has a timezone (e.g. 2026-05-10T08:00:00)" }
+                    },
+                    "required": ["trip_id", "sequence", "actual_arrive"]
+                }
+            },
+            {
+                "name": "stop_depart",
+                "description": "Record actual departure from a trip stop. Triggers trip and load status cascades (e.g. dispatched → in_transit on pickup, → delivered on final stop).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "sequence": { "type": "integer", "minimum": 1 },
+                        "actual_depart": { "type": "string" }
+                    },
+                    "required": ["trip_id", "sequence", "actual_depart"]
+                }
+            },
+            {
+                "name": "stop_late",
+                "description": "Flag a trip stop as late with an optional ETA and notes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "sequence": { "type": "integer", "minimum": 1 },
+                        "eta": { "type": "string" },
+                        "notes": { "type": "string" }
+                    },
+                    "required": ["trip_id", "sequence"]
+                }
+            },
+            {
+                "name": "check_call",
+                "description": "Record a driver check-call event with current location and optional notes and next-stop ETA.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "location": { "type": "string" },
+                        "notes": { "type": "string" },
+                        "eta_next_stop": { "type": "string" }
+                    },
+                    "required": ["trip_id", "location"]
+                }
+            },
+            {
                 "name": "list_drivers",
                 "description": "List drivers. Optional filter: status (available/assigned/dispatched/inactive).",
                 "inputSchema": {
@@ -302,6 +398,14 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "get_trip" => tool_get_trip(state, args).await,
         "assign_driver" => tool_assign_driver(state, args).await,
         "unassign_driver" => tool_unassign_driver(state, args).await,
+        "dispatch_trip" => tool_dispatch_trip(state, args).await,
+        "undispatch_trip" => tool_undispatch_trip(state, args).await,
+        "cancel_trip" => tool_cancel_trip(state, args).await,
+        "complete_trip" => tool_complete_trip(state, args).await,
+        "stop_arrive" => tool_stop_arrive(state, args).await,
+        "stop_depart" => tool_stop_depart(state, args).await,
+        "stop_late" => tool_stop_late(state, args).await,
+        "check_call" => tool_check_call(state, args).await,
         "list_drivers" => tool_list_drivers(state, args).await,
         "get_driver" => tool_get_driver(state, args).await,
         "list_trucks" => tool_list_trucks(state).await,
@@ -565,6 +669,123 @@ async fn tool_unassign_driver(state: &AppState, args: &Value) -> Result<Value, S
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
     events::on_trip_unassigned(&state.db, trip_id).await;
     Ok(mcp_content(trip))
+}
+
+// ---------------------------------------------------------------------------
+// Trip lifecycle MCP tools — thin shims that invoke the admin trip_actions
+// handler and return the resulting trip record (or status acknowledgement
+// for 204 actions).
+// ---------------------------------------------------------------------------
+
+async fn tool_dispatch_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    trip_actions::dispatch_trip(State(state.clone()), Path(trip_id))
+        .await
+        .map_err(|e| e.to_string())?;
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_undispatch_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    trip_actions::undispatch_trip(State(state.clone()), Path(trip_id))
+        .await
+        .map_err(|e| e.to_string())?;
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_cancel_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    trip_actions::cancel_trip(State(state.clone()), Path(trip_id))
+        .await
+        .map_err(|e| e.to_string())?;
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_complete_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    trip_actions::complete_trip(State(state.clone()), Path(trip_id))
+        .await
+        .map_err(|e| e.to_string())?;
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_stop_arrive(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let sequence = args["sequence"]
+        .as_u64()
+        .ok_or("missing or non-integer field 'sequence'")? as u32;
+    let actual_arrive = args["actual_arrive"]
+        .as_str()
+        .ok_or("missing or non-string field 'actual_arrive'")?
+        .to_string();
+    trip_actions::stop_arrive(
+        State(state.clone()),
+        Path((trip_id, sequence)),
+        Json(StopArriveRequest { actual_arrive }),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_stop_depart(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let sequence = args["sequence"]
+        .as_u64()
+        .ok_or("missing or non-integer field 'sequence'")? as u32;
+    let actual_depart = args["actual_depart"]
+        .as_str()
+        .ok_or("missing or non-string field 'actual_depart'")?
+        .to_string();
+    trip_actions::stop_depart(
+        State(state.clone()),
+        Path((trip_id, sequence)),
+        Json(StopDepartRequest { actual_depart }),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(trip))
+}
+
+async fn tool_stop_late(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let sequence = args["sequence"]
+        .as_u64()
+        .ok_or("missing or non-integer field 'sequence'")? as u32;
+    let eta = args["eta"].as_str().map(|s| s.to_string());
+    let notes = args["notes"].as_str().map(|s| s.to_string());
+    trip_actions::stop_late(
+        State(state.clone()),
+        Path((trip_id, sequence)),
+        Json(StopLateRequest { eta, notes }),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "trip_id": trip_id, "sequence": sequence, "status": "late_flag_recorded" })))
+}
+
+async fn tool_check_call(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let location = args["location"]
+        .as_str()
+        .ok_or("missing or non-string field 'location'")?
+        .to_string();
+    let notes = args["notes"].as_str().map(|s| s.to_string());
+    let eta_next_stop = args["eta_next_stop"].as_str().map(|s| s.to_string());
+    trip_actions::check_call(
+        State(state.clone()),
+        Path(trip_id),
+        Json(CheckCallRequest { location, notes, eta_next_stop }),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "trip_id": trip_id, "status": "check_call_recorded" })))
 }
 
 async fn tool_list_drivers(state: &AppState, args: &Value) -> Result<Value, String> {

@@ -1757,6 +1757,268 @@ async fn test_dispatch_trip_when_driver_already_dispatched_fails() {
 }
 
 // ---------------------------------------------------------------------------
+// Dispatcher trip lifecycle action tests (#221)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dispatcher_trip_lifecycle_actions() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "lifecycle1@example.com", "password-lifecycle1").await;
+
+    let fac_id = create_test_facility(&server, "Lifecycle Dock", "Houston, TX").await;
+
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Lifecycle Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "TR-LC-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-07-01T08:00:00", "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-07-01T16:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Assign via dispatcher API (covered by existing test) — needed to drive transitions
+    let assign_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
+        .await;
+    assert_eq!(assign_resp.status_code(), 200);
+
+    // Dispatch via dispatcher API
+    let dispatch_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(dispatch_resp.status_code(), 200);
+    assert_eq!(dispatch_resp.json::<serde_json::Value>()["status"], "dispatched");
+
+    // Undispatch
+    let undispatch_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/undispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(undispatch_resp.status_code(), 200);
+    assert_eq!(undispatch_resp.json::<serde_json::Value>()["status"], "assigned");
+
+    // Re-dispatch then drive stops
+    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+
+    // Check-call
+    let cc_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/check-call"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "location": "I-10 mile 320" }))
+        .await;
+    assert_eq!(cc_resp.status_code(), 204);
+
+    // Arrive at pickup
+    let arr1 = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-07-01T08:05:00" }))
+        .await;
+    assert_eq!(arr1.status_code(), 200);
+
+    // Late flag
+    let late_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/late"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "eta": "2026-07-01T17:00:00", "notes": "traffic" }))
+        .await;
+    assert_eq!(late_resp.status_code(), 204);
+
+    // Depart pickup → trip becomes in_transit
+    let dep1 = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-07-01T09:00:00" }))
+        .await;
+    assert_eq!(dep1.status_code(), 200);
+    assert_eq!(dep1.json::<serde_json::Value>()["status"], "in_transit");
+
+    // Arrive + depart delivery → trip becomes delivered
+    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/arrive"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-07-01T16:05:00" }))
+        .await;
+    let dep2 = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/depart"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-07-01T17:00:00" }))
+        .await;
+    assert_eq!(dep2.status_code(), 200);
+    // Confirm delivered status via follow-up GET (admin stop_depart returns a
+    // pre-final-cascade snapshot — see #221 / admin trip_actions::stop_depart).
+    let trip_after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(trip_after["status"], "delivered");
+
+    // Complete
+    let complete_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/complete"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(complete_resp.status_code(), 204);
+
+    // Verify driver/truck released
+    let driver_after = server.get(&format!("/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(driver_after["status"], "available");
+}
+
+#[tokio::test]
+async fn test_dispatcher_cancel_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "cancel1@example.com", "password-cancel1").await;
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [{ "sequence": 1, "stop_type": "pickup", "name": "Origin" }]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/cancel"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<serde_json::Value>()["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_dispatcher_mcp_lifecycle_tools_listed() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_lc@example.com", "password-mcp-lc").await;
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let tools = resp.json::<serde_json::Value>()["result"]["tools"].as_array().unwrap().clone();
+    let names: Vec<String> = tools.iter()
+        .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
+        .collect();
+    for expected in &[
+        "dispatch_trip", "undispatch_trip", "cancel_trip", "complete_trip",
+        "stop_arrive", "stop_depart", "stop_late", "check_call",
+    ] {
+        assert!(names.iter().any(|n| n == *expected),
+            "expected MCP tool {expected} to be listed");
+    }
+}
+
+#[tokio::test]
+async fn test_dispatcher_mcp_dispatch_and_complete() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_dc@example.com", "password-mcp-dc").await;
+
+    let fac_id = create_test_facility(&server, "MCP Dock", "Dallas, TX").await;
+
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "MCP Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "TR-MCP-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-07-02T08:00:00", "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-07-02T16:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // assign via dispatcher API (already covered)
+    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
+        .await;
+
+    // Dispatch via MCP
+    let dispatch_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "dispatch_trip", "arguments": { "trip_id": trip_id } }
+        }))
+        .await;
+    assert_eq!(dispatch_resp.status_code(), 200);
+    let body = dispatch_resp.json::<serde_json::Value>();
+    assert!(body["error"].is_null(), "MCP error: {:?}", body["error"]);
+    let content_text = body["result"]["content"][0]["text"].as_str().expect("text payload");
+    let trip: serde_json::Value = serde_json::from_str(content_text).expect("inner JSON");
+    assert_eq!(trip["status"], "dispatched");
+
+    // Drive to delivered via MCP stop_arrive/stop_depart
+    for (seq, arrive, depart) in [
+        (1u32, "2026-07-02T08:05:00", "2026-07-02T09:00:00"),
+        (2u32, "2026-07-02T16:05:00", "2026-07-02T17:00:00"),
+    ] {
+        let r = server.post("/dispatch/mcp")
+            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "stop_arrive",
+                    "arguments": { "trip_id": trip_id, "sequence": seq, "actual_arrive": arrive } }
+            }))
+            .await;
+        assert_eq!(r.status_code(), 200);
+        let r = server.post("/dispatch/mcp")
+            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&serde_json::json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": { "name": "stop_depart",
+                    "arguments": { "trip_id": trip_id, "sequence": seq, "actual_depart": depart } }
+            }))
+            .await;
+        assert_eq!(r.status_code(), 200);
+    }
+
+    // Complete via MCP
+    let complete_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": { "name": "complete_trip", "arguments": { "trip_id": trip_id } }
+        }))
+        .await;
+    assert_eq!(complete_resp.status_code(), 200);
+    let body = complete_resp.json::<serde_json::Value>();
+    assert!(body["error"].is_null(), "MCP error: {:?}", body["error"]);
+    let trip: serde_json::Value = serde_json::from_str(
+        body["result"]["content"][0]["text"].as_str().unwrap()
+    ).unwrap();
+    assert_eq!(trip["status"], "completed");
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher blob API tests (#121)
 // ---------------------------------------------------------------------------
 
