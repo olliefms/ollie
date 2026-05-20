@@ -35,16 +35,37 @@ jobs:
             echo "Circuit breaker active — skipping review."
           fi
 
-      # ── 2. Checkout (full — agent needs to read AGENTS.md and diff) ─────────
-      - name: Checkout
+      # ── 2. Skip bot PRs ────────────────────────────────────────────────────
+      # GitHub restricts GITHUB_TOKEN to read-only for bot-authored PRs
+      # (dependabot, github-actions, etc.), so label writes would fail.
+      # Bot PRs skip the agent entirely; human maintainer merges at discretion.
+      - name: Check for bot author
         if: steps.circuit_breaker.outputs.paused != 'true'
+        id: bot_check
+        env:
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          if [[ "$AUTHOR" == *"[bot]" ]]; then
+            echo "is_bot=true" >> "$GITHUB_OUTPUT"
+            echo "Bot PR ($AUTHOR) — skipping agent review."
+          else
+            echo "is_bot=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 3. Checkout (full — agent needs to read AGENTS.md and diff) ─────────
+      - name: Checkout
+        if: |
+          steps.circuit_breaker.outputs.paused != 'true' &&
+          steps.bot_check.outputs.is_bot != 'true'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # ── 3. Resolve trust tier ───────────────────────────────────────────────
+      # ── 4. Resolve trust tier ───────────────────────────────────────────────
       - name: Resolve trust tier
-        if: steps.circuit_breaker.outputs.paused != 'true'
+        if: |
+          steps.circuit_breaker.outputs.paused != 'true' &&
+          steps.bot_check.outputs.is_bot != 'true'
         id: trust
         env:
           AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -66,10 +87,11 @@ jobs:
           echo "tier=$TIER" >> "$GITHUB_OUTPUT"
           echo "Resolved '$AUTHOR' → $TIER"
 
-      # ── 4. Run review agent ─────────────────────────────────────────────────
+      # ── 5. Run review agent ─────────────────────────────────────────────────
       - name: Run review agent
         if: |
           steps.circuit_breaker.outputs.paused != 'true' &&
+          steps.bot_check.outputs.is_bot != 'true' &&
           steps.trust.outputs.tier != 'blocked'
         uses: anthropics/claude-code-action@v1
         env:
