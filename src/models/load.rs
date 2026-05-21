@@ -380,6 +380,8 @@ pub struct LoadDetailResponse {
     pub cancellation_reason: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mileage_summary: Option<crate::models::trip::MileageSummary>,
 }
 
 #[cfg(test)]

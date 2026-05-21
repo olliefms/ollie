@@ -125,12 +125,32 @@ export async function renderTripDetail(container, tripId) {
     stopsSection.className = 'trip-detail-section trip-detail-stops';
 
     if (data.stops && data.stops.length > 0) {
+      const ms = data.mileage_summary || null;
+      const header = renderMileageHeader(ms);
+      if (header) stopsSection.appendChild(header);
+
       const stopTimeline = document.createElement('div');
       stopTimeline.className = 'stop-timeline';
 
-      data.stops.forEach(stop => {
+      const originNode = renderOriginNode(ms ? ms.origin : null);
+      if (originNode) {
+        stopTimeline.appendChild(originNode);
+        const dhBadge = renderLegBadge(ms && ms.deadhead_miles);
+        if (dhBadge) stopTimeline.appendChild(dhBadge);
+      }
+
+      // legs are ordered to match waypoint pairs:
+      //   with origin:    legs[0] = deadhead (origin→stop0), legs[1] = stop0→stop1, ...
+      //   without origin: legs[0] = stop0→stop1, legs[1] = stop1→stop2, ...
+      const loadedStart = ms && ms.origin ? 1 : 0;
+      data.stops.forEach((stop, idx) => {
         const stopNode = renderStopNode(stop, tripId);
         stopTimeline.appendChild(stopNode);
+        if (idx < data.stops.length - 1 && ms && Array.isArray(ms.legs)) {
+          const leg = ms.legs[loadedStart + idx];
+          const badge = renderLegBadge(leg ? leg.miles : null);
+          if (badge) stopTimeline.appendChild(badge);
+        }
       });
 
       stopsSection.appendChild(stopTimeline);
@@ -368,6 +388,58 @@ export async function renderTripDetail(container, tripId) {
   }
 
   page.appendChild(renderBottomNav('trips'));
+}
+
+function fmtMiles(n) {
+  if (n === null || n === undefined) return '—';
+  return `${n.toFixed(1)} mi`;
+}
+
+function renderMileageHeader(ms) {
+  if (!ms) return null;
+  const section = document.createElement('div');
+  section.className = 'trip-detail-section trip-detail-mileage';
+
+  const totalRow = document.createElement('div');
+  totalRow.className = 'trip-detail-row';
+  totalRow.textContent = `Total: ${fmtMiles(ms.total_miles)} (${fmtMiles(ms.deadhead_miles)} deadhead + ${fmtMiles(ms.loaded_miles)} loaded)`;
+  section.appendChild(totalRow);
+
+  return section;
+}
+
+function renderOriginNode(origin) {
+  if (!origin || !origin.facility_name) return null;
+  const node = document.createElement('div');
+  node.className = 'stop-node stop-node--origin';
+  const marker = document.createElement('div');
+  marker.className = 'stop-node__marker';
+  node.appendChild(marker);
+  const content = document.createElement('div');
+  content.className = 'stop-node__content';
+  const label = document.createElement('span');
+  label.className = 'stop-node__type';
+  label.textContent = 'Starting from';
+  const name = document.createElement('span');
+  name.className = 'stop-node__name';
+  const place = origin.address ? `${origin.facility_name} — ${origin.address}` : origin.facility_name;
+  name.textContent = place;
+  const title = document.createElement('div');
+  title.className = 'stop-node__title';
+  title.appendChild(label);
+  title.appendChild(document.createTextNode(' — '));
+  title.appendChild(name);
+  content.appendChild(title);
+  node.appendChild(content);
+  return node;
+}
+
+function renderLegBadge(miles) {
+  if (miles === null || miles === undefined) return null;
+  const el = document.createElement('div');
+  el.className = 'stop-timeline__leg';
+  el.textContent = `↓ ${fmtMiles(miles)}`;
+  return el;
 }
 
 function renderStopNode(stop, tripId) {

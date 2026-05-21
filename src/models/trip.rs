@@ -69,6 +69,34 @@ pub struct TripStop {
     pub timezone: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct DeadheadOrigin {
+    pub trip_id: Uuid,
+    pub facility_name: Option<String>,
+    /// `normalized_address` if present, else raw `address`. Free-form single string.
+    pub address: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct LegMiles {
+    /// 0 = deadhead leg (origin → first stop). 1+ = loaded legs between trip stops.
+    pub index: u32,
+    /// "deadhead" or "loaded"
+    pub kind: String,
+    pub from: Option<String>,
+    pub to: Option<String>,
+    pub miles: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MileageSummary {
+    pub origin: Option<DeadheadOrigin>,
+    pub legs: Vec<LegMiles>,
+    pub deadhead_miles: Option<f64>,
+    pub loaded_miles: Option<f64>,
+    pub total_miles: Option<f64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TripStatus {
@@ -133,6 +161,13 @@ pub struct TripRecord {
     pub previous_trip_id: Option<Uuid>,
     pub deadhead_miles: Option<f64>,
     pub loaded_miles: Option<f64>,
+    pub total_miles: Option<f64>,
+    /// Per-segment miles from the single ORS multi-waypoint call. Order:
+    /// [deadhead_leg, loaded_leg_1, loaded_leg_2, ...] when origin exists;
+    /// [loaded_leg_1, loaded_leg_2, ...] when there's no previous trip.
+    /// Empty when ORS routing was unavailable.
+    #[serde(default)]
+    pub segment_miles: Vec<f64>,
     pub sequence: u32,
     pub driver_id: Option<Uuid>,
     pub truck_id: Option<Uuid>,
@@ -189,6 +224,9 @@ pub struct TripListItem {
     pub previous_trip_id: Option<Uuid>,
     pub deadhead_miles: Option<f64>,
     pub loaded_miles: Option<f64>,
+    pub total_miles: Option<f64>,
+    #[serde(default)]
+    pub segment_miles: Vec<f64>,
     pub sequence: u32,
     pub driver_id: Option<Uuid>,
     pub truck_id: Option<Uuid>,
@@ -213,6 +251,8 @@ impl From<TripRecord> for TripListItem {
             previous_trip_id: r.previous_trip_id,
             deadhead_miles: r.deadhead_miles,
             loaded_miles: r.loaded_miles,
+            total_miles: r.total_miles,
+            segment_miles: r.segment_miles,
             sequence: r.sequence,
             driver_id: r.driver_id,
             truck_id: r.truck_id,
@@ -286,6 +326,8 @@ mod tests {
             previous_trip_id: None,
             deadhead_miles: None,
             loaded_miles: None,
+            total_miles: None,
+            segment_miles: vec![],
             sequence: 0,
             driver_id: None,
             truck_id: None,
@@ -333,6 +375,8 @@ mod tests {
             previous_trip_id: None,
             deadhead_miles: None,
             loaded_miles: None,
+            total_miles: None,
+            segment_miles: vec![],
             sequence: 0,
             driver_id: None,
             truck_id: None,

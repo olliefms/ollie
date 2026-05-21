@@ -237,11 +237,76 @@ function fmtDate(isoStr) {
   }
 }
 
+function fmtArrivalWindow(start, end) {
+  if (!start) return '—';
+  if (!end) {
+    try { return new Date(start).toLocaleString(); } catch { return start; }
+  }
+  try {
+    const s = new Date(start);
+    const e = new Date(end);
+    const sameDay = s.toDateString() === e.toDateString();
+    if (sameDay) {
+      const sStr = s.toLocaleString();
+      const eStr = e.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `${sStr}–${eStr}`;
+    }
+    return `${s.toLocaleString()} – ${e.toLocaleString()}`;
+  } catch {
+    return start;
+  }
+}
+
 function fmtBytes(n) {
   if (!n) return '—';
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function fmtUSD(n) {
+  if (n === null || n === undefined) return '—';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  return `${sign}$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function fmtMiles(n) {
+  if (n === null || n === undefined) return '—';
+  return `${n.toFixed(1)} mi`;
+}
+
+function renderMileageCard(ms) {
+  if (!ms) return '';
+  const originLabel = ms.origin && ms.origin.facility_name
+    ? `${escHtml(ms.origin.facility_name)}${ms.origin.address ? ` — ${escHtml(ms.origin.address)}` : ''}`
+    : null;
+  const originRow = originLabel
+    ? `<div class="detail-item"><div class="detail-item__label">Origin (prev. trip)</div><div class="detail-item__value">${originLabel}</div></div>`
+    : '';
+  const legsRows = (ms.legs || []).map(l =>
+    `<tr><td>${escHtml(l.kind)}</td><td>${escHtml(l.from || '—')} → ${escHtml(l.to || '—')}</td><td style="text-align:right; font-variant-numeric: tabular-nums;">${fmtMiles(l.miles)}</td></tr>`
+  ).join('');
+  const legsTable = legsRows
+    ? `<div class="table-wrapper" style="margin-top: var(--space-3);">
+         <table class="data-table">
+           <thead><tr><th>Leg</th><th>From → To</th><th style="text-align:right;">Miles</th></tr></thead>
+           <tbody>${legsRows}</tbody>
+         </table>
+       </div>`
+    : '';
+  return `
+    <div class="detail-card">
+      <div class="detail-card__title">Mileage</div>
+      <div class="detail-grid">
+        ${originRow}
+        <div class="detail-item"><div class="detail-item__label">Deadhead</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${fmtMiles(ms.deadhead_miles)}</div></div>
+        <div class="detail-item"><div class="detail-item__label">Loaded</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${fmtMiles(ms.loaded_miles)}</div></div>
+        <div class="detail-item"><div class="detail-item__label">Total</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums; font-weight:600;">${fmtMiles(ms.total_miles)}</div></div>
+      </div>
+      ${legsTable}
+    </div>
+  `;
 }
 
 function escHtml(s) {
@@ -378,8 +443,8 @@ async function renderLoadsView(params = {}) {
           <td>${badge(load.status)}</td>
           <td>${escHtml(load.customer_name || '—')}</td>
           <td>${escHtml(origin)} → ${escHtml(dest)}</td>
-          <td>${fmtDate(stops[0]?.scheduled_arrive)}</td>
-          <td>${fmtDate(stops[last]?.scheduled_arrive)}</td>
+          <td>${fmtArrivalWindow(stops[0]?.scheduled_arrive, stops[0]?.scheduled_arrive_end)}</td>
+          <td>${fmtArrivalWindow(stops[last]?.scheduled_arrive, stops[last]?.scheduled_arrive_end)}</td>
         </tr>
       `;
       }).join('');
@@ -485,7 +550,7 @@ async function renderLoadDetailView(id) {
           <td>${i + 1}</td>
           <td>${escHtml(stop.facility_name || '—')}</td>
           <td>${escHtml(stop.stop_type || '—')}</td>
-          <td>${fmtDate(stop.scheduled_arrive)}</td>
+          <td>${fmtArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end)}</td>
           <td>${fmtDate(stop.actual_arrive)}</td>
           <td>${fmtDate(stop.actual_depart)}</td>
         </tr>
@@ -603,6 +668,34 @@ async function renderLoadDetailView(id) {
       }
     }
 
+    let rateHtml = '';
+    const rateItems = load.rate_items || [];
+    if (rateItems.length > 0) {
+      const rateRows = rateItems.map(r => {
+        const negStyle = r.amount_usd < 0 ? ' style="color: var(--color-danger, #b91c1c);"' : '';
+        return `
+          <tr>
+            <td>${escHtml(r.description || '—')}</td>
+            <td${negStyle} style="text-align:right; font-variant-numeric: tabular-nums;${r.amount_usd < 0 ? ' color: var(--color-danger, #b91c1c);' : ''}">${fmtUSD(r.amount_usd)}</td>
+          </tr>
+        `;
+      }).join('');
+      rateHtml = `
+        <div class="detail-card">
+          <div class="detail-card__title">Rate</div>
+          <div class="table-wrapper">
+            <table class="data-table">
+              <thead><tr><th>Description</th><th style="text-align:right;">Amount</th></tr></thead>
+              <tbody>${rateRows}</tbody>
+              <tfoot>
+                <tr><td style="font-weight:600;">Total</td><td style="text-align:right; font-weight:600; font-variant-numeric: tabular-nums;">${fmtUSD(load.total_rate_usd)}</td></tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
     const html = `
       <button class="back-link" id="back-to-loads">← Back to Loads</button>
 
@@ -642,6 +735,8 @@ async function renderLoadDetailView(id) {
         </div>
       </div>
 
+      ${rateHtml}
+      ${renderMileageCard(load.mileage_summary)}
       ${stopsHtml}
       ${tripsHtml}
       ${docsHtml}
@@ -755,8 +850,14 @@ async function renderTripsView(params = {}) {
         const lastStop = trip.stops && trip.stops.length > 0 ? trip.stops[trip.stops.length - 1] : null;
         const origin = trip.stops && trip.stops[0] ? (trip.stops[0].name || '—') : '—';
         const dest = lastStop ? (lastStop.name || '—') : '—';
-        const pickup = fmtDate(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null);
-        const delivery = fmtDate(lastStop ? lastStop.scheduled_arrive : null);
+        const pickup = fmtArrivalWindow(
+          trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null,
+          trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive_end : null,
+        );
+        const delivery = fmtArrivalWindow(
+          lastStop ? lastStop.scheduled_arrive : null,
+          lastStop ? lastStop.scheduled_arrive_end : null,
+        );
         return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td><td>${escHtml(trip.load_number || '—')}</td><td>${badge(trip.status)}</td><td>${escHtml(trip.driver_name || '—')}</td><td>${escHtml(origin)} → ${escHtml(dest)}</td><td>${pickup}</td><td>${delivery}</td></tr>`;
       }).join('');
     }
@@ -801,7 +902,7 @@ async function renderTripDetailView(id) {
         <td>${i + 1}</td>
         <td>${escHtml(stop.name || '—')}</td>
         <td>${escHtml(stop.stop_type || '—')}</td>
-        <td>${fmtDate(stop.scheduled_arrive)}</td>
+        <td>${fmtArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end)}</td>
         <td>${fmtDate(stop.actual_arrive)}</td>
         <td>${fmtDate(stop.actual_depart)}</td>
       </tr>
@@ -819,6 +920,7 @@ async function renderTripDetailView(id) {
           <div class="detail-item"><div class="detail-item__label">Trailer</div><div class="detail-item__value">${escHtml((trip.trailer_units || []).join(', ') || '—')}</div></div>
         </div>
       </div>
+      ${renderMileageCard(trip.mileage_summary)}
       <div class="detail-card">
         <div class="detail-card__title">Stops</div>
         <div class="table-wrapper">
@@ -861,7 +963,7 @@ async function renderDriverDetailView(id) {
       <tr data-trip-id="${trip.id}" style="cursor:pointer;">
         <td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td>
         <td>${badge(trip.status)}</td>
-        <td>${fmtDate(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null)}</td>
+        <td>${fmtArrivalWindow(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null, trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive_end : null)}</td>
       </tr>
     `).join('');
 
