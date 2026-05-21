@@ -49,6 +49,8 @@ pub struct DispatcherTripListItem {
     pub load_number: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mileage_summary: Option<crate::models::trip::MileageSummary>,
 }
 
 #[derive(serde::Serialize)]
@@ -133,6 +135,7 @@ fn enrich_trip(
         load_number: trip.load_number,
         created_at: trip.created_at,
         updated_at: trip.updated_at,
+        mileage_summary: None,
     }
 }
 
@@ -424,7 +427,7 @@ pub async fn get_trip(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     let record = state.db.get_trip(id).await?;
-    let trip: crate::models::TripListItem = record.into();
+    let trip: crate::models::TripListItem = record.clone().into();
 
     let driver_ids_vec:  Vec<_> = trip.driver_id.into_iter().collect();
     let truck_ids_vec:   Vec<_> = trip.truck_id.into_iter().collect();
@@ -440,7 +443,10 @@ pub async fn get_trip(
     let truck_map:   std::collections::HashMap<_, _> = truck_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
     let trailer_map: std::collections::HashMap<_, _> = trailer_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
 
-    let enriched = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
+    let mut enriched = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
+    enriched.mileage_summary = Some(
+        crate::api::mileage_summary::build_mileage_summary(&state, &record).await
+    );
     Ok(Json(enriched))
 }
 
@@ -1079,6 +1085,16 @@ async fn build_load_detail(
         }
     }).collect();
 
+    let mileage_summary = {
+        let mut trips = state.db.list_trips_for_load(record.id).await.unwrap_or_default();
+        trips.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        if let Some(trip_record) = trips.into_iter().next() {
+            Some(crate::api::mileage_summary::build_mileage_summary(state, &trip_record).await)
+        } else {
+            None
+        }
+    };
+
     let total_rate_usd = record.total_rate_usd();
     Ok(LoadDetailResponse {
         id: record.id,
@@ -1100,5 +1116,6 @@ async fn build_load_detail(
         cancellation_reason: record.cancellation_reason,
         created_at: record.created_at,
         updated_at: record.updated_at,
+        mileage_summary,
     })
 }

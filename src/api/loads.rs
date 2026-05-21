@@ -556,5 +556,6 @@ async fn build_detail_response(
         invoice_number: record.invoice_number, invoice_date: record.invoice_date,
         cancellation_reason: record.cancellation_reason,
         created_at: record.created_at, updated_at: record.updated_at,
+        mileage_summary: None,
     })
 }
