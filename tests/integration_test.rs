@@ -3373,3 +3373,235 @@ async fn test_220_driver_patch_cascades_to_load_and_transitions_status() {
     assert!(kinds.contains(&"trip.delivered"),
         "#220: driver path must fire trip.delivered event");
 }
+
+// ============================================================
+// Dispatcher API key tests
+// ============================================================
+
+async fn create_dispatcher_api_key(
+    server: &axum_test::TestServer,
+    token: &str,
+    label: &str,
+) -> serde_json::Value {
+    let resp = server.post("/dispatch/api-keys")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "label": label }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "create api key failed: {}", resp.text());
+    resp.json::<serde_json::Value>()
+}
+
+#[tokio::test]
+async fn test_api_key_create_returns_plaintext_once() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikey1@example.com", "pass-apikey1").await;
+
+    let body = create_dispatcher_api_key(&server, &token, "Claude desktop").await;
+
+    assert!(body["key"].as_str().unwrap().starts_with("olld_"));
+    assert_eq!(body["key"].as_str().unwrap().len(), 48);
+    assert_eq!(body["label"], "Claude desktop");
+    assert!(body["key_prefix"].as_str().is_some());
+    assert_eq!(&body["key"].as_str().unwrap()[..12], body["key_prefix"].as_str().unwrap());
+    assert!(body["id"].as_str().is_some());
+    assert!(body["expires_at"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn test_api_key_custom_expiry() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikey2@example.com", "pass-apikey2").await;
+
+    let resp = server.post("/dispatch/api-keys")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "label": "short-lived", "expires_in_days": 7 }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    let body = resp.json::<serde_json::Value>();
+    let expires: chrono::DateTime<chrono::Utc> = body["expires_at"].as_str().unwrap().parse().unwrap();
+    let created: chrono::DateTime<chrono::Utc> = body["created_at"].as_str().unwrap().parse().unwrap();
+    let diff = expires - created;
+    assert!(diff.num_days() >= 6 && diff.num_days() <= 8, "expected ~7 day expiry, got {}", diff.num_days());
+}
+
+#[tokio::test]
+async fn test_api_key_expiry_over_365_rejected() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikey3@example.com", "pass-apikey3").await;
+
+    let resp = server.post("/dispatch/api-keys")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "label": "too-long", "expires_in_days": 366 }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_api_key_list_returns_own_keys_only() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let t1 = dispatcher_login(&server, "apikeylist1@example.com", "pass1").await;
+    let t2 = dispatcher_login(&server, "apikeylist2@example.com", "pass2").await;
+
+    create_dispatcher_api_key(&server, &t1, "d1-key").await;
+    create_dispatcher_api_key(&server, &t2, "d2-key").await;
+
+    let resp = server.get("/dispatch/api-keys")
+        .add_header(header::AUTHORIZATION, format!("Bearer {t1}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    let keys = body["keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0]["label"], "d1-key");
+    assert!(keys[0]["key"].is_null(), "plaintext must not appear in list");
+}
+
+#[tokio::test]
+async fn test_api_key_list_excludes_revoked() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeyrev1@example.com", "pass-rev1").await;
+
+    let body = create_dispatcher_api_key(&server, &token, "to-revoke").await;
+    let key_id = body["id"].as_str().unwrap();
+
+    let del = server.delete(&format!("/dispatch/api-keys/{key_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del.status_code(), 204);
+
+    let list = server.get("/dispatch/api-keys")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    let list_body = list.json::<serde_json::Value>();
+    assert_eq!(list_body["keys"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_api_key_revoke_not_found_for_other_dispatcher() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let t1 = dispatcher_login(&server, "apikeyown1@example.com", "pass-own1").await;
+    let t2 = dispatcher_login(&server, "apikeyown2@example.com", "pass-own2").await;
+
+    let body = create_dispatcher_api_key(&server, &t1, "t1-key").await;
+    let key_id = body["id"].as_str().unwrap();
+
+    let resp = server.delete(&format!("/dispatch/api-keys/{key_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {t2}"))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_api_key_auth_grants_access_to_protected_endpoint() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeyauth1@example.com", "pass-auth1").await;
+
+    let body = create_dispatcher_api_key(&server, &token, "Claude desktop").await;
+    let api_key = body["key"].as_str().unwrap();
+
+    let resp = server.get("/dispatch/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+}
+
+#[tokio::test]
+async fn test_api_key_auth_works_on_mcp_endpoint() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeymcp1@example.com", "pass-mcp1").await;
+
+    let body = create_dispatcher_api_key(&server, &token, "Claude MCP").await;
+    let api_key = body["key"].as_str().unwrap();
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let result = resp.json::<serde_json::Value>();
+    assert_eq!(result["result"]["protocolVersion"], "2024-11-05");
+}
+
+#[tokio::test]
+async fn test_revoked_api_key_rejected() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeyrvk1@example.com", "pass-rvk1").await;
+
+    let body = create_dispatcher_api_key(&server, &token, "to-revoke").await;
+    let api_key = body["key"].as_str().unwrap().to_string();
+    let key_id = body["id"].as_str().unwrap();
+
+    server.delete(&format!("/dispatch/api-keys/{key_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+
+    let resp = server.get("/dispatch/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_jwt_auth_still_works_after_api_key_feature() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeycompat1@example.com", "pass-compat1").await;
+
+    let resp = server.get("/dispatch/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+}
+
+#[tokio::test]
+async fn test_api_key_create_requires_jwt_not_api_key() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeyself1@example.com", "pass-self1").await;
+
+    let body = create_dispatcher_api_key(&server, &token, "first-key").await;
+    let api_key = body["key"].as_str().unwrap();
+
+    let resp = server.post("/dispatch/api-keys")
+        .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .json(&serde_json::json!({ "label": "self-created" }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_api_key_revoke_requires_jwt_not_api_key() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeyself2@example.com", "pass-self2").await;
+
+    let body = create_dispatcher_api_key(&server, &token, "key-to-revoke").await;
+    let api_key = body["key"].as_str().unwrap().to_string();
+    let key_id = body["id"].as_str().unwrap();
+
+    let resp = server.delete(&format!("/dispatch/api-keys/{key_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_api_key_20_key_cap() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "apikeycap1@example.com", "pass-cap1").await;
+
+    for i in 0..20 {
+        let resp = server.post("/dispatch/api-keys")
+            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&serde_json::json!({ "label": format!("key-{i}") }))
+            .await;
+        assert_eq!(resp.status_code(), 201, "key {i} creation should succeed");
+    }
+
+    let resp = server.post("/dispatch/api-keys")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "label": "key-21" }))
+        .await;
+    assert_eq!(resp.status_code(), 429);
+}

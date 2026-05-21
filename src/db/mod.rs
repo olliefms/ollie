@@ -1,5 +1,6 @@
 // src/db/mod.rs
 pub mod blob_ops;
+pub mod dispatcher_api_key_ops;
 pub mod dispatcher_ops;
 pub mod driver_credentials_ops;
 pub mod driver_ops;
@@ -24,6 +25,7 @@ pub struct DbClient {
     pub blob_table: Table,
     pub dispatcher_table: Table,
     pub dispatcher_credentials_table: Table,
+    pub dispatcher_api_key_table: Table,
     pub driver_credentials_table: Table,
     pub driver_passkey_credentials_table: Table,
     pub driver_table: Table,
@@ -96,10 +98,18 @@ impl DbClient {
             empty_dispatcher_credentials_batch,
         ).await?;
 
+        let dispatcher_api_key_table = open_or_create(
+            &conn,
+            "dispatcher_api_keys",
+            dispatcher_api_key_schema(),
+            empty_dispatcher_api_key_batch,
+        ).await?;
+
         Ok(Self {
             blob_table,
             dispatcher_table,
             dispatcher_credentials_table,
+            dispatcher_api_key_table,
             driver_credentials_table,
             driver_passkey_credentials_table,
             driver_table,
@@ -665,6 +675,34 @@ fn empty_dispatcher_credentials_batch(schema: Arc<Schema>) -> Result<RecordBatch
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
+pub fn dispatcher_api_key_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("dispatcher_id", DataType::Utf8, false),
+        Field::new("label", DataType::Utf8, false),
+        Field::new("key_hash", DataType::Utf8, false),
+        Field::new("key_prefix", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("expires_at", DataType::Utf8, false),
+        Field::new("revoked_at", DataType::Utf8, true),
+        Field::new("last_used_at", DataType::Utf8, true),
+    ]))
+}
+
+fn empty_dispatcher_api_key_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
 fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
     let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
     RecordBatch::try_new(schema, vec![
@@ -729,5 +767,12 @@ mod tests {
         assert_eq!(client.driver_passkey_credentials_table.count_rows(None).await.unwrap(), 0);
         assert_eq!(client.dispatcher_table.count_rows(None).await.unwrap(), 0);
         assert_eq!(client.dispatcher_credentials_table.count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_db_client_has_dispatcher_api_key_table() {
+        let dir = TempDir::new().unwrap();
+        let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
+        assert_eq!(client.dispatcher_api_key_table.count_rows(None).await.unwrap(), 0);
     }
 }
