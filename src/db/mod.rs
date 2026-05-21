@@ -165,13 +165,13 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
                 transforms.push(("previous_trip_id".into(), "CAST(NULL AS string)".into()));
             }
             if existing.field_with_name("deadhead_miles").is_err() {
-                transforms.push(("deadhead_miles".into(), "CAST(NULL AS float64)".into()));
+                transforms.push(("deadhead_miles".into(), "CAST(NULL AS double)".into()));
             }
             if existing.field_with_name("loaded_miles").is_err() {
-                transforms.push(("loaded_miles".into(), "CAST(NULL AS float64)".into()));
+                transforms.push(("loaded_miles".into(), "CAST(NULL AS double)".into()));
             }
             if existing.field_with_name("total_miles").is_err() {
-                transforms.push(("total_miles".into(), "CAST(NULL AS float64)".into()));
+                transforms.push(("total_miles".into(), "CAST(NULL AS double)".into()));
             }
             if existing.field_with_name("segment_miles").is_err() {
                 transforms.push(("segment_miles".into(), "CAST(NULL AS string)".into()));
