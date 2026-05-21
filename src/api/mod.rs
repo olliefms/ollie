@@ -11,6 +11,7 @@ pub mod drivers;
 pub mod events;
 pub mod facilities;
 pub mod loads;
+pub mod mileage_summary;
 pub mod trailers;
 pub mod trip_actions;
 pub mod trips;

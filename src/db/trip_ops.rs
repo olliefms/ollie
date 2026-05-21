@@ -257,6 +257,11 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
         Arc::new(StringArray::from(vec![previous_trip_id_str.as_deref()])),
         Arc::new(Float64Array::from(vec![record.deadhead_miles])),
         Arc::new(Float64Array::from(vec![record.loaded_miles])),
+        Arc::new(Float64Array::from(vec![record.total_miles])),
+        Arc::new(StringArray::from(vec![
+            if record.segment_miles.is_empty() { None }
+            else { Some(serde_json::to_string(&record.segment_miles).unwrap_or_default()) }
+        ])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -322,6 +327,10 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
             .transpose()?,
         deadhead_miles: opt_f64("deadhead_miles"),
         loaded_miles: opt_f64("loaded_miles"),
+        total_miles: opt_f64("total_miles"),
+        segment_miles: opt_str("segment_miles")
+            .and_then(|s| serde_json::from_str::<Vec<f64>>(&s).ok())
+            .unwrap_or_default(),
         sequence: i64_col("sequence") as u32,
         driver_id,
         truck_id,
@@ -378,6 +387,8 @@ mod tests {
             previous_trip_id: None,
             deadhead_miles: None,
             loaded_miles: None,
+            total_miles: None,
+            segment_miles: vec![],
             sequence: 0,
             driver_id: None,
             truck_id: None,

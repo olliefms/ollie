@@ -170,6 +170,12 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
             if existing.field_with_name("loaded_miles").is_err() {
                 transforms.push(("loaded_miles".into(), "CAST(NULL AS float64)".into()));
             }
+            if existing.field_with_name("total_miles").is_err() {
+                transforms.push(("total_miles".into(), "CAST(NULL AS float64)".into()));
+            }
+            if existing.field_with_name("segment_miles").is_err() {
+                transforms.push(("segment_miles".into(), "CAST(NULL AS string)".into()));
+            }
             if !transforms.is_empty() {
                 tracing::info!("migrating trips table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
@@ -557,6 +563,8 @@ pub fn trip_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("previous_trip_id", DataType::Utf8, true),
         Field::new("deadhead_miles", DataType::Float64, true),
         Field::new("loaded_miles", DataType::Float64, true),
+        Field::new("total_miles", DataType::Float64, true),
+        Field::new("segment_miles", DataType::Utf8, true),  // JSON-encoded Vec<f64>
     ]))
 }
 
@@ -583,6 +591,8 @@ fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // previous_trip_id
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // deadhead_miles
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // loaded_miles
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // total_miles
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // segment_miles
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
