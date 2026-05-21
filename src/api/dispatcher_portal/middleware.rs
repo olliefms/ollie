@@ -93,13 +93,19 @@ async fn validate_api_key(state: &AppState, token: &str) -> Result<DispatcherCla
         }
     }
 
-    let key_for_touch = key.clone();
+    let key_id = key.id;
+    let dispatcher_id = key.dispatcher_id;
     let db_for_touch = state.db.clone();
     tokio::spawn(async move {
-        let mut k = key_for_touch;
-        k.last_used_at = Some(Utc::now());
-        if let Err(e) = db_for_touch.upsert_dispatcher_api_key(&k).await {
-            tracing::warn!(key_id = %k.id, err = ?e, "failed to update api key last_used_at");
+        match db_for_touch.get_dispatcher_api_key_by_id(key_id, dispatcher_id).await {
+            Ok(Some(mut current)) => {
+                current.last_used_at = Some(Utc::now());
+                if let Err(e) = db_for_touch.upsert_dispatcher_api_key(&current).await {
+                    tracing::warn!(key_id = %key_id, err = ?e, "failed to update api key last_used_at");
+                }
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(key_id = %key_id, err = ?e, "failed to fetch api key for last_used_at update"),
         }
     });
 
