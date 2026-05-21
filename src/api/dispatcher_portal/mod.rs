@@ -1,4 +1,5 @@
 // src/api/dispatcher_portal/mod.rs
+pub mod api_keys;
 pub mod auth;
 pub mod blobs;
 pub mod data;
@@ -10,7 +11,7 @@ use crate::AppState;
 use axum::{
     extract::DefaultBodyLimit,
     Router,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 
 pub fn auth_router() -> Router<AppState> {
@@ -61,9 +62,12 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/blobs/:id/query", post(blobs::query_blob))
         // MCP JSON-RPC 2.0 endpoint for AI agent tool calls
         .route("/dispatch/mcp", post(mcp::handle))
+        // API key management (GET allowed for both JWT and API-key auth; POST/DELETE require JWT)
+        .route("/dispatch/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))
+        .route("/dispatch/api-keys/:id", delete(api_keys::revoke_api_key))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            middleware::require_dispatcher_jwt,
+            middleware::require_dispatcher_auth,
         ))
 }
 

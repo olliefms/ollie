@@ -18,6 +18,10 @@ pub struct DispatcherClaims {
     pub exp: usize,
     pub iat: usize,
     pub kid: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_label: Option<String>,
 }
 
 pub fn encode_dispatcher_jwt(id: Uuid, token_version: i64, secret: &str) -> Result<String, AppError> {
@@ -30,6 +34,8 @@ pub fn encode_dispatcher_jwt(id: Uuid, token_version: i64, secret: &str) -> Resu
         exp: now + EXPIRY_SECS as usize,
         iat: now,
         kid: KID.into(),
+        api_key_id: None,
+        api_key_label: None,
     };
     let header = Header { kid: Some(KID.into()), ..Header::default() };
     encode(&header, &claims, &EncodingKey::from_secret(secret.as_bytes()))
@@ -85,6 +91,8 @@ mod tests {
             exp: 1_000_000, // far in the past
             iat: 999_999,
             kid: KID.into(),
+            api_key_id: None,
+            api_key_label: None,
         };
         let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(SECRET.as_bytes())).unwrap();
         let result = decode_dispatcher_jwt(&token, SECRET);
