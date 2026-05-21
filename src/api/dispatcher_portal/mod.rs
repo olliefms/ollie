@@ -1,4 +1,5 @@
 // src/api/dispatcher_portal/mod.rs
+pub mod api_keys;
 pub mod auth;
 pub mod blobs;
 pub mod data;
