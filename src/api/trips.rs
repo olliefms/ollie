@@ -339,7 +339,10 @@ async fn compute_trip_mileage(
 
     let has_deadhead = deadhead_origin_fac.is_some();
     let (deadhead, loaded_segs): (Option<f64>, &[f64]) = if has_deadhead {
-        (route.segment_miles.first().copied(), &route.segment_miles[1..])
+        match route.segment_miles.split_first() {
+            Some((first, rest)) => (Some(*first), rest),
+            None => return empty,
+        }
     } else {
         (None, &route.segment_miles[..])
     };
