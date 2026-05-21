@@ -23,6 +23,8 @@ pub enum AppError {
     Internal(String),
     #[error("{0}")]
     UnprocessableEntity(String),
+    #[error("too many requests")]
+    TooManyRequests,
     #[error("facility resolution required")]
     FacilityResolution(Box<Vec<crate::models::FacilityResolutionResponse>>),
 }
@@ -40,6 +42,7 @@ impl IntoResponse for AppError {
             Self::Conflict(_) => StatusCode::CONFLICT,
             Self::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
             Self::FacilityResolution(_) => unreachable!(),
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()
@@ -74,5 +77,10 @@ mod tests {
         use crate::models::FacilityResolutionResponse;
         let body = vec![FacilityResolutionResponse { stop_index: 0, facility_resolution_required: true, candidates: vec![] }];
         assert_eq!(status_of(AppError::FacilityResolution(Box::new(body))), StatusCode::OK);
+    }
+
+    #[test]
+    fn test_too_many_requests_status() {
+        assert_eq!(status_of(AppError::TooManyRequests), StatusCode::TOO_MANY_REQUESTS);
     }
 }
