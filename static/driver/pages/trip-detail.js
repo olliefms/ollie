@@ -302,7 +302,6 @@ export async function renderTripDetail(container, tripId) {
 
         if (doc.mime_type === 'application/pdf') {
           const frame = document.createElement('iframe');
-          frame.sandbox = 'allow-same-origin';
           frame.src = blobUrl;
           overlay.appendChild(frame);
         } else if (doc.mime_type && doc.mime_type.startsWith('image/')) {

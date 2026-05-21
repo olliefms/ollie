@@ -1166,7 +1166,10 @@ async function renderDocumentDetailView(id) {
 
     const viewerEl = document.getElementById('doc-viewer');
     const mt = doc.mime_type || '';
-    const canPreview = mt === 'application/pdf' || mt.startsWith('image/') || mt === 'text/plain' || mt === 'text/html';
+    const isPdf = mt === 'application/pdf';
+    const isImage = mt.startsWith('image/');
+    const isPlainText = mt === 'text/plain';
+    const canPreview = isPdf || isImage || isPlainText;
 
     if (!canPreview) {
       const msg = document.createElement('div');
@@ -1180,15 +1183,30 @@ async function renderDocumentDetailView(id) {
         const fileResp = await apiFetch(`${API_BASE}/blob/${id}`);
         if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
         const blob = await fileResp.blob();
-        const url = URL.createObjectURL(blob);
-        activeObjectUrl = url;
-        const iframe = document.createElement('iframe');
-        iframe.src = url;
-        iframe.sandbox = 'allow-same-origin';
-        iframe.style.cssText = 'width:100%;height:600px;border:none;';
-        iframe.title = doc.name || 'preview';
         viewerEl.textContent = '';
-        viewerEl.appendChild(iframe);
+        if (isPdf) {
+          const url = URL.createObjectURL(blob);
+          activeObjectUrl = url;
+          const iframe = document.createElement('iframe');
+          iframe.src = url;
+          iframe.style.cssText = 'width:100%;height:600px;border:none;';
+          iframe.title = doc.name || 'preview';
+          viewerEl.appendChild(iframe);
+        } else if (isImage) {
+          const url = URL.createObjectURL(blob);
+          activeObjectUrl = url;
+          const img = document.createElement('img');
+          img.src = url;
+          img.alt = doc.name || 'preview';
+          img.style.cssText = 'max-width:100%;height:auto;display:block;';
+          viewerEl.appendChild(img);
+        } else if (isPlainText) {
+          const text = await blob.text();
+          const pre = document.createElement('pre');
+          pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;max-height:600px;overflow:auto;margin:0;padding:12px;background:var(--color-surface-2);border-radius:4px;';
+          pre.textContent = text;
+          viewerEl.appendChild(pre);
+        }
       } catch (err) {
         if (err.message !== 'Unauthorized — please sign in again.') {
           viewerEl.textContent = `Preview failed: ${err.message}`;
