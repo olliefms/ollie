@@ -271,6 +271,44 @@ function fmtUSD(n) {
   return `${sign}$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function fmtMiles(n) {
+  if (n === null || n === undefined) return '—';
+  return `${n.toFixed(1)} mi`;
+}
+
+function renderMileageCard(ms) {
+  if (!ms) return '';
+  const originLabel = ms.origin && ms.origin.facility_name
+    ? `${escHtml(ms.origin.facility_name)}${ms.origin.address ? ` — ${escHtml(ms.origin.address)}` : ''}`
+    : null;
+  const originRow = originLabel
+    ? `<div class="detail-item"><div class="detail-item__label">Origin (prev. trip)</div><div class="detail-item__value">${originLabel}</div></div>`
+    : '';
+  const legsRows = (ms.legs || []).map(l =>
+    `<tr><td>${escHtml(l.kind)}</td><td>${escHtml(l.from || '—')} → ${escHtml(l.to || '—')}</td><td style="text-align:right; font-variant-numeric: tabular-nums;">${fmtMiles(l.miles)}</td></tr>`
+  ).join('');
+  const legsTable = legsRows
+    ? `<div class="table-wrapper" style="margin-top: var(--space-3);">
+         <table class="data-table">
+           <thead><tr><th>Leg</th><th>From → To</th><th style="text-align:right;">Miles</th></tr></thead>
+           <tbody>${legsRows}</tbody>
+         </table>
+       </div>`
+    : '';
+  return `
+    <div class="detail-card">
+      <div class="detail-card__title">Mileage</div>
+      <div class="detail-grid">
+        ${originRow}
+        <div class="detail-item"><div class="detail-item__label">Deadhead</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${fmtMiles(ms.deadhead_miles)}</div></div>
+        <div class="detail-item"><div class="detail-item__label">Loaded</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${fmtMiles(ms.loaded_miles)}</div></div>
+        <div class="detail-item"><div class="detail-item__label">Total</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums; font-weight:600;">${fmtMiles(ms.total_miles)}</div></div>
+      </div>
+      ${legsTable}
+    </div>
+  `;
+}
+
 function escHtml(s) {
   if (!s) return '';
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -698,6 +736,7 @@ async function renderLoadDetailView(id) {
       </div>
 
       ${rateHtml}
+      ${renderMileageCard(load.mileage_summary)}
       ${stopsHtml}
       ${tripsHtml}
       ${docsHtml}
@@ -881,6 +920,7 @@ async function renderTripDetailView(id) {
           <div class="detail-item"><div class="detail-item__label">Trailer</div><div class="detail-item__value">${escHtml((trip.trailer_units || []).join(', ') || '—')}</div></div>
         </div>
       </div>
+      ${renderMileageCard(trip.mileage_summary)}
       <div class="detail-card">
         <div class="detail-card__title">Stops</div>
         <div class="table-wrapper">
