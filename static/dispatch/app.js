@@ -237,6 +237,26 @@ function fmtDate(isoStr) {
   }
 }
 
+function fmtArrivalWindow(start, end) {
+  if (!start) return '—';
+  if (!end) {
+    try { return new Date(start).toLocaleString(); } catch { return start; }
+  }
+  try {
+    const s = new Date(start);
+    const e = new Date(end);
+    const sameDay = s.toDateString() === e.toDateString();
+    if (sameDay) {
+      const sStr = s.toLocaleString();
+      const eStr = e.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      return `${sStr}–${eStr}`;
+    }
+    return `${s.toLocaleString()} – ${e.toLocaleString()}`;
+  } catch {
+    return start;
+  }
+}
+
 function fmtBytes(n) {
   if (!n) return '—';
   if (n < 1024) return `${n} B`;
@@ -378,8 +398,8 @@ async function renderLoadsView(params = {}) {
           <td>${badge(load.status)}</td>
           <td>${escHtml(load.customer_name || '—')}</td>
           <td>${escHtml(origin)} → ${escHtml(dest)}</td>
-          <td>${fmtDate(stops[0]?.scheduled_arrive)}</td>
-          <td>${fmtDate(stops[last]?.scheduled_arrive)}</td>
+          <td>${fmtArrivalWindow(stops[0]?.scheduled_arrive, stops[0]?.scheduled_arrive_end)}</td>
+          <td>${fmtArrivalWindow(stops[last]?.scheduled_arrive, stops[last]?.scheduled_arrive_end)}</td>
         </tr>
       `;
       }).join('');
@@ -485,7 +505,7 @@ async function renderLoadDetailView(id) {
           <td>${i + 1}</td>
           <td>${escHtml(stop.facility_name || '—')}</td>
           <td>${escHtml(stop.stop_type || '—')}</td>
-          <td>${fmtDate(stop.scheduled_arrive)}</td>
+          <td>${fmtArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end)}</td>
           <td>${fmtDate(stop.actual_arrive)}</td>
           <td>${fmtDate(stop.actual_depart)}</td>
         </tr>
@@ -755,8 +775,14 @@ async function renderTripsView(params = {}) {
         const lastStop = trip.stops && trip.stops.length > 0 ? trip.stops[trip.stops.length - 1] : null;
         const origin = trip.stops && trip.stops[0] ? (trip.stops[0].name || '—') : '—';
         const dest = lastStop ? (lastStop.name || '—') : '—';
-        const pickup = fmtDate(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null);
-        const delivery = fmtDate(lastStop ? lastStop.scheduled_arrive : null);
+        const pickup = fmtArrivalWindow(
+          trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null,
+          trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive_end : null,
+        );
+        const delivery = fmtArrivalWindow(
+          lastStop ? lastStop.scheduled_arrive : null,
+          lastStop ? lastStop.scheduled_arrive_end : null,
+        );
         return `<tr data-trip-id="${trip.id}" style="cursor:pointer;"><td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td><td>${escHtml(trip.load_number || '—')}</td><td>${badge(trip.status)}</td><td>${escHtml(trip.driver_name || '—')}</td><td>${escHtml(origin)} → ${escHtml(dest)}</td><td>${pickup}</td><td>${delivery}</td></tr>`;
       }).join('');
     }
@@ -801,7 +827,7 @@ async function renderTripDetailView(id) {
         <td>${i + 1}</td>
         <td>${escHtml(stop.name || '—')}</td>
         <td>${escHtml(stop.stop_type || '—')}</td>
-        <td>${fmtDate(stop.scheduled_arrive)}</td>
+        <td>${fmtArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end)}</td>
         <td>${fmtDate(stop.actual_arrive)}</td>
         <td>${fmtDate(stop.actual_depart)}</td>
       </tr>
@@ -861,7 +887,7 @@ async function renderDriverDetailView(id) {
       <tr data-trip-id="${trip.id}" style="cursor:pointer;">
         <td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td>
         <td>${badge(trip.status)}</td>
-        <td>${fmtDate(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null)}</td>
+        <td>${fmtArrivalWindow(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null, trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive_end : null)}</td>
       </tr>
     `).join('');
 
