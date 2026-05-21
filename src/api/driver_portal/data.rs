@@ -741,6 +741,8 @@ mod tests {
             previous_trip_id: None,
             deadhead_miles: None,
             loaded_miles: None,
+            total_miles: None,
+            segment_miles: vec![],
             sequence: 0,
             driver_id: None,
             truck_id: None,

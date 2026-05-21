@@ -146,6 +146,8 @@ pub async fn create_trip(
         previous_trip_id,
         deadhead_miles,
         loaded_miles,
+        total_miles: None,
+        segment_miles: vec![],
         sequence: body.sequence.unwrap_or(0),
         driver_id: body.driver_id,
         truck_id: body.truck_id,
