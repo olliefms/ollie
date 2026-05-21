@@ -270,11 +270,17 @@ export async function renderTripDetail(container, tripId) {
       close.setAttribute('aria-label', 'Close preview');
 
       let blobUrl = null;
+      const onKey = (e) => { if (e.key === 'Escape') teardown(); };
+      const onBackdrop = (e) => { if (e.target === overlay) teardown(); };
       const teardown = () => {
+        document.removeEventListener('keydown', onKey);
+        overlay.removeEventListener('click', onBackdrop);
         if (blobUrl) URL.revokeObjectURL(blobUrl);
         if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
       };
       close.addEventListener('click', teardown);
+      document.addEventListener('keydown', onKey);
+      overlay.addEventListener('click', onBackdrop);
 
       const spinner = document.createElement('div');
       spinner.className = 'doc-preview__spinner';
@@ -296,15 +302,19 @@ export async function renderTripDetail(container, tripId) {
 
         if (doc.mime_type === 'application/pdf') {
           const frame = document.createElement('iframe');
-          frame.sandbox = 'allow-same-origin';
           frame.src = blobUrl;
           overlay.appendChild(frame);
-        } else {
+        } else if (doc.mime_type && doc.mime_type.startsWith('image/')) {
           const img = document.createElement('img');
           img.className = 'doc-preview__img';
           img.alt = doc.name;
           img.src = blobUrl;
           overlay.appendChild(img);
+        } else {
+          const msg = document.createElement('div');
+          msg.className = 'doc-preview__error';
+          msg.textContent = "This document type can't be previewed.";
+          overlay.appendChild(msg);
         }
       } catch (err) {
         spinner.remove();
