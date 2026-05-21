@@ -264,6 +264,13 @@ function fmtBytes(n) {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function fmtUSD(n) {
+  if (n === null || n === undefined) return '—';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  return `${sign}$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 function escHtml(s) {
   if (!s) return '';
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -623,6 +630,34 @@ async function renderLoadDetailView(id) {
       }
     }
 
+    let rateHtml = '';
+    const rateItems = load.rate_items || [];
+    if (rateItems.length > 0) {
+      const rateRows = rateItems.map(r => {
+        const negStyle = r.amount_usd < 0 ? ' style="color: var(--color-danger, #b91c1c);"' : '';
+        return `
+          <tr>
+            <td>${escHtml(r.description || '—')}</td>
+            <td${negStyle} style="text-align:right; font-variant-numeric: tabular-nums;${r.amount_usd < 0 ? ' color: var(--color-danger, #b91c1c);' : ''}">${fmtUSD(r.amount_usd)}</td>
+          </tr>
+        `;
+      }).join('');
+      rateHtml = `
+        <div class="detail-card">
+          <div class="detail-card__title">Rate</div>
+          <div class="table-wrapper">
+            <table class="data-table">
+              <thead><tr><th>Description</th><th style="text-align:right;">Amount</th></tr></thead>
+              <tbody>${rateRows}</tbody>
+              <tfoot>
+                <tr><td style="font-weight:600;">Total</td><td style="text-align:right; font-weight:600; font-variant-numeric: tabular-nums;">${fmtUSD(load.total_rate_usd)}</td></tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
+      `;
+    }
+
     const html = `
       <button class="back-link" id="back-to-loads">← Back to Loads</button>
 
@@ -662,6 +697,7 @@ async function renderLoadDetailView(id) {
         </div>
       </div>
 
+      ${rateHtml}
       ${stopsHtml}
       ${tripsHtml}
       ${docsHtml}
