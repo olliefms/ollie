@@ -19,22 +19,25 @@ Three small, independent doc-preview fixes that share a single review pass. Not 
 
 ## Tasks
 
-### Task 1 — #184 dispatch sandbox
+### Task 1 — #184 dispatch MIME-branch preview
 
-**File:** `static/dispatch/app.js` (line 1187)
+**File:** `static/dispatch/app.js` around line 1167.
 
-Change:
-```js
-iframe.sandbox = '';
-```
-to:
-```js
-iframe.sandbox = 'allow-same-origin';
-```
+**Empirical finding from Playwright (Chrome current build):** the original plan's `sandbox='allow-same-origin'` does NOT render blob PDFs — Chrome's PDF viewer fails under *every* sandbox value (`''`, `'allow-same-origin'`, `'allow-scripts'`, combinations). The only working configuration is no sandbox attribute at all. The proposed simple fix in the issue body is wrong.
 
-`allow-same-origin` is the minimum permission needed to let the browser's native PDF viewer and image renderer initialize. Without `allow-scripts`, scripts in HTML blobs still cannot execute, so XSS from a malicious uploaded HTML file is still blocked.
+To remove the sandbox safely, branch by MIME and use the right element per type:
 
-**Verification:** Open a PDF in the dispatch app via Chrome (Playwright MCP). Confirm the iframe renders. Manual user check in Brave is expected to still fail (documented limitation).
+- `application/pdf` → `<iframe>` with no sandbox attribute. PDFs cannot execute scripts, so the parent's session is not exposed even though a blob URL inherits the parent's origin.
+- `image/*` → `<img>` element. No iframe needed.
+- `text/plain` → `<pre>` with `textContent` (XSS-safe by definition).
+- `text/html` → dropped from the canPreview list. It is the only previewable type that can execute scripts, and we have no safe way to render it inline now. Falls through to the "use Download" message.
+
+This is a small scope creep from the original plan but is the correct, minimal fix that actually addresses the bug.
+
+**Verification:** Playwright MCP run during the sprint confirmed:
+- iframe with no sandbox → PDF renders correctly in Chrome.
+- iframe with `sandbox=''` / `'allow-same-origin'` → broken-doc icon (reproduces the bug).
+- iframe with `'allow-scripts'` variants → blank / no render.
 
 ### Task 2 — #205 driver MIME fallback
 
@@ -63,6 +66,10 @@ if (doc.mime_type === 'application/pdf') {
 ```
 
 **Verification:** Unit covered by inspection — no driver-app tests exist for this code path. Manual: trigger preview with a non-image, non-pdf doc — expect the unsupported message, not a broken `<img>`.
+
+### Task 2b — Driver app PDF preview parity
+
+While we are in `static/driver/pages/trip-detail.js openDocPreview`, the existing PDF branch also sets `frame.sandbox = 'allow-same-origin'`, which the Playwright investigation showed is broken in current Chrome — drivers see the same broken-doc icon for PDFs that dispatch users do. Remove the line. The driver PDF preview becomes a plain `<iframe>` with no sandbox, matching the dispatch fix and resolving the latent glitch the user reported.
 
 ### Task 3 — #206 driver Esc + backdrop dismiss
 
