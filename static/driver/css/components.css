@@ -535,6 +535,21 @@
   border-color: var(--color-border);
 }
 
+.stop-node--origin .stop-node__marker {
+  background: var(--color-muted, #94a3b8);
+}
+
+.stop-timeline__leg {
+  font-size: var(--text-xs, 0.75rem);
+  color: var(--color-text-muted);
+  padding: var(--space-1, 4px) 0 var(--space-1, 4px) calc(var(--stop-marker-size, 12px) + var(--space-3, 12px));
+}
+
+.trip-detail-mileage {
+  font-size: var(--text-sm, 0.875rem);
+  color: var(--color-text-muted);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
