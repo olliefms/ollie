@@ -91,7 +91,7 @@ pub async fn create_api_key(
         return Err(AppError::BadRequest("label must be 1-64 characters".into()));
     }
     let expires_in_days = req.expires_in_days.unwrap_or(365);
-    if expires_in_days < 1 || expires_in_days > 365 {
+    if !(1..=365).contains(&expires_in_days) {
         return Err(AppError::BadRequest("expires_in_days must be between 1 and 365".into()));
     }
 
