@@ -98,6 +98,7 @@ pub struct DriverTripDetailResponse {
     pub trailer_units: Vec<String>,
     pub load: Option<DriverTripLoadSummary>,
     pub stops: Vec<DriverTripStopSummary>,
+    pub mileage_summary: crate::models::trip::MileageSummary,
 }
 
 #[derive(Serialize)]
@@ -534,6 +535,8 @@ pub async fn trip_detail(
         })
         .collect();
 
+    let mileage_summary = crate::api::mileage_summary::build_mileage_summary(&state, &trip).await;
+
     Ok(Json(DriverTripDetailResponse {
         id: trip.id,
         trip_number: trip.trip_number,
@@ -542,6 +545,7 @@ pub async fn trip_detail(
         trailer_units,
         load,
         stops,
+        mileage_summary,
     }))
 }
 
