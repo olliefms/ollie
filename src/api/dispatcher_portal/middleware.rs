@@ -4,14 +4,18 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use chrono::Utc;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
     models::DispatcherStatus,
 };
-use chrono::Utc;
 
-pub async fn require_dispatcher_jwt(
+use super::jwt::{decode_dispatcher_jwt, DispatcherClaims};
+
+pub async fn require_dispatcher_auth(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -24,12 +28,20 @@ pub async fn require_dispatcher_jwt(
         .ok_or(AppError::Unauthorized)?
         .to_owned();
 
-    let claims = crate::api::dispatcher_portal::jwt::decode_dispatcher_jwt(
-        &token,
-        &state.config.dispatcher_jwt_secret,
-    )?;
+    let claims = if token.starts_with("olld_") {
+        validate_api_key(&state, &token).await?
+    } else {
+        validate_jwt_token(&state, &token).await?
+    };
 
-    let dispatcher_id = claims.dispatcher_id.parse::<uuid::Uuid>()
+    request.extensions_mut().insert(claims);
+    Ok(next.run(request).await)
+}
+
+async fn validate_jwt_token(state: &AppState, token: &str) -> Result<DispatcherClaims, AppError> {
+    let claims = decode_dispatcher_jwt(token, &state.config.dispatcher_jwt_secret)?;
+
+    let dispatcher_id: Uuid = claims.dispatcher_id.parse()
         .map_err(|_| AppError::Unauthorized)?;
 
     let creds = state.db.get_dispatcher_credentials(dispatcher_id).await?
@@ -52,8 +64,56 @@ pub async fn require_dispatcher_jwt(
         }
     }
 
-    request.extensions_mut().insert(claims);
-    Ok(next.run(request).await)
+    Ok(claims)
+}
+
+async fn validate_api_key(state: &AppState, token: &str) -> Result<DispatcherClaims, AppError> {
+    let hash = hex::encode(Sha256::digest(token.as_bytes()));
+
+    let key = state.db.get_dispatcher_api_key_by_hash(&hash).await?
+        .ok_or(AppError::Unauthorized)?;
+
+    if key.revoked_at.is_some() || key.expires_at <= Utc::now() {
+        return Err(AppError::Unauthorized);
+    }
+
+    let dispatcher = state.db.get_dispatcher_by_id(key.dispatcher_id).await
+        .map_err(|_| AppError::Unauthorized)?;
+
+    if dispatcher.status == DispatcherStatus::Inactive {
+        return Err(AppError::Unauthorized);
+    }
+
+    let creds = state.db.get_dispatcher_credentials(key.dispatcher_id).await?
+        .ok_or(AppError::Unauthorized)?;
+
+    if let Some(locked_until) = creds.locked_until {
+        if locked_until > Utc::now() {
+            return Err(AppError::Unauthorized);
+        }
+    }
+
+    let key_for_touch = key.clone();
+    let db_for_touch = state.db.clone();
+    tokio::spawn(async move {
+        let mut k = key_for_touch;
+        k.last_used_at = Some(Utc::now());
+        if let Err(e) = db_for_touch.upsert_dispatcher_api_key(&k).await {
+            tracing::warn!(key_id = %k.id, err = ?e, "failed to update api key last_used_at");
+        }
+    });
+
+    Ok(DispatcherClaims {
+        dispatcher_id: key.dispatcher_id.to_string(),
+        token_version: creds.token_version,
+        iss: "ollie-dispatcher".into(),
+        aud: "ollie-dispatcher".into(),
+        exp: 0,
+        iat: 0,
+        kid: "api-key".into(),
+        api_key_id: Some(key.id),
+        api_key_label: Some(key.label),
+    })
 }
 
 #[cfg(test)]
@@ -62,9 +122,7 @@ mod tests {
     use axum_test::TestServer;
     use crate::error::AppError;
 
-    // Lightweight stand-in for the real middleware: checks Authorization header only,
-    // without needing a real AppState. Tests the header extraction path.
-    async fn stub_jwt_middleware(
+    async fn stub_auth_middleware(
         req: axum::extract::Request,
         next: axum::middleware::Next,
     ) -> Result<axum::response::Response, AppError> {
@@ -84,7 +142,7 @@ mod tests {
     fn protected_app() -> Router {
         Router::new()
             .route("/protected", get(|| async { "ok" }))
-            .route_layer(from_fn(stub_jwt_middleware))
+            .route_layer(from_fn(stub_auth_middleware))
     }
 
     fn open_app() -> Router {
@@ -93,15 +151,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_require_dispatcher_jwt_missing_header() {
+    async fn test_require_dispatcher_auth_missing_header() {
         let server = TestServer::new(protected_app()).unwrap();
         let resp = server.get("/protected").await;
         assert_eq!(resp.status_code(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn test_require_dispatcher_jwt_invalid_token() {
-        // "Bearer " with empty token is rejected (simulates garbage token)
+    async fn test_require_dispatcher_auth_invalid_token() {
         let server = TestServer::new(protected_app()).unwrap();
         let resp = server.get("/protected")
             .add_header(axum::http::header::AUTHORIZATION, "Bearer ")
@@ -111,7 +168,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_auth_routes_unaffected() {
-        // Routes not behind the middleware don't require JWT
         let server = TestServer::new(open_app()).unwrap();
         let resp = server.get("/open").await;
         assert_eq!(resp.status_code(), StatusCode::OK);

@@ -63,7 +63,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/mcp", post(mcp::handle))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            middleware::require_dispatcher_jwt,
+            middleware::require_dispatcher_auth,
         ))
 }
 
