@@ -3,7 +3,7 @@ use crate::{
     ai::embed::embed_text,
     error::AppError,
     models::{
-        load::{LoadRecord, StopType},
+        load::StopType,
         trip::{CreateTripRequest, TripListResponse, TripRecord, TripStatus, TripStop, TripStopType, UpdateTripRequest},
     },
     routing::RoutingClient,
@@ -125,15 +125,8 @@ pub async fn create_trip(
         },
     };
 
-    // Compute deadhead and loaded miles via ORS (null on error or missing coords)
-    let deadhead_miles = match previous_trip_id {
-        Some(prev_id) => compute_deadhead_miles(&state.db, &state.ors, prev_id, stops.first()).await,
-        None => None,
-    };
-    let loaded_miles = match &load {
-        Some(load) => compute_loaded_miles(&state.db, &state.ors, load).await,
-        None => None,
-    };
+    // Compute deadhead + loaded + total + per-leg via a single ORS call.
+    let mileage = compute_trip_mileage(&state.db, &state.ors, previous_trip_id, &stops).await;
 
     // Denormalize load_number
     let load_number = load.as_ref().map(|l| l.load_number.clone());
@@ -144,10 +137,10 @@ pub async fn create_trip(
         load_id: body.load_id,
         load_number,
         previous_trip_id,
-        deadhead_miles,
-        loaded_miles,
-        total_miles: None,
-        segment_miles: vec![],
+        deadhead_miles: mileage.deadhead_miles,
+        loaded_miles: mileage.loaded_miles,
+        total_miles: mileage.total_miles,
+        segment_miles: mileage.segment_miles.clone(),
         sequence: body.sequence.unwrap_or(0),
         driver_id: body.driver_id,
         truck_id: body.truck_id,
@@ -285,36 +278,83 @@ pub fn router() -> Router<AppState> {
         .route("/api/v1/trips/:id", delete(delete_trip))
 }
 
-async fn compute_deadhead_miles(
-    db: &crate::db::DbClient,
-    ors: &RoutingClient,
-    prev_trip_id: Uuid,
-    first_stop: Option<&TripStop>,
-) -> Option<f64> {
-    let first_stop = first_stop?;
-    let curr_fac_id = first_stop.facility_id?;
-    let prev_trip = db.get_trip(prev_trip_id).await.ok()?;
-    let prev_last_fac_id = prev_trip.stops.last()?.facility_id?;
-    let facilities = db.batch_get_facilities(&[prev_last_fac_id, curr_fac_id]).await.ok()?;
-    let prev_fac = facilities.get(&prev_last_fac_id)?;
-    let curr_fac = facilities.get(&curr_fac_id)?;
-    ors.calculate_route_miles(&[(prev_fac.lat?, prev_fac.lng?), (curr_fac.lat?, curr_fac.lng?)]).await
+struct ComputedMileage {
+    deadhead_miles: Option<f64>,
+    loaded_miles: Option<f64>,
+    total_miles: Option<f64>,
+    /// Per-segment miles in the order [deadhead, loaded_legs...] when deadhead exists,
+    /// or just [loaded_legs...] when there's no previous trip.
+    segment_miles: Vec<f64>,
+    /// Resolved previous-trip last facility (deadhead origin), if available.
+    deadhead_origin_facility_id: Option<Uuid>,
 }
 
-async fn compute_loaded_miles(
+async fn compute_trip_mileage(
     db: &crate::db::DbClient,
     ors: &RoutingClient,
-    load: &LoadRecord,
-) -> Option<f64> {
-    if load.stops.len() < 2 { return None; }
-    let fac_ids: Vec<Uuid> = load.stops.iter().map(|s| s.facility_id).collect();
-    let facilities = db.batch_get_facilities(&fac_ids).await.ok()?;
-    let waypoints: Vec<(f64, f64)> = load.stops.iter()
-        .filter_map(|s| {
-            let f = facilities.get(&s.facility_id)?;
-            Some((f.lat?, f.lng?))
-        })
-        .collect();
-    if waypoints.len() != load.stops.len() { return None; }
-    ors.calculate_route_miles(&waypoints).await
+    previous_trip_id: Option<Uuid>,
+    trip_stops: &[TripStop],
+) -> ComputedMileage {
+    let mut empty = ComputedMileage {
+        deadhead_miles: None, loaded_miles: None, total_miles: None,
+        segment_miles: vec![], deadhead_origin_facility_id: None,
+    };
+    if trip_stops.is_empty() { return empty; }
+
+    // Resolve deadhead origin facility if a previous trip exists.
+    let deadhead_origin_fac: Option<Uuid> = match previous_trip_id {
+        Some(prev_id) => db.get_trip(prev_id).await.ok()
+            .and_then(|t| t.stops.last().and_then(|s| s.facility_id)),
+        None => None,
+    };
+    empty.deadhead_origin_facility_id = deadhead_origin_fac;
+
+    // Build the waypoint list: [deadhead_origin?, stop_0, stop_1, ...]
+    let mut fac_ids: Vec<Uuid> = Vec::new();
+    if let Some(fid) = deadhead_origin_fac { fac_ids.push(fid); }
+    for s in trip_stops {
+        match s.facility_id {
+            Some(fid) => fac_ids.push(fid),
+            None => return empty,
+        }
+    }
+    if fac_ids.len() < 2 { return empty; }
+
+    let facilities = match db.batch_get_facilities(&fac_ids).await {
+        Ok(f) => f,
+        Err(_) => return empty,
+    };
+
+    let mut waypoints: Vec<(f64, f64)> = Vec::with_capacity(fac_ids.len());
+    for fid in &fac_ids {
+        let f = match facilities.get(fid) { Some(f) => f, None => return empty };
+        let (lat, lng) = match (f.lat, f.lng) { (Some(la), Some(lo)) => (la, lo), _ => return empty };
+        waypoints.push((lat, lng));
+    }
+
+    let route = match ors.calculate_route_with_segments(&waypoints).await {
+        Some(r) => r,
+        None => return empty,
+    };
+
+    let has_deadhead = deadhead_origin_fac.is_some();
+    let (deadhead, loaded_segs): (Option<f64>, &[f64]) = if has_deadhead {
+        (route.segment_miles.first().copied(), &route.segment_miles[1..])
+    } else {
+        (None, &route.segment_miles[..])
+    };
+    let loaded: Option<f64> = if loaded_segs.is_empty() {
+        None
+    } else {
+        Some(loaded_segs.iter().sum())
+    };
+    let total = Some(route.total_miles);
+
+    ComputedMileage {
+        deadhead_miles: deadhead,
+        loaded_miles: loaded,
+        total_miles: total,
+        segment_miles: route.segment_miles,
+        deadhead_origin_facility_id: deadhead_origin_fac,
+    }
 }
