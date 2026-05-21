@@ -1184,7 +1184,7 @@ async function renderDocumentDetailView(id) {
         activeObjectUrl = url;
         const iframe = document.createElement('iframe');
         iframe.src = url;
-        iframe.sandbox = '';
+        iframe.sandbox = 'allow-same-origin';
         iframe.style.cssText = 'width:100%;height:600px;border:none;';
         iframe.title = doc.name || 'preview';
         viewerEl.textContent = '';
