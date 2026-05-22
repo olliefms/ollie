@@ -90,6 +90,23 @@ impl DbClient {
         self.upsert_trip(&record).await
     }
 
+    pub async fn update_trip_mileage(
+        &self, id: Uuid,
+        deadhead_miles: Option<f64>,
+        loaded_miles: Option<f64>,
+        total_miles: Option<f64>,
+        segment_miles: Vec<f64>,
+    ) -> Result<TripRecord, AppError> {
+        let mut record = self.get_trip(id).await?;
+        record.deadhead_miles = deadhead_miles;
+        record.loaded_miles = loaded_miles;
+        record.total_miles = total_miles;
+        record.segment_miles = segment_miles;
+        record.updated_at = Utc::now();
+        self.upsert_trip(&record).await?;
+        Ok(record)
+    }
+
     pub async fn update_trip_metadata(
         &self, id: Uuid,
         load_id: Option<Uuid>,

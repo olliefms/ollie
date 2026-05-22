@@ -3731,3 +3731,54 @@ async fn test_api_key_20_key_cap() {
         .await;
     assert_eq!(resp.status_code(), 429);
 }
+
+// ── compute_and_persist_mileage helper (Task 3, #259 prep) ─────────────────────────────────
+
+#[tokio::test]
+async fn test_compute_and_persist_mileage_returns_ors_unavailable_when_coords_missing() {
+    // Trip with stops on facilities that have no lat/lng → helper returns 409 OrsRoutingUnavailable.
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let fac_id = create_test_facility(&server, "Dock A", "Somewhere, US").await;
+    let fac2_id = create_test_facility(&server, "Dock B", "Elsewhere, US").await;
+    let load_id = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                 "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                 "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": fac2_id, "scheduled_arrive": "2026-05-11T08:00:00",
+                 "timezone": "America/Chicago"},
+            ],
+            "rate_items": [{"description": "LH", "amount_usd": 100.0}]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201);
+    let trip_id_str = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
+
+    let result = ollie::api::trips::compute_and_persist_mileage(&state, trip_id).await;
+    match result {
+        Err(ollie::error::AppError::OrsRoutingUnavailable(_)) => {}
+        other => panic!("expected OrsRoutingUnavailable, got {other:?}"),
+    }
+
+    // DB unchanged: still no miles
+    let trip_after = state.db.get_trip(trip_id).await.unwrap();
+    assert!(trip_after.total_miles.is_none());
+}
+
+#[tokio::test]
+async fn test_compute_and_persist_mileage_not_found() {
+    let (_server, _b, _d, _rx, state) = test_server_with_state().await;
+    let result = ollie::api::trips::compute_and_persist_mileage(&state, uuid::Uuid::new_v4()).await;
+    assert!(matches!(result, Err(ollie::error::AppError::NotFound)));
+}

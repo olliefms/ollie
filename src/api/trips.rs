@@ -369,3 +369,42 @@ async fn compute_trip_mileage(
         deadhead_origin_facility_id: deadhead_origin_fac,
     }
 }
+
+/// Recomputes mileage for an existing trip and persists the result via `merge_insert`.
+/// Loads the trip, resolves the previous trip's last facility + the trip's own stop
+/// facilities to coordinates, calls ORS, and writes `deadhead_miles`, `loaded_miles`,
+/// `total_miles`, `segment_miles`. Returns the freshly built `MileageSummary`.
+///
+/// Returns `AppError::OrsRoutingUnavailable` (409) when ORS returns no route OR a
+/// required facility has no lat/lng. Returns `AppError::NotFound` when the trip
+/// does not exist.
+pub async fn compute_and_persist_mileage(
+    state: &crate::AppState,
+    trip_id: Uuid,
+) -> Result<crate::models::trip::MileageSummary, AppError> {
+    let trip = state.db.get_trip(trip_id).await?;
+    let computed = compute_trip_mileage(&state.db, &state.ors, trip.previous_trip_id, &trip.stops).await;
+
+    // Detect failure: if a previous trip exists OR stops exist with potential routing,
+    // but we got no segment data back, ORS or coords were unavailable.
+    let expected_segments = trip.stops.len()
+        + usize::from(trip.previous_trip_id.is_some());
+    let have_route = !computed.segment_miles.is_empty()
+        && computed.total_miles.is_some();
+
+    if !have_route && expected_segments >= 2 {
+        return Err(AppError::OrsRoutingUnavailable(
+            "could not resolve route — ORS unavailable or facility coordinates missing".into(),
+        ));
+    }
+
+    let updated = state.db.update_trip_mileage(
+        trip_id,
+        computed.deadhead_miles,
+        computed.loaded_miles,
+        computed.total_miles,
+        computed.segment_miles,
+    ).await?;
+
+    Ok(crate::api::mileage_summary::build_mileage_summary(state, &updated).await)
+}
