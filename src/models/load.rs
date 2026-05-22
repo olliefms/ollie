@@ -133,6 +133,13 @@ pub struct Stop {
     pub blob_ids: Vec<Uuid>,
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Response-only: RFC 3339 UTC derived from `actual_arrive` + `timezone`.
+    /// Never persisted; populated only by response builders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_arrive_utc: Option<String>,
+    /// Response-only: RFC 3339 UTC derived from `actual_depart` + `timezone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_depart_utc: Option<String>,
 }
 
 impl Stop {
@@ -165,6 +172,25 @@ pub(crate) fn parse_stop_time(s: &str, tz: Option<&str>) -> Option<DateTime<Utc>
         }
         None => s.parse::<DateTime<Utc>>().ok(),
     }
+}
+
+/// Convert a stored stop-time string to an RFC 3339 UTC string.
+///
+/// * Naive `2026-05-22T14:30:00` + `Some("America/Chicago")` → `"2026-05-22T19:30:00+00:00"`.
+/// * Already-UTC `2026-04-24T03:20:00Z` (legacy, tz=None or tz=Some): parsed as UTC and re-emitted.
+/// * Offset-suffixed `...+05:00`: parsed and converted to UTC.
+/// * Anything unparseable → `None` (caller treats as "not derivable").
+pub fn naive_local_to_utc(s: &str, tz: Option<&str>) -> Option<String> {
+    use chrono::TimeZone as _;
+    // Try fully-qualified parse first (handles trailing Z or offset).
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc).to_rfc3339());
+    }
+    let tz_str = tz?;
+    let tz: chrono_tz::Tz = tz_str.parse().ok()?;
+    let naive = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S").ok()?;
+    let local = tz.from_local_datetime(&naive).single()?;
+    Some(local.with_timezone(&Utc).to_rfc3339())
 }
 
 /// Validates that `s` is a naive local datetime parseable in `tz_str`, with no UTC offset.
@@ -235,6 +261,10 @@ pub struct StopResponse {
     pub notes: Option<String>,
     pub blob_ids: Vec<Uuid>,
     pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_arrive_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_depart_utc: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -525,6 +555,8 @@ mod tests {
             notes: None,
             blob_ids: vec![],
             timezone: None,
+            actual_arrive_utc: None,
+            actual_depart_utc: None,
         }
     }
 
@@ -658,5 +690,56 @@ mod tests {
     fn test_parse_stop_time_utc_string_without_timezone() {
         let got = parse_stop_time("2026-04-27T10:15:00Z", None);
         assert!(got.is_some());
+    }
+
+    #[test]
+    fn test_naive_local_to_utc_naive_plus_tz() {
+        // 14:30 in America/Chicago (CDT, UTC-5 in May) → 19:30 UTC
+        let got = naive_local_to_utc("2026-05-22T14:30:00", Some("America/Chicago")).unwrap();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&got).unwrap();
+        assert_eq!(parsed.with_timezone(&Utc).to_rfc3339(),
+                   "2026-05-22T19:30:00+00:00");
+    }
+
+    #[test]
+    fn test_naive_local_to_utc_legacy_z_with_no_tz() {
+        // Backwards compat: UTC-suffixed string with timezone=None still parses.
+        let got = naive_local_to_utc("2026-04-24T03:20:00Z", None).unwrap();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&got).unwrap();
+        assert_eq!(parsed.with_timezone(&Utc).to_rfc3339(),
+                   "2026-04-24T03:20:00+00:00");
+    }
+
+    #[test]
+    fn test_naive_local_to_utc_offset_suffix() {
+        let got = naive_local_to_utc("2026-05-22T14:30:00+05:00", None).unwrap();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&got).unwrap();
+        assert_eq!(parsed.with_timezone(&Utc).to_rfc3339(),
+                   "2026-05-22T09:30:00+00:00");
+    }
+
+    #[test]
+    fn test_naive_local_to_utc_unparseable_returns_none() {
+        assert!(naive_local_to_utc("garbage", Some("America/Chicago")).is_none());
+        assert!(naive_local_to_utc("garbage", None).is_none());
+        // Naive string with no tz → can't derive UTC.
+        assert!(naive_local_to_utc("2026-05-22T14:30:00", None).is_none());
+    }
+
+    #[test]
+    fn test_validate_stop_time_str_rejects_z_when_tz_set() {
+        let err = validate_stop_time_str("2026-05-22T14:30:00Z", "America/Chicago", "actual_arrive");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_validate_stop_time_str_rejects_offset_when_tz_set() {
+        let err = validate_stop_time_str("2026-05-22T14:30:00+05:00", "America/Chicago", "actual_arrive");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn test_validate_stop_time_str_accepts_naive_when_tz_set() {
+        assert!(validate_stop_time_str("2026-05-22T14:30:00", "America/Chicago", "actual_arrive").is_ok());
     }
 }

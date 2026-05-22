@@ -504,6 +504,8 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             notes: input.notes,
             blob_ids: input.blob_ids,
             timezone: Some(input.timezone),
+            actual_arrive_utc: None,
+            actual_depart_utc: None,
         });
     }
 
@@ -523,6 +525,10 @@ async fn build_detail_response(
 
     let stops: Vec<StopResponse> = record.stops.iter().map(|stop| {
         let facility = facilities.get(&stop.facility_id);
+        let actual_arrive_utc = stop.actual_arrive.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, stop.timezone.as_deref()));
+        let actual_depart_utc = stop.actual_depart.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, stop.timezone.as_deref()));
         StopResponse {
             sequence: stop.sequence,
             stop_type: stop.stop_type.clone(),
@@ -543,10 +549,13 @@ async fn build_detail_response(
             notes: stop.notes.clone(),
             blob_ids: stop.blob_ids.clone(),
             timezone: stop.timezone.clone(),
+            actual_arrive_utc,
+            actual_depart_utc,
         }
     }).collect();
 
     let total_rate_usd = record.total_rate_usd();
+    let mileage_summary = crate::api::mileage_summary::build_load_mileage_summary(state, record.id).await;
     Ok(LoadDetailResponse {
         id: record.id, load_number: record.load_number, status: record.status,
         customer_name: record.customer_name, customer_ref: record.customer_ref,
@@ -556,6 +565,6 @@ async fn build_detail_response(
         invoice_number: record.invoice_number, invoice_date: record.invoice_date,
         cancellation_reason: record.cancellation_reason,
         created_at: record.created_at, updated_at: record.updated_at,
-        mileage_summary: None,
+        mileage_summary,
     })
 }

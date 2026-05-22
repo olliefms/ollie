@@ -67,6 +67,25 @@ pub struct TripStop {
     pub notes: Option<String>,
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Response-only: RFC 3339 UTC derived from `actual_arrive` + `timezone`.
+    /// Never persisted; populated only by response builders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_arrive_utc: Option<String>,
+    /// Response-only: RFC 3339 UTC derived from `actual_depart` + `timezone`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_depart_utc: Option<String>,
+}
+
+impl TripStop {
+    /// Populate `actual_arrive_utc` and `actual_depart_utc` from the naive +
+    /// timezone fields (or from an already-UTC suffix for legacy rows).
+    /// Call only on response paths — never on persisted records.
+    pub fn fill_utc_fields(&mut self) {
+        self.actual_arrive_utc = self.actual_arrive.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, self.timezone.as_deref()));
+        self.actual_depart_utc = self.actual_depart.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, self.timezone.as_deref()));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -350,6 +369,8 @@ mod tests {
                     detention_grace_minutes: None,
                     notes: None,
                     timezone: None,
+                    actual_arrive_utc: None,
+                    actual_depart_utc: None,
                 },
             ],
             notes: Some("urgent".into()),

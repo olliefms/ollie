@@ -87,6 +87,8 @@ pub async fn create_trip(
                 detention_grace_minutes: s.detention_grace_minutes,
                 notes: s.notes.clone(),
                 timezone: s.timezone.clone(),
+                actual_arrive_utc: None,
+                actual_depart_utc: None,
             }).collect()
         } else {
             vec![]
@@ -157,6 +159,7 @@ pub async fn create_trip(
     record.embedding = embed_text(&state.ai, &record.embedding_text()).await.ok();
 
     state.db.insert_trip(&record).await?;
+    for s in &mut record.stops { s.fill_utc_fields(); }
     Ok((StatusCode::CREATED, Json(record)))
 }
 
@@ -178,9 +181,12 @@ pub async fn list_trips(
     let _limit = q.limit.unwrap_or(20).min(100);
     let _offset = q.offset.unwrap_or(0);
 
-    let items = state.db.list_trips(
+    let mut items = state.db.list_trips(
         q.load_id, q.driver_id, q.status.as_deref(),
     ).await?;
+    for it in &mut items {
+        for s in &mut it.stops { s.fill_utc_fields(); }
+    }
     let returned = items.len();
     Ok(Json(TripListResponse { returned, items }))
 }
@@ -203,12 +209,13 @@ pub async fn get_trip(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let record = state.db.get_trip(id).await?;
+    let mut record = state.db.get_trip(id).await?;
+    for s in &mut record.stops { s.fill_utc_fields(); }
     Ok(Json(record))
 }
 
 #[utoipa::path(
-    put,
+    patch,
     path = "/api/v1/trips/{id}",
     params(
         ("id" = Uuid, Path, description = "Trip UUID")
@@ -240,9 +247,10 @@ pub async fn update_trip(
     let embed_text_str = format!("{trip_number} {stop_names} {notes_str}");
     let embedding = embed_text(&state.ai, &embed_text_str).await.ok();
 
-    let record = state.db.update_trip_metadata(
+    let mut record = state.db.update_trip_metadata(
         id, body.load_id, body.sequence, body.stops, body.notes, embedding,
     ).await?;
+    for s in &mut record.stops { s.fill_utc_fields(); }
     Ok(Json(record))
 }
 
@@ -360,4 +368,43 @@ async fn compute_trip_mileage(
         segment_miles: route.segment_miles,
         deadhead_origin_facility_id: deadhead_origin_fac,
     }
+}
+
+/// Recomputes mileage for an existing trip and persists the result via `merge_insert`.
+/// Loads the trip, resolves the previous trip's last facility + the trip's own stop
+/// facilities to coordinates, calls ORS, and writes `deadhead_miles`, `loaded_miles`,
+/// `total_miles`, `segment_miles`. Returns the freshly built `MileageSummary`.
+///
+/// Returns `AppError::OrsRoutingUnavailable` (409) when ORS returns no route OR a
+/// required facility has no lat/lng. Returns `AppError::NotFound` when the trip
+/// does not exist.
+pub async fn compute_and_persist_mileage(
+    state: &crate::AppState,
+    trip_id: Uuid,
+) -> Result<crate::models::trip::MileageSummary, AppError> {
+    let trip = state.db.get_trip(trip_id).await?;
+    let computed = compute_trip_mileage(&state.db, &state.ors, trip.previous_trip_id, &trip.stops).await;
+
+    // Detect failure: if a previous trip exists OR stops exist with potential routing,
+    // but we got no segment data back, ORS or coords were unavailable.
+    let expected_segments = trip.stops.len()
+        + usize::from(trip.previous_trip_id.is_some());
+    let have_route = !computed.segment_miles.is_empty()
+        && computed.total_miles.is_some();
+
+    if !have_route && expected_segments >= 2 {
+        return Err(AppError::OrsRoutingUnavailable(
+            "could not resolve route — ORS unavailable or facility coordinates missing".into(),
+        ));
+    }
+
+    let updated = state.db.update_trip_mileage(
+        trip_id,
+        computed.deadhead_miles,
+        computed.loaded_miles,
+        computed.total_miles,
+        computed.segment_miles,
+    ).await?;
+
+    Ok(crate::api::mileage_summary::build_mileage_summary(state, &updated).await)
 }

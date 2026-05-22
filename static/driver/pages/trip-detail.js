@@ -126,8 +126,6 @@ export async function renderTripDetail(container, tripId) {
 
     if (data.stops && data.stops.length > 0) {
       const ms = data.mileage_summary || null;
-      const header = renderMileageHeader(ms);
-      if (header) stopsSection.appendChild(header);
 
       const stopTimeline = document.createElement('div');
       stopTimeline.className = 'stop-timeline';
@@ -154,6 +152,9 @@ export async function renderTripDetail(container, tripId) {
       });
 
       stopsSection.appendChild(stopTimeline);
+
+      const mileageRow = renderMileageInlineRow(ms);
+      if (mileageRow) stopsSection.appendChild(mileageRow);
     } else {
       const emptyMsg = document.createElement('div');
       emptyMsg.className = 'trip-detail-empty';
@@ -390,22 +391,23 @@ export async function renderTripDetail(container, tripId) {
   page.appendChild(renderBottomNav('trips'));
 }
 
+function fmtMilesNum(n) {
+  if (n === null || n === undefined) return '—';
+  return n.toFixed(1);
+}
+
 function fmtMiles(n) {
   if (n === null || n === undefined) return '—';
   return `${n.toFixed(1)} mi`;
 }
 
-function renderMileageHeader(ms) {
+function renderMileageInlineRow(ms) {
   if (!ms) return null;
-  const section = document.createElement('div');
-  section.className = 'trip-detail-section trip-detail-mileage';
-
-  const totalRow = document.createElement('div');
-  totalRow.className = 'trip-detail-row';
-  totalRow.textContent = `Total: ${fmtMiles(ms.total_miles)} (${fmtMiles(ms.deadhead_miles)} deadhead + ${fmtMiles(ms.loaded_miles)} loaded)`;
-  section.appendChild(totalRow);
-
-  return section;
+  const row = document.createElement('div');
+  row.className = 'trip-detail-mileage-row';
+  row.textContent =
+    `Miles: ${fmtMilesNum(ms.deadhead_miles)} deadhead + ${fmtMilesNum(ms.loaded_miles)} loaded = ${fmtMilesNum(ms.total_miles)} total`;
+  return row;
 }
 
 function renderOriginNode(origin) {
@@ -419,11 +421,10 @@ function renderOriginNode(origin) {
   content.className = 'stop-node__content';
   const label = document.createElement('span');
   label.className = 'stop-node__type';
-  label.textContent = 'Starting from';
+  label.textContent = 'ORIGIN';
   const name = document.createElement('span');
   name.className = 'stop-node__name';
-  const place = origin.address ? `${origin.facility_name} — ${origin.address}` : origin.facility_name;
-  name.textContent = place;
+  name.textContent = origin.facility_name;
   const title = document.createElement('div');
   title.className = 'stop-node__title';
   title.appendChild(label);
@@ -432,6 +433,22 @@ function renderOriginNode(origin) {
   content.appendChild(title);
   node.appendChild(content);
   return node;
+}
+
+function formatArrivalWindow(start, end, tz) {
+  if (!start) return '—';
+  const startStr = formatStopTime(start, tz);
+  if (!end) return startStr;
+  // For the end, just show time (same day assumed for window).
+  const opts = { hour: '2-digit', minute: '2-digit' };
+  if (tz) {
+    try {
+      opts.timeZone = tz;
+      const endStr = new Date(end).toLocaleString('en-US', opts);
+      return `${startStr} – ${endStr}`;
+    } catch { /* fallthrough */ }
+  }
+  return `${startStr} – ${new Date(end).toLocaleString('en-US', opts)}`;
 }
 
 function renderLegBadge(miles) {
@@ -477,10 +494,17 @@ function renderStopNode(stop, tripId) {
 
   const time = document.createElement('div');
   time.className = 'stop-node__time';
-  time.textContent = formatStopTime(stop.scheduled_arrive, stop.timezone);
+  time.textContent = formatArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end, stop.timezone);
 
   content.appendChild(title);
   content.appendChild(time);
+
+  if (stop.address) {
+    const addr = document.createElement('div');
+    addr.className = 'stop-node__address';
+    addr.textContent = stop.address;
+    content.appendChild(addr);
+  }
 
   node.addEventListener('click', () => {
     navigate(`/driver/trips/${tripId}/stops/${stop.sequence}`);

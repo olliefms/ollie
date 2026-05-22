@@ -25,6 +25,8 @@ pub enum AppError {
     UnprocessableEntity(String),
     #[error("too many requests")]
     TooManyRequests,
+    #[error("ORS routing unavailable: {0}")]
+    OrsRoutingUnavailable(String),
     #[error("facility resolution required")]
     FacilityResolution(Box<Vec<crate::models::FacilityResolutionResponse>>),
 }
@@ -43,6 +45,7 @@ impl IntoResponse for AppError {
             Self::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            Self::OrsRoutingUnavailable(_) => StatusCode::CONFLICT,
             Self::FacilityResolution(_) => unreachable!(),
         };
         (status, Json(json!({ "error": self.to_string() }))).into_response()

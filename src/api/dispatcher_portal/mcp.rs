@@ -149,25 +149,70 @@ fn tools_list() -> Value {
             },
             {
                 "name": "list_trips",
-                "description": "List trips. Optional filters: load_id, driver_id, status.",
+                "description": "List trips. Items carry deadhead_miles, loaded_miles, total_miles, and origin_facility_name for fleet-wide audits without N+1 get_trip calls. Optional filters: load_id, driver_id, status, trip_number, load_number.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "load_id": { "type": "string", "format": "uuid" },
                         "driver_id": { "type": "string", "format": "uuid" },
-                        "status": { "type": "string" }
+                        "status": { "type": "string" },
+                        "trip_number": { "type": "string", "description": "Exact match, e.g. 'T-2026-0014'" },
+                        "load_number": { "type": "string", "description": "Filter to trips of a load by its load_number (e.g. 'LD-2026-0001')" }
                     }
                 }
             },
             {
                 "name": "get_trip",
-                "description": "Get a single trip by UUID.",
+                "description": "Get a single trip by UUID. Response includes a full mileage_summary (origin block + per-leg breakdown).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "format": "uuid" }
                     },
                     "required": ["id"]
+                }
+            },
+            {
+                "name": "create_trip",
+                "description": "Create a new trip. If load_id is given, stops can be omitted and will be copied from the load.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_number": { "type": "string" },
+                        "load_id": { "type": "string", "format": "uuid" },
+                        "sequence": { "type": "integer" },
+                        "driver_id": { "type": "string", "format": "uuid" },
+                        "truck_id": { "type": "string", "format": "uuid" },
+                        "trailer_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "stops": { "type": "array", "items": { "type": "object" } },
+                        "notes": { "type": "string" },
+                        "previous_trip_id": { "type": "string", "format": "uuid" }
+                    }
+                }
+            },
+            {
+                "name": "update_trip",
+                "description": "Update a trip's notes and/or previous_trip_id link. Setting previous_trip_id triggers a mileage recompute. Mileage fields cannot be set directly.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "notes": { "type": "string" },
+                        "previous_trip_id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "recalculate_trip_miles",
+                "description": "Recompute deadhead/loaded/total miles for a trip via ORS routing. Returns the updated mileage_summary. Use force=true to recompute even when miles are already set.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "force": { "type": "boolean" }
+                    },
+                    "required": ["trip_id"]
                 }
             },
             {
@@ -396,6 +441,9 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "update_load" => tool_update_load(state, args).await,
         "list_trips" => tool_list_trips(state, args).await,
         "get_trip" => tool_get_trip(state, args).await,
+        "create_trip" => tool_create_trip(state, args).await,
+        "update_trip" => tool_update_trip(state, args).await,
+        "recalculate_trip_miles" => tool_recalculate_trip_miles(state, args).await,
         "assign_driver" => tool_assign_driver(state, args).await,
         "unassign_driver" => tool_unassign_driver(state, args).await,
         "dispatch_trip" => tool_dispatch_trip(state, args).await,
@@ -569,20 +617,110 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
 }
 
 async fn tool_list_trips(state: &AppState, args: &Value) -> Result<Value, String> {
-    let load_id = parse_uuid_opt(args, "load_id")?;
-    let driver_id = parse_uuid_opt(args, "driver_id")?;
-    let status = args["status"].as_str();
-
-    let items = state.db.list_trips(load_id, driver_id, status)
-        .await.map_err(|e| e.to_string())?;
+    let q = super::data::ListTripsQuery {
+        load_id: parse_uuid_opt(args, "load_id")?,
+        driver_id: parse_uuid_opt(args, "driver_id")?,
+        status: args["status"].as_str().map(|s| s.to_string()),
+        trip_number: args["trip_number"].as_str().map(|s| s.to_string()),
+        load_number: args["load_number"].as_str().map(|s| s.to_string()),
+    };
+    let items = super::data::build_trip_list_items(state, q).await
+        .map_err(|e| e.to_string())?;
     let returned = items.len();
     Ok(mcp_content(serde_json::json!({ "returned": returned, "items": items })))
 }
 
 async fn tool_get_trip(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
-    let record = state.db.get_trip(id).await.map_err(|e| e.to_string())?;
-    Ok(mcp_content(record))
+    let item = super::data::build_trip_detail(state, id).await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(item))
+}
+
+async fn tool_create_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    use crate::models::trip::CreateTripRequest;
+    let req: CreateTripRequest = serde_json::from_value(args.clone())
+        .map_err(|e| format!("invalid create_trip arguments: {e}"))?;
+
+    // Reuse the admin create_trip handler — pure DB work, no HTTP roundtrip.
+    let _resp = crate::api::trips::create_trip(
+        axum::extract::State(state.clone()),
+        Json(req),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // Re-fetch most recently created trip via the dispatcher-enriched detail
+    // builder so the MCP response carries a full mileage_summary. We need the
+    // id — the admin handler returns it via the IntoResponse, but rather than
+    // dig into axum Response internals, look up by sorting trips by created_at.
+    // Simpler: scan once; production scale is fine for MCP audits.
+    let all = state.db.list_trips(None, None, None).await
+        .map_err(|e| e.to_string())?;
+    let newest = all.iter().max_by_key(|t| t.created_at)
+        .ok_or("trip create succeeded but trip not found on re-fetch")?;
+    let detail = super::data::build_trip_detail(state, newest.id).await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(detail))
+}
+
+async fn tool_update_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    use super::trip_writes::{patch_trip_handler, PatchTripBody};
+    let trip_id = parse_uuid(args, "trip_id")?;
+
+    // Reject raw-mileage fields up front (mirror handler behavior).
+    if let Value::Object(map) = args {
+        for forbidden in ["deadhead_miles", "loaded_miles", "total_miles", "segment_miles"] {
+            if map.contains_key(forbidden) {
+                return Err(format!(
+                    "{forbidden} is computed by routing and cannot be set directly"
+                ));
+            }
+        }
+    }
+
+    // Pass through whatever fields the MCP caller provided. The handler does
+    // its own deny_unknown_fields parse on a serde_json::Value body, so we
+    // strip the MCP-only trip_id and forward the rest.
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("trip_id");
+    }
+
+    // Validate against PatchTripBody shape early so the agent gets a clear error.
+    let _check: PatchTripBody = serde_json::from_value(body.clone())
+        .map_err(|e| format!("invalid update_trip arguments: {e}"))?;
+
+    let _resp = patch_trip_handler(
+        axum::extract::State(state.clone()),
+        Path(trip_id),
+        Json(body),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let detail = super::data::build_trip_detail(state, trip_id).await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(detail))
+}
+
+async fn tool_recalculate_trip_miles(state: &AppState, args: &Value) -> Result<Value, String> {
+    use super::trip_writes::{recalculate_miles_handler, RecalculateMilesBody};
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let force = args["force"].as_bool().unwrap_or(false);
+
+    let body = Some(Json(RecalculateMilesBody { force }));
+    let _resp = recalculate_miles_handler(
+        axum::extract::State(state.clone()),
+        Path(trip_id),
+        body,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    let summary = crate::api::mileage_summary::build_mileage_summary(state, &trip).await;
+    Ok(mcp_content(summary))
 }
 
 async fn tool_assign_driver(state: &AppState, args: &Value) -> Result<Value, String> {

@@ -6,6 +6,7 @@ pub mod data;
 pub mod jwt;
 pub mod mcp;
 pub mod middleware;
+pub mod trip_writes;
 
 use crate::AppState;
 use axum::{
@@ -25,7 +26,14 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/loads", get(data::list_loads).post(data::create_load))
         .route("/dispatch/api/v1/loads/:id", get(data::get_load).put(data::update_load))
         .route("/dispatch/api/v1/trips", get(data::list_trips))
-        .route("/dispatch/api/v1/trips/:id", get(data::get_trip))
+        .route(
+            "/dispatch/api/v1/trips/:id",
+            get(data::get_trip).patch(trip_writes::patch_trip_handler),
+        )
+        .route(
+            "/dispatch/api/v1/trips/:id/recalculate-miles",
+            post(trip_writes::recalculate_miles_handler),
+        )
         .route("/dispatch/api/v1/trips/:id/assign", post(data::assign_trip))
         .route("/dispatch/api/v1/trips/:id/unassign", post(data::unassign_trip))
         .route("/dispatch/api/v1/trips/:id/dispatch", post(data::dispatch_trip))
