@@ -28,7 +28,12 @@ export async function renderStopDetail(container, tripId, seq) {
     else navigate(`/driver/trips/${tripId}`);
   });
 
-  const header = renderAppBar({ title: `Stop ${seq}`, right: backBtn });
+  // Stop type bubble lives in the app bar's right slot (rendered after load).
+  const headerRight = document.createElement('div');
+  headerRight.className = 'stop-detail-header-right';
+  headerRight.appendChild(backBtn);
+
+  const header = renderAppBar({ title: `Stop ${seq}`, right: headerRight });
 
   // Loading state
   const loadingEl = document.createElement('div');
@@ -47,11 +52,11 @@ export async function renderStopDetail(container, tripId, seq) {
     // Clear loading state
     loadingEl.remove();
 
-    // Stop type subtitle
-    const stopTypeLabel = document.createElement('div');
-    stopTypeLabel.className = 'stop-detail-type';
-    stopTypeLabel.textContent = formatStopType(data.stop_type);
-    page.appendChild(stopTypeLabel);
+    // Stop type bubble next to the back button (mirrors trip-status badge pattern).
+    const stopTypeBubble = document.createElement('span');
+    stopTypeBubble.className = 'status-bubble status-bubble--stop-type';
+    stopTypeBubble.textContent = formatStopType(data.stop_type);
+    headerRight.insertBefore(stopTypeBubble, backBtn);
 
     // Facility info section
     const facilitySection = document.createElement('div');
@@ -233,6 +238,8 @@ function renderActualSection(stop, tripId, onChange) {
     await patchStop(tripId, stop.sequence, { actual_arrive: newVal });
     onChange();
   }, !stop.actual_arrive));
+  const arrivalBubble = renderArrivalStatusBubble(stop);
+  if (arrivalBubble) arrivedRow.appendChild(arrivalBubble);
   section.appendChild(arrivedRow);
 
   const departedRow = document.createElement('div');
@@ -242,6 +249,8 @@ function renderActualSection(stop, tripId, onChange) {
       await patchStop(tripId, stop.sequence, { actual_depart: newVal });
       onChange();
     }, !stop.actual_depart));
+    const dwellBubbles = renderDwellBubbles(stop);
+    dwellBubbles.forEach(b => departedRow.appendChild(b));
   } else {
     const placeholder = document.createElement('span');
     placeholder.className = 'stop-detail-actual-disabled';
@@ -251,6 +260,66 @@ function renderActualSection(stop, tripId, onChange) {
   section.appendChild(departedRow);
 
   return section;
+}
+
+function classifyArrival(stop) {
+  // Both scheduled_arrive and actual_arrive are naive ISO strings in the
+  // stop's local timezone — lexicographic compare matches chronological order.
+  const sched = stop.scheduled_arrive;
+  const schedEnd = stop.scheduled_arrive_end;
+  const actual = stop.actual_arrive;
+  if (!sched || !actual) return null;
+  if (actual < sched) return 'early';
+  if (schedEnd) {
+    if (actual <= schedEnd) return 'on-time';
+    return 'late';
+  }
+  // No window end: treat anything not-before sched as on-time (no grace).
+  return actual === sched ? 'on-time' : 'late';
+}
+
+function renderArrivalStatusBubble(stop) {
+  if (!stop.actual_arrive) return null;
+  const status = classifyArrival(stop);
+  if (!status) return null;
+  const bubble = document.createElement('span');
+  bubble.className = `status-bubble status-bubble--${status}`;
+  const labels = { 'early': 'early', 'on-time': 'on time', 'late': 'late' };
+  bubble.textContent = labels[status];
+  return bubble;
+}
+
+function formatDwell(minutes) {
+  const total = Math.max(0, Math.round(minutes));
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  if (h <= 0) return `${m}m`;
+  return `${h}h ${m}m`;
+}
+
+function renderDwellBubbles(stop) {
+  const out = [];
+  const arriveUtc = stop.actual_arrive_utc;
+  const departUtc = stop.actual_depart_utc;
+  if (!arriveUtc || !departUtc) return out;
+  const arrive = new Date(arriveUtc).getTime();
+  const depart = new Date(departUtc).getTime();
+  if (Number.isNaN(arrive) || Number.isNaN(depart) || depart < arrive) return out;
+  const dwellMin = (depart - arrive) / 60000;
+
+  const dwellBubble = document.createElement('span');
+  dwellBubble.className = 'status-bubble status-bubble--dwell';
+  dwellBubble.textContent = `dwell ${formatDwell(dwellMin)}`;
+  out.push(dwellBubble);
+
+  const free = typeof stop.free_dwell_minutes === 'number' ? stop.free_dwell_minutes : 120;
+  if (dwellMin > free) {
+    const detBubble = document.createElement('span');
+    detBubble.className = 'status-bubble status-bubble--detention';
+    detBubble.textContent = `detention ${formatDwell(dwellMin - free)}`;
+    out.push(detBubble);
+  }
+  return out;
 }
 
 function renderActualLine(label, currentValue, tz, onSave, primary) {

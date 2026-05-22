@@ -3,7 +3,7 @@ use crate::{
     ai::embed::embed_text,
     error::AppError,
     models::{
-        CreateFacilityRequest, FacilityListResponse, FacilityRecord,
+        validate_coords, CreateFacilityRequest, FacilityListResponse, FacilityRecord,
         FacilityResolutionResponse, GeocodeStatus, UpdateFacilityRequest,
     },
     AppState,
@@ -63,11 +63,17 @@ pub async fn create_facility(
 
     let embedding = embed_text(&state.ai, &embedding_text).await.ok();
 
+    let coords = validate_coords(body.lat, body.lng)?;
+    let (lat, lng, status) = match coords {
+        Some((la, lo)) => (Some(la), Some(lo), GeocodeStatus::Ready),
+        None => (None, None, GeocodeStatus::Pending),
+    };
+
     let record = FacilityRecord {
         id: Uuid::new_v4(), owner_id: 0,
         name: body.name, address: body.address,
-        normalized_address: None, lat: None, lng: None,
-        geocode_status: GeocodeStatus::Pending, geocode_failure_count: 0,
+        normalized_address: None, lat, lng,
+        geocode_status: status, geocode_failure_count: 0,
         contacts: body.contacts,
         notes: body.notes, tags: body.tags, blob_ids: body.blob_ids,
         avg_dwell_minutes: None, dwell_sample_count: 0,
@@ -75,7 +81,9 @@ pub async fn create_facility(
     };
 
     state.db.insert_facility(&record).await?;
-    let _ = state.geocoding_tx.try_send(record.id);
+    if coords.is_none() {
+        let _ = state.geocoding_tx.try_send(record.id);
+    }
 
     Ok((StatusCode::CREATED, Json(record)))
 }
@@ -152,8 +160,9 @@ pub async fn update_facility(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateFacilityRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let coords = validate_coords(body.lat, body.lng)?;
     let address_changed = body.address.is_some();
-    let updated = state.db.update_facility_metadata(
+    let mut updated = state.db.update_facility_metadata(
         id, body.name, body.address, body.contacts,
         body.notes, body.tags, body.blob_ids,
     ).await?;
@@ -163,7 +172,10 @@ pub async fn update_facility(
         let _ = state.db.update_facility_embedding(id, embedding).await;
     }
 
-    if address_changed {
+    if let Some((lat, lng)) = coords {
+        // Explicit coords always win over an address change — skip geocoder.
+        updated = state.db.set_facility_coords_manual(id, lat, lng).await?;
+    } else if address_changed {
         let _ = state.geocoding_tx.try_send(id);
     }
 
@@ -342,5 +354,152 @@ mod tests {
         let id1 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", true).await.unwrap();
         let id2 = resolve_or_create_facility(&state, "Dock B", "200 Elm St, Atlanta GA", true).await.unwrap();
         assert_ne!(id1, id2, "force_new_facility=true must always create a new record");
+    }
+
+    // -- Task 3b: lat/lng override -----------------------------------------
+
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    fn make_create(address: &str, lat: Option<f64>, lng: Option<f64>) -> CreateFacilityRequest {
+        CreateFacilityRequest {
+            name: "T".into(),
+            address: address.into(),
+            contacts: vec![],
+            notes: None,
+            tags: vec![],
+            blob_ids: vec![],
+            lat,
+            lng,
+        }
+    }
+
+    async fn create_and_get(
+        state: &AppState,
+        body: CreateFacilityRequest,
+    ) -> Result<FacilityRecord, AppError> {
+        let resp = create_facility(State(state.clone()), Json(body)).await?;
+        let (parts, body_bytes) = resp.into_response().into_parts();
+        assert_eq!(parts.status, StatusCode::CREATED);
+        let bytes = axum::body::to_bytes(body_bytes, usize::MAX).await.unwrap();
+        Ok(serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn test_create_facility_with_explicit_coords_skips_geocoder() {
+        let (state, _b, _d) = test_state().await;
+        let body = make_create("123 Industrial Blvd, Plant City FL", Some(28.0), Some(-82.0));
+        let rec = create_and_get(&state, body).await.expect("should create");
+        assert_eq!(rec.lat, Some(28.0));
+        assert_eq!(rec.lng, Some(-82.0));
+        assert_eq!(rec.geocode_status, GeocodeStatus::Ready);
+        assert_eq!(rec.geocode_failure_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_create_facility_without_coords_queues_geocoder() {
+        let (state, _b, _d) = test_state().await;
+        let body = make_create("123 Industrial Blvd, Plant City FL", None, None);
+        let rec = create_and_get(&state, body).await.expect("should create");
+        assert_eq!(rec.lat, None);
+        assert_eq!(rec.lng, None);
+        assert_eq!(rec.geocode_status, GeocodeStatus::Pending);
+    }
+
+    async fn expect_create_422(state: &AppState, body: CreateFacilityRequest) {
+        match create_facility(State(state.clone()), Json(body)).await {
+            Ok(_) => panic!("expected 422"),
+            Err(AppError::UnprocessableEntity(_)) => {}
+            Err(other) => panic!("expected 422, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_facility_with_only_lat_rejected() {
+        let (state, _b, _d) = test_state().await;
+        expect_create_422(&state, make_create("x", Some(28.0), None)).await;
+    }
+
+    #[tokio::test]
+    async fn test_create_facility_with_lat_out_of_range_rejected() {
+        let (state, _b, _d) = test_state().await;
+        expect_create_422(&state, make_create("x", Some(91.0), Some(0.0))).await;
+    }
+
+    #[tokio::test]
+    async fn test_create_facility_with_lng_out_of_range_rejected() {
+        let (state, _b, _d) = test_state().await;
+        expect_create_422(&state, make_create("x", Some(0.0), Some(-181.0))).await;
+    }
+
+    #[tokio::test]
+    async fn test_update_facility_with_explicit_coords_repairs_failed_geocode() {
+        let (state, _b, _d) = test_state().await;
+        // Seed a facility already in `failed` status with a bumped failure count.
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let rec = FacilityRecord {
+            id, owner_id: 0,
+            name: "ACE Plant City".into(),
+            address: "industrial address".into(),
+            normalized_address: None, lat: None, lng: None,
+            geocode_status: GeocodeStatus::Failed,
+            geocode_failure_count: 2,
+            contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
+            avg_dwell_minutes: None, dwell_sample_count: 0,
+            embedding: None, created_at: now, updated_at: now,
+        };
+        state.db.insert_facility(&rec).await.unwrap();
+
+        let body = UpdateFacilityRequest {
+            name: None, address: None, contacts: None,
+            notes: None, tags: None, blob_ids: None,
+            lat: Some(28.0125), lng: Some(-82.1199),
+        };
+        let resp = update_facility(State(state.clone()), Path(id), Json(body))
+            .await
+            .expect("should update")
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let updated: FacilityRecord = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(updated.lat, Some(28.0125));
+        assert_eq!(updated.lng, Some(-82.1199));
+        assert_eq!(updated.geocode_status, GeocodeStatus::Ready);
+        assert_eq!(updated.geocode_failure_count, 0);
+    }
+
+    #[tokio::test]
+    async fn test_update_facility_explicit_coords_beat_address_change() {
+        let (state, _b, _d) = test_state().await;
+        let now = Utc::now();
+        let id = Uuid::new_v4();
+        let rec = FacilityRecord {
+            id, owner_id: 0,
+            name: "F".into(), address: "old".into(),
+            normalized_address: None, lat: None, lng: None,
+            geocode_status: GeocodeStatus::Ready, geocode_failure_count: 0,
+            contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
+            avg_dwell_minutes: None, dwell_sample_count: 0,
+            embedding: None, created_at: now, updated_at: now,
+        };
+        state.db.insert_facility(&rec).await.unwrap();
+
+        let body = UpdateFacilityRequest {
+            name: None,
+            address: Some("new address".into()),
+            contacts: None, notes: None, tags: None, blob_ids: None,
+            lat: Some(35.0), lng: Some(-90.0),
+        };
+        let resp = update_facility(State(state.clone()), Path(id), Json(body))
+            .await
+            .expect("should update")
+            .into_response();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let updated: FacilityRecord = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(updated.address, "new address");
+        assert_eq!(updated.lat, Some(35.0));
+        assert_eq!(updated.lng, Some(-90.0));
+        assert_eq!(updated.geocode_status, GeocodeStatus::Ready);
     }
 }

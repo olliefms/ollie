@@ -81,6 +81,22 @@ impl DbClient {
         self.upsert_facility(&record).await
     }
 
+    /// Apply an explicit lat/lng override from a create/update API call.
+    /// Sets coords, marks status `Ready`, and resets `geocode_failure_count` to 0.
+    /// Does not touch `normalized_address`.
+    pub async fn set_facility_coords_manual(
+        &self, id: Uuid, lat: f64, lng: f64,
+    ) -> Result<FacilityRecord, AppError> {
+        let mut record = self.get_facility_by_id(id).await?;
+        record.lat = Some(lat);
+        record.lng = Some(lng);
+        record.geocode_status = GeocodeStatus::Ready;
+        record.geocode_failure_count = 0;
+        record.updated_at = Utc::now();
+        self.upsert_facility(&record).await?;
+        Ok(record)
+    }
+
     pub async fn mark_facility_geocode_failed(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_facility_by_id(id).await?;
         record.geocode_failure_count += 1;

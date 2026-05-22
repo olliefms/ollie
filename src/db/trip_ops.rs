@@ -90,6 +90,23 @@ impl DbClient {
         self.upsert_trip(&record).await
     }
 
+    pub async fn update_trip_mileage(
+        &self, id: Uuid,
+        deadhead_miles: Option<f64>,
+        loaded_miles: Option<f64>,
+        total_miles: Option<f64>,
+        segment_miles: Vec<f64>,
+    ) -> Result<TripRecord, AppError> {
+        let mut record = self.get_trip(id).await?;
+        record.deadhead_miles = deadhead_miles;
+        record.loaded_miles = loaded_miles;
+        record.total_miles = total_miles;
+        record.segment_miles = segment_miles;
+        record.updated_at = Utc::now();
+        self.upsert_trip(&record).await?;
+        Ok(record)
+    }
+
     pub async fn update_trip_metadata(
         &self, id: Uuid,
         load_id: Option<Uuid>,
@@ -104,6 +121,18 @@ impl DbClient {
         if let Some(v) = stops { record.stops = v; }
         if let Some(v) = notes { record.notes = Some(v); }
         if let Some(v) = embedding { record.embedding = Some(v); }
+        record.updated_at = Utc::now();
+        self.upsert_trip(&record).await?;
+        Ok(record)
+    }
+
+    /// Sets `previous_trip_id` to the given value (Some = set, omitted handled by caller).
+    /// Caller is responsible for re-computing mileage after a change.
+    pub async fn update_trip_previous_trip_id(
+        &self, id: Uuid, previous_trip_id: Option<Uuid>,
+    ) -> Result<TripRecord, AppError> {
+        let mut record = self.get_trip(id).await?;
+        record.previous_trip_id = previous_trip_id;
         record.updated_at = Utc::now();
         self.upsert_trip(&record).await?;
         Ok(record)
@@ -411,6 +440,8 @@ mod tests {
                     detention_grace_minutes: None,
                     notes: None,
                     timezone: None,
+                    actual_arrive_utc: None,
+                    actual_depart_utc: None,
                 },
             ],
             notes: Some("test trip".into()),

@@ -47,6 +47,17 @@ impl DbClient {
             .ok_or(AppError::NotFound)
     }
 
+    pub async fn get_load_by_number(&self, load_number: &str) -> Result<LoadRecord, AppError> {
+        let escaped = load_number.replace('\'', "''");
+        let stream = self.load_table.query()
+            .only_if(format!("load_number = '{escaped}'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        batches_to_loads(collect_stream(stream).await?)?
+            .into_iter().next()
+            .ok_or(AppError::NotFound)
+    }
+
     pub async fn delete_load_by_id(&self, id: Uuid) -> Result<(), AppError> {
         self.load_table.delete(&format!("id = '{id}'")).await
             .map(|_| ())
@@ -489,6 +500,7 @@ mod tests {
             detention_grace_minutes: None,
             notes: None, blob_ids: vec![],
             timezone: Some("America/Chicago".into()),
+            actual_arrive_utc: None, actual_depart_utc: None,
         }];
         db.insert_load(&load).await.unwrap();
         assert!(db.any_load_references_facility(fac_id).await.unwrap());

@@ -105,6 +105,10 @@ pub struct CreateFacilityRequest {
     pub tags: Vec<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lng: Option<f64>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -115,6 +119,40 @@ pub struct UpdateFacilityRequest {
     pub notes: Option<String>,
     pub tags: Option<Vec<String>>,
     pub blob_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lng: Option<f64>,
+}
+
+/// Validate optional lat/lng pair from a request body.
+/// - Both `Some` and in range → `Ok(Some((lat, lng)))`
+/// - Exactly one `Some` → 422
+/// - Out of range or non-finite → 422
+/// - Both `None` → `Ok(None)`
+pub fn validate_coords(
+    lat: Option<f64>,
+    lng: Option<f64>,
+) -> Result<Option<(f64, f64)>, crate::error::AppError> {
+    match (lat, lng) {
+        (Some(la), Some(lo)) => {
+            if !la.is_finite() || !lo.is_finite()
+                || !(-90.0..=90.0).contains(&la)
+                || !(-180.0..=180.0).contains(&lo)
+            {
+                return Err(crate::error::AppError::UnprocessableEntity(
+                    "lat must be in [-90, 90] and lng in [-180, 180]".into(),
+                ));
+            }
+            Ok(Some((la, lo)))
+        }
+        (Some(_), None) | (None, Some(_)) => Err(
+            crate::error::AppError::UnprocessableEntity(
+                "lat and lng must be provided together".into(),
+            ),
+        ),
+        (None, None) => Ok(None),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
