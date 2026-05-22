@@ -13,7 +13,7 @@ export async function renderPastPane(container, options = {}) {
   const stepperSlot = document.createElement('div');
   stepperSlot.className = 'past-pane__stepper-slot';
   const list = document.createElement('div');
-  list.className = 'trip-list past-pane__list';
+  list.className = 'past-pane__list';
   container.appendChild(stepperSlot);
   container.appendChild(list);
 
