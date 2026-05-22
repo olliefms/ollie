@@ -3969,18 +3969,209 @@ async fn test_patch_trip_requires_auth() {
 }
 
 #[tokio::test]
-async fn test_patch_trip_previous_trip_id_triggers_recalc_and_409s_when_ors_down() {
+async fn test_patch_trip_previous_trip_id_commits_even_when_recompute_fails() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "patch4@example.com", "password-patch4").await;
     let trip_id = make_trip_with_two_stops(&server).await;
     let other_trip_id = make_trip_with_two_stops(&server).await;
 
-    // Linking to a prev trip forces a recompute. ORS is mocked unavailable → 409.
+    // Linking to a prev trip forces a mileage recompute. ORS is mocked
+    // unavailable in tests, so the recompute fails — but the previous_trip_id
+    // write itself must still commit. v1.17.0 returned 409 here, which hid the
+    // partial commit from callers; v1.17.1 returns 200 with a non-null
+    // `mileage_recompute_warning` so the caller knows exactly what happened.
     let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "previous_trip_id": other_trip_id }))
         .await;
-    assert_eq!(resp.status_code(), 409);
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert!(
+        body["mileage_recompute_warning"].is_string(),
+        "expected non-null mileage_recompute_warning, got {:?}",
+        body["mileage_recompute_warning"],
+    );
+
+    // Verify the previous_trip_id link did commit by re-reading via the admin API
+    // (the dispatcher view doesn't expose previous_trip_id as a top-level field).
+    let get_resp = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    let trip: serde_json::Value = get_resp.json();
+    assert_eq!(trip["previous_trip_id"].as_str(), Some(other_trip_id.to_string().as_str()));
+}
+
+// ── Doctors (trip / load / facility) — v1.17.1 ─────────────────────────────
+
+#[tokio::test]
+async fn test_trip_doctor_dry_run_reports_missing_stop_metadata_without_writes() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "doctor1@example.com", "password-doctor1").await;
+    let fac1 = create_test_facility(&server, "Doc Dock A", "Memphis, TN").await;
+    let fac2 = create_test_facility(&server, "Doc Dock B", "Atlanta, GA").await;
+
+    // Load has rich stop metadata (notes, end window, dwell).
+    let load_resp = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "Doc Co",
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                 "facility_id": fac1, "scheduled_arrive": "2026-07-01T08:00:00",
+                 "scheduled_arrive_end": "2026-07-01T12:00:00",
+                 "expected_dwell_minutes": 60, "notes": "PU #123",
+                 "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": fac2, "scheduled_arrive": "2026-07-02T08:00:00",
+                 "notes": "Drop and hook", "timezone": "America/New_York"},
+            ],
+            "rate_items": [{"description": "LH", "amount_usd": 500.0}]
+        }))
+        .await;
+    let load_id = load_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Trip has bare facility_id stops — the exact T-0015 corruption pattern.
+    let trip = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "facility_id": fac1},
+                {"sequence": 2, "stop_type": "delivery", "facility_id": fac2},
+            ]
+        }))
+        .await;
+    assert_eq!(trip.status_code(), 201);
+    let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Dry-run.
+    let report = mcp_call(&server, &token, "trip_doctor", serde_json::json!({
+        "trip_id": trip_id
+    })).await;
+    assert_eq!(report["dry_run"], serde_json::json!(true));
+    assert!(report["applied"].as_array().unwrap().is_empty(), "dry-run wrote: {report}");
+    let findings = report["findings"].as_array().unwrap();
+    let metadata_finding = findings.iter()
+        .find(|f| f["check"] == "trip.stops.metadata_complete")
+        .expect("expected metadata_complete finding");
+    assert_eq!(metadata_finding["fix"]["kind"], "resync_stops_from_load");
+    assert_eq!(metadata_finding["fix"]["safe_to_auto_apply"], serde_json::json!(true));
+
+    // DB unchanged.
+    let get_before = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    let before: serde_json::Value = get_before.json();
+    assert!(before["stops"][0]["scheduled_arrive_end"].is_null());
+    assert!(before["stops"][0]["notes"].is_null());
+}
+
+#[tokio::test]
+async fn test_trip_doctor_apply_resyncs_stops_from_load_without_overwriting() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "doctor2@example.com", "password-doctor2").await;
+    let fac1 = create_test_facility(&server, "Apply Dock A", "Memphis, TN").await;
+    let fac2 = create_test_facility(&server, "Apply Dock B", "Atlanta, GA").await;
+
+    let load_resp = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "Apply Co",
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                 "facility_id": fac1, "scheduled_arrive": "2026-07-01T08:00:00",
+                 "scheduled_arrive_end": "2026-07-01T12:00:00",
+                 "expected_dwell_minutes": 60, "notes": "PU #123",
+                 "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": fac2, "scheduled_arrive": "2026-07-02T08:00:00",
+                 "notes": "Drop and hook", "timezone": "America/New_York"},
+            ],
+            "rate_items": [{"description": "LH", "amount_usd": 500.0}]
+        }))
+        .await;
+    let load_id = load_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Trip stops with one pre-existing non-null field (notes on stop 1) that
+    // disagrees with the load — verifies diff-and-confirm does NOT clobber it.
+    let trip = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "facility_id": fac1,
+                 "notes": "dispatcher amended note"},
+                {"sequence": 2, "stop_type": "delivery", "facility_id": fac2},
+            ]
+        }))
+        .await;
+    let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let report = mcp_call(&server, &token, "trip_doctor", serde_json::json!({
+        "trip_id": trip_id, "apply": true,
+    })).await;
+    assert_eq!(report["dry_run"], serde_json::json!(false));
+    // The metadata finding should be present but have a conflict, so the fix
+    // does NOT auto-apply — diff-and-confirm.
+    let findings = report["findings"].as_array().unwrap();
+    let metadata_finding = findings.iter()
+        .find(|f| f["check"] == "trip.stops.metadata_complete")
+        .expect("metadata finding present");
+    let conflicts = metadata_finding["fix"]["conflicts"].as_array().unwrap();
+    assert!(
+        conflicts.iter().any(|c| c.as_str().unwrap().contains("notes")),
+        "expected notes conflict, got conflicts={conflicts:?}"
+    );
+    assert_eq!(metadata_finding["fix"]["safe_to_auto_apply"], serde_json::json!(false));
+    let skipped = report["skipped_due_to_conflict"].as_array().unwrap();
+    assert!(skipped.iter().any(|c| c == "trip.stops.metadata_complete"));
+
+    // Stop 1's non-null `notes` survived; the load's value did not clobber it.
+    let trip_after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(trip_after["stops"][0]["notes"], "dispatcher amended note");
+}
+
+#[tokio::test]
+async fn test_load_doctor_flags_ungeocoded_facility() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "doctor3@example.com", "password-doctor3").await;
+    // The test geocoder doesn't fire — facilities created here have no
+    // lat/lng, which is exactly what load_doctor's facility_geocoded check
+    // should flag.
+    let fac1 = create_test_facility(&server, "Ungeo Dock", "Memphis, TN").await;
+    let fac2 = create_test_facility(&server, "Ungeo Dock 2", "Atlanta, GA").await;
+    let load_resp = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "LD Co",
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                 "facility_id": fac1, "scheduled_arrive": "2026-07-01T08:00:00",
+                 "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": fac2, "scheduled_arrive": "2026-07-02T08:00:00",
+                 "timezone": "America/New_York"},
+            ],
+            "rate_items": [{"description": "LH", "amount_usd": 100.0}]
+        }))
+        .await;
+    let status = load_resp.status_code();
+    let text = load_resp.text();
+    assert_eq!(status, 201, "load create failed: {status} {text}");
+    let load_id = serde_json::from_str::<serde_json::Value>(&text)
+        .expect("load response is JSON")["id"].as_str().unwrap().to_string();
+
+    let report = mcp_call(&server, &token, "load_doctor", serde_json::json!({
+        "load_id": load_id
+    })).await;
+    let findings = report["findings"].as_array().unwrap();
+    assert!(
+        findings.iter().any(|f| f["check"] == "load.stops.facility_geocoded"),
+        "expected facility_geocoded finding, got findings={findings:?}"
+    );
 }
 
 // ── Task 5: MCP create_trip/update_trip/recalculate_trip_miles + filters ───────
