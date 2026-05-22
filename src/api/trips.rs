@@ -215,7 +215,7 @@ pub async fn get_trip(
 }
 
 #[utoipa::path(
-    put,
+    patch,
     path = "/api/v1/trips/{id}",
     params(
         ("id" = Uuid, Path, description = "Trip UUID")

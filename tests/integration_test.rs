@@ -3782,3 +3782,187 @@ async fn test_compute_and_persist_mileage_not_found() {
     let result = ollie::api::trips::compute_and_persist_mileage(&state, uuid::Uuid::new_v4()).await;
     assert!(matches!(result, Err(ollie::error::AppError::NotFound)));
 }
+
+// ── dispatcher PATCH + recalculate-miles endpoints (Task 4, #259, #262) ─────
+
+async fn make_trip_with_two_stops(server: &axum_test::TestServer) -> String {
+    let fac1 = create_test_facility(server, "Recalc Dock A", "Dallas, TX").await;
+    let fac2 = create_test_facility(server, "Recalc Dock B", "Houston, TX").await;
+    server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "Recalc Co",
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                 "facility_id": fac1, "scheduled_arrive": "2026-06-01T08:00:00",
+                 "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": fac2, "scheduled_arrive": "2026-06-02T08:00:00",
+                 "timezone": "America/Chicago"},
+            ],
+            "rate_items": [{"description": "LH", "amount_usd": 100.0}]
+        }))
+        .await;
+    let trip = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                {"sequence": 1, "stop_type": "pickup", "facility_id": fac1,
+                 "scheduled_arrive": "2026-06-01T08:00:00", "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "facility_id": fac2,
+                 "scheduled_arrive": "2026-06-02T08:00:00", "timezone": "America/Chicago"},
+            ]
+        }))
+        .await;
+    assert_eq!(trip.status_code(), 201);
+    trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_recalculate_miles_returns_409_when_ors_unavailable() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "recalc1@example.com", "password-recalc1").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/recalculate-miles"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 409);
+}
+
+#[tokio::test]
+async fn test_recalculate_miles_requires_auth() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/recalculate-miles"))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_recalculate_miles_returns_existing_summary_when_already_set() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = dispatcher_login(&server, "recalc2@example.com", "password-recalc2").await;
+    let trip_id_str = make_trip_with_two_stops(&server).await;
+    let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
+
+    // Seed miles directly via DB so the "already set" branch fires.
+    state.db.update_trip_mileage(
+        trip_id, Some(50.0), Some(450.0), Some(500.0), vec![50.0, 450.0],
+    ).await.unwrap();
+    let before = state.db.get_trip(trip_id).await.unwrap();
+    let updated_at_before = before.updated_at;
+
+    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id_str}/recalculate-miles"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["total_miles"].as_f64(), Some(500.0));
+    assert_eq!(body["loaded_miles"].as_f64(), Some(450.0));
+
+    // No DB write → updated_at unchanged.
+    let after = state.db.get_trip(trip_id).await.unwrap();
+    assert_eq!(after.updated_at, updated_at_before);
+}
+
+#[tokio::test]
+async fn test_recalculate_miles_force_triggers_recompute() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = dispatcher_login(&server, "recalc3@example.com", "password-recalc3").await;
+    let trip_id_str = make_trip_with_two_stops(&server).await;
+    let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
+
+    // Seed miles so the "already set" guard would otherwise skip recompute.
+    state.db.update_trip_mileage(
+        trip_id, Some(10.0), Some(20.0), Some(30.0), vec![10.0, 20.0],
+    ).await.unwrap();
+
+    // ORS is unavailable in tests → force=true must call helper and surface 409
+    // (proves the force flag bypassed the early-return branch).
+    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id_str}/recalculate-miles"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "force": true }))
+        .await;
+    assert_eq!(resp.status_code(), 409);
+}
+
+#[tokio::test]
+async fn test_patch_trip_updates_notes() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "patch1@example.com", "password-patch1").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+
+    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "notes": "dispatcher note" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["id"], trip_id);
+
+    // Confirm persistence via admin GET (dispatcher response omits notes).
+    let get = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    let get_body = get.json::<serde_json::Value>();
+    assert_eq!(get_body["notes"], "dispatcher note");
+}
+
+#[tokio::test]
+async fn test_patch_trip_rejects_raw_mileage() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "patch2@example.com", "password-patch2").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+
+    for field in ["deadhead_miles", "loaded_miles", "total_miles", "segment_miles"] {
+        let body = if field == "segment_miles" {
+            serde_json::json!({ field: [1.0, 2.0] })
+        } else {
+            serde_json::json!({ field: 100.0 })
+        };
+        let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&body)
+            .await;
+        assert_eq!(resp.status_code(), 400, "expected 400 for field {field}");
+    }
+}
+
+#[tokio::test]
+async fn test_patch_trip_rejects_unknown_field() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "patch3@example.com", "password-patch3").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+
+    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "load_id": uuid::Uuid::new_v4() }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_patch_trip_requires_auth() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .json(&serde_json::json!({ "notes": "x" }))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_patch_trip_previous_trip_id_triggers_recalc_and_409s_when_ors_down() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "patch4@example.com", "password-patch4").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let other_trip_id = make_trip_with_two_stops(&server).await;
+
+    // Linking to a prev trip forces a recompute. ORS is mocked unavailable → 409.
+    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "previous_trip_id": other_trip_id }))
+        .await;
+    assert_eq!(resp.status_code(), 409);
+}
