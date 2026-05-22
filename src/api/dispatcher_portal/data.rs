@@ -49,6 +49,8 @@ pub struct DispatcherTripListItem {
     pub load_number: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
     /// Flattened mileage projection for list views — keeps payloads small but
     /// gives agents enough info to audit the fleet without N+1 `get_trip` calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,6 +150,7 @@ fn enrich_trip(
         load_number: trip.load_number,
         created_at: trip.created_at,
         updated_at: trip.updated_at,
+        notes: trip.notes,
         deadhead_miles: trip.deadhead_miles,
         loaded_miles: trip.loaded_miles,
         total_miles: trip.total_miles,

@@ -3914,8 +3914,10 @@ async fn test_patch_trip_updates_notes() {
     assert_eq!(resp.status_code(), 200);
     let body = resp.json::<serde_json::Value>();
     assert_eq!(body["id"], trip_id);
+    assert_eq!(body["notes"], "dispatcher note",
+        "dispatcher PATCH response should echo updated notes");
 
-    // Confirm persistence via admin GET (dispatcher response omits notes).
+    // Also confirm persistence via admin GET.
     let get = server.get(&format!("/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
         .await;
