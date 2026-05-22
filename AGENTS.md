@@ -206,6 +206,12 @@ On upload, the server computes SHA-256 of the file bytes:
 
 Both paths write to the DB. The filesystem file is only written once per unique checksum.
 
+## Geocoding
+
+Facility addresses are geocoded asynchronously after create or address-change update — the API returns immediately with `geocode_status: pending` and a background worker fills `lat`/`lng`/`normalized_address`. On failure, `geocode_status` transitions to `failed` (and after 3 attempts, `permanently_failed`).
+
+**Manual override:** `POST /api/v1/facilities` and `PATCH /api/v1/facilities/{id}` both accept optional `lat` + `lng`. When both are supplied, the geocoder is skipped, coords are persisted as-is, `geocode_status` is set to `ready`, and `geocode_failure_count` resets to `0`. On UPDATE, explicit coords win even when `address` is also being changed. Partial coords or out-of-range values (lat ∉ [-90, 90], lng ∉ [-180, 180]) → 422. This is the supported repair path for facilities the geocoder can't resolve (e.g. industrial warehouses with BOL-derived addresses).
+
 ## Content Extraction
 
 `extract_content()` in `src/ai/extract.rs` returns an `Extractable` enum:
