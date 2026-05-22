@@ -276,39 +276,6 @@ function fmtMiles(n) {
   return `${n.toFixed(1)} mi`;
 }
 
-function renderMileageCard(ms) {
-  if (!ms) return '';
-  const originLabel = ms.origin && ms.origin.facility_name
-    ? `${escHtml(ms.origin.facility_name)}${ms.origin.address ? ` — ${escHtml(ms.origin.address)}` : ''}`
-    : null;
-  const originRow = originLabel
-    ? `<div class="detail-item"><div class="detail-item__label">Origin (prev. trip)</div><div class="detail-item__value">${originLabel}</div></div>`
-    : '';
-  const legsRows = (ms.legs || []).map(l =>
-    `<tr><td>${escHtml(l.kind)}</td><td>${escHtml(l.from || '—')} → ${escHtml(l.to || '—')}</td><td style="text-align:right; font-variant-numeric: tabular-nums;">${fmtMiles(l.miles)}</td></tr>`
-  ).join('');
-  const legsTable = legsRows
-    ? `<div class="table-wrapper" style="margin-top: var(--space-3);">
-         <table class="data-table">
-           <thead><tr><th>Leg</th><th>From → To</th><th style="text-align:right;">Miles</th></tr></thead>
-           <tbody>${legsRows}</tbody>
-         </table>
-       </div>`
-    : '';
-  return `
-    <div class="detail-card">
-      <div class="detail-card__title">Mileage</div>
-      <div class="detail-grid">
-        ${originRow}
-        <div class="detail-item"><div class="detail-item__label">Deadhead</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${fmtMiles(ms.deadhead_miles)}</div></div>
-        <div class="detail-item"><div class="detail-item__label">Loaded</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${fmtMiles(ms.loaded_miles)}</div></div>
-        <div class="detail-item"><div class="detail-item__label">Total</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums; font-weight:600;">${fmtMiles(ms.total_miles)}</div></div>
-      </div>
-      ${legsTable}
-    </div>
-  `;
-}
-
 function escHtml(s) {
   if (!s) return '';
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -545,7 +512,11 @@ async function renderLoadDetailView(id) {
     let stopsHtml = '';
     const stops = load.stops || [];
     if (stops.length > 0) {
-      const stopRows = stops.map((stop, i) => `
+      const legs = (load.mileage_summary && load.mileage_summary.legs) || [];
+      const stopRows = stops.map((stop, i) => {
+        // For loads, legs[0] = stop_1 → stop_2. Stop 1 (i=0) has no inbound miles.
+        const milesCell = i === 0 ? '—' : fmtMiles(legs[i - 1] ? legs[i - 1].miles : null);
+        return `
         <tr>
           <td>${i + 1}</td>
           <td>${escHtml(stop.facility_name || '—')}</td>
@@ -553,8 +524,12 @@ async function renderLoadDetailView(id) {
           <td>${fmtArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end)}</td>
           <td>${fmtDate(stop.actual_arrive)}</td>
           <td>${fmtDate(stop.actual_depart)}</td>
+          <td style="text-align:right; font-variant-numeric: tabular-nums;">${milesCell}</td>
         </tr>
-      `).join('');
+      `;
+      }).join('');
+
+      const totalMiles = load.mileage_summary ? fmtMiles(load.mileage_summary.total_miles) : '—';
 
       stopsHtml = `
         <div class="detail-card">
@@ -569,9 +544,13 @@ async function renderLoadDetailView(id) {
                   <th>Scheduled Arrive</th>
                   <th>Actual Arrive</th>
                   <th>Actual Depart</th>
+                  <th style="text-align:right;">Miles</th>
                 </tr>
               </thead>
               <tbody>${stopRows}</tbody>
+              <tfoot>
+                <tr><td colspan="6" style="font-weight:600;">Total Miles</td><td style="text-align:right; font-weight:600; font-variant-numeric: tabular-nums;">${totalMiles}</td></tr>
+              </tfoot>
             </table>
           </div>
         </div>
@@ -582,7 +561,7 @@ async function renderLoadDetailView(id) {
     let tripsHtml = '';
     if (trips.length > 0) {
       const tripRows = trips.map(trip => `
-        <tr data-trip-id="${trip.id}">
+        <tr data-trip-id="${trip.id}" style="cursor:pointer;">
           <td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td>
           <td>${badge(trip.status)}</td>
           <td>${escHtml(trip.driver_name || '—')}</td>
@@ -603,7 +582,7 @@ async function renderLoadDetailView(id) {
                   <th>Truck</th>
                 </tr>
               </thead>
-              <tbody>${tripRows}</tbody>
+              <tbody id="load-trips-tbody">${tripRows}</tbody>
             </table>
           </div>
         </div>
@@ -736,7 +715,6 @@ async function renderLoadDetailView(id) {
       </div>
 
       ${rateHtml}
-      ${renderMileageCard(load.mileage_summary)}
       ${stopsHtml}
       ${tripsHtml}
       ${docsHtml}
@@ -745,6 +723,10 @@ async function renderLoadDetailView(id) {
     setContent(html);
 
     document.getElementById('back-to-loads').addEventListener('click', goBack);
+
+    document.querySelectorAll('#load-trips-tbody tr[data-trip-id]').forEach(row => {
+      row.addEventListener('click', () => navigate('trip-detail', { id: row.dataset.tripId }));
+    });
 
     document.querySelectorAll('.doc-row').forEach(row => {
       row.addEventListener('click', () => {
@@ -897,6 +879,35 @@ async function renderTripDetailView(id) {
 
     if (topbarTitle) topbarTitle.textContent = `Trip ${trip.trip_number || shortId(id)}`;
 
+    const ms = trip.mileage_summary;
+    const hasOrigin = !!(ms && ms.origin);
+    const legs = (ms && ms.legs) || [];
+
+    // Leg-index contract:
+    //  - origin present: legs[0] is deadhead (origin → stop_1), legs[1+] loaded between stops
+    //    => stop i (1-based) inbound miles = legs[i-1]
+    //  - origin absent: legs[0] is stop_1 → stop_2
+    //    => stop i (1-based, i>1) inbound miles = legs[i-2]; stop 1 has none
+    const milesForStop = (i /* 0-based stop index */) => {
+      if (hasOrigin) {
+        return fmtMiles(legs[i] ? legs[i].miles : null);
+      }
+      if (i === 0) return '—';
+      return fmtMiles(legs[i - 1] ? legs[i - 1].miles : null);
+    };
+
+    const originRow = hasOrigin ? `
+      <tr>
+        <td>0</td>
+        <td>${escHtml(ms.origin.facility_name || '—')}${ms.origin.address ? ` — ${escHtml(ms.origin.address)}` : ''}</td>
+        <td>origin</td>
+        <td>—</td>
+        <td>—</td>
+        <td>—</td>
+        <td style="text-align:right; font-variant-numeric: tabular-nums;">—</td>
+      </tr>
+    ` : '';
+
     const stopRows = (trip.stops || []).map((stop, i) => `
       <tr>
         <td>${i + 1}</td>
@@ -905,8 +916,12 @@ async function renderTripDetailView(id) {
         <td>${fmtArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end)}</td>
         <td>${fmtDate(stop.actual_arrive)}</td>
         <td>${fmtDate(stop.actual_depart)}</td>
+        <td style="text-align:right; font-variant-numeric: tabular-nums;">${milesForStop(i)}</td>
       </tr>
     `).join('');
+
+    const totalMiles = ms ? fmtMiles(ms.total_miles) : '—';
+    const bodyRows = (originRow + stopRows) || '<tr><td colspan="7" style="text-align:center; padding: var(--space-4); color: var(--color-text-muted);">No stops</td></tr>';
 
     setContent(`
       <button class="back-link" id="back-to-trips">← Back to Trips</button>
@@ -920,13 +935,15 @@ async function renderTripDetailView(id) {
           <div class="detail-item"><div class="detail-item__label">Trailer</div><div class="detail-item__value">${escHtml((trip.trailer_units || []).join(', ') || '—')}</div></div>
         </div>
       </div>
-      ${renderMileageCard(trip.mileage_summary)}
       <div class="detail-card">
         <div class="detail-card__title">Stops</div>
         <div class="table-wrapper">
           <table class="data-table">
-            <thead><tr><th>#</th><th>Facility</th><th>Type</th><th>Scheduled Arrive</th><th>Actual Arrive</th><th>Actual Depart</th></tr></thead>
-            <tbody>${stopRows || '<tr><td colspan="6" style="text-align:center; padding: var(--space-4); color: var(--color-text-muted);">No stops</td></tr>'}</tbody>
+            <thead><tr><th>#</th><th>Facility</th><th>Type</th><th>Scheduled Arrive</th><th>Actual Arrive</th><th>Actual Depart</th><th style="text-align:right;">Miles</th></tr></thead>
+            <tbody>${bodyRows}</tbody>
+            <tfoot>
+              <tr><td colspan="6" style="font-weight:600;">Total Miles</td><td style="text-align:right; font-weight:600; font-variant-numeric: tabular-nums;">${totalMiles}</td></tr>
+            </tfoot>
           </table>
         </div>
       </div>
