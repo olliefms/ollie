@@ -4237,3 +4237,112 @@ async fn test_mcp_list_trips_filter_by_load_number() {
     assert_eq!(items.len(), 1);
     assert_eq!(items[0]["id"], trip_id);
 }
+
+#[tokio::test]
+async fn test_load_detail_mileage_summary_loaded_only() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let fac1 = create_test_facility(&server, "Pickup", "Chicago, IL").await;
+    let fac2 = create_test_facility(&server, "Stop2", "St Louis, MO").await;
+    let fac3 = create_test_facility(&server, "Delivery", "Memphis, TN").await;
+
+    let load_id = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [
+                {"sequence": 0, "stop_type": "pickup", "service_type": "live_load",
+                 "facility_id": fac1, "scheduled_arrive": "2026-05-10T08:00:00",
+                 "timezone": "America/Chicago"},
+                {"sequence": 1, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": fac2, "scheduled_arrive": "2026-05-10T14:00:00",
+                 "timezone": "America/Chicago"},
+                {"sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                 "facility_id": fac3, "scheduled_arrive": "2026-05-11T08:00:00",
+                 "timezone": "America/Chicago"},
+            ],
+            "rate_items": []
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Pre-populate mileage: deadhead 10.0, loaded leg1 100.0, loaded leg2 200.0
+    state.db.update_trip_mileage(
+        trip_uuid,
+        Some(10.0),
+        Some(300.0),
+        Some(310.0),
+        vec![10.0, 100.0, 200.0],
+    ).await.unwrap();
+    // segment_miles has 3 entries which is one per consecutive pair, but trip has 3 stops + no origin
+    // (no previous_trip_id). Tweak: with no origin, segment_miles maps stop0->stop1, stop1->stop2.
+    // So actually our segment_miles should be [100.0, 200.0] (2 loaded legs, no deadhead leg).
+    state.db.update_trip_mileage(
+        trip_uuid,
+        Some(0.0),
+        Some(300.0),
+        Some(300.0),
+        vec![100.0, 200.0],
+    ).await.unwrap();
+
+    let detail = server.get(&format!("/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+    let ms = &body["mileage_summary"];
+    assert!(!ms.is_null(), "mileage_summary should be present");
+    assert!(ms["origin"].is_null(), "origin must be stripped on load summary");
+    assert!(ms["deadhead_miles"].is_null(), "deadhead_miles must be null on load summary");
+    let legs = ms["legs"].as_array().expect("legs array");
+    assert_eq!(legs.len(), 2, "only loaded legs (deadhead stripped)");
+    for leg in legs {
+        assert_eq!(leg["kind"], "loaded");
+    }
+    assert_eq!(ms["loaded_miles"].as_f64().unwrap(), 300.0);
+    assert_eq!(ms["total_miles"].as_f64().unwrap(), 300.0);
+}
+
+#[tokio::test]
+async fn test_load_detail_mileage_summary_none_without_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    let detail = server.get(&format!("/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+    assert!(body["mileage_summary"].is_null(), "no trip → mileage_summary null");
+}
+
+#[tokio::test]
+async fn test_load_detail_mileage_summary_none_when_only_cancelled_trip() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Cancel the trip
+    state.db.transition_trip_status(trip_uuid, ollie::models::TripStatus::Cancelled).await.unwrap();
+
+    let detail = server.get(&format!("/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+    assert!(body["mileage_summary"].is_null(), "only cancelled trip → mileage_summary null");
+}
