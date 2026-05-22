@@ -236,6 +236,7 @@ PDFs use `lopdf::Document::load_mem()`. If lopdf can't extract ≥50 words, the 
 | `OLLAMA_EMBED_DIM` | No | `768` | Embedding dimension (must match model) |
 | `PIPELINE_WORKERS` | No | `1` | Concurrent pipeline workers |
 | TERMINAL_TIMEZONE | No | America/New_York | IANA timezone for pay-period weeks (driver-portal Past tab). Replaced by per-terminal data in a future release (#185). |
+| `OLLIE_FREE_DWELL_MINUTES` | No | `120` | Minutes of free dwell before detention accrues at a stop. Surfaced on driver stop-detail response so clients don't hardcode (#258). |
 
 ## Running Tests
 

@@ -2645,6 +2645,20 @@ async fn test_driver_stop_detail_includes_actual_arrive_utc() {
 }
 
 #[tokio::test]
+async fn test_driver_stop_detail_includes_free_dwell_minutes() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let detail = server.get(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+    assert_eq!(body["free_dwell_minutes"].as_u64(), Some(120),
+               "default free_dwell_minutes should be 120");
+}
+
+#[tokio::test]
 async fn test_admin_get_trip_legacy_z_row_reads_utc_field() {
     use ollie::models::{TripStop, TripStopType};
     let (server, _db, _blob, _rx, state) = test_server_with_state().await;

@@ -143,6 +143,7 @@ pub struct DriverStopDetailResponse {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actual_depart_utc: Option<String>,
     pub expected_dwell_minutes: Option<u32>,
+    pub free_dwell_minutes: u32,
     pub commodity: Option<String>,
     pub weight_lbs: Option<f64>,
     pub notes: Option<String>,
@@ -633,6 +634,7 @@ pub async fn stop_detail(
         actual_arrive_utc,
         actual_depart_utc,
         expected_dwell_minutes: stop.expected_dwell_minutes,
+        free_dwell_minutes: state.config.free_dwell_minutes,
         commodity: load_opt.as_ref().and_then(|l| l.commodity.clone()),
         weight_lbs: load_opt.as_ref().and_then(|l| l.weight_lbs),
         notes: stop.notes.clone(),

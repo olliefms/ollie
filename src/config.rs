@@ -23,6 +23,7 @@ pub struct Config {
     pub driver_rp_origin: String,
     pub dispatcher_jwt_secret: String,
     pub terminal_timezone: String,
+    pub free_dwell_minutes: u32,
 }
 
 impl Config {
@@ -84,6 +85,8 @@ impl Config {
             driver_rp_origin,
             dispatcher_jwt_secret,
             terminal_timezone,
+            free_dwell_minutes: env::var("OLLIE_FREE_DWELL_MINUTES")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(120),
         })
     }
 }
@@ -207,6 +210,48 @@ mod tests {
         let cfg = Config::from_env().expect("default config should load");
         assert_eq!(cfg.terminal_timezone, "America/New_York");
         if let Some(v) = prior { std::env::set_var("TERMINAL_TIMEZONE", v); }
+    }
+
+    #[test]
+    fn test_free_dwell_minutes_default() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prior = env::var("OLLIE_FREE_DWELL_MINUTES").ok();
+        env::remove_var("OLLIE_FREE_DWELL_MINUTES");
+        env::set_var("ADMIN_API_KEY", "test-key");
+        set_driver_vars();
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.free_dwell_minutes, 120);
+        env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
+        if let Some(v) = prior { env::set_var("OLLIE_FREE_DWELL_MINUTES", v); }
+    }
+
+    #[test]
+    fn test_free_dwell_minutes_override() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prior = env::var("OLLIE_FREE_DWELL_MINUTES").ok();
+        env::set_var("OLLIE_FREE_DWELL_MINUTES", "90");
+        env::set_var("ADMIN_API_KEY", "test-key");
+        set_driver_vars();
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.free_dwell_minutes, 90);
+        env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
+        if let Some(v) = prior { env::set_var("OLLIE_FREE_DWELL_MINUTES", v); } else { env::remove_var("OLLIE_FREE_DWELL_MINUTES"); }
+    }
+
+    #[test]
+    fn test_free_dwell_minutes_invalid_falls_back_to_default() {
+        let _g = ENV_LOCK.lock().unwrap();
+        let prior = env::var("OLLIE_FREE_DWELL_MINUTES").ok();
+        env::set_var("OLLIE_FREE_DWELL_MINUTES", "abc");
+        env::set_var("ADMIN_API_KEY", "test-key");
+        set_driver_vars();
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.free_dwell_minutes, 120);
+        env::remove_var("ADMIN_API_KEY");
+        remove_driver_vars();
+        if let Some(v) = prior { env::set_var("OLLIE_FREE_DWELL_MINUTES", v); } else { env::remove_var("OLLIE_FREE_DWELL_MINUTES"); }
     }
 
     #[test]
