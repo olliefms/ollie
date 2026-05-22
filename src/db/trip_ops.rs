@@ -411,6 +411,8 @@ mod tests {
                     detention_grace_minutes: None,
                     notes: None,
                     timezone: None,
+                    actual_arrive_utc: None,
+                    actual_depart_utc: None,
                 },
             ],
             notes: Some("test trip".into()),

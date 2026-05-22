@@ -84,6 +84,10 @@ pub struct DriverTripStopSummary {
     pub scheduled_arrive_end: Option<String>,
     pub actual_arrive: Option<String>,
     pub actual_depart: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_arrive_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_depart_utc: Option<String>,
     pub expected_dwell_minutes: Option<u32>,
     pub notes: Option<String>,
     pub timezone: Option<String>,
@@ -134,6 +138,10 @@ pub struct DriverStopDetailResponse {
     pub scheduled_arrive_end: Option<String>,
     pub actual_arrive: Option<String>,
     pub actual_depart: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_arrive_utc: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_depart_utc: Option<String>,
     pub expected_dwell_minutes: Option<u32>,
     pub commodity: Option<String>,
     pub weight_lbs: Option<f64>,
@@ -519,6 +527,10 @@ pub async fn trip_detail(
             } else {
                 (s.name.clone().unwrap_or_else(|| format!("Stop {}", s.sequence)), None)
             };
+            let actual_arrive_utc = s.actual_arrive.as_deref()
+                .and_then(|v| crate::models::load::naive_local_to_utc(v, s.timezone.as_deref()));
+            let actual_depart_utc = s.actual_depart.as_deref()
+                .and_then(|v| crate::models::load::naive_local_to_utc(v, s.timezone.as_deref()));
             DriverTripStopSummary {
                 sequence: s.sequence,
                 stop_type: s.stop_type.as_str().to_string(),
@@ -528,6 +540,8 @@ pub async fn trip_detail(
                 scheduled_arrive_end: s.scheduled_arrive_end.clone(),
                 actual_arrive: s.actual_arrive.clone(),
                 actual_depart: s.actual_depart.clone(),
+                actual_arrive_utc,
+                actual_depart_utc,
                 expected_dwell_minutes: s.expected_dwell_minutes,
                 notes: s.notes.clone(),
                 timezone: s.timezone.clone(),
@@ -603,6 +617,10 @@ pub async fn stop_detail(
         zip: None,
     });
 
+    let actual_arrive_utc = stop.actual_arrive.as_deref()
+        .and_then(|v| crate::models::load::naive_local_to_utc(v, stop.timezone.as_deref()));
+    let actual_depart_utc = stop.actual_depart.as_deref()
+        .and_then(|v| crate::models::load::naive_local_to_utc(v, stop.timezone.as_deref()));
     Ok(Json(DriverStopDetailResponse {
         sequence: stop.sequence,
         stop_type: stop.stop_type.as_str().to_string(),
@@ -612,6 +630,8 @@ pub async fn stop_detail(
         scheduled_arrive_end: stop.scheduled_arrive_end.clone(),
         actual_arrive: stop.actual_arrive.clone(),
         actual_depart: stop.actual_depart.clone(),
+        actual_arrive_utc,
+        actual_depart_utc,
         expected_dwell_minutes: stop.expected_dwell_minutes,
         commodity: load_opt.as_ref().and_then(|l| l.commodity.clone()),
         weight_lbs: load_opt.as_ref().and_then(|l| l.weight_lbs),
@@ -778,6 +798,8 @@ mod tests {
             detention_grace_minutes: None,
             notes: None,
             timezone: None,
+            actual_arrive_utc: None,
+            actual_depart_utc: None,
         }
     }
 
@@ -859,6 +881,8 @@ mod tests {
             detention_grace_minutes: None,
             notes: None,
             timezone: tz.map(String::from),
+            actual_arrive_utc: None,
+            actual_depart_utc: None,
         }
     }
 

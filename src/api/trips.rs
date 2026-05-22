@@ -87,6 +87,8 @@ pub async fn create_trip(
                 detention_grace_minutes: s.detention_grace_minutes,
                 notes: s.notes.clone(),
                 timezone: s.timezone.clone(),
+                actual_arrive_utc: None,
+                actual_depart_utc: None,
             }).collect()
         } else {
             vec![]
@@ -157,6 +159,7 @@ pub async fn create_trip(
     record.embedding = embed_text(&state.ai, &record.embedding_text()).await.ok();
 
     state.db.insert_trip(&record).await?;
+    for s in &mut record.stops { s.fill_utc_fields(); }
     Ok((StatusCode::CREATED, Json(record)))
 }
 
@@ -178,9 +181,12 @@ pub async fn list_trips(
     let _limit = q.limit.unwrap_or(20).min(100);
     let _offset = q.offset.unwrap_or(0);
 
-    let items = state.db.list_trips(
+    let mut items = state.db.list_trips(
         q.load_id, q.driver_id, q.status.as_deref(),
     ).await?;
+    for it in &mut items {
+        for s in &mut it.stops { s.fill_utc_fields(); }
+    }
     let returned = items.len();
     Ok(Json(TripListResponse { returned, items }))
 }
@@ -203,7 +209,8 @@ pub async fn get_trip(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
-    let record = state.db.get_trip(id).await?;
+    let mut record = state.db.get_trip(id).await?;
+    for s in &mut record.stops { s.fill_utc_fields(); }
     Ok(Json(record))
 }
 
@@ -240,9 +247,10 @@ pub async fn update_trip(
     let embed_text_str = format!("{trip_number} {stop_names} {notes_str}");
     let embedding = embed_text(&state.ai, &embed_text_str).await.ok();
 
-    let record = state.db.update_trip_metadata(
+    let mut record = state.db.update_trip_metadata(
         id, body.load_id, body.sequence, body.stops, body.notes, embedding,
     ).await?;
+    for s in &mut record.stops { s.fill_utc_fields(); }
     Ok(Json(record))
 }
 

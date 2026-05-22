@@ -79,6 +79,7 @@ mod tests {
                 detention_grace_minutes: None,
                 notes: None, blob_ids: vec![],
                 timezone: Some("America/Chicago".into()),
+                actual_arrive_utc: None, actual_depart_utc: None,
             }],
             rate_items: vec![], commodity: None, weight_lbs: None, miles: None,
             notes: None, tags: vec![], blob_ids: vec![],

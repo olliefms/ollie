@@ -367,9 +367,10 @@ pub async fn stop_arrive(
     // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
     // is theoretically possible but negligible in practice — see #95.
     crate::services::trip_stops::validate_arrive(&body.actual_arrive, stop_tz.as_deref())?;
-    let trip = crate::services::trip_stops::record_stop_arrive(
+    let mut trip = crate::services::trip_stops::record_stop_arrive(
         &state, id, seq, body.actual_arrive,
     ).await?;
+    for s in &mut trip.stops { s.fill_utc_fields(); }
     Ok(Json(trip))
 }
 
@@ -404,9 +405,10 @@ pub async fn stop_depart(
     // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
     // is theoretically possible but negligible in practice — see #95.
     crate::services::trip_stops::validate_depart(&body.actual_depart, stop_tz.as_deref())?;
-    let trip = crate::services::trip_stops::record_stop_depart(
+    let mut trip = crate::services::trip_stops::record_stop_depart(
         &state, id, seq, body.actual_depart,
     ).await?;
+    for s in &mut trip.stops { s.fill_utc_fields(); }
     Ok(Json(trip))
 }
 

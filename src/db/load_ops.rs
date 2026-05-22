@@ -489,6 +489,7 @@ mod tests {
             detention_grace_minutes: None,
             notes: None, blob_ids: vec![],
             timezone: Some("America/Chicago".into()),
+            actual_arrive_utc: None, actual_depart_utc: None,
         }];
         db.insert_load(&load).await.unwrap();
         assert!(db.any_load_references_facility(fac_id).await.unwrap());

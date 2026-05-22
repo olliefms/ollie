@@ -120,6 +120,9 @@ fn enrich_trip(
         .filter_map(|tid| trailer_map.get(tid).cloned())
         .collect();
 
+    let mut stops = trip.stops;
+    for s in &mut stops { s.fill_utc_fields(); }
+
     DispatcherTripListItem {
         id: trip.id,
         trip_number: trip.trip_number,
@@ -130,7 +133,7 @@ fn enrich_trip(
         truck_unit,
         trailer_ids: trip.trailer_ids,
         trailer_units,
-        stops: trip.stops,
+        stops,
         load_id: trip.load_id,
         load_number: trip.load_number,
         created_at: trip.created_at,
@@ -1062,6 +1065,10 @@ async fn build_load_detail(
 
     let stops: Vec<StopResponse> = record.stops.iter().map(|stop| {
         let facility = facilities.get(&stop.facility_id);
+        let actual_arrive_utc = stop.actual_arrive.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, stop.timezone.as_deref()));
+        let actual_depart_utc = stop.actual_depart.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, stop.timezone.as_deref()));
         StopResponse {
             sequence: stop.sequence,
             stop_type: stop.stop_type.clone(),
@@ -1082,6 +1089,8 @@ async fn build_load_detail(
             notes: stop.notes.clone(),
             blob_ids: stop.blob_ids.clone(),
             timezone: stop.timezone.clone(),
+            actual_arrive_utc,
+            actual_depart_utc,
         }
     }).collect();
 

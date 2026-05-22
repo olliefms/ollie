@@ -2610,6 +2610,132 @@ async fn test_patch_stop_depart_before_arrive_rejected() {
 }
 
 #[tokio::test]
+async fn test_patch_stop_rejects_offset_suffix() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-09T08:00:00+05:00" }))
+        .await;
+    assert_eq!(resp.status_code(), 422);
+}
+
+#[tokio::test]
+async fn test_driver_stop_detail_includes_actual_arrive_utc() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    // Stop 1 has timezone America/Los_Angeles. Naive 14:30 local in May = 21:30 UTC (PDT, UTC-7).
+    let arrive = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-09T14:30:00" }))
+        .await;
+    assert_eq!(arrive.status_code(), 200);
+
+    let detail = server.get(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+    let utc = body["actual_arrive_utc"].as_str().expect("actual_arrive_utc present");
+    let parsed = chrono::DateTime::parse_from_rfc3339(utc).expect("valid RFC3339");
+    assert_eq!(parsed.with_timezone(&chrono::Utc).to_rfc3339(),
+               "2026-05-09T21:30:00+00:00");
+}
+
+#[tokio::test]
+async fn test_admin_get_trip_legacy_z_row_reads_utc_field() {
+    use ollie::models::{TripStop, TripStopType};
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+
+    // Build a trip directly via DB with a legacy Z-suffixed actual_arrive and timezone=None.
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "Origin",
+                  "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Simulate a legacy row: timezone=None, actual_arrive with trailing Z.
+    let legacy_stops = vec![TripStop {
+        sequence: 1,
+        stop_type: TripStopType::Pickup,
+        facility_id: None,
+        name: Some("Origin".into()),
+        address: None,
+        load_stop_index: None,
+        scheduled_arrive: None,
+        scheduled_arrive_end: None,
+        actual_arrive: Some("2026-04-24T03:20:00Z".into()),
+        actual_depart: None,
+        expected_dwell_minutes: None,
+        detention_free_minutes: None,
+        detention_grace_minutes: None,
+        notes: None,
+        timezone: None,
+        actual_arrive_utc: None,
+        actual_depart_utc: None,
+    }];
+    state.db.update_trip_metadata(trip_uuid, None, None, Some(legacy_stops), None, None).await.unwrap();
+
+    let resp = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    let utc = body["stops"][0]["actual_arrive_utc"].as_str()
+        .expect("legacy UTC row still produces actual_arrive_utc");
+    let parsed = chrono::DateTime::parse_from_rfc3339(utc).expect("valid RFC3339");
+    assert_eq!(parsed.with_timezone(&chrono::Utc).to_rfc3339(),
+               "2026-04-24T03:20:00+00:00");
+}
+
+#[tokio::test]
+async fn test_patch_stop_accepts_z_suffix_when_no_timezone() {
+    // Backwards-compat write: only reject Z when stop's timezone IS set.
+    use ollie::models::{TripStop, TripStopType};
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    // Strip the timezone off stop 1 so it represents a legacy row.
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    let record = state.db.get_trip(trip_uuid).await.unwrap();
+    let mut stops = record.stops.clone();
+    stops[0] = TripStop {
+        sequence: 1,
+        stop_type: TripStopType::Pickup,
+        facility_id: None,
+        name: Some("Origin".into()),
+        address: None,
+        load_stop_index: None,
+        scheduled_arrive: None,
+        scheduled_arrive_end: None,
+        actual_arrive: None,
+        actual_depart: None,
+        expected_dwell_minutes: None,
+        detention_free_minutes: None,
+        detention_grace_minutes: None,
+        notes: None,
+        timezone: None,
+        actual_arrive_utc: None,
+        actual_depart_utc: None,
+    };
+    state.db.update_trip_metadata(trip_uuid, None, None, Some(stops), None, None).await.unwrap();
+
+    let resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-09T08:00:00Z" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "Z accepted when stop has no timezone");
+}
+
+#[tokio::test]
 async fn test_patch_last_stop_depart_transitions_to_delivered() {
     let (server, _db, _blob, _rx, state) = test_server_with_state().await;
     let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;

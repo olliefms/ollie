@@ -504,6 +504,8 @@ async fn resolve_stops(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<S
             notes: input.notes,
             blob_ids: input.blob_ids,
             timezone: Some(input.timezone),
+            actual_arrive_utc: None,
+            actual_depart_utc: None,
         });
     }
 
@@ -523,6 +525,10 @@ async fn build_detail_response(
 
     let stops: Vec<StopResponse> = record.stops.iter().map(|stop| {
         let facility = facilities.get(&stop.facility_id);
+        let actual_arrive_utc = stop.actual_arrive.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, stop.timezone.as_deref()));
+        let actual_depart_utc = stop.actual_depart.as_deref()
+            .and_then(|s| crate::models::load::naive_local_to_utc(s, stop.timezone.as_deref()));
         StopResponse {
             sequence: stop.sequence,
             stop_type: stop.stop_type.clone(),
@@ -543,6 +549,8 @@ async fn build_detail_response(
             notes: stop.notes.clone(),
             blob_ids: stop.blob_ids.clone(),
             timezone: stop.timezone.clone(),
+            actual_arrive_utc,
+            actual_depart_utc,
         }
     }).collect();
 
