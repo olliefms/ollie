@@ -165,13 +165,13 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
                 transforms.push(("previous_trip_id".into(), "CAST(NULL AS string)".into()));
             }
             if existing.field_with_name("deadhead_miles").is_err() {
-                transforms.push(("deadhead_miles".into(), "CAST(NULL AS float64)".into()));
+                transforms.push(("deadhead_miles".into(), "CAST(NULL AS double)".into()));
             }
             if existing.field_with_name("loaded_miles").is_err() {
-                transforms.push(("loaded_miles".into(), "CAST(NULL AS float64)".into()));
+                transforms.push(("loaded_miles".into(), "CAST(NULL AS double)".into()));
             }
             if existing.field_with_name("total_miles").is_err() {
-                transforms.push(("total_miles".into(), "CAST(NULL AS float64)".into()));
+                transforms.push(("total_miles".into(), "CAST(NULL AS double)".into()));
             }
             if existing.field_with_name("segment_miles").is_err() {
                 transforms.push(("segment_miles".into(), "CAST(NULL AS string)".into()));
@@ -784,5 +784,56 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
         assert_eq!(client.dispatcher_api_key_table.count_rows(None).await.unwrap(), 0);
+    }
+
+    // Guards against the recurring failure documented in AGENTS.md: writing an
+    // Arrow DataType spelling (Utf8, Float64, …) inside a `CAST(NULL AS …)`
+    // expression. The DataFusion SQL parser bundled with LanceDB rejects those
+    // at migration time and crash-loops the server. This bug has shipped to
+    // production in v1.10.0, v1.13.0, and v1.16.0.
+    //
+    // Forbidden tokens are assembled via `concat!` so the test does not match
+    // itself when scanning the source.
+    #[test]
+    fn cast_expressions_use_sql_types_not_arrow_types() {
+        let source = include_str!("mod.rs");
+        let cutoff = source.find("#[cfg(test)]").unwrap_or(source.len());
+        let prod = &source[..cutoff];
+
+        let forbidden: &[&str] = &[
+            concat!("Ut", "f8"),
+            concat!("ut", "f8"),
+            concat!("Float", "64"),
+            concat!("float", "64"),
+            concat!("Int", "64"),
+            concat!("Int", "32"),
+        ];
+
+        let mut violations = Vec::new();
+        for ty in forbidden {
+            let needle = format!(" AS {})", ty);
+            let mut search_from = 0;
+            while let Some(rel) = prod[search_from..].find(&needle) {
+                let idx = search_from + rel;
+                let line_start = prod[..idx].rfind('\n').map(|n| n + 1).unwrap_or(0);
+                let line_end = prod[idx..].find('\n').map(|n| idx + n).unwrap_or(prod.len());
+                let line_no = prod[..idx].bytes().filter(|&b| b == b'\n').count() + 1;
+                violations.push(format!(
+                    "  src/db/mod.rs:{}: `{}` — {}",
+                    line_no,
+                    ty,
+                    prod[line_start..line_end].trim()
+                ));
+                search_from = idx + needle.len();
+            }
+        }
+
+        assert!(
+            violations.is_empty(),
+            "Found Arrow type name(s) in CAST expressions. Use DataFusion SQL \
+             keywords (`string`, `double`, `bigint`, …), not Arrow DataType \
+             names. See the \"Recurring AI-agent failure\" lesson in AGENTS.md.\n{}",
+            violations.join("\n")
+        );
     }
 }
