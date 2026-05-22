@@ -49,6 +49,16 @@ pub struct DispatcherTripListItem {
     pub load_number: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub updated_at: chrono::DateTime<chrono::Utc>,
+    /// Flattened mileage projection for list views — keeps payloads small but
+    /// gives agents enough info to audit the fleet without N+1 `get_trip` calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadhead_miles: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded_miles: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_miles: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_facility_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mileage_summary: Option<crate::models::trip::MileageSummary>,
 }
@@ -138,6 +148,10 @@ fn enrich_trip(
         load_number: trip.load_number,
         created_at: trip.created_at,
         updated_at: trip.updated_at,
+        deadhead_miles: trip.deadhead_miles,
+        loaded_miles: trip.loaded_miles,
+        total_miles: trip.total_miles,
+        origin_facility_name: None,
         mileage_summary: None,
     }
 }
@@ -360,6 +374,8 @@ pub struct ListTripsQuery {
     pub load_id: Option<Uuid>,
     pub driver_id: Option<Uuid>,
     pub status: Option<String>,
+    pub trip_number: Option<String>,
+    pub load_number: Option<String>,
 }
 
 #[utoipa::path(
@@ -381,7 +397,37 @@ pub async fn list_trips(
     State(state): State<AppState>,
     Query(q): Query<ListTripsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let trips = state.db.list_trips(q.load_id, q.driver_id, q.status.as_deref()).await?;
+    let items = build_trip_list_items(&state, q).await?;
+    Ok(Json(DispatcherTripListResponse { items }))
+}
+
+/// Shared list-trips builder used by the HTTP handler and the MCP `list_trips` tool.
+/// Applies `trip_number` / `load_number` filters (post-query for trip_number, two-step
+/// lookup for load_number), enriches with driver/truck/trailer names, and projects a
+/// flat `origin_facility_name` from the previous trip's last stop facility.
+pub async fn build_trip_list_items(
+    state: &AppState,
+    q: ListTripsQuery,
+) -> Result<Vec<DispatcherTripListItem>, AppError> {
+    // Resolve `load_number` → `load_id` if provided; if no such load exists, return [].
+    let load_id_filter = if let Some(ln) = &q.load_number {
+        match state.db.get_load_by_number(ln).await {
+            Ok(load) => Some(load.id),
+            Err(AppError::NotFound) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        }
+    } else {
+        q.load_id
+    };
+
+    let trips = state.db.list_trips(load_id_filter, q.driver_id, q.status.as_deref()).await?;
+
+    // Apply `trip_number` filter post-fetch (case-sensitive exact match).
+    let trips: Vec<_> = if let Some(tn) = &q.trip_number {
+        trips.into_iter().filter(|t| &t.trip_number == tn).collect()
+    } else {
+        trips
+    };
 
     let mut driver_ids = std::collections::HashSet::new();
     let mut truck_ids  = std::collections::HashSet::new();
@@ -406,11 +452,48 @@ pub async fn list_trips(
     let truck_map:   std::collections::HashMap<_, _> = truck_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
     let trailer_map: std::collections::HashMap<_, _> = trailer_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
 
-    let items: Vec<DispatcherTripListItem> = trips.into_iter()
-        .map(|trip| enrich_trip(trip, &driver_map, &truck_map, &trailer_map))
+    // Collect previous_trip_id set for origin lookup, then batch the facility resolves.
+    let prev_trip_ids: Vec<Uuid> = trips.iter()
+        .filter_map(|t| t.previous_trip_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
         .collect();
+    let mut origin_name_by_trip: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
+    if !prev_trip_ids.is_empty() {
+        // Resolve each previous trip → last stop facility name.
+        let mut fac_ids: Vec<Uuid> = Vec::new();
+        let mut prev_to_fac: std::collections::HashMap<Uuid, Uuid> =
+            std::collections::HashMap::new();
+        for prev_id in &prev_trip_ids {
+            if let Ok(prev) = state.db.get_trip(*prev_id).await {
+                if let Some(fac_id) = prev.stops.last().and_then(|s| s.facility_id) {
+                    fac_ids.push(fac_id);
+                    prev_to_fac.insert(*prev_id, fac_id);
+                }
+            }
+        }
+        let facilities = state.db.batch_get_facilities(&fac_ids).await.unwrap_or_default();
+        for trip in &trips {
+            if let Some(prev_id) = trip.previous_trip_id {
+                if let Some(fac_id) = prev_to_fac.get(&prev_id) {
+                    if let Some(fac) = facilities.get(fac_id) {
+                        origin_name_by_trip.insert(trip.id, fac.name.clone());
+                    }
+                }
+            }
+        }
+    }
 
-    Ok(Json(DispatcherTripListResponse { items }))
+    let items: Vec<DispatcherTripListItem> = trips.into_iter()
+        .map(|trip| {
+            let trip_id = trip.id;
+            let mut item = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
+            item.origin_facility_name = origin_name_by_trip.get(&trip_id).cloned();
+            item
+        })
+        .collect();
+    Ok(items)
 }
 
 #[utoipa::path(
@@ -429,6 +512,17 @@ pub async fn get_trip(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    let item = build_trip_detail(&state, id).await?;
+    Ok(Json(item))
+}
+
+/// Shared trip-detail builder — used by the HTTP handler and the MCP `get_trip` tool.
+/// Returns the enriched `DispatcherTripListItem` carrying a full `mileage_summary`
+/// (origin + legs[]) so callers get a single, coherent shape.
+pub async fn build_trip_detail(
+    state: &AppState,
+    id: Uuid,
+) -> Result<DispatcherTripListItem, AppError> {
     let record = state.db.get_trip(id).await?;
     let trip: crate::models::TripListItem = record.clone().into();
 
@@ -447,10 +541,11 @@ pub async fn get_trip(
     let trailer_map: std::collections::HashMap<_, _> = trailer_records.into_iter().map(|(id, r)| (id, r.unit_number)).collect();
 
     let mut enriched = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
-    enriched.mileage_summary = Some(
-        crate::api::mileage_summary::build_mileage_summary(&state, &record).await
-    );
-    Ok(Json(enriched))
+    let summary = crate::api::mileage_summary::build_mileage_summary(state, &record).await;
+    enriched.origin_facility_name = summary.origin.as_ref()
+        .and_then(|o| o.facility_name.clone());
+    enriched.mileage_summary = Some(summary);
+    Ok(enriched)
 }
 
 #[utoipa::path(
@@ -1096,7 +1191,7 @@ async fn build_load_detail(
 
     let mileage_summary = {
         let mut trips = state.db.list_trips_for_load(record.id).await.unwrap_or_default();
-        trips.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        trips.sort_by_key(|t| std::cmp::Reverse(t.created_at));
         if let Some(trip_record) = trips.into_iter().next() {
             Some(crate::api::mileage_summary::build_mileage_summary(state, &trip_record).await)
         } else {

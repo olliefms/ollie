@@ -24,7 +24,7 @@ use crate::{
     error::AppError,
 };
 
-use super::data::get_trip as dispatcher_get_trip;
+use super::data::build_trip_detail;
 
 #[derive(Debug, Deserialize, ToSchema, Default)]
 pub struct RecalculateMilesBody {
@@ -129,6 +129,6 @@ pub async fn patch_trip_handler(
         compute_and_persist_mileage(&state, id).await?;
     }
 
-    let resp = dispatcher_get_trip(State(state), Path(id)).await?;
-    Ok(resp)
+    let item = build_trip_detail(&state, id).await?;
+    Ok(Json(item))
 }
