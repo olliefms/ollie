@@ -2645,6 +2645,88 @@ async fn test_driver_stop_detail_includes_actual_arrive_utc() {
 }
 
 #[tokio::test]
+async fn test_driver_stop_detail_includes_scheduled_arrive_utc() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+
+    let driver_id_str = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Sched UTC Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let driver_id: uuid::Uuid = driver_id_str.parse().unwrap();
+
+    let creds = ollie::models::DriverCredentials {
+        driver_id, pin_hash: None, token_version: 1,
+        failed_pin_attempts: 0, locked_until: None,
+        updated_at: chrono::Utc::now(),
+    };
+    state.db.upsert_driver_credentials(&creds).await.unwrap();
+
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-SCHED-001" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Naive 08:00 local on 2026-05-09 in America/Chicago (CDT, UTC-5) → 13:00 UTC.
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "Origin",
+                  "scheduled_arrive": "2026-05-09T08:00:00",
+                  "scheduled_arrive_end": "2026-05-09T10:00:00",
+                  "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "name": "Destination",
+                  "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let assign = server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign.status_code(), 200);
+    let dispatch = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
+    let driver_token = ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap();
+
+    let detail = server.get(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+    let utc = body["scheduled_arrive_utc"].as_str()
+        .expect("scheduled_arrive_utc present");
+    let parsed = chrono::DateTime::parse_from_rfc3339(utc).expect("valid RFC3339");
+    assert_eq!(parsed.with_timezone(&chrono::Utc).to_rfc3339(),
+               "2026-05-09T13:00:00+00:00");
+    let utc_end = body["scheduled_arrive_end_utc"].as_str()
+        .expect("scheduled_arrive_end_utc present");
+    let parsed_end = chrono::DateTime::parse_from_rfc3339(utc_end).expect("valid RFC3339");
+    assert_eq!(parsed_end.with_timezone(&chrono::Utc).to_rfc3339(),
+               "2026-05-09T15:00:00+00:00");
+
+    // Trip detail also exposes the field on the embedded stop summary.
+    let trip = server.get(&format!("/driver/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(trip.status_code(), 200);
+    let trip_body: serde_json::Value = trip.json();
+    let trip_utc = trip_body["stops"][0]["scheduled_arrive_utc"].as_str()
+        .expect("scheduled_arrive_utc on trip-detail stop");
+    assert_eq!(chrono::DateTime::parse_from_rfc3339(trip_utc).unwrap()
+                  .with_timezone(&chrono::Utc).to_rfc3339(),
+               "2026-05-09T13:00:00+00:00");
+}
+
+#[tokio::test]
 async fn test_driver_stop_detail_includes_free_dwell_minutes() {
     let (server, _db, _blob, _rx, state) = test_server_with_state().await;
     let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
