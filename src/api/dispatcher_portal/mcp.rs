@@ -357,9 +357,107 @@ fn tools_list() -> Value {
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
+                "name": "get_truck",
+                "description": "Get a single truck by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "truck_id": { "type": "string", "format": "uuid" } },
+                    "required": ["truck_id"]
+                }
+            },
+            {
+                "name": "create_truck",
+                "description": "Create a new truck. Defaults status to `available`. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "unit_number": { "type": "string" },
+                        "year":        { "type": "integer" },
+                        "make":        { "type": "string" },
+                        "model":       { "type": "string" },
+                        "vin":         { "type": "string" },
+                        "plate":       { "type": "string" },
+                        "plate_state": { "type": "string" },
+                        "notes":       { "type": "string" }
+                    },
+                    "required": ["unit_number"]
+                }
+            },
+            {
+                "name": "update_truck",
+                "description": "Update a truck's fields. `status` is not settable here — trucks transition via the trip lifecycle. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "truck_id":    { "type": "string", "format": "uuid" },
+                        "unit_number": { "type": "string" },
+                        "year":        { "type": "integer" },
+                        "make":        { "type": "string" },
+                        "model":       { "type": "string" },
+                        "vin":         { "type": "string" },
+                        "plate":       { "type": "string" },
+                        "plate_state": { "type": "string" },
+                        "notes":       { "type": "string" }
+                    },
+                    "required": ["truck_id"]
+                }
+            },
+            {
                 "name": "list_trailers",
                 "description": "List all trailers.",
                 "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "get_trailer",
+                "description": "Get a single trailer by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "trailer_id": { "type": "string", "format": "uuid" } },
+                    "required": ["trailer_id"]
+                }
+            },
+            {
+                "name": "create_trailer",
+                "description": "Create a new trailer. `owner` is one of fleet/carrier/customer/other; `owner_name` is required when owner is not fleet. Defaults status to `available`. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "unit_number":  { "type": "string" },
+                        "owner":        { "type": "string", "enum": ["fleet","carrier","customer","other"] },
+                        "owner_name":   { "type": "string" },
+                        "year":         { "type": "integer" },
+                        "make":         { "type": "string" },
+                        "trailer_type": { "type": "string" },
+                        "length_ft":    { "type": "number" },
+                        "vin":          { "type": "string" },
+                        "plate":        { "type": "string" },
+                        "plate_state":  { "type": "string" },
+                        "notes":        { "type": "string" }
+                    },
+                    "required": ["unit_number", "owner"]
+                }
+            },
+            {
+                "name": "update_trailer",
+                "description": "Update a trailer's fields. `status` is not settable here — trailers transition via the trip lifecycle. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trailer_id":   { "type": "string", "format": "uuid" },
+                        "unit_number":  { "type": "string" },
+                        "owner":        { "type": "string", "enum": ["fleet","carrier","customer","other"] },
+                        "owner_name":   { "type": "string" },
+                        "year":         { "type": "integer" },
+                        "make":         { "type": "string" },
+                        "trailer_type": { "type": "string" },
+                        "length_ft":    { "type": "number" },
+                        "vin":          { "type": "string" },
+                        "plate":        { "type": "string" },
+                        "plate_state":  { "type": "string" },
+                        "notes":        { "type": "string" }
+                    },
+                    "required": ["trailer_id"]
+                }
             },
             {
                 "name": "list_events",
@@ -552,7 +650,13 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "list_drivers" => tool_list_drivers(state, args).await,
         "get_driver" => tool_get_driver(state, args).await,
         "list_trucks" => tool_list_trucks(state).await,
+        "get_truck" => tool_get_truck(state, args).await,
+        "create_truck" => tool_create_truck(state, args).await,
+        "update_truck" => tool_update_truck(state, args).await,
         "list_trailers" => tool_list_trailers(state).await,
+        "get_trailer" => tool_get_trailer(state, args).await,
+        "create_trailer" => tool_create_trailer(state, args).await,
+        "update_trailer" => tool_update_trailer(state, args).await,
         "list_events" => tool_list_events(state, args).await,
         "list_facilities" => tool_list_facilities(state, args).await,
         "get_facility" => tool_get_facility(state, args).await,
@@ -1029,6 +1133,56 @@ async fn tool_list_trailers(state: &AppState) -> Result<Value, String> {
     let (total, items) = state.db.list_trailers(None, None, 100, 0)
         .await.map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+}
+
+async fn tool_get_truck(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "truck_id")?;
+    let record = state.db.get_truck_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_create_truck(state: &AppState, args: &Value) -> Result<Value, String> {
+    let record = super::truck_writes::apply_truck_create(state, args.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_truck(state: &AppState, args: &Value) -> Result<Value, String> {
+    let truck_id = parse_uuid(args, "truck_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("truck_id");
+    }
+    let record = super::truck_writes::apply_truck_patch(state, truck_id, body)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_get_trailer(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "trailer_id")?;
+    let record = state.db.get_trailer_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_create_trailer(state: &AppState, args: &Value) -> Result<Value, String> {
+    let record = super::trailer_writes::apply_trailer_create(state, args.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_trailer(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trailer_id = parse_uuid(args, "trailer_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("trailer_id");
+    }
+    let record = super::trailer_writes::apply_trailer_patch(state, trailer_id, body)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
 }
 
 async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, String> {
