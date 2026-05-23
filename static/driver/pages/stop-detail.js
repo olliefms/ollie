@@ -147,8 +147,8 @@ export async function renderStopDetail(container, tripId, seq) {
       if (data.scheduled_arrive) {
         const arriveWindow = document.createElement('div');
         arriveWindow.className = 'stop-detail-row';
-        const start = formatShortTime(data.scheduled_arrive, data.timezone);
-        const end = data.scheduled_arrive_end ? formatShortTime(data.scheduled_arrive_end, data.timezone) : null;
+        const start = formatShortTime(data.scheduled_arrive_utc, data.timezone);
+        const end = data.scheduled_arrive_end_utc ? formatShortTime(data.scheduled_arrive_end_utc, data.timezone) : null;
         if (end) {
           arriveWindow.textContent = `${start} – ${end}`;
         } else {
@@ -234,7 +234,7 @@ function renderActualSection(stop, tripId, onChange) {
 
   const arrivedRow = document.createElement('div');
   arrivedRow.className = 'stop-detail-row stop-actual-row';
-  arrivedRow.appendChild(renderActualLine('Arrived', stop.actual_arrive, stop.timezone, async (newVal) => {
+  arrivedRow.appendChild(renderActualLine('Arrived', stop.actual_arrive, stop.actual_arrive_utc, stop.timezone, async (newVal) => {
     await patchStop(tripId, stop.sequence, { actual_arrive: newVal });
     onChange();
   }, !stop.actual_arrive));
@@ -245,7 +245,7 @@ function renderActualSection(stop, tripId, onChange) {
   const departedRow = document.createElement('div');
   departedRow.className = 'stop-detail-row stop-actual-row';
   if (stop.actual_arrive) {
-    departedRow.appendChild(renderActualLine('Departed', stop.actual_depart, stop.timezone, async (newVal) => {
+    departedRow.appendChild(renderActualLine('Departed', stop.actual_depart, stop.actual_depart_utc, stop.timezone, async (newVal) => {
       await patchStop(tripId, stop.sequence, { actual_depart: newVal });
       onChange();
     }, !stop.actual_depart));
@@ -322,7 +322,7 @@ function renderDwellBubbles(stop) {
   return out;
 }
 
-function renderActualLine(label, currentValue, tz, onSave, primary) {
+function renderActualLine(label, currentValue, currentValueUtc, tz, onSave, primary) {
   const wrap = document.createElement('span');
   const lbl = document.createElement('span');
   lbl.className = 'stop-detail-actual-label';
@@ -342,7 +342,7 @@ function renderActualLine(label, currentValue, tz, onSave, primary) {
     wrap.appendChild(btn);
   } else if (currentValue) {
     const time = document.createElement('span');
-    time.textContent = formatShortTime(currentValue, tz);
+    time.textContent = formatShortTime(currentValueUtc || currentValue, tz);
     wrap.appendChild(time);
     const edit = document.createElement('button');
     edit.type = 'button';
