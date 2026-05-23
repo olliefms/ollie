@@ -3,6 +3,7 @@ pub mod api_keys;
 pub mod auth;
 pub mod blobs;
 pub mod data;
+pub mod facility_writes;
 pub mod jwt;
 pub mod mcp;
 pub mod middleware;
@@ -51,6 +52,15 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trailers", get(data::list_trailers))
         .route("/dispatch/api/v1/trailers/:id", get(data::get_trailer))
         .route("/dispatch/api/v1/events", get(data::list_events))
+        // Facilities
+        .route(
+            "/dispatch/api/v1/facilities",
+            get(data::list_facilities).post(facility_writes::create_facility_handler),
+        )
+        .route(
+            "/dispatch/api/v1/facilities/:id",
+            get(data::get_facility).patch(facility_writes::update_facility_handler),
+        )
         // KPI count endpoints
         .route("/dispatch/api/v1/loads/count", get(data::count_open_loads))
         .route("/dispatch/api/v1/drivers/count", get(data::count_active_drivers))

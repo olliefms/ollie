@@ -110,6 +110,10 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::check_call,
         dispatcher_portal::trip_writes::recalculate_miles_handler,
         dispatcher_portal::trip_writes::patch_trip_handler,
+        dispatcher_portal::data::list_facilities,
+        dispatcher_portal::data::get_facility,
+        dispatcher_portal::facility_writes::create_facility_handler,
+        dispatcher_portal::facility_writes::update_facility_handler,
         dispatcher_portal::data::list_drivers,
         dispatcher_portal::data::get_driver,
         dispatcher_portal::data::list_trucks,
@@ -201,6 +205,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             trip_actions::CheckCallRequest,
             dispatcher_portal::trip_writes::RecalculateMilesBody,
             dispatcher_portal::trip_writes::PatchTripBody,
+            dispatcher_portal::facility_writes::CreateFacilityBody,
+            dispatcher_portal::facility_writes::PatchFacilityBody,
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
@@ -490,6 +496,11 @@ Data endpoints (dispatcher JWT required — same response shapes as admin API):
 
   GET  /dispatch/api/v1/trailers           List trailers (?status)
   GET  /dispatch/api/v1/trailers/:id       Get trailer record
+
+  GET   /dispatch/api/v1/facilities         List facilities (?q for name/address substring, ?limit, ?offset)
+  GET   /dispatch/api/v1/facilities/:id     Get facility record
+  POST  /dispatch/api/v1/facilities         Create facility (body: name, address, contacts?, notes?, tags?, blob_ids?, lat?, lng?). Unknown fields are rejected.
+  PATCH /dispatch/api/v1/facilities/:id     Update facility fields. Setting `address` re-queues the geocoder; explicit `lat`+`lng` set status=ready and reset failure count. Unknown fields are rejected.
 
   GET  /dispatch/api/v1/events             List recent events (?trip_id, ?driver_id, ?limit, ?offset)
 
