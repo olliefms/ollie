@@ -284,6 +284,8 @@ Trunk-based. Three skills cover the workflow:
 - **`/sprint-plan`** — exception, for cross-cutting work that must land atomically. Plans + executes on a feature branch, one PR to main.
 - **`/cut-release`** — when main has accumulated enough work to ship. Bumps version, tags, generates release notes. No release branch involved.
 
+**Skill source of truth:** The project-local copies of `work-issue`, `sprint-plan`, and `cut-release` live in `.claude/skills/` and are the authoritative versions for this repo. When invoking any of these skills, always use the project-local version, never the globally installed one of the same name. The project copies are tailored to Ollie's conventions (trunk-based releases, Shippability Bar, triage rules above) and may diverge from the global skills over time.
+
 ### Version increment
 - **Patch (x.y.Z):** bug fixes only, no new API surface or features
 - **Minor (x.Y.0):** any new feature, endpoint, or UI capability
