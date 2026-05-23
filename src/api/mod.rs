@@ -118,8 +118,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::get_driver,
         dispatcher_portal::data::list_trucks,
         dispatcher_portal::data::get_truck,
+        dispatcher_portal::truck_writes::create_truck_handler,
+        dispatcher_portal::truck_writes::update_truck_handler,
         dispatcher_portal::data::list_trailers,
         dispatcher_portal::data::get_trailer,
+        dispatcher_portal::trailer_writes::create_trailer_handler,
+        dispatcher_portal::trailer_writes::update_trailer_handler,
         dispatcher_portal::data::list_events,
         dispatcher_portal::blobs::list_blobs,
         dispatcher_portal::blobs::upload_blob,
@@ -210,6 +214,10 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             dispatcher_portal::trip_writes::PatchTripBody,
             dispatcher_portal::facility_writes::CreateFacilityBody,
             dispatcher_portal::facility_writes::PatchFacilityBody,
+            dispatcher_portal::truck_writes::CreateTruckBody,
+            dispatcher_portal::truck_writes::PatchTruckBody,
+            dispatcher_portal::trailer_writes::CreateTrailerBody,
+            dispatcher_portal::trailer_writes::PatchTrailerBody,
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
@@ -501,11 +509,15 @@ Data endpoints (dispatcher JWT required — same response shapes as admin API):
   GET  /dispatch/api/v1/drivers            List drivers (?status)
   GET  /dispatch/api/v1/drivers/:id        Get driver record
 
-  GET  /dispatch/api/v1/trucks             List trucks (?status)
-  GET  /dispatch/api/v1/trucks/:id         Get truck record
+  GET   /dispatch/api/v1/trucks             List trucks (?status)
+  GET   /dispatch/api/v1/trucks/:id         Get truck record
+  POST  /dispatch/api/v1/trucks             Create truck (body: unit_number, year?, make?, model?, vin?, plate?, plate_state?, notes?). Defaults status=available. Unknown fields are rejected.
+  PATCH /dispatch/api/v1/trucks/:id         Update truck fields. `status` is not settable — trucks transition via the trip lifecycle. Unknown fields are rejected.
 
-  GET  /dispatch/api/v1/trailers           List trailers (?status)
-  GET  /dispatch/api/v1/trailers/:id       Get trailer record
+  GET   /dispatch/api/v1/trailers           List trailers (?status)
+  GET   /dispatch/api/v1/trailers/:id       Get trailer record
+  POST  /dispatch/api/v1/trailers           Create trailer (body: unit_number, owner [fleet|carrier|customer|other], owner_name? (required when owner != fleet), year?, make?, trailer_type?, length_ft?, vin?, plate?, plate_state?, notes?). Defaults status=available. Unknown fields are rejected.
+  PATCH /dispatch/api/v1/trailers/:id       Update trailer fields. `status` is not settable — trailers transition via the trip lifecycle. Unknown fields are rejected.
 
   GET   /dispatch/api/v1/facilities         List facilities (?q for name/address substring, ?limit, ?offset)
   GET   /dispatch/api/v1/facilities/:id     Get facility record

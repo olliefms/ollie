@@ -494,7 +494,7 @@ function renderStopNode(stop, tripId) {
 
   const time = document.createElement('div');
   time.className = 'stop-node__time';
-  time.textContent = formatArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end, stop.timezone);
+  time.textContent = formatArrivalWindow(stop.scheduled_arrive_utc, stop.scheduled_arrive_end_utc, stop.timezone);
 
   content.appendChild(title);
   content.appendChild(time);
