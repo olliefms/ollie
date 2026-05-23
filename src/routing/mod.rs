@@ -41,6 +41,22 @@ pub struct RouteMiles {
     pub segment_miles: Vec<f64>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum RoutingError {
+    #[error("fewer than 2 waypoints")]
+    TooFewWaypoints,
+    #[error("ORS HTTP {status}: {body}")]
+    HttpError { status: u16, body: String },
+    #[error("ORS request timed out after 15s")]
+    Timeout,
+    #[error("ORS transport error: {0}")]
+    Transport(String),
+    #[error("ORS response parse error: {0}")]
+    ParseError(String),
+    #[error("ORS returned no routes")]
+    EmptyRoutes,
+}
+
 impl RoutingClient {
     pub fn new(api_key: &str) -> Self {
         Self { client: Client::new(), api_key: api_key.to_string() }
@@ -48,11 +64,28 @@ impl RoutingClient {
 
     /// Calculates HGV route distances for ordered waypoints (lat, lng).
     /// Returns total miles and per-segment miles (one entry per consecutive pair).
-    /// Returns None if fewer than 2 waypoints or on API error.
+    /// Returns None if fewer than 2 waypoints or on API error; the underlying
+    /// failure (HTTP status, response body, timeout) is logged at WARN.
     pub async fn calculate_route_with_segments(
         &self, waypoints: &[(f64, f64)],
     ) -> Option<RouteMiles> {
-        if waypoints.len() < 2 { return None; }
+        match self.try_calculate_route(waypoints).await {
+            Ok(r) => Some(r),
+            Err(RoutingError::TooFewWaypoints) => None,
+            Err(e) => {
+                tracing::warn!("ORS routing failed: {e}");
+                None
+            }
+        }
+    }
+
+    /// Result-returning variant used internally; surfaces the exact failure
+    /// reason so callers (and logs) get HTTP status + body, timeout, parse
+    /// error — not the generic "unavailable" we used to log.
+    async fn try_calculate_route(
+        &self, waypoints: &[(f64, f64)],
+    ) -> Result<RouteMiles, RoutingError> {
+        if waypoints.len() < 2 { return Err(RoutingError::TooFewWaypoints); }
         let coordinates: Vec<[f64; 2]> = waypoints.iter()
             .map(|&(lat, lng)| [lng, lat])
             .collect();
@@ -62,12 +95,23 @@ impl RoutingClient {
             .bearer_auth(&self.api_key)
             .json(&body)
             .timeout(std::time::Duration::from_secs(15))
-            .send().await.ok()?;
-        if !resp.status().is_success() { return None; }
-        let data: OrsResponse = resp.json().await.ok()?;
-        let route = data.routes.into_iter().next()?;
+            .send().await
+            .map_err(|e| {
+                if e.is_timeout() { RoutingError::Timeout }
+                else { RoutingError::Transport(e.to_string()) }
+            })?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            let trimmed = body.chars().take(500).collect::<String>();
+            return Err(RoutingError::HttpError { status: status.as_u16(), body: trimmed });
+        }
+        let data: OrsResponse = resp.json().await
+            .map_err(|e| RoutingError::ParseError(e.to_string()))?;
+        let route = data.routes.into_iter().next()
+            .ok_or(RoutingError::EmptyRoutes)?;
         let segment_miles: Vec<f64> = route.segments.iter().map(|s| s.distance).collect();
-        Some(RouteMiles {
+        Ok(RouteMiles {
             total_miles: route.summary.distance,
             segment_miles,
         })
