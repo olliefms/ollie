@@ -371,6 +371,42 @@ fn tools_list() -> Value {
                         "driver_id": { "type": "string", "format": "uuid" }
                     }
                 }
+            },
+            {
+                "name": "trip_doctor",
+                "description": "Diagnose a trip's data integrity. Returns a structured report of findings (missing stop metadata, broken chain links, stale mileage arithmetic, status/actuals mismatches, unresolved driver/truck/trailer ids). Dry-run by default. Pass apply=true to commit safe auto-fixes (currently: resync trip-stop fields from the linked load when the trip's fields are null and the load has values; never overwrites a non-null trip value).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "apply":   { "type": "boolean", "default": false }
+                    },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "load_doctor",
+                "description": "Diagnose a load's data integrity. Checks: stop facilities geocoded, scheduled windows well-formed, actual_depart > actual_arrive, timezone present when actuals are, rate_items sum matches total. Read-only — surfaces findings; fixes live in facility_doctor or require human reconciliation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "load_id": { "type": "string", "format": "uuid" },
+                        "apply":   { "type": "boolean", "default": false }
+                    },
+                    "required": ["load_id"]
+                }
+            },
+            {
+                "name": "facility_doctor",
+                "description": "Diagnose a facility's data integrity. Checks: address present, lat/lng present, coordinates inside US bounding box (warning), normalized_address present when geocoded. Read-only — does not retry geocoding or set coordinates. To fix coordinates, PATCH /api/v1/facilities/:id with explicit lat+lng (admin scope).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "facility_id": { "type": "string", "format": "uuid" },
+                        "apply":       { "type": "boolean", "default": false }
+                    },
+                    "required": ["facility_id"]
+                }
             }
         ]
     })
@@ -459,6 +495,9 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "list_trucks" => tool_list_trucks(state).await,
         "list_trailers" => tool_list_trailers(state).await,
         "list_events" => tool_list_events(state, args).await,
+        "trip_doctor" => tool_trip_doctor(state, args).await,
+        "load_doctor" => tool_load_doctor(state, args).await,
+        "facility_doctor" => tool_facility_doctor(state, args).await,
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -665,43 +704,21 @@ async fn tool_create_trip(state: &AppState, args: &Value) -> Result<Value, Strin
 }
 
 async fn tool_update_trip(state: &AppState, args: &Value) -> Result<Value, String> {
-    use super::trip_writes::{patch_trip_handler, PatchTripBody};
+    use super::trip_writes::{apply_trip_patch, PatchTripBody};
     let trip_id = parse_uuid(args, "trip_id")?;
 
-    // Reject raw-mileage fields up front (mirror handler behavior).
-    if let Value::Object(map) = args {
-        for forbidden in ["deadhead_miles", "loaded_miles", "total_miles", "segment_miles"] {
-            if map.contains_key(forbidden) {
-                return Err(format!(
-                    "{forbidden} is computed by routing and cannot be set directly"
-                ));
-            }
-        }
-    }
-
-    // Pass through whatever fields the MCP caller provided. The handler does
-    // its own deny_unknown_fields parse on a serde_json::Value body, so we
-    // strip the MCP-only trip_id and forward the rest.
     let mut body = args.clone();
     if let Value::Object(map) = &mut body {
         map.remove("trip_id");
     }
 
-    // Validate against PatchTripBody shape early so the agent gets a clear error.
+    // Validate shape early so the agent gets a clear error before we touch DB.
     let _check: PatchTripBody = serde_json::from_value(body.clone())
         .map_err(|e| format!("invalid update_trip arguments: {e}"))?;
 
-    let _resp = patch_trip_handler(
-        axum::extract::State(state.clone()),
-        Path(trip_id),
-        Json(body),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    let detail = super::data::build_trip_detail(state, trip_id).await
+    let result = apply_trip_patch(state, trip_id, body).await
         .map_err(|e| e.to_string())?;
-    Ok(mcp_content(detail))
+    Ok(mcp_content(result))
 }
 
 async fn tool_recalculate_trip_miles(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -969,4 +986,36 @@ async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, Strin
 
     let items: Vec<crate::models::EventResponse> = records.into_iter().map(crate::models::EventResponse::from).collect();
     Ok(mcp_content(serde_json::json!({ "returned": items.len(), "items": items })))
+}
+
+// ---------------------------------------------------------------------------
+// Doctors (dry-run + diff-and-confirm). See `services::doctors` for the
+// check definitions; these wrappers are pure transport glue.
+// ---------------------------------------------------------------------------
+
+async fn tool_trip_doctor(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let apply = args["apply"].as_bool().unwrap_or(false);
+    let report = crate::services::doctors::trip::run(state, trip_id, apply)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(report))
+}
+
+async fn tool_load_doctor(state: &AppState, args: &Value) -> Result<Value, String> {
+    let load_id = parse_uuid(args, "load_id")?;
+    let apply = args["apply"].as_bool().unwrap_or(false);
+    let report = crate::services::doctors::load::run(state, load_id, apply)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(report))
+}
+
+async fn tool_facility_doctor(state: &AppState, args: &Value) -> Result<Value, String> {
+    let facility_id = parse_uuid(args, "facility_id")?;
+    let apply = args["apply"].as_bool().unwrap_or(false);
+    let report = crate::services::doctors::facility::run(state, facility_id, apply)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(report))
 }

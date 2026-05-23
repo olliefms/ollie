@@ -24,7 +24,19 @@ use crate::{
     error::AppError,
 };
 
-use super::data::build_trip_detail;
+use super::data::{build_trip_detail, DispatcherTripListItem};
+
+/// Result of applying a trip patch — the up-to-date detail plus an optional
+/// warning when a side-effect (e.g. mileage recompute) failed *after* the
+/// primary write committed. Letting the recompute fail loudly while the
+/// chain link commits silently was the v1.17.0 footgun this resolves.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct PatchTripResult {
+    #[serde(flatten)]
+    pub detail: DispatcherTripListItem,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mileage_recompute_warning: Option<String>,
+}
 
 #[derive(Debug, Deserialize, ToSchema, Default)]
 pub struct RecalculateMilesBody {
@@ -83,11 +95,11 @@ pub async fn recalculate_miles_handler(
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = PatchTripBody, description = "Allowed fields: notes, previous_trip_id"),
     responses(
-        (status = 200, description = "Updated trip record (enriched, with mileage_summary)"),
+        (status = 200, description = "Updated trip record (enriched, with mileage_summary); \
+            on partial success a `mileage_recompute_warning` field is populated"),
         (status = 400, description = "Bad request — unknown or disallowed field"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Trip not found"),
-        (status = 409, description = "ORS unavailable while recomputing mileage"),
     ),
     security(("BearerAuth" = [])),
     tag = "dispatch"
@@ -97,8 +109,22 @@ pub async fn patch_trip_handler(
     Path(id): Path<Uuid>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Reject raw-mileage fields explicitly with a friendly message before generic
-    // deny_unknown_fields kicks in.
+    let result = apply_trip_patch(&state, id, body).await?;
+    Ok(Json(result))
+}
+
+/// Shared write helper used by the HTTP handler and the MCP `update_trip` tool.
+/// Commits `notes` and `previous_trip_id` first; mileage recompute is *best-effort*
+/// — if it fails (ORS down, facility missing coords) the primary writes are still
+/// persisted and the failure is reported as `mileage_recompute_warning` in the
+/// returned `PatchTripResult`. Callers that need the recompute to succeed should
+/// either retry once routing is healthy or call `recalculate_trip_miles` directly.
+pub async fn apply_trip_patch(
+    state: &AppState,
+    id: Uuid,
+    body: serde_json::Value,
+) -> Result<PatchTripResult, AppError> {
+    // Reject raw-mileage fields explicitly before generic deny_unknown_fields kicks in.
     if let serde_json::Value::Object(map) = &body {
         for forbidden in [
             "deadhead_miles", "loaded_miles", "total_miles", "segment_miles",
@@ -114,21 +140,25 @@ pub async fn patch_trip_handler(
     let parsed: PatchTripBody = serde_json::from_value(body)
         .map_err(|e| AppError::BadRequest(format!("invalid request body: {e}")))?;
 
-    // Apply notes update if present.
     if parsed.notes.is_some() {
         state.db.update_trip_metadata(
             id, None, None, None, parsed.notes.clone(), None,
         ).await?;
     }
 
-    // Apply previous_trip_id update if present, then re-fire mileage recompute.
+    let mut mileage_recompute_warning: Option<String> = None;
     if let Some(new_prev) = parsed.previous_trip_id {
         state.db
             .update_trip_previous_trip_id(id, Some(new_prev))
             .await?;
-        compute_and_persist_mileage(&state, id).await?;
+        // Recompute is best-effort: the chain link is already committed and is
+        // valuable on its own. Don't propagate routing failure as a hard error.
+        if let Err(e) = compute_and_persist_mileage(state, id).await {
+            tracing::warn!("mileage recompute after previous_trip_id update failed: {e}");
+            mileage_recompute_warning = Some(e.to_string());
+        }
     }
 
-    let item = build_trip_detail(&state, id).await?;
-    Ok(Json(item))
+    let detail = build_trip_detail(state, id).await?;
+    Ok(PatchTripResult { detail, mileage_recompute_warning })
 }
