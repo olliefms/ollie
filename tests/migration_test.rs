@@ -104,6 +104,102 @@ async fn seed_pre_v16_db(path: &str) {
     conn.create_table("trips", reader).execute().await.unwrap();
 }
 
+/// Pre-#268 drivers schema: identical to current minus `current_truck_id`
+/// and `current_trailer_ids`.
+fn driver_schema_pre_equipment(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("phone", DataType::Utf8, true),
+        Field::new("email", DataType::Utf8, true),
+        Field::new("license_number", DataType::Utf8, true),
+        Field::new("license_state", DataType::Utf8, true),
+        Field::new("license_expiry", DataType::Utf8, true),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn driver_pre_equipment_row_batch(schema: Arc<Schema>, embed_dim: usize) -> RecordBatch {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![None];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(vec![Some(id.as_str())])),
+        Arc::new(StringArray::from(vec![Some("Legacy Driver")])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(StringArray::from(vec![Some("available")])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(
+            FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+                nulls, embed_dim as i32,
+            ),
+        ),
+        Arc::new(Int64Array::from(vec![1_i64])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+    ]).unwrap()
+}
+
+async fn seed_pre_equipment_drivers(path: &str) {
+    let conn = lancedb::connect(path).execute().await.unwrap();
+    let schema = driver_schema_pre_equipment(EMBED_DIM);
+    let batch = driver_pre_equipment_row_batch(schema.clone(), EMBED_DIM);
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    conn.create_table("drivers", reader).execute().await.unwrap();
+}
+
+#[tokio::test]
+async fn migration_opens_pre_equipment_drivers_table_and_adds_new_columns() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    seed_pre_equipment_drivers(path).await;
+
+    let client = DbClient::new(path, EMBED_DIM).await.expect(
+        "DbClient::new must migrate a pre-#268 drivers table without erroring",
+    );
+
+    let drivers_schema = client.driver_table.schema().await.unwrap();
+    assert!(drivers_schema.field_with_name("current_truck_id").is_ok());
+    assert!(drivers_schema.field_with_name("current_trailer_ids").is_ok());
+    assert_eq!(client.driver_table.count_rows(None).await.unwrap(), 1);
+
+    // Read pre-existing row via ops layer — defaults must round-trip.
+    let (_total, items) = client.list_drivers(None, 10, 0).await.unwrap();
+    let id = items[0].id;
+    let d = client.get_driver_by_id(id).await.unwrap();
+    assert_eq!(d.current_truck_id, None);
+    assert_eq!(d.current_trailer_ids, Vec::<Uuid>::new());
+
+    // New equipment write round-trips.
+    let new_trailer = Uuid::new_v4();
+    let new_truck = Uuid::new_v4();
+    let updated = client.update_driver_equipment(
+        id,
+        Some(Some(new_truck)),
+        Some(vec![new_trailer]),
+    ).await.unwrap();
+    assert_eq!(updated.current_truck_id, Some(new_truck));
+    assert_eq!(updated.current_trailer_ids, vec![new_trailer]);
+
+    let refetched = client.get_driver_by_id(id).await.unwrap();
+    assert_eq!(refetched.current_truck_id, Some(new_truck));
+    assert_eq!(refetched.current_trailer_ids, vec![new_trailer]);
+}
+
 #[tokio::test]
 async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
     let dir = TempDir::new().unwrap();

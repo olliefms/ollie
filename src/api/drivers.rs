@@ -78,6 +78,8 @@ pub async fn create_driver(
         license_expiry: body.license_expiry,
         status: DriverStatus::Available,
         notes: body.notes,
+        current_truck_id: None,
+        current_trailer_ids: vec![],
         embedding: None,
         owner_id: 0,
         created_at: now,

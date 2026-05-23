@@ -116,6 +116,16 @@ impl DbClient {
         self.upsert_trailer(&record).await
     }
 
+    pub async fn get_trailer_by_unit_number(&self, unit: &str) -> Result<Option<TrailerRecord>, AppError> {
+        let escaped = unit.replace('\'', "''");
+        let stream = self.trailer_table.query()
+            .only_if(format!("unit_number = '{escaped}'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let records = batches_to_trailers(collect_stream(stream).await?)?;
+        Ok(records.into_iter().next())
+    }
+
     pub async fn list_trailers(
         &self,
         status_filter: Option<&str>,

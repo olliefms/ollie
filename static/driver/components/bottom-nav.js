@@ -1,10 +1,11 @@
 import { replaceNavigate } from '../app.js';
-import { truckIcon, dollarIcon, userIcon } from './icons.js';
+import { truckIcon, dollarIcon, userIcon, trailerIcon } from './icons.js';
 
 const ITEMS = [
-  { id: 'trips',   label: 'Trips',   path: '/driver/trips',   make: truckIcon },
-  { id: 'pay',     label: 'Pay',     path: '/driver/pay',     make: dollarIcon },
-  { id: 'account', label: 'Account', path: '/driver/account', make: userIcon },
+  { id: 'trips',     label: 'Trips',     path: '/driver/trips',     make: truckIcon },
+  { id: 'equipment', label: 'Equipment', path: '/driver/equipment', make: trailerIcon },
+  { id: 'pay',       label: 'Pay',       path: '/driver/pay',       make: dollarIcon },
+  { id: 'account',   label: 'Account',   path: '/driver/account',   make: userIcon },
 ];
 
 export function renderBottomNav(activeItem) {
