@@ -111,6 +111,20 @@ impl DbClient {
         self.upsert_driver(&record).await
     }
 
+    pub async fn update_driver_equipment(
+        &self,
+        id: Uuid,
+        current_truck_id: Option<Option<Uuid>>,
+        current_trailer_ids: Option<Vec<Uuid>>,
+    ) -> Result<DriverRecord, AppError> {
+        let mut record = self.get_driver_by_id(id).await?;
+        if let Some(truck) = current_truck_id { record.current_truck_id = truck; }
+        if let Some(trailers) = current_trailer_ids { record.current_trailer_ids = trailers; }
+        record.updated_at = Utc::now();
+        self.upsert_driver(&record).await?;
+        Ok(record)
+    }
+
     pub async fn soft_delete_driver(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_driver_by_id(id).await?;
         record.status = DriverStatus::Inactive;
@@ -179,6 +193,10 @@ fn driver_to_batch(record: &DriverRecord, embed_dim: usize) -> Result<RecordBatc
     let id_str = record.id.to_string();
     let created_str = record.created_at.to_rfc3339();
     let updated_str = record.updated_at.to_rfc3339();
+    let current_truck_str = record.current_truck_id.map(|u| u.to_string());
+    let trailer_id_strs: Vec<String> = record.current_trailer_ids.iter().map(|u| u.to_string()).collect();
+    let trailer_ids_json = serde_json::to_string(&trailer_id_strs)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let embedding_col: Arc<dyn arrow_array::Array> = match &record.embedding {
         Some(v) => {
@@ -206,6 +224,8 @@ fn driver_to_batch(record: &DriverRecord, embed_dim: usize) -> Result<RecordBatc
         Arc::new(Int64Array::from(vec![record.owner_id])),
         Arc::new(StringArray::from(vec![created_str.as_str()])),
         Arc::new(StringArray::from(vec![updated_str.as_str()])),
+        Arc::new(StringArray::from(vec![current_truck_str.as_deref()])),
+        Arc::new(StringArray::from(vec![trailer_ids_json.as_str()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -243,6 +263,16 @@ fn row_to_driver(batch: &RecordBatch, i: usize) -> Result<DriverRecord, AppError
                 .map(|fa| (0..fa.len()).map(|j| fa.value(j)).collect::<Vec<f32>>())
         });
 
+    let current_truck_id = opt_str("current_truck_id")
+        .map(|s| s.parse::<Uuid>())
+        .transpose()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let current_trailer_ids = {
+        let raw = opt_str("current_trailer_ids").unwrap_or_else(|| "[]".to_string());
+        let strs: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+        strs.iter().filter_map(|s| s.parse::<Uuid>().ok()).collect()
+    };
+
     Ok(DriverRecord {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         name: str_col("name"),
@@ -253,6 +283,8 @@ fn row_to_driver(batch: &RecordBatch, i: usize) -> Result<DriverRecord, AppError
         license_expiry: opt_str("license_expiry"),
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
         notes: opt_str("notes"),
+        current_truck_id,
+        current_trailer_ids,
         embedding,
         owner_id: i64_col("owner_id"),
         created_at: str_col("created_at").parse()
@@ -293,6 +325,8 @@ mod tests {
             license_expiry: Some("2027-12-31".into()),
             status: DriverStatus::Available,
             notes: Some("experienced flatbed driver".into()),
+            current_truck_id: None,
+            current_trailer_ids: vec![],
             embedding: None, owner_id: 0,
             created_at: now, updated_at: now,
         }

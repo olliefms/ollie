@@ -128,6 +128,9 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::blobs::delete_blob,
         dispatcher_portal::blobs::query_blob,
         driver_portal::data::update_stop_times,
+        driver_portal::equipment::get_equipment,
+        driver_portal::equipment::update_trailer,
+        driver_portal::equipment::list_available_trailers,
         driver_portal::documents::upload_document,
         driver_portal::documents::list_documents,
         driver_portal::documents::get_document_content,
@@ -211,6 +214,13 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
             driver_portal::data::UpdateStopTimesRequest,
+            driver_portal::equipment::EquipmentTruckSummary,
+            driver_portal::equipment::EquipmentTrailerSummary,
+            driver_portal::equipment::DriverEquipmentResponse,
+            driver_portal::equipment::UpdateTrailerRequest,
+            driver_portal::equipment::UpdateTrailerResponse,
+            driver_portal::equipment::AvailableTrailerItem,
+            driver_portal::equipment::AvailableTrailersResponse,
             models::DispatcherStatus,
             models::DispatcherRecord,
             dispatchers::CreateDispatcherRequest,
@@ -523,6 +533,13 @@ Data endpoints (JWT required — driver sees only their own trips):
   GET  /driver/api/v1/trips                  Driver's trips (?tab=current|upcoming|past)
   GET  /driver/api/v1/trips/:id              Trip detail (stops, load summary, equipment)
   GET  /driver/api/v1/trips/:id/stops/:seq   Stop detail (facility contacts, commodity info)
+  GET  /driver/api/v1/equipment              Current truck + currently attached trailer(s)
+  PUT  /driver/api/v1/equipment/trailer      Set currently attached trailers (body: trailer_ids OR trailer_unit_numbers).
+                                             Cascades onto the driver's active Dispatched/InTransit trip's trailer_ids
+                                             unless the driver has arrived at the final delivery stop. Emits driver.trailer_changed.
+                                             At dispatch time, /trips/:id/dispatch reconciles the trip's trailer_ids to the
+                                             driver's current_trailer_ids when they differ.
+  GET  /driver/api/v1/trailers               List trailers available for selection (excludes inactive/out_of_service)
 
 ## Dispatcher MCP Server
 

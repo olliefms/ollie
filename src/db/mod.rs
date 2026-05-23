@@ -52,9 +52,7 @@ impl DbClient {
             empty_load_batch(schema, embed_dim)
         }).await?;
 
-        let driver_table = open_or_create(&conn, "drivers", driver_schema(embed_dim), |schema| {
-            empty_driver_batch(schema, embed_dim)
-        }).await?;
+        let driver_table = open_or_create_driver(&conn, embed_dim).await?;
 
         let truck_table = open_or_create(&conn, "trucks", truck_schema(embed_dim), |schema| {
             empty_truck_batch(schema, embed_dim)
@@ -180,6 +178,35 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
                 tracing::info!("migrating trips table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
                     .map_err(|e| AppError::Internal(format!("trip schema migration failed: {e}")))?;
+            }
+            Ok(table)
+        }
+    }
+}
+
+async fn open_or_create_driver(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = driver_schema(embed_dim);
+    match conn.open_table("drivers").execute().await {
+        Err(_) => {
+            let batch = empty_driver_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("drivers", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            if existing.field_with_name("current_truck_id").is_err() {
+                transforms.push(("current_truck_id".into(), "CAST(NULL AS string)".into()));
+            }
+            if existing.field_with_name("current_trailer_ids").is_err() {
+                transforms.push(("current_trailer_ids".into(), "'[]'".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating drivers table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("driver schema migration failed: {e}")))?;
             }
             Ok(table)
         }
@@ -341,6 +368,8 @@ pub fn driver_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("owner_id", DataType::Int64, false),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("current_truck_id", DataType::Utf8, true),
+        Field::new("current_trailer_ids", DataType::Utf8, false),
     ]))
 }
 
@@ -362,6 +391,8 @@ fn empty_driver_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBat
         Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // current_truck_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // current_trailer_ids
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

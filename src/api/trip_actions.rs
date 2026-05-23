@@ -193,20 +193,50 @@ pub async fn dispatch_trip(
         return Err(AppError::Conflict("trip must be in assigned status to dispatch".into()));
     }
 
-    if let Some(driver_id) = existing.driver_id {
+    let driver_for_dispatch = if let Some(driver_id) = existing.driver_id {
         let driver = state.db.get_driver_by_id(driver_id).await?;
         if driver.status == DriverStatus::Dispatched {
             return Err(AppError::Conflict(
                 "driver is already dispatched on another trip".into()
             ));
         }
-    }
+        Some(driver)
+    } else {
+        None
+    };
     if let Some(truck_id) = existing.truck_id {
         let truck = state.db.get_truck_by_id(truck_id).await?;
         if truck.status == TruckStatus::Dispatched {
             return Err(AppError::Conflict(
                 "truck is already dispatched on another trip".into()
             ));
+        }
+    }
+
+    // Reconcile trip trailers to the driver's currently-attached trailers.
+    // Issue #268: at dispatch time, the trip should reflect reality — the trailer
+    // physically attached to the driver — not the trailer the trip was created with.
+    let mut existing = existing;
+    if let Some(driver) = &driver_for_dispatch {
+        if !driver.current_trailer_ids.is_empty()
+            && driver.current_trailer_ids != existing.trailer_ids
+        {
+            let dropped: Vec<Uuid> = existing.trailer_ids.iter()
+                .filter(|tid| !driver.current_trailer_ids.contains(tid))
+                .copied()
+                .collect();
+            state.db.update_trip_resources(
+                existing.id,
+                existing.driver_id,
+                existing.truck_id,
+                driver.current_trailer_ids.clone(),
+            ).await?;
+            existing.trailer_ids = driver.current_trailer_ids.clone();
+            // Trailers that were assigned to this trip but are no longer attached
+            // fall back to Available — they're no longer on this load.
+            for tid in dropped {
+                let _ = state.db.update_trailer_status(tid, TrailerStatus::Available).await;
+            }
         }
     }
 
