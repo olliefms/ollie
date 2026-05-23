@@ -97,6 +97,19 @@ impl DbClient {
         Ok(record)
     }
 
+    /// Reset a facility's geocode state to `Pending` and clear its failure
+    /// count without touching coordinates, address, or any other field. Used
+    /// by `facility_doctor` to retry a permanently-failed geocode without
+    /// requiring an address-touch PATCH.
+    pub async fn retry_facility_geocode(&self, id: Uuid) -> Result<FacilityRecord, AppError> {
+        let mut record = self.get_facility_by_id(id).await?;
+        record.geocode_status = GeocodeStatus::Pending;
+        record.geocode_failure_count = 0;
+        record.updated_at = Utc::now();
+        self.upsert_facility(&record).await?;
+        Ok(record)
+    }
+
     pub async fn mark_facility_geocode_failed(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_facility_by_id(id).await?;
         record.geocode_failure_count += 1;
