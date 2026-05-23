@@ -7,7 +7,9 @@ pub mod facility_writes;
 pub mod jwt;
 pub mod mcp;
 pub mod middleware;
+pub mod trailer_writes;
 pub mod trip_writes;
+pub mod truck_writes;
 
 use crate::AppState;
 use axum::{
@@ -47,10 +49,22 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trips/:id/check-call", post(data::check_call))
         .route("/dispatch/api/v1/drivers", get(data::list_drivers))
         .route("/dispatch/api/v1/drivers/:id", get(data::get_driver))
-        .route("/dispatch/api/v1/trucks", get(data::list_trucks))
-        .route("/dispatch/api/v1/trucks/:id", get(data::get_truck))
-        .route("/dispatch/api/v1/trailers", get(data::list_trailers))
-        .route("/dispatch/api/v1/trailers/:id", get(data::get_trailer))
+        .route(
+            "/dispatch/api/v1/trucks",
+            get(data::list_trucks).post(truck_writes::create_truck_handler),
+        )
+        .route(
+            "/dispatch/api/v1/trucks/:id",
+            get(data::get_truck).patch(truck_writes::update_truck_handler),
+        )
+        .route(
+            "/dispatch/api/v1/trailers",
+            get(data::list_trailers).post(trailer_writes::create_trailer_handler),
+        )
+        .route(
+            "/dispatch/api/v1/trailers/:id",
+            get(data::get_trailer).patch(trailer_writes::update_trailer_handler),
+        )
         .route("/dispatch/api/v1/events", get(data::list_events))
         // Facilities
         .route(

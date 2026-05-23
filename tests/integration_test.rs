@@ -4805,3 +4805,366 @@ async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
     assert_eq!(after.geocode_status, ollie::models::GeocodeStatus::Pending);
     assert_eq!(after.geocode_failure_count, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Dispatcher portal trailer + truck CRUD (#269)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dispatcher_trailer_crud_http() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trl-crud@example.com", "password-trl1").await;
+    let auth = format!("Bearer {token}");
+
+    // POST create — fleet trailer
+    let created = server.post("/dispatch/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "unit_number": "DTRL-001",
+            "owner": "fleet",
+            "trailer_type": "dry_van",
+            "length_ft": 53.0,
+        }))
+        .await;
+    assert_eq!(created.status_code(), 201);
+    let body: serde_json::Value = created.json();
+    let id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["status"], "available");
+    assert_eq!(body["unit_number"], "DTRL-001");
+
+    // GET one
+    let one = server.get(&format!("/dispatch/api/v1/trailers/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(one.status_code(), 200);
+    assert_eq!(one.json::<serde_json::Value>()["unit_number"], "DTRL-001");
+
+    // GET list
+    let list = server.get("/dispatch/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(list.status_code(), 200);
+    let items = list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(items.iter().any(|t| t["id"] == id));
+
+    // PATCH update notes + make
+    let patched = server.patch(&format!("/dispatch/api/v1/trailers/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "notes": "ICE box, mid-2026 refurb", "make": "Wabash" }))
+        .await;
+    assert_eq!(patched.status_code(), 200);
+    let pbody: serde_json::Value = patched.json();
+    assert_eq!(pbody["notes"], "ICE box, mid-2026 refurb");
+    assert_eq!(pbody["make"], "Wabash");
+    assert_eq!(pbody["status"], "available");
+}
+
+#[tokio::test]
+async fn test_dispatcher_trailer_create_requires_owner_name_when_not_fleet() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trl-owner@example.com", "password-trl2").await;
+
+    let resp = server.post("/dispatch/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "unit_number": "DTRL-CAR-001",
+            "owner": "carrier",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_dispatcher_trailer_create_rejects_unknown_field() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trl-unk1@example.com", "password-trl3").await;
+
+    // status is admin-only — must be rejected
+    let resp = server.post("/dispatch/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "unit_number": "DTRL-X",
+            "owner": "fleet",
+            "status": "dispatched",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_dispatcher_trailer_patch_rejects_status_and_unknown_fields() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trl-unk2@example.com", "password-trl4").await;
+    let auth = format!("Bearer {token}");
+
+    let created = server.post("/dispatch/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "unit_number": "DTRL-PATCH", "owner": "fleet" }))
+        .await;
+    let id = created.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // status is intentionally not in PatchTrailerBody
+    let resp = server.patch(&format!("/dispatch/api/v1/trailers/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "status": "out_of_service" }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+
+    // owner_id is admin-only
+    let resp = server.patch(&format!("/dispatch/api/v1/trailers/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "owner_id": 99 }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_dispatcher_truck_crud_http() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trk-crud@example.com", "password-trk1").await;
+    let auth = format!("Bearer {token}");
+
+    let created = server.post("/dispatch/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "unit_number": "DTRK-001",
+            "make": "Kenworth",
+            "model": "T680",
+            "year": 2024,
+        }))
+        .await;
+    assert_eq!(created.status_code(), 201);
+    let body: serde_json::Value = created.json();
+    let id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["status"], "available");
+
+    let one = server.get(&format!("/dispatch/api/v1/trucks/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(one.status_code(), 200);
+    assert_eq!(one.json::<serde_json::Value>()["unit_number"], "DTRK-001");
+
+    let patched = server.patch(&format!("/dispatch/api/v1/trucks/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "notes": "DEF top-off at terminal" }))
+        .await;
+    assert_eq!(patched.status_code(), 200);
+    assert_eq!(patched.json::<serde_json::Value>()["notes"], "DEF top-off at terminal");
+}
+
+#[tokio::test]
+async fn test_dispatcher_truck_patch_rejects_status_and_unknown_fields() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trk-unk@example.com", "password-trk2").await;
+    let auth = format!("Bearer {token}");
+
+    let created = server.post("/dispatch/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "unit_number": "DTRK-PATCH" }))
+        .await;
+    let id = created.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.patch(&format!("/dispatch/api/v1/trucks/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "status": "out_of_service" }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+
+    let resp = server.patch(&format!("/dispatch/api/v1/trucks/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "owner_id": 99 }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_dispatcher_trailer_mcp_create_get_update() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trl-mcp@example.com", "password-trl-mcp").await;
+    let auth = format!("Bearer {token}");
+
+    // create_trailer
+    let create_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "create_trailer", "arguments": {
+                "unit_number": "MCP-TRL-001",
+                "owner": "fleet",
+                "trailer_type": "reefer",
+            }}
+        }))
+        .await;
+    assert_eq!(create_resp.status_code(), 200);
+    let body: serde_json::Value = create_resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let record: serde_json::Value = serde_json::from_str(text).unwrap();
+    let id = record["id"].as_str().unwrap().to_string();
+    assert_eq!(record["status"], "available");
+    assert_eq!(record["trailer_type"], "reefer");
+
+    // get_trailer
+    let get_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "get_trailer", "arguments": { "trailer_id": id }}
+        }))
+        .await;
+    assert_eq!(get_resp.status_code(), 200);
+    let body: serde_json::Value = get_resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let got: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(got["unit_number"], "MCP-TRL-001");
+
+    // update_trailer
+    let upd_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": { "name": "update_trailer", "arguments": {
+                "trailer_id": id, "notes": "via MCP",
+            }}
+        }))
+        .await;
+    assert_eq!(upd_resp.status_code(), 200);
+    let body: serde_json::Value = upd_resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let upd: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(upd["notes"], "via MCP");
+}
+
+#[tokio::test]
+async fn test_dispatcher_truck_mcp_create_get_update() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "trk-mcp@example.com", "password-trk-mcp").await;
+    let auth = format!("Bearer {token}");
+
+    let create_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "create_truck", "arguments": {
+                "unit_number": "MCP-TRK-001", "make": "Peterbilt",
+            }}
+        }))
+        .await;
+    assert_eq!(create_resp.status_code(), 200);
+    let body: serde_json::Value = create_resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let record: serde_json::Value = serde_json::from_str(text).unwrap();
+    let id = record["id"].as_str().unwrap().to_string();
+    assert_eq!(record["status"], "available");
+    assert_eq!(record["make"], "Peterbilt");
+
+    let get_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "get_truck", "arguments": { "truck_id": id }}
+        }))
+        .await;
+    assert_eq!(get_resp.status_code(), 200);
+    let body: serde_json::Value = get_resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let got: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(got["unit_number"], "MCP-TRK-001");
+
+    let upd_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": { "name": "update_truck", "arguments": {
+                "truck_id": id, "model": "579",
+            }}
+        }))
+        .await;
+    assert_eq!(upd_resp.status_code(), 200);
+    let body: serde_json::Value = upd_resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let upd: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(upd["model"], "579");
+}
+
+#[tokio::test]
+async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
+    // Acceptance criteria: dispatcher agent creates a trailer (and truck)
+    // mid-conversation via MCP and immediately references them in assign_driver.
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "asg-mcp@example.com", "password-asg-mcp").await;
+    let auth = format!("Bearer {token}");
+
+    // Driver (admin API — there's no dispatcher driver-create)
+    let driver_resp = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "MCP Assign Driver" }))
+        .await;
+    assert_eq!(driver_resp.status_code(), 201);
+    let driver_id = driver_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Create truck via MCP
+    let tk_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "create_truck", "arguments": { "unit_number": "ASG-TRK-001" }}
+        }))
+        .await;
+    let tk_text = tk_resp.json::<serde_json::Value>()["result"]["content"][0]["text"]
+        .as_str().unwrap().to_string();
+    let truck_id = serde_json::from_str::<serde_json::Value>(&tk_text).unwrap()["id"]
+        .as_str().unwrap().to_string();
+
+    // Create trailer via MCP
+    let tl_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "create_trailer", "arguments": {
+                "unit_number": "ASG-TRL-001", "owner": "fleet",
+            }}
+        }))
+        .await;
+    let tl_text = tl_resp.json::<serde_json::Value>()["result"]["content"][0]["text"]
+        .as_str().unwrap().to_string();
+    let trailer_id = serde_json::from_str::<serde_json::Value>(&tl_text).unwrap()["id"]
+        .as_str().unwrap().to_string();
+
+    // Trip
+    let fac_id = create_test_facility(&server, "MCP Origin", "Dallas, TX").await;
+    let trip_resp = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "trip_number": "T-ASG-MCP-001",
+            "stops": [{
+                "sequence": 1, "stop_type": "origin",
+                "facility_id": fac_id, "scheduled_arrive": "2026-08-01T08:00:00",
+                "timezone": "America/Chicago"
+            }]
+        }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201);
+    let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // assign_driver via MCP using the freshly-created truck and trailer
+    let asg = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+            "params": { "name": "assign_driver", "arguments": {
+                "trip_id": trip_id,
+                "driver_id": driver_id,
+                "truck_id": truck_id,
+                "trailer_ids": [trailer_id],
+            }}
+        }))
+        .await;
+    assert_eq!(asg.status_code(), 200);
+    let body: serde_json::Value = asg.json();
+    assert!(body["error"].is_null(), "assign_driver returned error: {body}");
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let trip: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(trip["status"], "assigned");
+    assert_eq!(trip["driver_id"], driver_id);
+    assert_eq!(trip["truck_id"], truck_id);
+}
