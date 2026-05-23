@@ -373,6 +373,65 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "list_facilities",
+                "description": "List facilities. Optional q is a case-insensitive substring search across name and address. limit defaults to 100.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "q":     { "type": "string" },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 1000 }
+                    }
+                }
+            },
+            {
+                "name": "get_facility",
+                "description": "Get a single facility by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "facility_id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["facility_id"]
+                }
+            },
+            {
+                "name": "create_facility",
+                "description": "Create a new facility. When lat+lng are omitted the geocoder is queued; when both are provided the facility is marked geocoded immediately. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name":      { "type": "string" },
+                        "address":   { "type": "string" },
+                        "contacts":  { "type": "array", "items": { "type": "object" } },
+                        "notes":     { "type": "string" },
+                        "tags":      { "type": "array", "items": { "type": "string" } },
+                        "blob_ids":  { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "lat":       { "type": "number" },
+                        "lng":       { "type": "number" }
+                    },
+                    "required": ["name", "address"]
+                }
+            },
+            {
+                "name": "update_facility",
+                "description": "Update a facility's fields. Setting `address` re-queues the geocoder; explicit `lat`+`lng` skip the geocoder and mark the record geocoded. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "facility_id": { "type": "string", "format": "uuid" },
+                        "name":        { "type": "string" },
+                        "address":     { "type": "string" },
+                        "contacts":    { "type": "array", "items": { "type": "object" } },
+                        "notes":       { "type": "string" },
+                        "tags":        { "type": "array", "items": { "type": "string" } },
+                        "blob_ids":    { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "lat":         { "type": "number" },
+                        "lng":         { "type": "number" }
+                    },
+                    "required": ["facility_id"]
+                }
+            },
+            {
                 "name": "trip_doctor",
                 "description": "Diagnose a trip's data integrity. Returns a structured report of findings (missing stop metadata, broken chain links, stale mileage arithmetic, status/actuals mismatches, unresolved driver/truck/trailer ids). Dry-run by default. Pass apply=true to commit safe auto-fixes (currently: resync trip-stop fields from the linked load when the trip's fields are null and the load has values; never overwrites a non-null trip value).",
                 "inputSchema": {
@@ -398,7 +457,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "facility_doctor",
-                "description": "Diagnose a facility's data integrity. Checks: address present, lat/lng present, coordinates inside US bounding box (warning), normalized_address present when geocoded. Read-only — does not retry geocoding or set coordinates. To fix coordinates, PATCH /api/v1/facilities/:id with explicit lat+lng (admin scope).",
+                "description": "Diagnose a facility's data integrity. Checks: address present, lat/lng present, coordinates inside US bounding box (warning), normalized_address present when geocoded. With apply=true, re-queues geocoding for facilities stuck at geocode_status=permanently_failed (resets failure count, sets status=pending, pushes onto the geocoding worker). Setting manual coordinates remains a deliberate dispatcher action via update_facility.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -495,6 +554,10 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "list_trucks" => tool_list_trucks(state).await,
         "list_trailers" => tool_list_trailers(state).await,
         "list_events" => tool_list_events(state, args).await,
+        "list_facilities" => tool_list_facilities(state, args).await,
+        "get_facility" => tool_get_facility(state, args).await,
+        "create_facility" => tool_create_facility(state, args).await,
+        "update_facility" => tool_update_facility(state, args).await,
         "trip_doctor" => tool_trip_doctor(state, args).await,
         "load_doctor" => tool_load_doctor(state, args).await,
         "facility_doctor" => tool_facility_doctor(state, args).await,
@@ -986,6 +1049,60 @@ async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, Strin
 
     let items: Vec<crate::models::EventResponse> = records.into_iter().map(crate::models::EventResponse::from).collect();
     Ok(mcp_content(serde_json::json!({ "returned": items.len(), "items": items })))
+}
+
+// ---------------------------------------------------------------------------
+// Facilities — list / get / create / update share the dispatcher write helpers
+// in `facility_writes` so HTTP and MCP enforce the same validation + side
+// effects (geocode queue, manual-coords override).
+// ---------------------------------------------------------------------------
+
+async fn tool_list_facilities(state: &AppState, args: &Value) -> Result<Value, String> {
+    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(100).min(1000);
+    let q = args["q"].as_str().map(|s| s.to_string());
+
+    let (_total, items) = state.db.list_facilities(None, &[], 1000, 0)
+        .await.map_err(|e| e.to_string())?;
+
+    let filtered: Vec<_> = if let Some(needle) = q.as_deref().filter(|s| !s.is_empty()) {
+        let needle = needle.to_lowercase();
+        items.into_iter()
+            .filter(|f| {
+                f.name.to_lowercase().contains(&needle)
+                    || f.address.to_lowercase().contains(&needle)
+            })
+            .take(limit)
+            .collect()
+    } else {
+        items.into_iter().take(limit).collect()
+    };
+    let returned = filtered.len();
+    Ok(mcp_content(serde_json::json!({ "returned": returned, "items": filtered })))
+}
+
+async fn tool_get_facility(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "facility_id")?;
+    let record = state.db.get_facility_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_create_facility(state: &AppState, args: &Value) -> Result<Value, String> {
+    let record = super::facility_writes::apply_facility_create(state, args.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_facility(state: &AppState, args: &Value) -> Result<Value, String> {
+    let facility_id = parse_uuid(args, "facility_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("facility_id");
+    }
+    let record = super::facility_writes::apply_facility_patch(state, facility_id, body)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
 }
 
 // ---------------------------------------------------------------------------

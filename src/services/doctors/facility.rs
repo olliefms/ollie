@@ -6,11 +6,12 @@
 //! - `facility.coords_in_us_bbox`      — lat/lng within continental-US bounding box (sanity).
 //! - `facility.normalized_address`     — geocoded facilities have a normalized address.
 //!
-//! No auto-fixes. The two surgical primitives that *would* fix a finding —
-//! re-queueing geocode (already wired via address change) and setting
-//! manual coordinates (admin endpoint exists) — both require values the
-//! doctor cannot derive on its own. Callers see the diagnosis and route
-//! to the right primitive.
+//! Auto-fixes (apply=true):
+//! - `facility.geocode_retry` — when geocode_status=PermanentlyFailed AND the
+//!   address is non-empty AND no manual coords have been set, reset failure
+//!   state to Pending and push to the geocoding worker. Never overwrites
+//!   existing data. Setting manual coordinates remains a deliberate dispatcher
+//!   action via `update_facility` — the doctor does not invent coordinates.
 
 use uuid::Uuid;
 
@@ -20,7 +21,7 @@ use crate::{
     AppState,
 };
 
-use super::{DoctorReport, Finding, Severity};
+use super::{DoctorReport, Finding, ProposedFix, Severity};
 
 // Continental-US bounding box (deliberately loose to allow AK/HI outliers as
 // warnings rather than hard errors). Tightening this would require a per-
@@ -38,8 +39,11 @@ pub async fn run(state: &AppState, facility_id: Uuid, apply: bool) -> Result<Doc
     check_coords_present(&fac, &mut report);
     check_coords_in_us_bbox(&fac, &mut report);
     check_normalized_address(&fac, &mut report);
+    check_geocode_retry(&fac, &mut report);
 
-    let _ = apply; // no auto-fixes today
+    if apply {
+        apply_safe_fixes(state, facility_id, &mut report).await?;
+    }
     report.classify_findings();
     Ok(report)
 }
@@ -93,6 +97,61 @@ fn check_coords_in_us_bbox(fac: &FacilityRecord, report: &mut DoctorReport) {
             fix: None,
         });
     }
+}
+
+/// Surface a re-queue auto-fix when a facility is stuck at `PermanentlyFailed`
+/// with no manual coords. The fix only resets state — it never invents coords.
+fn check_geocode_retry(fac: &FacilityRecord, report: &mut DoctorReport) {
+    if !matches!(fac.geocode_status, GeocodeStatus::PermanentlyFailed) { return; }
+    if fac.address.trim().is_empty() { return; }
+    if fac.lat.is_some() || fac.lng.is_some() { return; }
+
+    report.push(Finding {
+        check: "facility.geocode_retry".into(),
+        severity: Severity::Warning,
+        description: format!(
+            "geocode_status=permanently_failed after {} failures with no manual \
+             coords set. The address may have started resolving since the last \
+             attempt — apply=true will re-queue it.",
+            fac.geocode_failure_count,
+        ),
+        fix: Some(ProposedFix {
+            kind: "geocode_retry".into(),
+            description: "Reset geocode_status to pending, clear the failure \
+                          count, and push the facility back onto the geocoding \
+                          worker. Coordinates and address are left untouched."
+                .into(),
+            conflicts: Vec::new(),
+            safe_to_auto_apply: true,
+        }),
+    });
+}
+
+async fn apply_safe_fixes(
+    state: &AppState,
+    facility_id: Uuid,
+    report: &mut DoctorReport,
+) -> Result<(), AppError> {
+    let to_apply: Vec<String> = report.findings.iter()
+        .filter_map(|f| match &f.fix {
+            Some(fix) if fix.safe_to_auto_apply => Some(f.check.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for check_id in to_apply {
+        match check_id.as_str() {
+            "facility.geocode_retry" => {
+                state.db.retry_facility_geocode(facility_id).await?;
+                let _ = state.geocoding_tx.try_send(facility_id);
+                report.applied.push(check_id);
+            }
+            _ => {
+                tracing::warn!("facility_doctor: no applier wired for check {check_id}");
+            }
+        }
+    }
+    Ok(())
 }
 
 fn check_normalized_address(fac: &FacilityRecord, report: &mut DoctorReport) {

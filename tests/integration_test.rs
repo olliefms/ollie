@@ -4553,3 +4553,255 @@ async fn test_load_detail_mileage_summary_none_when_only_cancelled_trip() {
     let body: serde_json::Value = detail.json();
     assert!(body["mileage_summary"].is_null(), "only cancelled trip → mileage_summary null");
 }
+
+// ---------------------------------------------------------------------------
+// Dispatcher portal facility CRUD (#265)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_dispatcher_facility_crud_http() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "fac-crud@example.com", "password-fac1").await;
+    let auth = format!("Bearer {token}");
+
+    // POST create
+    let created = server.post("/dispatch/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "name": "Plant City RSC",
+            "address": "1000 Industrial Blvd, Plant City FL",
+        }))
+        .await;
+    assert_eq!(created.status_code(), 201);
+    let body: serde_json::Value = created.json();
+    let id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["geocode_status"], "pending");
+    assert!(body["lat"].is_null());
+
+    // GET one
+    let one = server.get(&format!("/dispatch/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(one.status_code(), 200);
+    assert_eq!(one.json::<serde_json::Value>()["name"], "Plant City RSC");
+
+    // GET list (with q substring matching name)
+    let list = server.get("/dispatch/api/v1/facilities?q=plant")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(list.status_code(), 200);
+    let list_body: serde_json::Value = list.json();
+    assert!(list_body["returned"].as_u64().unwrap() >= 1);
+    let items = list_body["items"].as_array().unwrap();
+    assert!(items.iter().any(|f| f["id"] == id));
+
+    // PATCH update name
+    let patched = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Plant City RSC (renamed)" }))
+        .await;
+    assert_eq!(patched.status_code(), 200);
+    assert_eq!(patched.json::<serde_json::Value>()["name"], "Plant City RSC (renamed)");
+}
+
+#[tokio::test]
+async fn test_dispatcher_facility_create_with_explicit_coords_marks_ready() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "fac-coords@example.com", "password-fac2").await;
+
+    let resp = server.post("/dispatch/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "name": "Pre-Geocoded Dock",
+            "address": "123 Known St",
+            "lat": 28.0125,
+            "lng": -82.1199,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["geocode_status"], "ready");
+    assert!((body["lat"].as_f64().unwrap() - 28.0125).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn test_dispatcher_facility_patch_address_requeues_geocode() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = dispatcher_login(&server, "fac-readdress@example.com", "password-fac3").await;
+    let auth = format!("Bearer {token}");
+
+    // Seed a Ready facility directly so we can observe the transition to Pending.
+    let now = chrono::Utc::now();
+    let id = uuid::Uuid::new_v4();
+    state.db.insert_facility(&ollie::models::FacilityRecord {
+        id, owner_id: 0,
+        name: "Seeded".into(),
+        address: "Old Address".into(),
+        normalized_address: Some("Old normalized".into()),
+        lat: Some(28.0), lng: Some(-82.0),
+        geocode_status: ollie::models::GeocodeStatus::Ready,
+        geocode_failure_count: 0,
+        contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
+        avg_dwell_minutes: None, dwell_sample_count: 0,
+        embedding: None, created_at: now, updated_at: now,
+    }).await.unwrap();
+
+    let resp = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "address": "New Address" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["address"], "New Address");
+    assert_eq!(body["geocode_status"], "pending");
+    assert!(body["lat"].is_null());
+}
+
+#[tokio::test]
+async fn test_dispatcher_facility_patch_explicit_coords_repair_failed_geocode() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = dispatcher_login(&server, "fac-repair@example.com", "password-fac4").await;
+    let auth = format!("Bearer {token}");
+
+    let now = chrono::Utc::now();
+    let id = uuid::Uuid::new_v4();
+    state.db.insert_facility(&ollie::models::FacilityRecord {
+        id, owner_id: 0,
+        name: "Broken".into(),
+        address: "Unresolvable address".into(),
+        normalized_address: None,
+        lat: None, lng: None,
+        geocode_status: ollie::models::GeocodeStatus::PermanentlyFailed,
+        geocode_failure_count: 3,
+        contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
+        avg_dwell_minutes: None, dwell_sample_count: 0,
+        embedding: None, created_at: now, updated_at: now,
+    }).await.unwrap();
+
+    let resp = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "lat": 28.0125, "lng": -82.1199 }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["geocode_status"], "ready");
+    assert_eq!(body["geocode_failure_count"], 0);
+}
+
+#[tokio::test]
+async fn test_dispatcher_facility_create_rejects_unknown_field() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "fac-unk1@example.com", "password-fac5").await;
+
+    let resp = server.post("/dispatch/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "name": "X", "address": "Y",
+            "admin_secret": "leak",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_dispatcher_facility_patch_rejects_unknown_field() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "fac-unk2@example.com", "password-fac6").await;
+    let auth = format!("Bearer {token}");
+
+    let created = server.post("/dispatch/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "X", "address": "Y" }))
+        .await;
+    let id = created.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "owner_id": 99 }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_dispatcher_facility_mcp_create_and_update() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "fac-mcp@example.com", "password-mcp-fac").await;
+    let auth = format!("Bearer {token}");
+
+    // MCP create_facility
+    let create_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "create_facility", "arguments": {
+                "name": "MCP Facility", "address": "1 MCP Way",
+            }}
+        }))
+        .await;
+    assert_eq!(create_resp.status_code(), 200);
+    let body: serde_json::Value = create_resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let record: serde_json::Value = serde_json::from_str(text).unwrap();
+    let id = record["id"].as_str().unwrap().to_string();
+    assert_eq!(record["geocode_status"], "pending");
+
+    // MCP update_facility — set explicit coords
+    let upd_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "update_facility", "arguments": {
+                "facility_id": id, "lat": 30.0, "lng": -90.0,
+            }}
+        }))
+        .await;
+    assert_eq!(upd_resp.status_code(), 200);
+    let upd: serde_json::Value = upd_resp.json();
+    let upd_text = upd["result"]["content"][0]["text"].as_str().unwrap();
+    let upd_record: serde_json::Value = serde_json::from_str(upd_text).unwrap();
+    assert_eq!(upd_record["geocode_status"], "ready");
+    assert!((upd_record["lat"].as_f64().unwrap() - 30.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = dispatcher_login(&server, "fac-doc@example.com", "password-fac-doc").await;
+    let auth = format!("Bearer {token}");
+
+    let now = chrono::Utc::now();
+    let id = uuid::Uuid::new_v4();
+    state.db.insert_facility(&ollie::models::FacilityRecord {
+        id, owner_id: 0,
+        name: "Stuck Facility".into(),
+        address: "industrial address".into(),
+        normalized_address: None,
+        lat: None, lng: None,
+        geocode_status: ollie::models::GeocodeStatus::PermanentlyFailed,
+        geocode_failure_count: 3,
+        contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
+        avg_dwell_minutes: None, dwell_sample_count: 0,
+        embedding: None, created_at: now, updated_at: now,
+    }).await.unwrap();
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "facility_doctor", "arguments": {
+                "facility_id": id.to_string(), "apply": true,
+            }}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let report: serde_json::Value = serde_json::from_str(text).unwrap();
+    let applied = report["applied"].as_array().unwrap();
+    assert!(applied.iter().any(|c| c == "facility.geocode_retry"),
+        "expected facility.geocode_retry in applied; got {applied:?}");
+
+    let after = state.db.get_facility_by_id(id).await.unwrap();
+    assert_eq!(after.geocode_status, ollie::models::GeocodeStatus::Pending);
+    assert_eq!(after.geocode_failure_count, 0);
+}

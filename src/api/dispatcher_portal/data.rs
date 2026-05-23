@@ -1012,6 +1012,84 @@ pub async fn get_trailer(
 }
 
 // ---------------------------------------------------------------------------
+// Facilities
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListFacilitiesDispatchQuery {
+    /// Substring search across name and address (case-insensitive).
+    pub q: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/facilities",
+    params(
+        ("q" = Option<String>, Query, description = "Substring search across name and address (case-insensitive)"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 20, max 100)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
+    ),
+    responses(
+        (status = 200, description = "List of facilities", body = crate::models::FacilityListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn list_facilities(
+    State(state): State<AppState>,
+    Query(q): Query<ListFacilitiesDispatchQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let limit = q.limit.unwrap_or(20).min(100);
+    let offset = q.offset.unwrap_or(0);
+
+    // Fetch up to the scan cap, then apply the `q` filter and paginate in
+    // memory. At current facility volume (~tens) this is cheap; if the table
+    // grows large enough to matter, push the OR-LIKE filter into
+    // `build_facility_filter` so LanceDB does the work.
+    const SCAN_CAP: usize = 1000;
+    let (_total, items) = state.db.list_facilities(None, &[], SCAN_CAP, 0).await?;
+
+    let filtered: Vec<_> = if let Some(query) = q.q.as_deref().filter(|s| !s.is_empty()) {
+        let needle = query.to_lowercase();
+        items.into_iter()
+            .filter(|f| {
+                f.name.to_lowercase().contains(&needle)
+                    || f.address.to_lowercase().contains(&needle)
+            })
+            .collect()
+    } else {
+        items
+    };
+
+    let page: Vec<_> = filtered.into_iter().skip(offset).take(limit).collect();
+    let returned = page.len();
+    Ok(Json(crate::models::FacilityListResponse { returned, items: page }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/facilities/{id}",
+    params(("id" = Uuid, Path, description = "Facility UUID")),
+    responses(
+        (status = 200, description = "Facility record", body = crate::models::FacilityRecord),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Facility not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn get_facility(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.get_facility_by_id(id).await?;
+    Ok(Json(record))
+}
+
+// ---------------------------------------------------------------------------
 // Events
 // ---------------------------------------------------------------------------
 
