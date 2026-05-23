@@ -59,6 +59,10 @@ pub struct DriverRecord {
     pub license_expiry: Option<String>,
     pub status: DriverStatus,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub current_truck_id: Option<Uuid>,
+    #[serde(default)]
+    pub current_trailer_ids: Vec<Uuid>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -173,6 +177,7 @@ mod tests {
             phone: None, email: None, license_number: None,
             license_state: None, license_expiry: None,
             status: DriverStatus::Available, notes: None,
+            current_truck_id: None, current_trailer_ids: vec![],
             embedding: Some(vec![0.1]),
             owner_id: 0, created_at: now, updated_at: now,
         };

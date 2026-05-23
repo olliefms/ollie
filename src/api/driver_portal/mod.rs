@@ -2,11 +2,12 @@
 pub mod auth;
 pub mod data;
 pub mod documents;
+pub mod equipment;
 pub mod jwt;
 pub mod middleware;
 
 use crate::AppState;
-use axum::{Router, routing::{delete as axum_delete, get, post}};
+use axum::{Router, routing::{delete as axum_delete, get, post, put}};
 
 pub fn auth_router() -> Router<AppState> {
     Router::new()
@@ -37,6 +38,9 @@ pub fn portal_router(state: &AppState) -> Router<AppState> {
             "/trips/:id/documents/:blob_id/content",
             get(documents::get_document_content),
         )
+        .route("/equipment", get(equipment::get_equipment))
+        .route("/equipment/trailer", put(equipment::update_trailer))
+        .route("/trailers", get(equipment::list_available_trailers))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_driver_jwt,

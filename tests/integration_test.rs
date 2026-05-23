@@ -4889,6 +4889,358 @@ async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
 }
 
 // ---------------------------------------------------------------------------
+// Driver equipment endpoints (#268)
+// ---------------------------------------------------------------------------
+
+async fn create_driver_with_jwt(server: &TestServer, state: &AppState) -> (uuid::Uuid, String) {
+    let driver_id_str = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Equip Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let driver_id: uuid::Uuid = driver_id_str.parse().unwrap();
+    let creds = ollie::models::DriverCredentials {
+        driver_id, pin_hash: None, token_version: 1,
+        failed_pin_attempts: 0, locked_until: None,
+        updated_at: chrono::Utc::now(),
+    };
+    state.db.upsert_driver_credentials(&creds).await.unwrap();
+    let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
+    let token = ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap();
+    (driver_id, token)
+}
+
+async fn create_trailer(server: &TestServer, unit: &str) -> uuid::Uuid {
+    server.post("/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": unit, "owner": "fleet" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().parse().unwrap()
+}
+
+#[tokio::test]
+async fn test_driver_equipment_get_returns_empty_initially() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (_did, token) = create_driver_with_jwt(&server, &state).await;
+    let resp = server.get("/driver/api/v1/equipment")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let v: serde_json::Value = resp.json();
+    assert!(v["truck"].is_null());
+    assert_eq!(v["trailers"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn test_driver_equipment_update_trailer_by_id_persists_and_returns_summary() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (did, token) = create_driver_with_jwt(&server, &state).await;
+    let trailer_id = create_trailer(&server, "TR-EQ-001").await;
+
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_ids": [trailer_id.to_string()] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["trip_cascade"], false);
+    assert!(body["trip_id"].is_null());
+    assert_eq!(body["trailers"][0]["id"], trailer_id.to_string());
+    assert_eq!(body["trailers"][0]["unit_number"], "TR-EQ-001");
+
+    // Driver record updated.
+    let d = state.db.get_driver_by_id(did).await.unwrap();
+    assert_eq!(d.current_trailer_ids, vec![trailer_id]);
+}
+
+#[tokio::test]
+async fn test_driver_equipment_update_trailer_by_unit_number_lookup() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (_did, token) = create_driver_with_jwt(&server, &state).await;
+    let _ = create_trailer(&server, "TR-UNIT-LOOKUP").await;
+
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_unit_numbers": ["TR-UNIT-LOOKUP"] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["trailers"][0]["unit_number"], "TR-UNIT-LOOKUP");
+}
+
+#[tokio::test]
+async fn test_driver_equipment_update_unknown_unit_returns_404() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (_did, token) = create_driver_with_jwt(&server, &state).await;
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_unit_numbers": ["DOES-NOT-EXIST"] }))
+        .await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_driver_equipment_update_both_fields_returns_400() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (_did, token) = create_driver_with_jwt(&server, &state).await;
+    let trailer_id = create_trailer(&server, "TR-BOTH").await;
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "trailer_ids": [trailer_id.to_string()],
+            "trailer_unit_numbers": ["TR-BOTH"],
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_driver_equipment_update_neither_field_returns_400() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (_did, token) = create_driver_with_jwt(&server, &state).await;
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_driver_equipment_cascades_into_active_in_transit_trip() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
+
+    let old_trailer = create_trailer(&server, "TR-OLD").await;
+    let new_trailer = create_trailer(&server, "TR-NEW").await;
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-EQ-CASCADE" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "driver_id": driver_id.to_string(),
+            "truck_id": truck_id,
+            "trailer_ids": [old_trailer.to_string()],
+        }))
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    // depart origin → in_transit
+    server.post(&format!("/api/v1/trips/{trip_id}/stops/0/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
+        .await;
+
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_ids": [new_trailer.to_string()] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["trip_cascade"], true);
+    assert_eq!(body["trip_id"].as_str().unwrap(), trip_id);
+
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    let trip = state.db.get_trip(trip_uuid).await.unwrap();
+    assert_eq!(trip.trailer_ids, vec![new_trailer]);
+}
+
+#[tokio::test]
+async fn test_driver_equipment_no_cascade_when_at_final_delivery() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
+
+    let old_trailer = create_trailer(&server, "TR-FD-OLD").await;
+    let new_trailer = create_trailer(&server, "TR-FD-NEW").await;
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-EQ-FD" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "driver_id": driver_id.to_string(),
+            "truck_id": truck_id,
+            "trailer_ids": [old_trailer.to_string()],
+        }))
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_id}/stops/0/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_id}/stops/1/arrive"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-12T14:00:00Z" }))
+        .await;
+
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_ids": [new_trailer.to_string()] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["trip_cascade"], false);
+
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    let trip = state.db.get_trip(trip_uuid).await.unwrap();
+    assert_eq!(trip.trailer_ids, vec![old_trailer], "trip trailer should not change when driver is at final delivery");
+
+    let d = state.db.get_driver_by_id(driver_id).await.unwrap();
+    assert_eq!(d.current_trailer_ids, vec![new_trailer]);
+}
+
+#[tokio::test]
+async fn test_dispatch_trip_reconciles_to_driver_current_trailer() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
+
+    let initial_trailer = create_trailer(&server, "TR-DISP-INIT").await;
+    let attached_trailer = create_trailer(&server, "TR-DISP-ATTACHED").await;
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-DISP-RECON" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "driver_id": driver_id.to_string(),
+            "truck_id": truck_id,
+            "trailer_ids": [initial_trailer.to_string()],
+        }))
+        .await;
+
+    // Driver attaches a different trailer pre-dispatch (no cascade since trip is Assigned).
+    let put_resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_ids": [attached_trailer.to_string()] }))
+        .await;
+    assert_eq!(put_resp.status_code(), 200);
+
+    let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
+    let pre = state.db.get_trip(trip_uuid).await.unwrap();
+    assert_eq!(pre.trailer_ids, vec![initial_trailer], "trip should still hold the initial trailer pre-dispatch");
+
+    let disp = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(disp.status_code(), 200);
+
+    let post = state.db.get_trip(trip_uuid).await.unwrap();
+    assert_eq!(post.trailer_ids, vec![attached_trailer], "dispatch should reconcile trip trailer to driver's current_trailer_ids");
+
+    // Dropped trailer should fall back to Available; attached trailer should be Dispatched.
+    let dropped = state.db.get_trailer_by_id(initial_trailer).await.unwrap();
+    assert_eq!(dropped.status, ollie::models::TrailerStatus::Available,
+        "trailer dropped at dispatch reconciliation should revert to Available");
+    let attached = state.db.get_trailer_by_id(attached_trailer).await.unwrap();
+    assert_eq!(attached.status, ollie::models::TrailerStatus::Dispatched,
+        "newly attached trailer should be Dispatched after trip dispatch");
+}
+
+#[tokio::test]
+async fn test_driver_equipment_cascade_syncs_trailer_statuses() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
+
+    let old_trailer = create_trailer(&server, "TR-SYNC-OLD").await;
+    let new_trailer = create_trailer(&server, "TR-SYNC-NEW").await;
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-EQ-SYNC" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "driver_id": driver_id.to_string(),
+            "truck_id": truck_id,
+            "trailer_ids": [old_trailer.to_string()],
+        }))
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_id}/stops/0/depart"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
+        .await;
+
+    // old trailer should be Dispatched at this point.
+    let old_before = state.db.get_trailer_by_id(old_trailer).await.unwrap();
+    assert_eq!(old_before.status, ollie::models::TrailerStatus::Dispatched);
+
+    // Swap to new trailer via driver equipment endpoint (mid InTransit).
+    let resp = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_ids": [new_trailer.to_string()] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    let old_after = state.db.get_trailer_by_id(old_trailer).await.unwrap();
+    assert_eq!(old_after.status, ollie::models::TrailerStatus::Available,
+        "dropped trailer should fall back to Available after mid-trip swap");
+    let new_after = state.db.get_trailer_by_id(new_trailer).await.unwrap();
+    assert_eq!(new_after.status, ollie::models::TrailerStatus::Dispatched,
+        "newly attached trailer should be Dispatched while trip is InTransit");
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher portal trailer + truck CRUD (#269)
 // ---------------------------------------------------------------------------
 
