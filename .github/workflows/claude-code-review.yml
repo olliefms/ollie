@@ -102,6 +102,12 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # The prompt drives the review entirely through the gh CLI (read the
+          # diff, post one comment, apply one label). Without this allowlist the
+          # SDK auto-denies those tool calls in CI, so the agent runs "green" but
+          # posts nothing. Scoped per-subcommand rather than blanket Bash(gh:*).
+          claude_args: |
+            --allowedTools "Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Read,Grep,Glob"
           prompt: |
             You are the Ollie review agent. Your identifier is: `🤖 [agent:review]`
 
@@ -156,7 +162,9 @@ jobs:
 
             ## Comment Format
 
-            Post exactly one comment:
+            Maintain exactly one review comment per PR. On re-review (a new
+            commit), edit your existing comment in place rather than posting a
+            new one — see step 4. The comment body:
 
             ```
             🤖 [agent:review]
@@ -188,7 +196,10 @@ jobs:
             2. Read AGENTS.md for codebase-specific rules (version constraints,
                DB patterns, test patterns, OpenAPI requirements, etc.).
             3. Review the diff against the shippability bar.
-            4. Post the comment.
+            4. Post (or update) the comment. Use `--edit-last` so re-reviews
+               replace your prior comment instead of stacking duplicates, and
+               `--create-if-none` so the first review still creates one:
+               `gh pr comment ${{ github.event.pull_request.number }} --edit-last --create-if-none --body "..." --repo ergofobe/ollie`
             5. Apply the label:
                `gh pr edit ${{ github.event.pull_request.number }} --add-label "review:DECISION" --repo ergofobe/ollie`
 
