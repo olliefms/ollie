@@ -108,9 +108,6 @@ jobs:
           # posts nothing. Scoped per-subcommand rather than blanket Bash(gh:*).
           claude_args: |
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Read,Grep,Glob"
-          # TEMPORARY: surface the full agent output so we can confirm the tool
-          # denials are resolved. Remove after one verified run posts a comment.
-          show_full_output: true
           prompt: |
             You are the Ollie review agent. Your identifier is: `🤖 [agent:review]`
 
