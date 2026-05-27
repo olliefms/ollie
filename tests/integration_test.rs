@@ -5602,3 +5602,217 @@ async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
     assert_eq!(trip["driver_id"], driver_id);
     assert_eq!(trip["truck_id"], truck_id);
 }
+
+// ---------------------------------------------------------------------------
+// Blob-store MCP tools + presigned byte-transfer endpoints (#277)
+// ---------------------------------------------------------------------------
+
+const DISPATCHER_SECRET: &str = "test-dispatcher-secret-must-be-32b";
+
+fn mint_upload_token() -> String {
+    ollie::api::dispatcher_portal::blob_links::mint_token(
+        DISPATCHER_SECRET,
+        ollie::api::dispatcher_portal::blob_links::BlobUrlOp::Post,
+        None,
+        300,
+    )
+    .unwrap()
+    .0
+}
+
+fn mint_download_token(id: uuid::Uuid) -> String {
+    ollie::api::dispatcher_portal::blob_links::mint_token(
+        DISPATCHER_SECRET,
+        ollie::api::dispatcher_portal::blob_links::BlobUrlOp::Get,
+        Some(id),
+        300,
+    )
+    .unwrap()
+    .0
+}
+
+#[tokio::test]
+async fn test_presigned_blob_round_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let data = b"%PDF-1.4 fake pdf bytes for the round trip test".to_vec();
+    let expected_sum = ollie::storage::compute_checksum(&data);
+
+    // Upload via presigned POST
+    let up_token = mint_upload_token();
+    let up = server
+        .post(&format!("/dispatch/blobs/presigned?token={up_token}&name=rt.pdf&tags=invoice,rt"))
+        .add_header(header::CONTENT_TYPE, "application/pdf")
+        .bytes(data.clone().into())
+        .await;
+    assert!(
+        up.status_code() == 202 || up.status_code() == 201,
+        "unexpected status: {}",
+        up.status_code()
+    );
+    let rec: serde_json::Value = up.json();
+    let id = rec["id"].as_str().unwrap().to_string();
+    assert_eq!(rec["checksum"], expected_sum, "checksum must be the sha256 of the bytes");
+    assert_eq!(rec["mime_type"], "application/pdf");
+    assert_eq!(rec["name"], "rt.pdf");
+    assert_eq!(rec["tags"], serde_json::json!(["invoice", "rt"]));
+
+    // Download via presigned GET — bytes must round-trip exactly
+    let blob_uuid = id.parse::<uuid::Uuid>().unwrap();
+    let dl_token = mint_download_token(blob_uuid);
+    let dl = server
+        .get(&format!("/dispatch/blobs/presigned/{id}?token={dl_token}"))
+        .await;
+    assert_eq!(dl.status_code(), 200);
+    assert_eq!(dl.as_bytes().to_vec(), data, "downloaded bytes must match uploaded bytes");
+}
+
+#[tokio::test]
+async fn test_presigned_download_rejects_id_mismatch() {
+    let (server, _b, _d, _rx) = test_server().await;
+    // Token bound to one blob id, used against a different path id → 401.
+    let bound = uuid::Uuid::new_v4();
+    let token = mint_download_token(bound);
+    let other = uuid::Uuid::new_v4();
+    let resp = server
+        .get(&format!("/dispatch/blobs/presigned/{other}?token={token}"))
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_presigned_upload_rejects_bad_token() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server
+        .post("/dispatch/blobs/presigned?token=not-a-valid-jwt")
+        .add_header(header::CONTENT_TYPE, "text/plain")
+        .bytes(b"hello".to_vec().into())
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_presigned_upload_rejects_download_token() {
+    let (server, _b, _d, _rx) = test_server().await;
+    // A GET-scoped token must not authorize an upload.
+    let token = mint_download_token(uuid::Uuid::new_v4());
+    let resp = server
+        .post(&format!("/dispatch/blobs/presigned?token={token}"))
+        .add_header(header::CONTENT_TYPE, "text/plain")
+        .bytes(b"hello".to_vec().into())
+        .await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+/// Like `mcp_call` but returns the full JSON-RPC envelope without asserting
+/// success, so error-path tests can inspect `error.message`.
+async fn mcp_call_raw(
+    server: &axum_test::TestServer,
+    token: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    server
+        .post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": name, "arguments": args }
+        }))
+        .await
+        .json()
+}
+
+#[tokio::test]
+async fn test_mcp_create_blob_inline_and_cap() {
+    use base64::Engine as _;
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobmcp1@example.com", "password-blobmcp1").await;
+
+    // Small inline upload succeeds.
+    let small = base64::engine::general_purpose::STANDARD.encode(b"hello inline");
+    let record = mcp_call(
+        &server,
+        &token,
+        "create_blob",
+        serde_json::json!({ "content_base64": small, "content_type": "text/plain", "filename": "hi.txt" }),
+    )
+    .await;
+    assert_eq!(record["mime_type"], "text/plain");
+    assert_eq!(record["name"], "hi.txt");
+    assert_eq!(record["size"], 12);
+
+    // Oversize (> 256 KiB default cap) is rejected before touching storage.
+    let big = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 260 * 1024]);
+    let resp = mcp_call_raw(
+        &server,
+        &token,
+        "create_blob",
+        serde_json::json!({ "content_base64": big, "content_type": "application/octet-stream" }),
+    )
+    .await;
+    assert!(
+        resp["error"]["message"].as_str().unwrap_or("").contains("inline limit"),
+        "expected inline-limit rejection, got: {resp}"
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_create_blob_rejects_bad_base64() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobmcp2@example.com", "password-blobmcp2").await;
+    let resp = mcp_call_raw(
+        &server,
+        &token,
+        "create_blob",
+        serde_json::json!({ "content_base64": "not!!base64!!", "content_type": "text/plain" }),
+    )
+    .await;
+    assert!(
+        resp["error"]["message"].as_str().unwrap_or("").contains("base64"),
+        "expected base64 error, got: {resp}"
+    );
+}
+
+#[tokio::test]
+async fn test_mcp_get_blob_metadata_and_delete() {
+    use base64::Engine as _;
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobmcp3@example.com", "password-blobmcp3").await;
+
+    // Create a blob inline.
+    let content = base64::engine::general_purpose::STANDARD.encode(b"settlement statement");
+    let created = mcp_call(
+        &server,
+        &token,
+        "create_blob",
+        serde_json::json!({ "content_base64": content, "content_type": "text/plain", "filename": "stmt.txt" }),
+    )
+    .await;
+    let id = created["id"].as_str().unwrap().to_string();
+
+    // Metadata carries an (empty) attached_to reverse lookup.
+    let meta = mcp_call(&server, &token, "get_blob_metadata", serde_json::json!({ "id": id })).await;
+    assert_eq!(meta["id"], id);
+    assert_eq!(meta["attached_to"]["loads"], serde_json::json!([]));
+    assert_eq!(meta["attached_to"]["facilities"], serde_json::json!([]));
+
+    // list_blobs sees it.
+    let listed = mcp_call(&server, &token, "list_blobs", serde_json::json!({ "content_type": "text/plain" })).await;
+    assert!(listed["returned"].as_u64().unwrap() >= 1);
+
+    // Unattached delete succeeds and reports was_attached=false.
+    let del = mcp_call(&server, &token, "delete_blob", serde_json::json!({ "id": id })).await;
+    assert_eq!(del["deleted"], true);
+    assert_eq!(del["was_attached"], false);
+}
+
+#[tokio::test]
+async fn test_openapi_includes_presigned_blob_paths() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.get("/openapi.json").await;
+    assert_eq!(resp.status_code(), 200);
+    let spec: serde_json::Value = resp.json();
+    let paths = &spec["paths"];
+    assert!(!paths["/dispatch/blobs/presigned"].is_null(), "upload path missing from spec");
+    assert!(!paths["/dispatch/blobs/presigned/{id}"].is_null(), "download path missing from spec");
+}
