@@ -6,7 +6,7 @@ This file is for AI coding agents working on this codebase. Read it before makin
 
 ollie is a RAG-enabled blob store written in Rust. It accepts file uploads, stores them content-addressed on disk, and uses Ollama to generate summaries and embeddings. Blobs are indexed in LanceDB for semantic search.
 
-**Stack:** Axum 0.7, LanceDB 0.27, Arrow 57, async-channel 2, reqwest 0.12, lopdf 0.32
+**Stack:** Axum 0.7, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, lopdf 0.32
 
 ## Codebase Layout
 
@@ -45,13 +45,13 @@ src/
 
 **Do not change these versions without reading this section.**
 
-- `lancedb = "0.27"` — lancedb 0.9 (originally in the design plan) had an arrow/chrono incompatibility and was abandoned
-- `arrow-array = "57"` and `arrow-schema = "57"` — lancedb 0.27.2 bundles arrow 57.2 internally; using arrow 52 or 53 causes `RecordBatchReader` trait incompatibility at compile time
-- If you upgrade lancedb, check its bundled arrow version first: `cargo tree -p lancedb | grep arrow`
+- `lancedb = "0.29"` — lancedb 0.9 (originally in the design plan) had an arrow/chrono incompatibility and was abandoned. Bumped 0.27→0.29 in v1.19.x to drop the `tantivy`→`lru` transitive dependency flagged by Dependabot (GHSA-rhfx-m35p-ff5j); lancedb 0.29 removed `tantivy` entirely.
+- `arrow-array = "58"` and `arrow-schema = "58"` — **must match the arrow version lancedb bundles internally.** lancedb 0.29 uses arrow 58; a mismatch (e.g. our crate on 57 while lancedb is on 58) puts two copies of `arrow_array` in the tree and causes `RecordBatch` / `RecordBatchReader` trait incompatibility at compile time. This was the entire content of the 0.27→0.29 migration: no lancedb API call we use changed — only the arrow pin had to move in lockstep.
+- If you upgrade lancedb, check its bundled arrow version first (`cargo tree -p lancedb | grep arrow`) and bump `arrow-array`/`arrow-schema` to match in the same change.
 
-### LanceDB 0.27 API Differences
+### LanceDB API Notes
 
-The plan was written for an older API. The actual 0.27 API differs:
+The plan was written for an older API. The actual API (0.27 through 0.29, unchanged across that bump) differs:
 
 - Use `.only_if("condition")` not `.filter("condition")` for row filtering
 - Queries require traits in scope: `use lancedb::query::{ExecutableQuery, QueryBase};`
