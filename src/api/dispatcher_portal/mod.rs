@@ -1,6 +1,7 @@
 // src/api/dispatcher_portal/mod.rs
 pub mod api_keys;
 pub mod auth;
+pub mod blob_links;
 pub mod blobs;
 pub mod data;
 pub mod facility_writes;
@@ -92,8 +93,15 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
                 .delete(blobs::delete_blob),
         )
         .route("/dispatch/api/v1/blobs/:id/query", post(blobs::query_blob))
-        // MCP JSON-RPC 2.0 endpoint for AI agent tool calls
-        .route("/dispatch/mcp", post(mcp::handle))
+        // MCP JSON-RPC 2.0 endpoint for AI agent tool calls.
+        // Body limit must clear the inline-base64 ceiling of `create_blob`: a
+        // base64 payload is ~4/3 the raw size, plus JSON envelope overhead.
+        .route(
+            "/dispatch/mcp",
+            post(mcp::handle).layer(DefaultBodyLimit::max(
+                state.config.mcp_inline_blob_max_bytes * 4 / 3 + 64 * 1024,
+            )),
+        )
         // API key management (GET allowed for both JWT and API-key auth; POST/DELETE require JWT)
         .route("/dispatch/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))
         .route("/dispatch/api-keys/:id", delete(api_keys::revoke_api_key))
@@ -101,6 +109,22 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
             state.clone(),
             middleware::require_dispatcher_auth,
         ))
+}
+
+/// Presigned blob byte-transfer routes. Token-authenticated via the `token` query
+/// param (see `blob_links`), so these are deliberately mounted WITHOUT the
+/// dispatcher JWT middleware — an agent holding only a presigned token (no JWT)
+/// must be able to reach them.
+pub fn public_router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/dispatch/blobs/presigned",
+            post(blobs::presigned_upload).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+        )
+        .route(
+            "/dispatch/blobs/presigned/:id",
+            get(blobs::presigned_download),
+        )
 }
 
 pub fn dispatcher_portal_router(state: &AppState) -> Router<AppState> {
