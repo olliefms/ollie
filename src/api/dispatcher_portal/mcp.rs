@@ -1415,7 +1415,7 @@ async fn tool_get_blob_upload_url(state: &AppState, args: &Value) -> Result<Valu
         "upload_url": url,
         "method": "POST",
         "expires_at": unix_to_rfc3339(exp),
-        "max_bytes": 50 * 1024 * 1024,
+        "max_bytes": crate::api::blobs::PRESIGNED_UPLOAD_MAX_BYTES,
         "instructions": "POST the raw file bytes to upload_url with a Content-Type header set to the file's MIME type. \
             Optional query params: name, tags (comma-separated). \
             Example: curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<upload_url>&name=doc.pdf&tags=invoice,2026'. \
@@ -1505,17 +1505,21 @@ async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String
     let content_type = args["content_type"].as_str();
     let tags: Vec<String> = args["tag"].as_str().map(|t| vec![t.to_string()]).unwrap_or_default();
 
-    // When filtering by content_type (done in memory, since it isn't a DB filter),
-    // fetch a wider window first so the post-filter page isn't starved.
+    // content_type isn't a DB-level filter, so it's applied in memory over a bounded
+    // scan window. Fetch a wider window first so the post-filter page isn't starved.
     let fetch = if content_type.is_some() { limit.max(1000) } else { limit };
     let (_total, items) = state.db.list(name, &tags, fetch, 0).await.map_err(|e| e.to_string())?;
+    let scanned = items.len();
 
     let filtered: Vec<_> = match content_type {
         Some(ct) => items.into_iter().filter(|i| i.mime_type == ct).take(limit).collect(),
         None => items.into_iter().take(limit).collect(),
     };
+    // If the scan window was saturated while content_type-filtering, matching blobs
+    // may exist beyond it — surface that rather than silently under-reporting.
+    let truncated = content_type.is_some() && scanned >= fetch;
     let returned = filtered.len();
-    Ok(mcp_content(serde_json::json!({ "returned": returned, "items": filtered })))
+    Ok(mcp_content(serde_json::json!({ "returned": returned, "truncated": truncated, "items": filtered })))
 }
 
 async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, String> {

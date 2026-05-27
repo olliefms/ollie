@@ -56,7 +56,12 @@ pub struct BlobUploadRequest {
 /// Returns `201 Created` when an identical file (same SHA-256) was already stored
 /// (AI output copied from the existing record), or `202 Accepted` for a new file
 /// queued for processing.
-pub async fn ingest_blob(
+/// Max bytes accepted by the presigned upload route. Shared so the route's
+/// `DefaultBodyLimit` and the `max_bytes` advertised by `get_blob_upload_url`
+/// cannot drift apart.
+pub const PRESIGNED_UPLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
+
+pub(crate) async fn ingest_blob(
     state: &AppState,
     data: Bytes,
     mime_type: String,

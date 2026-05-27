@@ -119,7 +119,8 @@ pub fn public_router() -> Router<AppState> {
     Router::new()
         .route(
             "/dispatch/blobs/presigned",
-            post(blobs::presigned_upload).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
+            post(blobs::presigned_upload)
+                .layer(DefaultBodyLimit::max(crate::api::blobs::PRESIGNED_UPLOAD_MAX_BYTES)),
         )
         .route(
             "/dispatch/blobs/presigned/:id",
