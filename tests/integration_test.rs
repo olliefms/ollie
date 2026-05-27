@@ -5774,6 +5774,26 @@ async fn test_mcp_create_blob_rejects_bad_base64() {
 }
 
 #[tokio::test]
+async fn test_mcp_create_blob_rejects_control_chars_in_content_type() {
+    use base64::Engine as _;
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobmcp4@example.com", "password-blobmcp4").await;
+    let content = base64::engine::general_purpose::STANDARD.encode(b"x");
+    // A CR/LF-laden content_type would otherwise be stored and break every download.
+    let resp = mcp_call_raw(
+        &server,
+        &token,
+        "create_blob",
+        serde_json::json!({ "content_base64": content, "content_type": "text/plain\r\nX-Injected: evil" }),
+    )
+    .await;
+    assert!(
+        resp["error"]["message"].as_str().unwrap_or("").contains("control characters"),
+        "expected control-character rejection, got: {resp}"
+    );
+}
+
+#[tokio::test]
 async fn test_mcp_get_blob_metadata_and_delete() {
     use base64::Engine as _;
     let (server, _b, _d, _rx) = test_server().await;

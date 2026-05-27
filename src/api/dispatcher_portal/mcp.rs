@@ -1431,6 +1431,14 @@ async fn tool_create_blob(state: &AppState, args: &Value) -> Result<Value, Strin
         .as_str()
         .ok_or("missing or non-string field 'content_type'")?
         .to_string();
+    // content_type becomes the blob's mime_type and is later emitted verbatim in a
+    // Content-Type response header. Unlike the multipart paths (whose header parsing
+    // already excludes control bytes), this inline path takes an arbitrary string, so
+    // reject empty values and any control character — otherwise a CR/LF would make
+    // every later download fail at header emission. Mirrors the AGENTS.md header lesson.
+    if content_type.is_empty() || content_type.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err("content_type must be a non-empty MIME type with no control characters".to_string());
+    }
     let filename = args["filename"].as_str().unwrap_or("unnamed").to_string();
     let tags: Vec<String> = match args.get("tags") {
         None | Some(Value::Null) => vec![],
