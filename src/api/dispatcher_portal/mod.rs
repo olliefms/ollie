@@ -115,7 +115,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
 /// param (see `blob_links`), so these are deliberately mounted WITHOUT the
 /// dispatcher JWT middleware — an agent holding only a presigned token (no JWT)
 /// must be able to reach them.
-pub fn public_router() -> Router<AppState> {
+pub(crate) fn public_router() -> Router<AppState> {
     Router::new()
         .route(
             "/dispatch/blobs/presigned",

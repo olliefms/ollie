@@ -49,6 +49,11 @@ pub struct BlobUploadRequest {
     pub visibility: Option<BlobVisibility>,
 }
 
+/// Max bytes accepted by the presigned upload route. Shared so the route's
+/// `DefaultBodyLimit` and the `max_bytes` advertised by `get_blob_upload_url`
+/// cannot drift apart.
+pub(crate) const PRESIGNED_UPLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
+
 /// Shared blob ingest: content-addressed dedup, storage write, DB insert, and
 /// pipeline enqueue. Used by the admin multipart upload, the dispatcher multipart
 /// upload, and the dispatcher presigned-URL upload so all three share one code path.
@@ -56,11 +61,6 @@ pub struct BlobUploadRequest {
 /// Returns `201 Created` when an identical file (same SHA-256) was already stored
 /// (AI output copied from the existing record), or `202 Accepted` for a new file
 /// queued for processing.
-/// Max bytes accepted by the presigned upload route. Shared so the route's
-/// `DefaultBodyLimit` and the `max_bytes` advertised by `get_blob_upload_url`
-/// cannot drift apart.
-pub const PRESIGNED_UPLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
-
 pub(crate) async fn ingest_blob(
     state: &AppState,
     data: Bytes,
