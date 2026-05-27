@@ -617,7 +617,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "list_blobs",
-                "description": "List blob metadata. Optional filters: name (substring), tag (exact), content_type (exact MIME match), limit (default 100, max 1000).",
+                "description": "List blob metadata. Optional filters: name (substring), tag (exact), content_type (exact MIME match), limit (default 100, max 1000). Response includes `total` (count for the name/tag filter) and `truncated` (true when more results exist than were returned — for content_type queries this means the scan window was saturated).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1508,18 +1508,25 @@ async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String
     // content_type isn't a DB-level filter, so it's applied in memory over a bounded
     // scan window. Fetch a wider window first so the post-filter page isn't starved.
     let fetch = if content_type.is_some() { limit.max(1000) } else { limit };
-    let (_total, items) = state.db.list(name, &tags, fetch, 0).await.map_err(|e| e.to_string())?;
+    let (total, items) = state.db.list(name, &tags, fetch, 0).await.map_err(|e| e.to_string())?;
     let scanned = items.len();
 
     let filtered: Vec<_> = match content_type {
         Some(ct) => items.into_iter().filter(|i| i.mime_type == ct).take(limit).collect(),
         None => items.into_iter().take(limit).collect(),
     };
-    // If the scan window was saturated while content_type-filtering, matching blobs
-    // may exist beyond it — surface that rather than silently under-reporting.
-    let truncated = content_type.is_some() && scanned >= fetch;
     let returned = filtered.len();
-    Ok(mcp_content(serde_json::json!({ "returned": returned, "truncated": truncated, "items": filtered })))
+    // `total` counts the name/tag filter (not content_type, which is applied in
+    // memory). `truncated` tells the caller results are incomplete: for the no-MIME
+    // path that's exactly `returned < total`; for the MIME path it's whether the scan
+    // window was saturated (matches may lie beyond it).
+    let truncated = match content_type {
+        Some(_) => scanned >= fetch,
+        None => returned < total,
+    };
+    Ok(mcp_content(serde_json::json!({
+        "returned": returned, "total": total, "truncated": truncated, "items": filtered
+    })))
 }
 
 async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, String> {

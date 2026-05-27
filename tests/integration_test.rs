@@ -5819,6 +5819,8 @@ async fn test_mcp_get_blob_metadata_and_delete() {
     // list_blobs sees it.
     let listed = mcp_call(&server, &token, "list_blobs", serde_json::json!({ "content_type": "text/plain" })).await;
     assert!(listed["returned"].as_u64().unwrap() >= 1);
+    assert!(listed["total"].is_number(), "list_blobs must report a total");
+    assert!(listed["truncated"].is_boolean(), "list_blobs must report truncation");
 
     // Unattached delete succeeds and reports was_attached=false.
     let del = mcp_call(&server, &token, "delete_blob", serde_json::json!({ "id": id })).await;
