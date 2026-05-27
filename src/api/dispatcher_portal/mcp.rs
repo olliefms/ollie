@@ -22,9 +22,12 @@ use crate::{
         self, CheckCallRequest, StopArriveRequest, StopDepartRequest, StopLateRequest,
     },
     events,
-    models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
+    models::{BlobVisibility, DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
     AppState,
 };
+
+use super::blob_links::{self, BlobUrlOp};
+use base64::Engine as _;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 envelope types
@@ -564,6 +567,78 @@ fn tools_list() -> Value {
                     },
                     "required": ["facility_id"]
                 }
+            },
+            {
+                "name": "get_blob_upload_url",
+                "description": "Mint a short-lived presigned URL for uploading a file (PDF, scan, contract, etc.) to the blob store. POST the raw file bytes to the returned url with a Content-Type header; optional query params name and tags (comma-separated). The HTTP response is the created blob record — use its id in create_load/update_load/create_facility/update_facility blob_ids. Use this for any file over a few hundred KB. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "expires_in_seconds": { "type": "integer", "minimum": 1, "description": "TTL for the URL; clamped to the server max (default 300s)." }
+                    }
+                }
+            },
+            {
+                "name": "create_blob",
+                "description": "Upload a small file inline as base64. For files larger than the inline limit (default 256 KiB) use get_blob_upload_url instead — this tool rejects oversized payloads. Returns the created blob record; its `checksum` is the SHA-256 and its `id` is used in blob_ids.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "content_base64": { "type": "string", "description": "Standard base64-encoded file bytes." },
+                        "content_type":   { "type": "string", "description": "MIME type, e.g. application/pdf." },
+                        "filename":       { "type": "string" },
+                        "tags":           { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["content_base64", "content_type"]
+                }
+            },
+            {
+                "name": "get_blob_url",
+                "description": "Mint a short-lived presigned GET URL for downloading a blob's bytes. GET the url to retrieve the file; for large files stream to disk (e.g. curl -o out.pdf '<url>') rather than reading into context. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" },
+                        "expires_in_seconds": { "type": "integer", "minimum": 1, "description": "TTL for the URL; clamped to the server max (default 300s)." }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "get_blob_metadata",
+                "description": "Fetch a blob's metadata (no bytes) plus a reverse lookup of what references it: attached_to.loads and attached_to.facilities.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "list_blobs",
+                "description": "List blob metadata. Optional filters: name (substring), tag (exact), content_type (exact MIME match), limit (default 100, max 1000).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name":         { "type": "string" },
+                        "tag":          { "type": "string" },
+                        "content_type": { "type": "string" },
+                        "limit":        { "type": "integer", "minimum": 1, "maximum": 1000 }
+                    }
+                }
+            },
+            {
+                "name": "delete_blob",
+                "description": "Delete a blob. By default fails if the blob is referenced by any load or facility; pass force=true to delete anyway. Storage bytes are removed only when no other blob record shares the same checksum. Returns { deleted, was_attached }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":    { "type": "string", "format": "uuid" },
+                        "force": { "type": "boolean", "default": false }
+                    },
+                    "required": ["id"]
+                }
             }
         ]
     })
@@ -665,6 +740,12 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "trip_doctor" => tool_trip_doctor(state, args).await,
         "load_doctor" => tool_load_doctor(state, args).await,
         "facility_doctor" => tool_facility_doctor(state, args).await,
+        "get_blob_upload_url" => tool_get_blob_upload_url(state, args).await,
+        "create_blob" => tool_create_blob(state, args).await,
+        "get_blob_url" => tool_get_blob_url(state, args).await,
+        "get_blob_metadata" => tool_get_blob_metadata(state, args).await,
+        "list_blobs" => tool_list_blobs(state, args).await,
+        "delete_blob" => tool_delete_blob(state, args).await,
         _ => Err(format!("unknown tool: {name}")),
     }
 }
@@ -1289,4 +1370,171 @@ async fn tool_facility_doctor(state: &AppState, args: &Value) -> Result<Value, S
         .await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(report))
+}
+
+// ---------------------------------------------------------------------------
+// Blob store tools.
+//
+// File bytes never traverse MCP except for small inline `create_blob` payloads
+// (capped by config). Large transfers go through presigned URLs minted here and
+// served by the token-authenticated routes in `blobs::presigned_{upload,download}`.
+// ---------------------------------------------------------------------------
+
+/// Clamp a caller-requested TTL to [1, server max], defaulting when omitted.
+fn resolve_presign_ttl(state: &AppState, args: &Value) -> u64 {
+    args.get("expires_in_seconds")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(state.config.blob_presign_ttl_secs)
+        .clamp(1, state.config.blob_presign_max_ttl_secs)
+}
+
+fn require_base_url(state: &AppState) -> Result<String, String> {
+    let base = &state.config.public_base_url;
+    if base.is_empty() {
+        Err("OLLIE_PUBLIC_BASE_URL is not configured, so presigned URLs cannot be built. \
+             Use create_blob for small inline uploads, or ask an operator to set OLLIE_PUBLIC_BASE_URL."
+            .to_string())
+    } else {
+        Ok(base.clone())
+    }
+}
+
+fn unix_to_rfc3339(ts: i64) -> String {
+    chrono::DateTime::from_timestamp(ts, 0)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+async fn tool_get_blob_upload_url(state: &AppState, args: &Value) -> Result<Value, String> {
+    let base = require_base_url(state)?;
+    let ttl = resolve_presign_ttl(state, args);
+    let (token, exp) = blob_links::mint_token(&state.config.dispatcher_jwt_secret, BlobUrlOp::Post, None, ttl)
+        .map_err(|e| e.to_string())?;
+    let url = blob_links::upload_url(&base, &token);
+    Ok(mcp_content(serde_json::json!({
+        "upload_url": url,
+        "method": "POST",
+        "expires_at": unix_to_rfc3339(exp),
+        "max_bytes": 50 * 1024 * 1024,
+        "instructions": "POST the raw file bytes to upload_url with a Content-Type header set to the file's MIME type. \
+            Optional query params: name, tags (comma-separated). \
+            Example: curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<upload_url>&name=doc.pdf&tags=invoice,2026'. \
+            The JSON response is the created blob record — use its id in blob_ids."
+    })))
+}
+
+async fn tool_create_blob(state: &AppState, args: &Value) -> Result<Value, String> {
+    let content_b64 = args["content_base64"]
+        .as_str()
+        .ok_or("missing or non-string field 'content_base64'")?;
+    let content_type = args["content_type"]
+        .as_str()
+        .ok_or("missing or non-string field 'content_type'")?
+        .to_string();
+    let filename = args["filename"].as_str().unwrap_or("unnamed").to_string();
+    let tags: Vec<String> = match args.get("tags") {
+        None | Some(Value::Null) => vec![],
+        Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("invalid tags: {e}"))?,
+    };
+
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(content_b64.trim())
+        .map_err(|e| format!("content_base64 is not valid base64: {e}"))?;
+
+    let max = state.config.mcp_inline_blob_max_bytes;
+    if data.len() > max {
+        return Err(format!(
+            "inline content is {} bytes, exceeding the {} byte inline limit — use get_blob_upload_url for files this large",
+            data.len(),
+            max
+        ));
+    }
+
+    let (_status, record) = crate::api::blobs::ingest_blob(
+        state,
+        bytes::Bytes::from(data),
+        content_type,
+        filename,
+        tags,
+        BlobVisibility::Private,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_get_blob_url(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let base = require_base_url(state)?;
+    // Confirm the blob exists before handing out a URL for it.
+    state.db.get_by_id(id).await.map_err(|e| e.to_string())?;
+    let ttl = resolve_presign_ttl(state, args);
+    let (token, exp) = blob_links::mint_token(&state.config.dispatcher_jwt_secret, BlobUrlOp::Get, Some(id), ttl)
+        .map_err(|e| e.to_string())?;
+    let url = blob_links::download_url(&base, id, &token);
+    Ok(mcp_content(serde_json::json!({
+        "url": url,
+        "method": "GET",
+        "expires_at": unix_to_rfc3339(exp),
+        "instructions": "GET this URL to download the raw bytes. For large files, stream to disk \
+            (e.g. curl -o out.pdf '<url>') rather than reading the payload into context."
+    })))
+}
+
+async fn tool_get_blob_metadata(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = state.db.get_by_id(id).await.map_err(|e| e.to_string())?;
+    let loads = state.db.loads_referencing_blob(id).await.map_err(|e| e.to_string())?;
+    let facilities = state.db.facilities_referencing_blob(id).await.map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(&record).map_err(|e| e.to_string())?;
+    value["attached_to"] = serde_json::json!({ "loads": loads, "facilities": facilities });
+    Ok(mcp_content(value))
+}
+
+async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String> {
+    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(100).min(1000);
+    let name = args["name"].as_str();
+    let content_type = args["content_type"].as_str();
+    let tags: Vec<String> = args["tag"].as_str().map(|t| vec![t.to_string()]).unwrap_or_default();
+
+    // When filtering by content_type (done in memory, since it isn't a DB filter),
+    // fetch a wider window first so the post-filter page isn't starved.
+    let fetch = if content_type.is_some() { limit.max(1000) } else { limit };
+    let (_total, items) = state.db.list(name, &tags, fetch, 0).await.map_err(|e| e.to_string())?;
+
+    let filtered: Vec<_> = match content_type {
+        Some(ct) => items.into_iter().filter(|i| i.mime_type == ct).take(limit).collect(),
+        None => items.into_iter().take(limit).collect(),
+    };
+    let returned = filtered.len();
+    Ok(mcp_content(serde_json::json!({ "returned": returned, "items": filtered })))
+}
+
+async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let force = args["force"].as_bool().unwrap_or(false);
+
+    let record = state.db.get_by_id(id).await.map_err(|e| e.to_string())?;
+
+    let attached_to_load = state.db.any_load_references_blob(id).await.map_err(|e| e.to_string())?;
+    let attached_to_facility = state.db.any_facility_references_blob(id).await.map_err(|e| e.to_string())?;
+    let was_attached = attached_to_load || attached_to_facility;
+
+    if was_attached && !force {
+        return Err(format!(
+            "blob {id} is referenced by one or more loads/facilities; pass force=true to delete anyway"
+        ));
+    }
+
+    // Remove storage bytes only when no other blob record shares this checksum.
+    let ref_count = state.db.count_by_checksum(&record.checksum).await.map_err(|e| e.to_string())?;
+    if ref_count <= 1 {
+        state.store.delete(&record.checksum).await.map_err(|e| e.to_string())?;
+        let extract_base = std::path::Path::new(&state.config.extract_store_path);
+        if let Err(e) = crate::storage::extract_store::delete_extract(extract_base, &record.checksum).await {
+            tracing::warn!("failed to delete extract cache for {}: {e}", record.checksum);
+        }
+    }
+    state.db.delete_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true, "was_attached": was_attached })))
 }

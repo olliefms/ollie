@@ -237,6 +237,10 @@ PDFs use `lopdf::Document::load_mem()`. If lopdf can't extract ≥50 words, the 
 | `PIPELINE_WORKERS` | No | `1` | Concurrent pipeline workers |
 | TERMINAL_TIMEZONE | No | America/New_York | IANA timezone for pay-period weeks (driver-portal Past tab). Replaced by per-terminal data in a future release (#185). |
 | `OLLIE_FREE_DWELL_MINUTES` | No | `120` | Minutes of free dwell before detention accrues at a stop. Surfaced on driver stop-detail response so clients don't hardcode (#258). |
+| `OLLIE_PUBLIC_BASE_URL` | No | `` (empty) | Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`. Used to build absolute presigned blob upload/download URLs for the dispatcher MCP blob tools. When empty, the presigned-URL tools error; inline `create_blob` still works (#277). |
+| `OLLIE_MCP_INLINE_BLOB_MAX_BYTES` | No | `262144` | Max decoded size for the inline-base64 `create_blob` MCP tool. Larger files must use a presigned upload URL. Also sizes the `/dispatch/mcp` request body limit (#277). |
+| `OLLIE_BLOB_PRESIGN_TTL_SECS` | No | `300` | Default TTL (seconds) for presigned blob URLs when the caller omits `expires_in_seconds` (#277). |
+| `OLLIE_BLOB_PRESIGN_MAX_TTL_SECS` | No | `3600` | Hard cap (seconds) on presigned blob URL TTL (#277). |
 
 ## Running Tests
 
