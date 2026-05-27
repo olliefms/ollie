@@ -227,6 +227,18 @@ impl DbClient {
         Ok(blob_count + stop_count > 0)
     }
 
+    /// Ids of loads that reference `blob_id` (in the load's `blob_ids` or any
+    /// stop's `blob_ids`). Used for the MCP `attached_to` reverse lookup.
+    pub async fn loads_referencing_blob(&self, blob_id: Uuid) -> Result<Vec<Uuid>, AppError> {
+        let id_str = blob_id.to_string();
+        let stream = self.load_table.query()
+            .only_if(format!("blob_ids LIKE '%\"{id_str}\"%' OR stops LIKE '%\"{id_str}\"%'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_loads(collect_stream(stream).await?)?
+            .into_iter().map(|r| r.id).collect())
+    }
+
     pub async fn list_loads_needing_routing(&self) -> Result<Vec<Uuid>, AppError> {
         // loads with no miles and non-terminal status
         let stream = self.load_table.query()
@@ -516,6 +528,18 @@ mod tests {
         db.insert_load(&load).await.unwrap();
         assert!(db.any_load_references_blob(blob_id).await.unwrap());
         assert!(!db.any_load_references_blob(uuid::Uuid::new_v4()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_loads_referencing_blob() {
+        let (db, _dir) = test_db().await;
+        let blob_id = uuid::Uuid::new_v4();
+        let mut load = sample_load();
+        load.blob_ids = vec![blob_id];
+        db.insert_load(&load).await.unwrap();
+        let refs = db.loads_referencing_blob(blob_id).await.unwrap();
+        assert_eq!(refs, vec![load.id]);
+        assert!(db.loads_referencing_blob(uuid::Uuid::new_v4()).await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -24,6 +24,18 @@ pub struct Config {
     pub dispatcher_jwt_secret: String,
     pub terminal_timezone: String,
     pub free_dwell_minutes: u32,
+    /// Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`.
+    /// Used to build absolute presigned blob upload/download URLs handed to MCP agents.
+    /// Empty when unset — the presigned MCP tools error clearly in that case rather than
+    /// emitting an unusable relative URL. Inline `create_blob` works without it.
+    pub public_base_url: String,
+    /// Maximum decoded size accepted by the inline-base64 `create_blob` MCP tool.
+    /// Larger artifacts must go through a presigned upload URL. Default 256 KiB.
+    pub mcp_inline_blob_max_bytes: usize,
+    /// Default TTL (seconds) for presigned blob URLs when the caller omits one.
+    pub blob_presign_ttl_secs: u64,
+    /// Hard cap (seconds) on presigned blob URL TTL, regardless of caller request.
+    pub blob_presign_max_ttl_secs: u64,
 }
 
 impl Config {
@@ -87,6 +99,16 @@ impl Config {
             terminal_timezone,
             free_dwell_minutes: env::var("OLLIE_FREE_DWELL_MINUTES")
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(120),
+            public_base_url: env::var("OLLIE_PUBLIC_BASE_URL")
+                .unwrap_or_default()
+                .trim_end_matches('/')
+                .to_string(),
+            mcp_inline_blob_max_bytes: env::var("OLLIE_MCP_INLINE_BLOB_MAX_BYTES")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(256 * 1024),
+            blob_presign_ttl_secs: env::var("OLLIE_BLOB_PRESIGN_TTL_SECS")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(300),
+            blob_presign_max_ttl_secs: env::var("OLLIE_BLOB_PRESIGN_MAX_TTL_SECS")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(3600),
         })
     }
 }

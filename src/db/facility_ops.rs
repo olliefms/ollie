@@ -207,6 +207,28 @@ impl DbClient {
             .into_iter().map(|r| (r.id, r)).collect())
     }
 
+    /// Ids of facilities that reference `blob_id` in their `blob_ids`. Used for the
+    /// MCP `attached_to` reverse lookup.
+    pub async fn facilities_referencing_blob(&self, blob_id: Uuid) -> Result<Vec<Uuid>, AppError> {
+        let id_str = blob_id.to_string();
+        let stream = self.facility_table.query()
+            .only_if(format!("blob_ids LIKE '%\"{id_str}\"%'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_facilities(collect_stream(stream).await?)?
+            .into_iter().map(|r| r.id).collect())
+    }
+
+    /// Whether any facility references `blob_id`. Mirrors `any_load_references_blob`
+    /// so `delete_blob` can guard against orphaning a referenced document.
+    pub async fn any_facility_references_blob(&self, blob_id: Uuid) -> Result<bool, AppError> {
+        let id_str = blob_id.to_string();
+        let count = self.facility_table
+            .count_rows(Some(format!("blob_ids LIKE '%\"{id_str}\"%'")))
+            .await.map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(count > 0)
+    }
+
     pub async fn list_pending_geocode_facility_ids(&self) -> Result<Vec<Uuid>, AppError> {
         let stream = self.facility_table.query()
             .only_if("geocode_status = 'pending' OR geocode_status = 'failed'")
@@ -431,6 +453,22 @@ mod tests {
         let (total, items) = db.list_facilities(None, &["cold".to_string()], 10, 0).await.unwrap();
         assert_eq!(total, 1);
         assert_eq!(items[0].id, f.id);
+    }
+
+    #[tokio::test]
+    async fn test_facility_blob_references() {
+        let (db, _dir) = test_db().await;
+        let blob_id = uuid::Uuid::new_v4();
+        let mut f = sample_facility();
+        f.blob_ids = vec![blob_id];
+        db.insert_facility(&f).await.unwrap();
+
+        assert!(db.any_facility_references_blob(blob_id).await.unwrap());
+        assert!(!db.any_facility_references_blob(uuid::Uuid::new_v4()).await.unwrap());
+
+        let refs = db.facilities_referencing_blob(blob_id).await.unwrap();
+        assert_eq!(refs, vec![f.id]);
+        assert!(db.facilities_referencing_blob(uuid::Uuid::new_v4()).await.unwrap().is_empty());
     }
 
     #[tokio::test]
