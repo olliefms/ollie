@@ -5827,6 +5827,33 @@ async fn test_mcp_get_blob_metadata_and_delete() {
 }
 
 #[tokio::test]
+async fn test_mcp_delete_blob_keeps_bytes_when_checksum_shared() {
+    use base64::Engine as _;
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "blobmcp5@example.com", "password-blobmcp5").await;
+
+    // Two records, identical content → same checksum (the second dedups).
+    let raw = b"shared-content document body".to_vec();
+    let content = base64::engine::general_purpose::STANDARD.encode(&raw);
+    let a = mcp_call(&server, &token, "create_blob",
+        serde_json::json!({ "content_base64": content, "content_type": "text/plain", "filename": "a.txt" })).await;
+    let b = mcp_call(&server, &token, "create_blob",
+        serde_json::json!({ "content_base64": content, "content_type": "text/plain", "filename": "b.txt" })).await;
+    let id_a = a["id"].as_str().unwrap().to_string();
+    let id_b = b["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap();
+    assert_eq!(a["checksum"], b["checksum"], "identical content must share a checksum");
+
+    // Delete A; B still references the checksum, so the bytes must survive.
+    let del = mcp_call(&server, &token, "delete_blob", serde_json::json!({ "id": id_a })).await;
+    assert_eq!(del["deleted"], true);
+
+    let dl_token = mint_download_token(id_b);
+    let resp = server.get(&format!("/dispatch/blobs/presigned/{id_b}?token={dl_token}")).await;
+    assert_eq!(resp.status_code(), 200, "B must remain downloadable after A is deleted");
+    assert_eq!(resp.as_bytes().to_vec(), raw);
+}
+
+#[tokio::test]
 async fn test_openapi_includes_presigned_blob_paths() {
     let (server, _b, _d, _rx) = test_server().await;
     let resp = server.get("/openapi.json").await;

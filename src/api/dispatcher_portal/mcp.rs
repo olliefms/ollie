@@ -1534,15 +1534,20 @@ async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, Strin
         ));
     }
 
-    // Remove storage bytes only when no other blob record shares this checksum.
-    let ref_count = state.db.count_by_checksum(&record.checksum).await.map_err(|e| e.to_string())?;
-    if ref_count <= 1 {
+    // Delete the DB record FIRST, then re-count by checksum. LanceDB has no
+    // transactions, so this ordering is what makes concurrent delete-vs-upload safe:
+    // if a concurrent ingest added another record for the same checksum (its storage
+    // write is a dedup no-op), the post-delete recount sees it and we keep the bytes.
+    // Deleting the row before the bytes also means a mid-operation failure orphans a
+    // file (recoverable) rather than leaving a record pointing at deleted bytes.
+    state.db.delete_by_id(id).await.map_err(|e| e.to_string())?;
+    let remaining = state.db.count_by_checksum(&record.checksum).await.map_err(|e| e.to_string())?;
+    if remaining == 0 {
         state.store.delete(&record.checksum).await.map_err(|e| e.to_string())?;
         let extract_base = std::path::Path::new(&state.config.extract_store_path);
         if let Err(e) = crate::storage::extract_store::delete_extract(extract_base, &record.checksum).await {
             tracing::warn!("failed to delete extract cache for {}: {e}", record.checksum);
         }
     }
-    state.db.delete_by_id(id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "deleted": true, "was_attached": was_attached })))
 }
