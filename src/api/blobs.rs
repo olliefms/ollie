@@ -49,6 +49,62 @@ pub struct BlobUploadRequest {
     pub visibility: Option<BlobVisibility>,
 }
 
+/// Max bytes accepted by the presigned upload route. Shared so the route's
+/// `DefaultBodyLimit` and the `max_bytes` advertised by `get_blob_upload_url`
+/// cannot drift apart.
+pub(crate) const PRESIGNED_UPLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
+
+/// Shared blob ingest: content-addressed dedup, storage write, DB insert, and
+/// pipeline enqueue. Used by the admin multipart upload, the dispatcher multipart
+/// upload, and the dispatcher presigned-URL upload so all three share one code path.
+///
+/// Returns `201 Created` when an identical file (same SHA-256) was already stored
+/// (AI output copied from the existing record), or `202 Accepted` for a new file
+/// queued for processing.
+pub(crate) async fn ingest_blob(
+    state: &AppState,
+    data: Bytes,
+    mime_type: String,
+    name: String,
+    tags: Vec<String>,
+    visibility: BlobVisibility,
+) -> Result<(StatusCode, BlobRecord), AppError> {
+    let checksum = crate::storage::compute_checksum(&data);
+    let now = Utc::now();
+
+    if state.store.exists(&checksum).await {
+        let existing = state.db.get_one_by_checksum(&checksum).await?;
+        let (summary, embedding, status) = match existing {
+            Some(ref r) => (r.summary.clone(), r.embedding.clone(), BlobStatus::Ready),
+            None => (None, None, BlobStatus::Pending),
+        };
+        let record = BlobRecord {
+            id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
+            size: data.len() as i64, status, error: None, summary, tags,
+            embedding, created_at: now, updated_at: now,
+            visibility, uploaded_by: None,
+        };
+        state.db.insert(&record).await?;
+        if matches!(record.status, BlobStatus::Pending) {
+            state.pipeline_tx.send(record.id).await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+        }
+        Ok((StatusCode::CREATED, record))
+    } else {
+        state.store.write(&data).await?;
+        let record = BlobRecord {
+            id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
+            size: data.len() as i64, status: BlobStatus::Pending, error: None,
+            summary: None, tags, embedding: None, created_at: now, updated_at: now,
+            visibility, uploaded_by: None,
+        };
+        state.db.insert(&record).await?;
+        state.pipeline_tx.send(record.id).await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok((StatusCode::ACCEPTED, record))
+    }
+}
+
 #[utoipa::path(
     post,
     path = "/api/v1/blobs",
@@ -114,40 +170,9 @@ pub async fn upload_blob(
         .or_else(|| display_name.as_ref().and_then(|n| mime_guess::from_path(n).first().map(|m| m.to_string())))
         .unwrap_or_else(|| mime_guess::mime::APPLICATION_OCTET_STREAM.to_string());
     let name = display_name.or(filename).unwrap_or_else(|| "unnamed".to_string());
-    let checksum = crate::storage::compute_checksum(&data);
-    let now = Utc::now();
 
-    let (status_code, record) = if state.store.exists(&checksum).await {
-        let existing = state.db.get_one_by_checksum(&checksum).await?;
-        let (summary, embedding, status) = match existing {
-            Some(ref r) => (r.summary.clone(), r.embedding.clone(), BlobStatus::Ready),
-            None => (None, None, BlobStatus::Pending),
-        };
-        let record = BlobRecord {
-            id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
-            size: data.len() as i64, status, error: None, summary, tags,
-            embedding, created_at: now, updated_at: now,
-            visibility: visibility.unwrap_or_default(), uploaded_by: None,
-        };
-        state.db.insert(&record).await?;
-        if matches!(record.status, BlobStatus::Pending) {
-            state.pipeline_tx.send(record.id).await
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-        }
-        (StatusCode::CREATED, record)
-    } else {
-        state.store.write(&data).await?;
-        let record = BlobRecord {
-            id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
-            size: data.len() as i64, status: BlobStatus::Pending, error: None,
-            summary: None, tags, embedding: None, created_at: now, updated_at: now,
-            visibility: visibility.unwrap_or_default(), uploaded_by: None,
-        };
-        state.db.insert(&record).await?;
-        state.pipeline_tx.send(record.id).await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        (StatusCode::ACCEPTED, record)
-    };
+    let (status_code, record) =
+        ingest_blob(&state, data, mime_type, name, tags, visibility.unwrap_or_default()).await?;
 
     Ok((status_code, Json(record)))
 }

@@ -10,7 +10,7 @@ use crate::{
     api::blobs::ListQuery,
     api::utils::sanitize_filename,
     error::AppError,
-    models::{BlobListResponse, BlobRecord, BlobStatus, BlobVisibility, UpdateBlobRequest},
+    models::{BlobListResponse, BlobStatus, BlobVisibility, UpdateBlobRequest},
     storage::extract_store::{delete_extract, read_extract, write_extract, ExtractForQuery},
     AppState,
 };
@@ -23,9 +23,11 @@ use axum::{
 };
 use axum_extra::extract::Query;
 use bytes::Bytes;
-use chrono::Utc;
+use serde::Deserialize;
 use std::time::Instant;
 use uuid::Uuid;
+
+use super::blob_links::{self, BlobUrlOp};
 
 #[utoipa::path(
     get,
@@ -148,68 +150,10 @@ pub async fn upload_blob(
     let name = display_name
         .or(filename)
         .unwrap_or_else(|| "unnamed".to_string());
-    let checksum = crate::storage::compute_checksum(&data);
-    let now = Utc::now();
 
-    let (status_code, record) = if state.store.exists(&checksum).await {
-        let existing = state.db.get_one_by_checksum(&checksum).await?;
-        let (summary, embedding, status) = match existing {
-            Some(ref r) => (r.summary.clone(), r.embedding.clone(), BlobStatus::Ready),
-            None => (None, None, BlobStatus::Pending),
-        };
-        let record = BlobRecord {
-            id: Uuid::new_v4(),
-            owner_id: 0,
-            checksum,
-            name,
-            mime_type,
-            size: data.len() as i64,
-            status,
-            error: None,
-            summary,
-            tags,
-            embedding,
-            created_at: now,
-            updated_at: now,
-            visibility: visibility.unwrap_or_default(),
-            uploaded_by: None,
-        };
-        state.db.insert(&record).await?;
-        if matches!(record.status, BlobStatus::Pending) {
-            state
-                .pipeline_tx
-                .send(record.id)
-                .await
-                .map_err(|e| AppError::Internal(e.to_string()))?;
-        }
-        (StatusCode::CREATED, record)
-    } else {
-        state.store.write(&data).await?;
-        let record = BlobRecord {
-            id: Uuid::new_v4(),
-            owner_id: 0,
-            checksum,
-            name,
-            mime_type,
-            size: data.len() as i64,
-            status: BlobStatus::Pending,
-            error: None,
-            summary: None,
-            tags,
-            embedding: None,
-            created_at: now,
-            updated_at: now,
-            visibility: visibility.unwrap_or_default(),
-            uploaded_by: None,
-        };
-        state.db.insert(&record).await?;
-        state
-            .pipeline_tx
-            .send(record.id)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?;
-        (StatusCode::ACCEPTED, record)
-    };
+    let (status_code, record) = crate::api::blobs::ingest_blob(
+        &state, data, mime_type, name, tags, visibility.unwrap_or_default(),
+    ).await?;
 
     Ok((status_code, Json(record)))
 }
@@ -417,5 +361,119 @@ pub async fn query_blob(
         model,
         processing_time_ms,
     }))
+}
+
+// ---------------------------------------------------------------------------
+// Presigned (token-authenticated) blob byte transfer.
+//
+// These two routes are mounted OUTSIDE the dispatcher JWT middleware. They are
+// authenticated by a short-lived, blob-scoped token in the `token` query param
+// (minted by the MCP tools `get_blob_upload_url` / `get_blob_url`), letting an
+// agent that holds no dispatcher JWT move file bytes over plain HTTP without
+// putting large payloads on the MCP transport. See `blob_links.rs`.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct PresignedDownloadQuery {
+    /// Presigned token from `get_blob_url`.
+    pub token: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PresignedUploadQuery {
+    /// Presigned token from `get_blob_upload_url`.
+    pub token: String,
+    /// Optional display name; defaults to "unnamed". MIME is inferred from it when
+    /// the `Content-Type` header is absent.
+    pub name: Option<String>,
+    /// Optional comma-separated tags, e.g. `tags=invoice,2026`.
+    pub tags: Option<String>,
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/blobs/presigned",
+    params(
+        ("token" = String, Query, description = "Presigned upload token from get_blob_upload_url"),
+        ("name" = Option<String>, Query, description = "Display name; MIME inferred from it if Content-Type header absent"),
+        ("tags" = Option<String>, Query, description = "Comma-separated tags")
+    ),
+    request_body(content = String, description = "Raw file bytes; set Content-Type to the file's MIME type", content_type = "application/octet-stream"),
+    responses(
+        (status = 201, description = "Deduplicated — record created, AI output copied", body = BlobRecord),
+        (status = 202, description = "Accepted — queued for AI processing", body = BlobRecord),
+        (status = 400, description = "Empty body"),
+        (status = 401, description = "Missing, invalid, expired, or wrong-scope token"),
+    ),
+    tag = "dispatch"
+)]
+pub async fn presigned_upload(
+    State(state): State<AppState>,
+    Query(q): Query<PresignedUploadQuery>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<impl IntoResponse, AppError> {
+    blob_links::verify_token(&state.config.dispatcher_jwt_secret, &q.token, BlobUrlOp::Post)?;
+
+    if body.is_empty() {
+        return Err(AppError::BadRequest("request body is empty".into()));
+    }
+
+    let mime_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .or_else(|| q.name.as_ref().and_then(|n| mime_guess::from_path(n).first().map(|m| m.to_string())))
+        .unwrap_or_else(|| mime_guess::mime::APPLICATION_OCTET_STREAM.to_string());
+    let name = q.name.clone().unwrap_or_else(|| "unnamed".to_string());
+    let tags: Vec<String> = q
+        .tags
+        .as_deref()
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+        .unwrap_or_default();
+
+    let (status_code, record) =
+        crate::api::blobs::ingest_blob(&state, body, mime_type, name, tags, BlobVisibility::Private).await?;
+    Ok((status_code, Json(record)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/dispatch/blobs/presigned/{id}",
+    params(
+        ("id" = Uuid, Path, description = "Blob UUID"),
+        ("token" = String, Query, description = "Presigned download token from get_blob_url")
+    ),
+    responses(
+        (status = 200, description = "Raw file bytes"),
+        (status = 401, description = "Missing, invalid, expired, wrong-scope, or id-mismatched token"),
+        (status = 404, description = "Not found"),
+    ),
+    tag = "dispatch"
+)]
+pub async fn presigned_download(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(q): Query<PresignedDownloadQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    let claims = blob_links::verify_token(&state.config.dispatcher_jwt_secret, &q.token, BlobUrlOp::Get)?;
+    // Token is bound to a single blob — reject if the path id doesn't match.
+    if claims.sub != id.to_string() {
+        return Err(AppError::Unauthorized);
+    }
+
+    let record = state.db.get_by_id(id).await?;
+    let data = state.store.read(&record.checksum).await?;
+    let disposition = format!("attachment; filename=\"{}\"", sanitize_filename(&record.name));
+
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, record.mime_type),
+            (header::CONTENT_DISPOSITION, disposition),
+        ],
+        Body::from(data),
+    )
+        .into_response())
 }
 

@@ -131,6 +131,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::blobs::update_blob,
         dispatcher_portal::blobs::delete_blob,
         dispatcher_portal::blobs::query_blob,
+        dispatcher_portal::blobs::presigned_upload,
+        dispatcher_portal::blobs::presigned_download,
         driver_portal::data::update_stop_times,
         driver_portal::equipment::get_equipment,
         driver_portal::equipment::update_trailer,
@@ -555,7 +557,24 @@ Data endpoints (JWT required — driver sees only their own trips):
 
 ## Dispatcher MCP Server
 
-POST /dispatch/mcp — MCP JSON-RPC endpoint for AI agent tool calls. Requires dispatcher JWT (Authorization: Bearer <token> from POST /dispatch/auth/login). Supports tools: list_loads, get_load, create_load, update_load, list_trips, get_trip, assign_driver, unassign_driver, dispatch_trip, undispatch_trip, cancel_trip, complete_trip, stop_arrive, stop_depart, stop_late, check_call, list_drivers, get_driver, list_trucks, list_trailers, list_events.
+POST /dispatch/mcp — MCP JSON-RPC endpoint for AI agent tool calls. Requires dispatcher JWT (Authorization: Bearer <token> from POST /dispatch/auth/login). Supports tools: list_loads, get_load, create_load, update_load, list_trips, get_trip, assign_driver, unassign_driver, dispatch_trip, undispatch_trip, cancel_trip, complete_trip, stop_arrive, stop_depart, stop_late, check_call, list_drivers, get_driver, list_trucks, list_trailers, list_events, and the blob-store tools below.
+
+### Blob-store MCP tools
+
+File bytes do not travel over MCP (except small inline create_blob payloads). Large transfers use short-lived presigned URLs minted by the tools and served by the token-authenticated routes below.
+
+  get_blob_upload_url   Mint a presigned POST URL. POST raw bytes to it (Content-Type header; optional ?name=&tags=); response is the created blob record. Use for files over the inline limit. (expires_in_seconds optional)
+  create_blob           Upload a small file inline as base64 (content_base64, content_type; optional filename, tags). Rejects payloads over the inline limit (default 256 KiB) — use get_blob_upload_url instead.
+  get_blob_url          Mint a presigned GET URL for a blob's bytes (id; expires_in_seconds optional). Stream large files to disk rather than into context.
+  get_blob_metadata     Blob metadata + reverse lookup attached_to.{loads,facilities} (id).
+  list_blobs            List blob metadata (optional name, tag, content_type, limit).
+  delete_blob           Delete a blob (id; force? default false — fails if referenced by a load/facility unless force). Returns { deleted, was_attached }.
+
+Presigned byte-transfer endpoints (token-authenticated via ?token=, no JWT header — mounted outside the dispatcher JWT middleware so credential-less agents can use them):
+  POST /dispatch/blobs/presigned?token=…             Upload raw body bytes (Content-Type header; optional ?name=&tags=). 50 MB limit. Returns the blob record.
+  GET  /dispatch/blobs/presigned/{id}?token=…        Download raw bytes. Token is bound to that single blob id and operation, and expires (default 300s).
+
+Requires OLLIE_PUBLIC_BASE_URL set for the presigned-URL tools to build absolute URLs; create_blob works without it.
 
 ## Full Spec
 
@@ -615,6 +634,9 @@ pub fn router(state: AppState) -> Router {
     // Dispatcher portal: auth + JWT-protected data endpoints
     let dispatcher_auth = dispatcher_portal::dispatcher_portal_router(&state);
 
+    // Presigned blob byte-transfer routes — token-authenticated, no JWT middleware
+    let dispatcher_public = dispatcher_portal::public_router();
+
     // Driver portal: auth endpoints + JWT-protected data endpoints (#51 adds routes)
     let driver_portal = driver_portal::portal_router(&state);
 
@@ -636,6 +658,7 @@ pub fn router(state: AppState) -> Router {
         .route("/version", get(version::get_version))
         .merge(protected)
         .merge(dispatcher_auth)
+        .merge(dispatcher_public)
         .merge(driver_portal)
         .nest_service("/driver", driver_static)
         .nest_service("/dispatch", dispatch_static)
