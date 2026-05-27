@@ -6,7 +6,7 @@ This file is for AI coding agents working on this codebase. Read it before makin
 
 ollie is a RAG-enabled blob store written in Rust. It accepts file uploads, stores them content-addressed on disk, and uses Ollama to generate summaries and embeddings. Blobs are indexed in LanceDB for semantic search.
 
-**Stack:** Axum 0.7, LanceDB 0.27, Arrow 57, async-channel 2, reqwest 0.12, lopdf 0.32
+**Stack:** Axum 0.7, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, lopdf 0.32
 
 ## Codebase Layout
 
@@ -45,13 +45,13 @@ src/
 
 **Do not change these versions without reading this section.**
 
-- `lancedb = "0.27"` — lancedb 0.9 (originally in the design plan) had an arrow/chrono incompatibility and was abandoned
-- `arrow-array = "57"` and `arrow-schema = "57"` — lancedb 0.27.2 bundles arrow 57.2 internally; using arrow 52 or 53 causes `RecordBatchReader` trait incompatibility at compile time
-- If you upgrade lancedb, check its bundled arrow version first: `cargo tree -p lancedb | grep arrow`
+- `lancedb = "0.29"` — lancedb 0.9 (originally in the design plan) had an arrow/chrono incompatibility and was abandoned. Bumped 0.27→0.29 in v1.19.x to drop the `tantivy`→`lru` transitive dependency flagged by Dependabot (GHSA-rhfx-m35p-ff5j); lancedb 0.29 removed `tantivy` entirely.
+- `arrow-array = "58"` and `arrow-schema = "58"` — **must match the arrow version lancedb bundles internally.** lancedb 0.29 uses arrow 58; a mismatch (e.g. our crate on 57 while lancedb is on 58) puts two copies of `arrow_array` in the tree and causes `RecordBatch` / `RecordBatchReader` trait incompatibility at compile time. This was the entire content of the 0.27→0.29 migration: no lancedb API call we use changed — only the arrow pin had to move in lockstep.
+- If you upgrade lancedb, check its bundled arrow version first (`cargo tree -p lancedb | grep arrow`) and bump `arrow-array`/`arrow-schema` to match in the same change.
 
-### LanceDB 0.27 API Differences
+### LanceDB API Notes
 
-The plan was written for an older API. The actual 0.27 API differs:
+The plan was written for an older API. The actual API (0.27 through 0.29, unchanged across that bump) differs:
 
 - Use `.only_if("condition")` not `.filter("condition")` for row filtering
 - Queries require traits in scope: `use lancedb::query::{ExecutableQuery, QueryBase};`
@@ -328,7 +328,7 @@ Trunk-based. Three skills cover the workflow:
 - **Existing-DB migration safety net lives in `tests/migration_test.rs`.** The test seeds a pre-v1.16.0 trips table (current schema minus the v1.16.0-added columns), populates one row, then opens the DB with current `DbClient::new` and asserts the migration completes and the new columns round-trip via `insert_trip` / `get_trip`. Any future migration that adds a column must extend this test: drop the new column from the seed schema and add an assertion that a fresh post-migration row carrying the new column round-trips through the ops layer. Without this, CAST-type regressions and other migration bugs only surface in production. Documented under the "recurring AI-agent failure" lesson.
 - **SPA `goBack()` must not call `navigate()` — use a shared render function instead.** `navigate()` pushes to history before rendering. If `goBack()` calls `navigate()`, pressing Back twice re-adds the current view to history, creating an infinite loop. Extract the render-and-update logic into `_renderView(view, params)` and have both `navigate()` (which pushes first) and `goBack()` (which pops first) call `_renderView` directly.
 - **KPI count endpoints on LanceDB should access `state.db.*_table.count_rows()` directly rather than going through list helpers.** The list helpers fetch + deserialize rows just to return the total, which is wasteful for a pure count. LanceDB's `count_rows(filter)` is a cheap metadata operation. Add count methods or call the table directly in the handler.
-- **Sort by `created_at DESC` happens after `collect_stream`, not in the query.** LanceDB 0.27 does not have reliable `order_by` support. Follow the trip_ops pattern: call `batches_to_*`, then `records.sort_by_key(|r| std::cmp::Reverse(r.created_at))`, then skip/map. Do not rely on insertion order for user-facing list views.
+- **Sort by `created_at DESC` happens after `collect_stream`, not in the query.** LanceDB (0.27–0.29) does not have reliable `order_by` support. Follow the trip_ops pattern: call `batches_to_*`, then `records.sort_by_key(|r| std::cmp::Reverse(r.created_at))`, then skip/map. Do not rely on insertion order for user-facing list views.
 - **LanceDB migration CAST expressions require DataFusion *SQL* type names, not Arrow type names.** The bundled SQL parser accepts `string`, `double`, `int64`, `bigint` — and rejects every Arrow spelling (`Utf8`, `utf8`, `Float64`, `float64`, `Double`). Applies to all `add_columns(NewColumnTransform::SqlExpressions(...))` calls in migration helpers. (Earlier versions of this lesson incorrectly listed `utf8`/`float64` as acceptable — they are not, and shipped releases v1.13.0 and v1.16.0 each crash-looped on this exact mistake. See the "recurring AI-agent failure" lesson below.)
 - **Removing a DB-level `.limit()` from a list query requires adding `.take(limit)` to the iterator.** When you remove `.limit(limit + offset)` from a LanceDB query (e.g. to fix a sort-window bug), the in-memory iterator no longer has a page cap. Always add `.skip(offset).take(limit)` to the iterator after `sort_by_key` — without `.take(limit)`, the endpoint returns all remaining rows.
 - **CSS class attribute injection needs the same allowlist as inner-text injection.** Before interpolating any API-derived value into a CSS class string (e.g. `badge--${entityType}`), apply `.replace(/[^a-z0-9_]/g, '_')` — the same pattern used in the `badge()` utility. A raw `entity_type` containing `"` or whitespace becomes an XSS vector via class attribute breakout.
