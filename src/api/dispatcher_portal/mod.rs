@@ -4,6 +4,7 @@ pub mod auth;
 pub mod blob_links;
 pub mod blobs;
 pub mod data;
+pub mod driver_writes;
 pub mod facility_writes;
 pub mod jwt;
 pub mod mcp;
@@ -50,6 +51,14 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trips/:id/check-call", post(data::check_call))
         .route("/dispatch/api/v1/drivers", get(data::list_drivers))
         .route("/dispatch/api/v1/drivers/:id", get(data::get_driver))
+        .route(
+            "/dispatch/api/v1/drivers/:id/attach-equipment",
+            post(driver_writes::attach_equipment_handler),
+        )
+        .route(
+            "/dispatch/api/v1/drivers/:id/detach-equipment",
+            post(driver_writes::detach_equipment_handler),
+        )
         .route(
             "/dispatch/api/v1/trucks",
             get(data::list_trucks).post(truck_writes::create_truck_handler),

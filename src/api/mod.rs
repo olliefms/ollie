@@ -116,6 +116,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::facility_writes::update_facility_handler,
         dispatcher_portal::data::list_drivers,
         dispatcher_portal::data::get_driver,
+        dispatcher_portal::driver_writes::attach_equipment_handler,
+        dispatcher_portal::driver_writes::detach_equipment_handler,
         dispatcher_portal::data::list_trucks,
         dispatcher_portal::data::get_truck,
         dispatcher_portal::truck_writes::create_truck_handler,
@@ -220,6 +222,9 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             dispatcher_portal::truck_writes::PatchTruckBody,
             dispatcher_portal::trailer_writes::CreateTrailerBody,
             dispatcher_portal::trailer_writes::PatchTrailerBody,
+            dispatcher_portal::driver_writes::AttachEquipmentBody,
+            dispatcher_portal::driver_writes::DetachEquipmentBody,
+            dispatcher_portal::driver_writes::DriverEquipmentChange,
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
@@ -326,7 +331,7 @@ Loads & trips:
   stop_arrive, stop_depart, stop_late, check_call
 
 Fleet & facilities:
-  list_drivers, get_driver
+  list_drivers, get_driver, attach_equipment, detach_equipment
   list_trucks, get_truck, create_truck, update_truck
   list_trailers, get_trailer, create_trailer, update_trailer
   list_facilities, get_facility, create_facility, update_facility

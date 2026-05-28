@@ -354,6 +354,33 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "attach_equipment",
+                "description": "Attach a truck and/or trailers to a driver. Trailers are additive (merged with any already attached). Attaching a truck releases the driver's previous truck to available first. Rejected if the driver is inactive or any equipment is on another driver's active (dispatched/in_transit) trip. If the driver has an active trip, the trip's truck/trailers are synced. Pure equipment event — does not change trip status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "driver_id":   { "type": "string", "format": "uuid" },
+                        "truck":       { "type": "string", "format": "uuid" },
+                        "trailer_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                    },
+                    "required": ["driver_id"]
+                }
+            },
+            {
+                "name": "detach_equipment",
+                "description": "Detach a driver's truck and/or drop trailers, releasing them to available. Set truck=true to un-seat the truck; pass trailer_ids to drop specific trailers, or all_trailers=true to drop every trailer. Syncs the driver's active trip when present. Pure equipment event — does not change trip status.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "driver_id":    { "type": "string", "format": "uuid" },
+                        "truck":        { "type": "boolean", "default": false },
+                        "trailer_ids":  { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "all_trailers": { "type": "boolean", "default": false }
+                    },
+                    "required": ["driver_id"]
+                }
+            },
+            {
                 "name": "list_trucks",
                 "description": "List all trucks.",
                 "inputSchema": { "type": "object", "properties": {} }
@@ -709,6 +736,8 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "check_call" => tool_check_call(state, args).await,
         "list_drivers" => tool_list_drivers(state, args).await,
         "get_driver" => tool_get_driver(state, args).await,
+        "attach_equipment" => tool_attach_equipment(state, args).await,
+        "detach_equipment" => tool_detach_equipment(state, args).await,
         "list_trucks" => tool_list_trucks(state).await,
         "get_truck" => tool_get_truck(state, args).await,
         "create_truck" => tool_create_truck(state, args).await,
@@ -1186,6 +1215,30 @@ async fn tool_get_driver(state: &AppState, args: &Value) -> Result<Value, String
     let id = parse_uuid(args, "id")?;
     let record = state.db.get_driver_by_id(id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(record))
+}
+
+async fn tool_attach_equipment(state: &AppState, args: &Value) -> Result<Value, String> {
+    let driver_id = parse_uuid(args, "driver_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("driver_id");
+    }
+    let change = super::driver_writes::apply_attach_equipment(state, driver_id, body)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(change))
+}
+
+async fn tool_detach_equipment(state: &AppState, args: &Value) -> Result<Value, String> {
+    let driver_id = parse_uuid(args, "driver_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("driver_id");
+    }
+    let change = super::driver_writes::apply_detach_equipment(state, driver_id, body)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(change))
 }
 
 async fn tool_list_trucks(state: &AppState) -> Result<Value, String> {
