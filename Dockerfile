@@ -1,24 +1,27 @@
-# Dockerfile
+# syntax=docker/dockerfile:1
 FROM rust:1.91-slim AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
-# Warm the dependency cache
-RUN mkdir src && echo 'fn main(){}' > src/main.rs && \
-    echo 'pub fn lib(){}' > src/lib.rs && \
-    cargo build --release && rm -rf src
-
 COPY src ./src
-RUN touch src/main.rs src/lib.rs && cargo build --release
+
+# Cache mounts persist the cargo registry and target dir across builds, even
+# when this layer is invalidated (e.g. by a version bump touching Cargo.toml).
+# Only crates that actually changed recompile — mirroring local incremental
+# builds. The binary is copied out of the cache mount since mounts aren't
+# captured in the image layer.
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release && cp target/release/ollie /usr/local/bin/ollie
 
 FROM debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY --from=builder /app/target/release/ollie /usr/local/bin/ollie
+COPY --from=builder /usr/local/bin/ollie /usr/local/bin/ollie
 COPY static ./static
 
 RUN useradd -m -u 1001 ollie
