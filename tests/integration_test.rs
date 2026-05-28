@@ -5978,3 +5978,332 @@ async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
     assert_eq!(get.status_code(), 200, "sibling blob must still be readable after first record deleted");
     assert_eq!(get.as_bytes(), content.as_slice(), "sibling blob bytes must be intact");
 }
+
+// ---------------------------------------------------------------------------
+// Driver equipment attach/detach (dispatcher surface) — #181
+// ---------------------------------------------------------------------------
+
+async fn make_driver(server: &axum_test::TestServer, name: &str) -> String {
+    server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": name }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn make_truck(server: &axum_test::TestServer, unit: &str) -> String {
+    server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": unit }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn make_trailer(server: &axum_test::TestServer, unit: &str) -> String {
+    server.post("/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": unit, "owner": "fleet" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn truck_status(server: &axum_test::TestServer, id: &str) -> String {
+    server.get(&format!("/api/v1/trucks/{id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>()["status"].as_str().unwrap().to_string()
+}
+
+async fn trailer_status(server: &axum_test::TestServer, id: &str) -> String {
+    server.get(&format!("/api/v1/trailers/{id}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await
+        .json::<serde_json::Value>()["status"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_attach_equipment_truck_and_trailers() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "attach1@example.com", "password-attach1").await;
+    let auth = format!("Bearer {token}");
+
+    let driver = make_driver(&server, "Attach Driver").await;
+    let truck = make_truck(&server, "AE-TRK-1").await;
+    let trl_a = make_trailer(&server, "AE-TRL-A").await;
+    let trl_b = make_trailer(&server, "AE-TRL-B").await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "truck": truck, "trailer_ids": [trl_a, trl_b] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["truck_id"], truck);
+    assert_eq!(body["trailer_ids"].as_array().unwrap().len(), 2);
+    assert_eq!(body["trip_cascade"], false);
+
+    // Driver record reflects equipment.
+    let d = server.get(&format!("/dispatch/api/v1/drivers/{driver}"))
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    assert_eq!(d["current_truck_id"], truck);
+    assert_eq!(d["current_trailer_ids"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_attach_equipment_trailers_are_additive() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "attach2@example.com", "password-attach2").await;
+    let auth = format!("Bearer {token}");
+
+    let driver = make_driver(&server, "Additive Driver").await;
+    let trl_a = make_trailer(&server, "ADD-TRL-A").await;
+    let trl_b = make_trailer(&server, "ADD-TRL-B").await;
+
+    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "trailer_ids": [trl_a] })).await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "trailer_ids": [trl_b] })).await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    let ids: Vec<String> = body["trailer_ids"].as_array().unwrap().iter()
+        .map(|v| v.as_str().unwrap().to_string()).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(ids.contains(&trl_a));
+    assert!(ids.contains(&trl_b));
+
+    // Re-attaching the same trailer does not duplicate it.
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "trailer_ids": [trl_a] })).await;
+    assert_eq!(resp.json::<serde_json::Value>()["trailer_ids"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn test_attach_truck_releases_previous_truck() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "attach3@example.com", "password-attach3").await;
+    let auth = format!("Bearer {token}");
+
+    let driver = make_driver(&server, "Swap Driver").await;
+    let truck1 = make_truck(&server, "SW-TRK-1").await;
+    let truck2 = make_truck(&server, "SW-TRK-2").await;
+
+    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "truck": truck1 })).await;
+    assert_eq!(truck_status(&server, &truck1).await, "assigned");
+
+    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "truck": truck2 })).await;
+    assert_eq!(truck_status(&server, &truck1).await, "available", "previous truck released");
+    assert_eq!(truck_status(&server, &truck2).await, "assigned");
+}
+
+#[tokio::test]
+async fn test_attach_equipment_empty_body_400() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "attach4@example.com", "password-attach4").await;
+    let driver = make_driver(&server, "Empty Driver").await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({})).await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_attach_equipment_inactive_driver_409() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "attach5@example.com", "password-attach5").await;
+    let auth = format!("Bearer {token}");
+    let driver = make_driver(&server, "Inactive Driver").await;
+    let truck = make_truck(&server, "IN-TRK-1").await;
+
+    // Soft-delete (inactivate) the driver via admin API.
+    server.delete(&format!("/api/v1/drivers/{driver}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret").await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "truck": truck })).await;
+    assert_eq!(resp.status_code(), 409);
+}
+
+#[tokio::test]
+async fn test_attach_equipment_conflict_on_other_active_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "attach6@example.com", "password-attach6").await;
+    let auth = format!("Bearer {token}");
+
+    // Driver A gets a dispatched trip with truck + trailer.
+    let driver_a = make_driver(&server, "Driver A").await;
+    let truck = make_truck(&server, "CF-TRK-1").await;
+    let trailer = make_trailer(&server, "CF-TRL-1").await;
+    let trip = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "O" },
+                { "sequence": 2, "stop_type": "delivery", "name": "D" }
+            ]
+        }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    server.post(&format!("/api/v1/trips/{trip}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_a, "truck_id": truck, "trailer_ids": [trailer] })).await;
+    server.post(&format!("/api/v1/trips/{trip}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret").await;
+
+    // Driver B tries to grab the same truck.
+    let driver_b = make_driver(&server, "Driver B").await;
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver_b}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "truck": truck })).await;
+    assert_eq!(resp.status_code(), 409, "truck on another active trip");
+
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver_b}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "trailer_ids": [trailer] })).await;
+    assert_eq!(resp.status_code(), 409, "trailer on another active trip");
+}
+
+#[tokio::test]
+async fn test_attach_detach_cascades_active_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "attach7@example.com", "password-attach7").await;
+    let auth = format!("Bearer {token}");
+
+    let driver = make_driver(&server, "Cascade Driver").await;
+    let truck = make_truck(&server, "CA-TRK-1").await;
+    let trailer1 = make_trailer(&server, "CA-TRL-1").await;
+    let trailer2 = make_trailer(&server, "CA-TRL-2").await;
+    let trip = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "O" },
+                { "sequence": 2, "stop_type": "delivery", "name": "D" }
+            ]
+        }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    server.post(&format!("/api/v1/trips/{trip}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver, "truck_id": truck, "trailer_ids": [trailer1] })).await;
+    server.post(&format!("/api/v1/trips/{trip}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret").await;
+
+    // Attach a second trailer — should cascade into the active trip.
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "trailer_ids": [trailer2] })).await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["trip_cascade"], true);
+    assert_eq!(body["trip_id"], trip);
+
+    let t = server.get(&format!("/dispatch/api/v1/trips/{trip}"))
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    assert_eq!(t["trailer_ids"].as_array().unwrap().len(), 2, "trip synced with both trailers");
+
+    // Detach trailer1 — released to available; trip synced down to one.
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/detach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "trailer_ids": [trailer1] })).await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<serde_json::Value>()["trip_cascade"], true);
+    assert_eq!(trailer_status(&server, &trailer1).await, "available");
+
+    let t = server.get(&format!("/dispatch/api/v1/trips/{trip}"))
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    let ids: Vec<String> = t["trailer_ids"].as_array().unwrap().iter()
+        .map(|v| v.as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, vec![trailer2]);
+}
+
+#[tokio::test]
+async fn test_detach_equipment_truck_and_all_trailers() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "detach1@example.com", "password-detach1").await;
+    let auth = format!("Bearer {token}");
+
+    let driver = make_driver(&server, "Detach Driver").await;
+    let truck = make_truck(&server, "DE-TRK-1").await;
+    let trl_a = make_trailer(&server, "DE-TRL-A").await;
+    let trl_b = make_trailer(&server, "DE-TRL-B").await;
+
+    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "truck": truck, "trailer_ids": [trl_a, trl_b] })).await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/detach-equipment"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "truck": true, "all_trailers": true })).await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert!(body["truck_id"].is_null());
+    assert_eq!(body["trailer_ids"].as_array().unwrap().len(), 0);
+
+    assert_eq!(truck_status(&server, &truck).await, "available");
+    assert_eq!(trailer_status(&server, &trl_a).await, "available");
+    assert_eq!(trailer_status(&server, &trl_b).await, "available");
+}
+
+#[tokio::test]
+async fn test_detach_equipment_empty_body_400() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "detach2@example.com", "password-detach2").await;
+    let driver = make_driver(&server, "Detach Empty").await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/detach-equipment"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({})).await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_attach_equipment_via_mcp() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcpattach@example.com", "password-mcpattach").await;
+    let auth = format!("Bearer {token}");
+
+    let driver = make_driver(&server, "MCP Attach Driver").await;
+    let truck = make_truck(&server, "MCP-TRK-1").await;
+    let trailer = make_trailer(&server, "MCP-TRL-1").await;
+
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "attach_equipment", "arguments": {
+                "driver_id": driver, "truck": truck, "trailer_ids": [trailer]
+            }}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let change: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert_eq!(change["truck_id"], truck);
+    assert_eq!(change["trailer_ids"].as_array().unwrap().len(), 1);
+
+    // detach via MCP
+    let resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": "detach_equipment", "arguments": {
+                "driver_id": driver, "truck": true, "all_trailers": true
+            }}
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    let text = body["result"]["content"][0]["text"].as_str().unwrap();
+    let change: serde_json::Value = serde_json::from_str(text).unwrap();
+    assert!(change["truck_id"].is_null());
+    assert_eq!(change["trailer_ids"].as_array().unwrap().len(), 0);
+}
