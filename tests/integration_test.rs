@@ -5865,3 +5865,86 @@ async fn test_openapi_includes_presigned_blob_paths() {
     assert!(!paths["/dispatch/blobs/presigned"].is_null(), "upload path missing from spec");
     assert!(!paths["/dispatch/blobs/presigned/{id}"].is_null(), "download path missing from spec");
 }
+
+// --- TOCTOU race fix tests ---
+
+#[tokio::test]
+async fn test_admin_delete_blob_keeps_bytes_when_checksum_shared() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Upload the same bytes twice — dedup gives two records with the same checksum.
+    let content = b"shared-checksum-admin-test-bytes";
+    let r1 = server.post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
+                .file_name("shared-a.txt").mime_type("text/plain")))
+        .await;
+    assert!(r1.status_code() == 202 || r1.status_code() == 201);
+
+    let r2 = server.post("/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
+                .file_name("shared-b.txt").mime_type("text/plain")))
+        .await;
+    assert!(r2.status_code() == 202 || r2.status_code() == 201);
+
+    let id1 = r1.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let id2 = r2.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    assert_ne!(id1, id2, "dedup must produce two distinct record ids");
+
+    // Delete the first record — the storage bytes must NOT be deleted because id2 still exists.
+    let del = server.delete(&format!("/api/v1/blob/{id1}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(del.status_code(), 204);
+
+    // The sibling record's bytes must still be downloadable.
+    let get = server.get(&format!("/api/v1/blob/{id2}"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+    assert_eq!(get.status_code(), 200, "sibling blob must still be readable after first record deleted");
+    assert_eq!(get.as_bytes(), content.as_slice(), "sibling blob bytes must be intact");
+}
+
+#[tokio::test]
+async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "toctou-disp@example.com", "password-toctou-disp").await;
+
+    // Upload the same bytes twice — dedup gives two records with the same checksum.
+    let content = b"shared-checksum-dispatcher-test-bytes";
+    let r1 = server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
+                .file_name("disp-shared-a.txt").mime_type("text/plain")))
+        .await;
+    assert!(r1.status_code() == 202 || r1.status_code() == 201);
+
+    let r2 = server.post("/dispatch/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
+                .file_name("disp-shared-b.txt").mime_type("text/plain")))
+        .await;
+    assert!(r2.status_code() == 202 || r2.status_code() == 201);
+
+    let id1 = r1.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let id2 = r2.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    assert_ne!(id1, id2, "dedup must produce two distinct record ids");
+
+    // Delete the first record — the storage bytes must NOT be deleted because id2 still exists.
+    let del = server.delete(&format!("/dispatch/api/v1/blob/{id1}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del.status_code(), 204);
+
+    // The sibling record's bytes must still be downloadable.
+    let get = server.get(&format!("/dispatch/api/v1/blob/{id2}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(get.status_code(), 200, "sibling blob must still be readable after first record deleted");
+    assert_eq!(get.as_bytes(), content.as_slice(), "sibling blob bytes must be intact");
+}
