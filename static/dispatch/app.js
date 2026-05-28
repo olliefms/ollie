@@ -65,8 +65,9 @@ function isAuthenticated() {
 
 async function apiFetch(path, options = {}) {
   const token = getToken();
+  const isFormData = options.body instanceof FormData;
   const headers = {
-    'Content-Type': 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {}),
   };
@@ -1123,11 +1124,18 @@ async function renderDocumentsView(params = {}) {
     const blobs = data.items || [];
 
     const filterHtml = `
-      <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3);">
+      <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3);align-items:center;flex-wrap:wrap;">
         <input class="form-input" id="doc-filter-name" type="text"
           placeholder="Filter by name…" value="${escHtml(filterName)}" style="max-width:240px;">
         <button class="btn btn--secondary" id="doc-filter-apply">Search</button>
+        <span style="flex:1;"></span>
+        <input type="file" id="doc-upload-file" style="display:none;">
+        <label style="display:flex;gap:var(--space-1);align-items:center;font-size:var(--text-sm);">
+          <input type="checkbox" id="doc-upload-visible-driver"> Visible to driver
+        </label>
+        <button class="btn btn--primary" id="doc-upload-btn">+ Upload</button>
       </div>
+      <div id="doc-upload-status" class="alert" hidden style="margin-bottom:var(--space-3);"></div>
     `;
 
     let tableHtml = '';
@@ -1185,6 +1193,43 @@ async function renderDocumentsView(params = {}) {
       row.addEventListener('click', () => {
         navigate('document', { id: row.dataset.blobId });
       });
+    });
+
+    const fileInput = document.getElementById('doc-upload-file');
+    const uploadBtn = document.getElementById('doc-upload-btn');
+    const statusEl = document.getElementById('doc-upload-status');
+
+    uploadBtn?.addEventListener('click', () => fileInput?.click());
+
+    fileInput?.addEventListener('change', async () => {
+      const file = fileInput.files && fileInput.files[0];
+      if (!file) return;
+
+      const visibleToDriver = document.getElementById('doc-upload-visible-driver')?.checked;
+      const fd = new FormData();
+      fd.append('file', file);
+      if (visibleToDriver) fd.append('visibility', 'driver');
+
+      statusEl.hidden = false;
+      statusEl.className = 'alert';
+      statusEl.textContent = `Uploading ${file.name}…`;
+      uploadBtn.disabled = true;
+
+      try {
+        const res = await apiFetch(`${API_BASE}/blobs`, { method: 'POST', body: fd });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        statusEl.className = 'alert alert--info';
+        statusEl.textContent = `Uploaded ${file.name}.`;
+        navigate('documents', { name: filterName });
+      } catch (err) {
+        if (err.message !== 'Unauthorized — please sign in again.') {
+          statusEl.className = 'alert alert--error';
+          statusEl.textContent = `Upload failed: ${err.message}`;
+        }
+      } finally {
+        uploadBtn.disabled = false;
+        fileInput.value = '';
+      }
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
