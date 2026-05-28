@@ -319,6 +319,14 @@ Public, no auth: GET /version, GET /openapi.json, GET /llms.txt.
 Missing or incorrect credentials return 401. Dispatcher login locks out after 5
 failed attempts (15 min × 2^(failures-5), capped at 24h; 423 with locked_until).
 
+Dispatcher API keys (for headless/programmatic callers — used in the Authorization
+header just like a JWT) are managed under /dispatch/api-keys (a password/JWT session
+is required; an API-key session cannot mint more keys):
+  POST   /dispatch/api-keys      Create a key. Body: { label (1-64 chars), expires_in_days? (1-365, default 365) }.
+                                 Returns the plaintext `key` exactly once — it is never retrievable again. Max 20 active keys per dispatcher.
+  GET    /dispatch/api-keys      List the caller's active keys (label, key_prefix, created/expires/last_used; no plaintext).
+  DELETE /dispatch/api-keys/:id  Revoke a key.
+
 ## Dispatcher MCP server — POST /dispatch/mcp
 
 JSON-RPC 2.0. Call `tools/list` for input schemas, `tools/call` to invoke. Requires
@@ -373,12 +381,14 @@ within the 7-day window).
   Trips      GET /trips, GET /trips/:id,
              POST /trips/:id/{assign,unassign,dispatch,undispatch,cancel,complete},
              POST /trips/:id/stops/:seq/{arrive,depart,late}, POST /trips/:id/check-call
-  Drivers    GET /drivers, GET /drivers/:id
+  Drivers    GET /drivers, GET /drivers/:id,
+             POST /drivers/:id/attach-equipment, POST /drivers/:id/detach-equipment
   Trucks     GET /trucks, GET /trucks/:id, POST /trucks, PATCH /trucks/:id
   Trailers   GET /trailers, GET /trailers/:id, POST /trailers, PATCH /trailers/:id
   Facilities GET /facilities (?q, ?limit, ?offset), GET /facilities/:id, POST /facilities, PATCH /facilities/:id
-  Blobs      GET /blobs, GET /blob/:id, PUT /blob/:id, DELETE /blob/:id, POST /blobs/:id/query
-             (prefer the presigned flow above over multipart POST for uploads)
+  Blobs      GET /blobs, GET /blob/:id, POST /blobs, PUT /blob/:id, DELETE /blob/:id, POST /blobs/:id/query
+             (multipart POST /blobs accepts an optional visibility=driver field to expose the
+             document in the driver portal; prefer the presigned flow above for large uploads)
   Events     GET /events (?trip_id, ?driver_id, ?limit, ?offset)
   Counts     GET /loads/count, /drivers/count, /blobs/count, /events/count
 
