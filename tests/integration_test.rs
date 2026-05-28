@@ -5240,6 +5240,120 @@ async fn test_driver_equipment_cascade_syncs_trailer_statuses() {
         "newly attached trailer should be Dispatched while trip is InTransit");
 }
 
+#[tokio::test]
+async fn test_driver_equipment_reflects_assigned_trip_truck_and_trailer() {
+    // Regression: a driver assigned a truck + trailer via dispatch (who never
+    // recorded a self-service swap) must see that equipment on the Equipment
+    // tab. The truck has no driver-side write path, so it is derived from the
+    // driver's active trip; trailers fall back to the trip when the driver has
+    // no recorded swap.
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
+
+    let trailer_id = create_trailer(&server, "TR-REFLECT").await;
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-REFLECT", "plate": "RFL-123" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "driver_id": driver_id.to_string(),
+            "truck_id": truck_id,
+            "trailer_ids": [trailer_id.to_string()],
+        }))
+        .await;
+
+    // Driver has recorded no swap, so current_truck_id / current_trailer_ids are unset.
+    let d = state.db.get_driver_by_id(driver_id).await.unwrap();
+    assert!(d.current_truck_id.is_none());
+    assert!(d.current_trailer_ids.is_empty());
+
+    let resp = server.get("/driver/api/v1/equipment")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let v: serde_json::Value = resp.json();
+    assert_eq!(v["truck"]["id"], truck_id, "truck should be derived from the assigned trip");
+    assert_eq!(v["truck"]["unit_number"], "T-REFLECT");
+    assert_eq!(v["truck"]["plate"], "RFL-123");
+    assert_eq!(v["trailers"][0]["id"], trailer_id.to_string(),
+        "trailer should fall back to the assigned trip when no swap is recorded");
+    assert_eq!(v["trailers"][0]["unit_number"], "TR-REFLECT");
+}
+
+#[tokio::test]
+async fn test_driver_equipment_prefers_running_trip_over_newer_queued_trip() {
+    // A driver running a Dispatched trip while a newer Assigned trip is queued
+    // must see the running trip's truck on the Equipment tab — not the queued
+    // one. Dispatch allows at most one Dispatched/InTransit trip per driver, so
+    // the in-flight trip is the source of physically-attached equipment.
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
+
+    let running_truck = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-RUNNING" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let queued_truck = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "T-QUEUED" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let make_trip = || async {
+        server.post("/api/v1/trips")
+            .add_header(header::AUTHORIZATION, "Bearer test-secret")
+            .json(&serde_json::json!({
+                "stops": [
+                    { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                    { "sequence": 1, "stop_type": "delivery", "name": "Destination" }
+                ]
+            }))
+            .await
+            .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+    };
+
+    // Trip A: assigned then dispatched (the running trip).
+    let trip_a = make_trip().await;
+    server.post(&format!("/api/v1/trips/{trip_a}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id.to_string(), "truck_id": running_truck }))
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_a}/dispatch"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .await;
+
+    // Trip B: a newer trip merely assigned to the same driver (queued).
+    let trip_b = make_trip().await;
+    server.post(&format!("/api/v1/trips/{trip_b}/assign"))
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "driver_id": driver_id.to_string(), "truck_id": queued_truck }))
+        .await;
+
+    let resp = server.get("/driver/api/v1/equipment")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let v: serde_json::Value = resp.json();
+    assert_eq!(v["truck"]["unit_number"], "T-RUNNING",
+        "equipment should reflect the running (dispatched) trip, not the newer queued one");
+}
+
 // ---------------------------------------------------------------------------
 // Dispatcher portal trailer + truck CRUD (#269)
 // ---------------------------------------------------------------------------
