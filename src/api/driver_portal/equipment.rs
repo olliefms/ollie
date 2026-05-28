@@ -71,7 +71,15 @@ pub async fn get_equipment(
     let driver_id = claims.driver_id.parse::<Uuid>().map_err(|_| AppError::Unauthorized)?;
     let driver = state.db.get_driver_by_id(driver_id).await?;
 
-    let truck = if let Some(tid) = driver.current_truck_id {
+    // The driver's truck is managed entirely by dispatch — there is no
+    // driver-side write path for it — so it is sourced from the driver's active
+    // trip. Trailers prefer the driver's own equipment record (set by the
+    // self-service swap), falling back to the active trip when the driver has
+    // not recorded a swap (e.g. a freshly assigned trip).
+    let active_trip = active_trip_for_driver(&state, driver_id).await?;
+
+    let truck_id = driver.current_truck_id.or_else(|| active_trip.as_ref().and_then(|t| t.truck_id));
+    let truck = if let Some(tid) = truck_id {
         state.db.get_truck_by_id(tid).await.ok().map(|t| EquipmentTruckSummary {
             id: t.id,
             unit_number: t.unit_number,
@@ -81,8 +89,14 @@ pub async fn get_equipment(
         None
     };
 
-    let mut trailers = Vec::with_capacity(driver.current_trailer_ids.len());
-    for tid in &driver.current_trailer_ids {
+    let trailer_ids: Vec<Uuid> = if !driver.current_trailer_ids.is_empty() {
+        driver.current_trailer_ids.clone()
+    } else {
+        active_trip.as_ref().map(|t| t.trailer_ids.clone()).unwrap_or_default()
+    };
+
+    let mut trailers = Vec::with_capacity(trailer_ids.len());
+    for tid in &trailer_ids {
         if let Ok(t) = state.db.get_trailer_by_id(*tid).await {
             trailers.push(trailer_summary(&t));
         }
@@ -295,6 +309,35 @@ pub async fn list_available_trailers(
         })
         .collect();
     Ok(Json(AvailableTrailersResponse { items: filtered }))
+}
+
+/// The driver's current trip for equipment display. A trip the driver is
+/// physically running (Dispatched/InTransit — dispatch allows at most one per
+/// driver) always wins over a queued Assigned trip, so the tab reflects the
+/// equipment actually attached rather than the newest queued assignment.
+/// Within a status tier the most recent trip wins. Used to source the
+/// dispatch-managed truck and to fall back for trailers when the driver has no
+/// self-recorded equipment.
+async fn active_trip_for_driver(
+    state: &AppState,
+    driver_id: Uuid,
+) -> Result<Option<crate::models::TripListItem>, AppError> {
+    let mut trips: Vec<_> = state.db.list_trips(None, Some(driver_id), None).await?
+        .into_iter()
+        .filter(|t| matches!(
+            t.status,
+            TripStatus::Assigned | TripStatus::Dispatched | TripStatus::InTransit
+        ))
+        .collect();
+    let status_rank = |s: &TripStatus| match s {
+        TripStatus::InTransit | TripStatus::Dispatched => 0,
+        _ => 1,
+    };
+    trips.sort_by(|a, b| {
+        status_rank(&a.status).cmp(&status_rank(&b.status))
+            .then(b.created_at.cmp(&a.created_at))
+    });
+    Ok(trips.into_iter().next())
 }
 
 fn trailer_summary(t: &crate::models::TrailerRecord) -> EquipmentTrailerSummary {
