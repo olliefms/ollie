@@ -5,153 +5,75 @@ description: Use when picking up a single GitHub issue — implements, self-revi
 
 # Work Issue
 
-## Overview
-
-One issue → one branch → one PR → merge. The default flow. Trunk-based: PRs target `main`, no release branch.
+One issue → one branch → one PR → merge. The default flow. **Trunk-based: PRs target `main`, no release branch.** Branch name: `issue-<N>-<slug>`. Merge with squash + delete-branch.
 
 **Usage:** `/work-issue <issue-number>`
 
-## Self-Configure First
+This skill assumes you already know how to drive git and `gh`. It only spells out the decisions specific to this project — where to find the bar for "done," how to triage findings, what gates a self-merge, and the rules that exist because we got burned before. Execute the ordinary mechanics yourself.
 
-Find and read the project guide (`AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`) in full. You need:
-- **Shippability Bar** — the definition of "done." Skill operates against it.
-- **Critical Constraints** — non-negotiable rules
-- **Running Tests** — exact test command
-- **Triage Rules** — blocker / significant / nit classification
+## Self-configure first
 
-If the project guide does not define a Shippability Bar, stop and tell the user. Do not invent one.
+Read the project guide (`AGENTS.md` / `CLAUDE.md` / `GEMINI.md`) in full and pull out:
+- **Shippability Bar** — the definition of "done." Everything below operates against it.
+- **Critical Constraints** — the non-negotiables.
+- **Running Tests** — the exact command.
+- **Triage Rules** — blocker / significant / nit.
 
-## Steps
+If the guide defines no Shippability Bar, stop and tell the user. Don't invent one — a made-up bar is worse than none, because it looks authoritative.
 
-### 1. Read the issue completely
+## The flow
 
-```bash
-gh issue view <N> --comments
-```
+1. **Read the issue *and its comments*.** Bodies go stale; the live scope lives in the comments. If scope is still ambiguous after reading both, ask before branching — a clarifying question is far cheaper than rework.
 
-Issue bodies go stale; comments hold the current scope. Read both. If scope is ambiguous, ask the user before branching — clarifying questions are cheaper than rework.
+2. **Start from green.** Run the test command on `main` before you touch anything. If it's red before you've done a thing, stop and tell the user — never build on a broken baseline, you'll never know which red is yours.
 
-### 2. Verify clean starting state
+3. **Implement on a branch, staying inside the issue's scope.** If the work starts pulling in things the issue didn't ask for, stop and ask rather than quietly growing the PR — scope creep is invisible to the reviewer until it's too late to undo.
 
-```bash
-git checkout main && git pull
-```
+4. **Self-review against the Shippability Bar**, then run one capped Opus pass (see below).
 
-Run the project's test command. If red before you touch anything, **stop and tell the user.** Do not implement against a broken baseline.
+5. **Self-merge only if it's clean** (see gate below), then close the issue with a one-line verification comment noting what you actually tested.
 
-### 3. Branch
+### Never touch version numbers
 
-```bash
-git checkout -b issue-<N>-<short-slug>
-```
+Do not edit the version in `Cargo.toml` / `package.json` / `pyproject.toml`, and do not touch version-coupled stamps — the driver PWA `CACHE_NAME` or `?v=` asset stamps. Renumbering is exclusively `cut-release`'s job. An issue PR that hardcodes a version desyncs the next release (this rule exists because PR #284 did exactly that). Leave every version string alone.
 
-### 4. Implement
+## Triage: the calibration that matters
 
-Edit, test, commit in small focused commits. Use the project's test command after every meaningful change. Never stack failures — fix before continuing.
+Classify every finding — your own and Opus's — as one of:
 
-If the work expands beyond the issue scope, stop and ask the user. Don't quietly grow the PR.
+- **blocker** — correctness, security, data-loss, a broken contract, or a missing test on the critical path.
+- **significant** — meaningfully affects maintainability or correctness in edge cases. Worth fixing in *this* PR.
+- **nit** — style, taste, micro-optimization, a refactor you'd enjoy. Not fixed, not tracked.
 
-**Never bump version numbers.** Do not edit the version in `Cargo.toml` / `package.json` / `pyproject.toml`, and do not touch version-coupled stamps (e.g. a PWA `CACHE_NAME` or `?v=` asset stamp). Version renumbering is exclusively the `cut-release` skill's job — an issue PR that hardcodes a version desyncs the release. Leave all version strings untouched.
+Fix blockers and significants inline. Mention nits in a `## Notes` section of the PR only if they cluster into a pattern worth a human's attention. **Never file a nit as a GitHub issue** — the backlog is for work, not for robot homework.
 
-### 5. Self-review with triage
+## Opus review: one pass, hard cap of two
 
-Before opening the PR, review your own diff against the Shippability Bar from the project guide:
+Spawn Opus (Agent tool, `model: "opus"`):
 
-```bash
-git diff main...HEAD
-```
+> Review `git diff main...HEAD`. Apply the Shippability Bar and Triage Rules from `<project guide filename>`. Classify every finding as blocker / significant / nit with file:line citations. Don't enumerate nits — only flag a nit if nits cluster into a pattern.
 
-Classify every finding as **blocker**, **significant**, or **nit**:
+Then triage the response yourself — **Opus output is input, not orders.** Fix blockers and run it once more. If iteration 2 still surfaces blockers, stop and escalate to the user; three iterations means the change needs human eyes, not another loop.
 
-- **blocker** — correctness, security, data-loss, broken contract, missing critical-path test
-- **significant** — meaningful issue that affects maintainability or correctness in edge cases; worth addressing in this PR
-- **nit** — style, taste, micro-optimization, refactor opportunity; not addressed, not tracked
+## Self-merge gate
 
-Fix all blockers and significants inline. Note nits in the PR description under a `## Notes` section if any are worth mentioning, then move on. **Never file a GitHub issue for a nit.**
-
-### 6. Opus review (one iteration, capped)
-
-Spawn Opus as a subagent (Agent tool, `model: "opus"`):
-
-> Review the diff on branch `<branch>` vs main (`git diff main...HEAD`). Apply the Shippability Bar and Triage Rules from `<project guide filename>`. Classify every finding as blocker, significant, or nit. Report each with file:line citations. Do not enumerate nits — only mention nits if they cluster into a pattern worth noting.
-
-Triage the response:
-
-- **blockers** — fix inline, then run Opus once more (iteration 2). If iteration 2 still finds blockers, **stop and escalate to the user.** Do not loop further.
-- **significants** — fix inline if < 30 min, otherwise stop and discuss with the user
-- **nits** — note in PR description if a pattern, otherwise discard
-
-Hard cap: **2 Opus iterations.** Three is a sign the change needs human eyes.
-
-### 7. Final verification
-
-```bash
-# project test command — must be green
-```
-
-```bash
-git log --oneline main..HEAD    # confirm commits are what you expect
-```
-
-### 8. Open PR
-
-```bash
-gh pr create --base main --head <branch> \
-  --title "<type>(<area>): <headline> (#<N>)" \
-  --body "$(cat <<'EOF'
-Closes #<N>
-
-## Summary
-- [what changed and why, 1-3 bullets]
-
-## Test plan
-- [ ] Project test suite passes
-- [ ] [manual verification if UI or integration]
-
-## Notes
-[nits or patterns worth mentioning; omit section if none]
-EOF
-)"
-```
-
-### 9. Self-merge if clean
-
-Merge if **all** of:
+Squash-merge and close the issue **only if all** hold:
 - blockers = 0
-- significants = 0 (addressed in PR, not deferred)
+- significants = 0, *addressed in this PR* (not deferred)
 - CI green
-- Local test suite green
+- local test suite green
 
-```bash
-gh pr merge <PR#> --squash --delete-branch
-```
+PR title: `<type>(<area>): <headline> (#<N>)`, body closes the issue. If any condition fails, leave the PR open and tell the user — never self-merge with a deferred significant.
 
-Then close the issue with a verification comment:
-
-```bash
-gh issue comment <N> --body "Implemented in #<PR#>. Verified: [what you tested]"
-gh issue close <N> --reason completed
-```
-
-If self-merge conditions are not met, **leave the PR open and tell the user.** Do not self-merge with deferred significants.
-
-### 10. Update main locally
-
-```bash
-git checkout main && git pull
-```
-
----
-
-## Common Mistakes
+## Common mistakes
 
 | Mistake | Fix |
 |---|---|
-| Filing nits as GitHub issues | Nits go in the PR `## Notes` section or get discarded. The backlog is not a landfill. |
-| Looping Opus review past 2 iterations | Stop at iteration 2. If still finding blockers, the change needs human review. |
-| Self-merging with deferred significants | Significants get fixed in-PR or the PR stays open for user review. |
-| Treating "Opus found something" as "must fix" | Apply the triage rules. Opus output is input, not orders. |
-| Skipping the project guide read | The Shippability Bar and Triage Rules live there. Don't invent them. |
-| Growing the PR scope mid-flight | If scope expands, stop and ask. Don't grow the PR silently. |
-| Branching from a red baseline | Verify tests green on main before branching. |
-| Bumping a version number or cache stamp | Versioning is `cut-release`'s job. Leave `Cargo.toml`, `package.json`, PWA `CACHE_NAME`/`?v=` stamps, etc. untouched. |
+| Filing nits as GitHub issues | Nits go in PR `## Notes` or get discarded. The backlog is not a landfill. |
+| Looping Opus past 2 iterations | Stop at iteration 2. Still finding blockers → human review. |
+| Self-merging with deferred significants | Fix in-PR, or leave the PR open. |
+| Treating "Opus found something" as "must fix" | Triage it. Opus output is input. |
+| Inventing a Shippability Bar | It lives in the project guide. No bar there → stop. |
+| Growing PR scope mid-flight | Scope expands → stop and ask. |
+| Branching from a red baseline | Tests green on main *before* you branch. |
+| Bumping a version or cache stamp | That's `cut-release`'s job. Leave `Cargo.toml`, `package.json`, PWA `CACHE_NAME`/`?v=` alone. |
