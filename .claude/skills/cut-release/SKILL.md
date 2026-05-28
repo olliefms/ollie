@@ -5,135 +5,60 @@ description: Use when main has accumulated enough merged work to ship — bumps 
 
 # Cut Release
 
-## Overview
+Ship the current state of `main` as a tagged release. Assumes work landed via `/work-issue` PRs that were each reviewed at merge time. This skill owns three things only: the version bump, the tag, and the release notes.
 
-Ship the current state of `main` as a tagged release. Assumes work has landed on main via `/work-issue` PRs and each PR was already reviewed at merge time. This skill handles version bump, tag, and release notes.
+**Usage:** `/cut-release` (or `/cut-release patch` / `/cut-release minor` to skip the bump-decision step).
 
-**Usage:** `/cut-release` (optionally `/cut-release patch` or `/cut-release minor` to skip the bump-decision step)
+You know how to run git, `gh release`, and the project's build. What follows is only the project-specific judgment: how to pick the bump, the version-coupled stamps unique to this repo, and the tag invariant that bites if you get it wrong.
 
-## Self-Configure First
+## Self-configure first
 
-Read the project guide (`AGENTS.md` / `CLAUDE.md` / `GEMINI.md`) for:
-- **Version increment rules** — patch vs minor criteria
-- **Version file locations** — `Cargo.toml`, `package.json`, `pyproject.toml`, etc.
-- **Running Tests** — exact command
+Read the project guide (`AGENTS.md` / `CLAUDE.md` / `GEMINI.md`) for version increment rules, version file locations, and the test command.
 
-## Steps
+## Preconditions
 
-### 1. Verify state
+`main`, pulled, tests green. If `git log <last-tag>..HEAD` is empty there's nothing to ship — stop. If tests are red, stop and fix on main with a `/work-issue` flow first; you never tag a red tree.
 
-```bash
-git checkout main && git pull
-gh release list --limit 1     # get last tag
-git log --oneline <last-tag>..HEAD    # what's shipping
-```
+## Decide the bump
 
-If `git log <last-tag>..HEAD` is empty, there's nothing to release — stop.
+If the user passed `patch` / `minor`, use it. Otherwise read the commits since the last tag and **propose** the bump with that commit list as your evidence, then wait for confirmation:
 
-Run the test command. **Must be green.** If red, stop and tell the user.
+- **patch (x.y.Z)** — bug fixes only. No new API surface, no new features.
+- **minor (x.Y.0)** — any new endpoint, feature, or user-visible capability.
+- **major (X.0.0)** — propose only; require explicit user confirmation.
 
-### 2. Decide version bump
+## Optional cross-PR review
 
-If the user passed `patch` or `minor` as an argument, use that. Otherwise read the commits since the last tag and propose:
+Only worth it when the diff since the last tag spans multiple subsystems or several interacting `/work-issue` PRs — that's the one thing per-PR review can't have caught. Skip it for a one-PR release; those were already reviewed at merge. When you do run it, spawn Opus:
 
-- **patch (x.y.Z)** — bug fixes only, no new API surface, no new features
-- **minor (x.Y.0)** — any new endpoint, feature, or user-visible capability
-- **major (X.0.0)** — propose only; require explicit user confirmation
+> Review the cumulative diff `git diff <last-tag>..HEAD` on main. Focus on *interactions between separate PRs* — semantic conflicts, redundant work, contract drift that per-PR review wouldn't catch. Apply the Shippability Bar and Triage Rules from `<project guide>`. Report blockers and significants only.
 
-Present the bump decision with the commit list as evidence. Wait for user confirmation before proceeding unless they passed the argument.
+Triage as in `/work-issue`. Hard cap of 2 iterations; blockers still standing at iteration 2 → stop and escalate. Nits from this pass get noted or discarded, never filed.
 
-### 3. Optional cross-PR review
+## Bump the version — including this repo's hidden stamps
 
-If the diff since last tag touches multiple subsystems or includes several `/work-issue` PRs that interact, offer to run Opus against `<last-tag>..HEAD` to catch cross-PR semantic conflicts. Skip if the release is one small PR.
+Update the manifest version (`Cargo.toml` `[package] version`, `package.json` `"version"`, or `pyproject.toml`), then refresh the lockfile so it matches (`cargo build`, `npm install`, etc.).
 
-Spawn Opus with this brief:
+**Then update the version-coupled asset stamps**, which live outside the manifest and must match the release version. Issue and sprint PRs are explicitly told not to touch these, so setting them is *your* job. In this repo that's the driver PWA cache stamp — `CACHE_NAME = 'ollie-vX.Y.Z'` in `static/driver/sw.js` and the `?v=X.Y.Z` query stamps in `static/driver/*.html`. Grep the previous version string to find every occurrence; a missed stamp ships a stale service worker.
 
-> Review the cumulative diff `git diff <last-tag>..HEAD` on main. Focus on *interactions between separate PRs* — semantic conflicts, redundant work, or contract drift that per-PR review wouldn't catch. Apply the Shippability Bar and Triage Rules from `<project guide>`. Report blockers and significants only.
+Commit the bump (`chore: bump to vX.Y.Z`) and push to main.
 
-Triage as in `/work-issue`. Hard cap: 2 iterations. Blockers at iteration 2 → stop and escalate.
+## Tag — the invariant that bites
 
-### 4. Bump version files
+**The tag must point at the bump commit.** Bump first, then tag — never the reverse. Push the tag as `refs/tags/vX.Y.Z`; without the `refs/tags/` prefix git can push a same-named branch instead. Verify `vX.Y.Z` and `main` resolve to the same commit before moving on.
 
-Update version in the project's manifest file(s). Common locations:
+## Release notes
 
-| File present | Field |
-|---|---|
-| `Cargo.toml` | `[package] version` |
-| `package.json` | `"version"` |
-| `pyproject.toml` | `[project] version` or `[tool.poetry] version` |
+Generate from `git log <last-tag>..HEAD`, grouped by type, referencing the issue numbers from PR titles. Create the GitHub release targeting `main`. Omit empty sections. Then report: version shipped, issues closed (by PR reference), and the release URL.
 
-Also update any **version-coupled asset stamps** the project uses — these are not in the manifest but must match the release version. Grep for the previous version string to find them. In this repo: the driver PWA cache stamp (`CACHE_NAME = 'ollie-vX.Y.Z'` in `static/driver/sw.js` and the `?v=X.Y.Z` query stamps in `static/driver/*.html`). Issue/sprint PRs are told *not* to touch these, so they are cut-release's responsibility to set to the chosen version.
-
-Run the lockfile update if applicable (`cargo build`, `npm install`, etc.) so the lockfile matches.
-
-Commit:
-
-```bash
-git add <version files>
-git commit -m "chore: bump to vX.Y.Z"
-git push origin main
-```
-
-### 5. Tag
-
-**Tag points to the bump commit on main.**
-
-```bash
-git tag vX.Y.Z
-git push origin refs/tags/vX.Y.Z
-```
-
-The `refs/tags/` prefix avoids any ambiguity with branch names.
-
-Verify:
-```bash
-git log --oneline -1 vX.Y.Z
-git log --oneline -1 main
-# must match
-```
-
-### 6. GitHub release
-
-Generate notes from `<last-tag>..HEAD`:
-
-```bash
-git log <last-tag>..HEAD --oneline
-```
-
-Group commits by type. Reference issue numbers from PR titles.
-
-```bash
-gh release create vX.Y.Z --title "vX.Y.Z — <headline>" --target main --notes "$(cat <<'EOF'
-## Bug Fixes
-- [description] (#N)
-
-## Enhancements
-- [description] (#N)
-
-## Infrastructure
-- [description] (#N)
-EOF
-)"
-```
-
-Omit empty sections.
-
-### 7. Done
-
-Output a brief summary:
-- Version shipped
-- Issues closed (by PR reference)
-- Release URL
-
----
-
-## Common Mistakes
+## Common mistakes
 
 | Mistake | Fix |
 |---|---|
-| Tagging before bumping version | The tag should point to the bump commit — bump first, tag second |
-| `git push origin vX.Y.Z` for the tag | Use `refs/tags/vX.Y.Z` — without the prefix, git may push a branch instead |
-| Running cross-PR Opus review on a one-PR release | Skip it. Single PRs were already reviewed at merge. |
-| Looping Opus past 2 iterations | Stop and escalate to the user, same rule as `/work-issue` |
-| Releasing with red tests | Hard stop. Fix on main with a `/work-issue` flow before cutting. |
-| Filing nits from cross-PR review as issues | Nits get noted in release prep or discarded. No robot homework. |
+| Tagging before bumping | Tag points at the bump commit — bump first, tag second. |
+| Pushing the tag as `vX.Y.Z` | Use `refs/tags/vX.Y.Z`, or git may push a branch. |
+| Forgetting the PWA cache stamps | Grep the old version string; `sw.js` + `?v=` stamps must match the manifest. |
+| Cross-PR Opus on a one-PR release | Skip it — already reviewed at merge. |
+| Looping Opus past 2 iterations | Escalate, same rule as `/work-issue`. |
+| Tagging a red tree | Hard stop. Fix on main first. |
+| Filing cross-PR nits as issues | Note or discard. No robot homework. |
