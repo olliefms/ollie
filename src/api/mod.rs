@@ -286,297 +286,176 @@ async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
 
 const LLMS_TXT: &str = r#"# ollie API
 
-ollie is a REST API for freight load management with RAG-enabled document blob storage.
+ollie is a freight load-management system with RAG-enabled document storage. The
+core resources are loads, trips, drivers, trucks, trailers, facilities, and
+document blobs. Uploaded documents are summarized and embedded by Ollama for
+semantic search.
+
+## Which surface should I use?
+
+ollie exposes four surfaces. Choose by caller, not by habit:
+
+  Dispatcher MCP    POST /dispatch/mcp     AI agents and tool-using assistants. PREFERRED.
+  Dispatcher REST   /dispatch/api/v1/*     Dispatcher web app and programmatic integrations.
+  Driver portal     /driver/api/v1/*       The driver mobile PWA only.
+  Admin REST        /api/v1/*              DEPRECATED — see "Admin REST (deprecated)" below.
+
+New automation should target the dispatcher MCP server, falling back to the
+dispatcher REST API where no tool exists for an operation. The admin REST surface
+is retained for backward compatibility only and will be removed in a future release.
 
 ## Authentication
 
-Public/unauthenticated endpoints:
-  GET /version — Returns {"version":"x.y.z"} matching the server build (no auth).
+  Dispatcher MCP / REST   Authorization: Bearer <JWT>          (POST /dispatch/auth/login with email+password, or a dispatcher API key)
+  Driver portal           Authorization: Bearer <JWT>          (driver passkey or PIN auth)
+  Admin REST              Authorization: Bearer <ADMIN_API_KEY>  (deprecated)
 
-All other endpoints except /openapi.json and /llms.txt require:
-  Authorization: Bearer <ADMIN_API_KEY>
+Public, no auth: GET /version, GET /openapi.json, GET /llms.txt.
+Missing or incorrect credentials return 401. Dispatcher login locks out after 5
+failed attempts (15 min × 2^(failures-5), capped at 24h; 423 with locked_until).
 
-Missing or incorrect key returns 401 Unauthorized.
+## Dispatcher MCP server — POST /dispatch/mcp
 
-## Endpoint Groups
+JSON-RPC 2.0. Call `tools/list` for input schemas, `tools/call` to invoke. Requires
+a dispatcher JWT or API key in the Authorization header.
 
-### Blobs — /api/v1/blobs, /api/v1/blob/:id
-Store and retrieve files (PDFs, images, documents). Files are content-addressed and
-deduplicated. Uploaded files are processed asynchronously: Ollama generates a text
-summary and a vector embedding. Supports semantic search via ?s=<query>.
+Loads & trips:
+  list_loads, get_load, create_load, update_load
+  list_trips, get_trip, create_trip, update_trip, recalculate_trip_miles
+  assign_driver, unassign_driver, dispatch_trip, undispatch_trip, cancel_trip, complete_trip
+  stop_arrive, stop_depart, stop_late, check_call
 
-  POST   /api/v1/blobs              Upload file (multipart/form-data: file, name?, tags?).
-                                    Returns 202 (accepted, queued for AI processing) for new files,
-                                    or 201 (created, AI output copied) when an identical file was
-                                    previously uploaded (content-addressed deduplication).
-  GET    /api/v1/blobs              List or search blobs (?s=query for semantic search)
-  GET    /api/v1/blob/:id           Download file or get JSON record (Accept: application/json)
-  PUT    /api/v1/blob/:id           Update name and/or tags
-  DELETE /api/v1/blob/:id           Delete (blocked if referenced by a load)
-  POST   /api/v1/blobs/:id/query    Ask a natural-language question about the document.
-                                    Body: { "prompt": "...", "model": "llama3.2" (optional) }
-                                    Returns: { id, prompt, answer, model, processing_time_ms }
-                                    Requires blob status=ready. Uses extracted text (text blobs)
-                                    or vision model (scanned PDFs). 400 for bad prompt,
-                                    422 if not ready or content type not queryable.
+Fleet & facilities:
+  list_drivers, get_driver
+  list_trucks, get_truck, create_truck, update_truck
+  list_trailers, get_trailer, create_trailer, update_trailer
+  list_facilities, get_facility, create_facility, update_facility
+  list_events
 
-### Dispatcher Blobs — /dispatch/api/v1/blobs, /dispatch/api/v1/blob/:id
-Same capabilities as the admin blob API, protected by dispatcher JWT.
+Data-integrity doctors:
+  trip_doctor, load_doctor, facility_doctor — diagnose (and optionally repair) one record.
 
-  POST   /dispatch/api/v1/blobs              Upload file (multipart/form-data: file, name?, tags?)
-  GET    /dispatch/api/v1/blobs              List or search blobs (?name=, ?s=, ?limit=, ?offset=)
-  GET    /dispatch/api/v1/blob/:id           Download file or JSON record (Accept: application/json)
-  PUT    /dispatch/api/v1/blob/:id           Update name and/or tags
-  DELETE /dispatch/api/v1/blob/:id           Delete (409 if referenced by a load)
-  POST   /dispatch/api/v1/blobs/:id/query    Natural-language question about a document
+Document blobs:
+  upload_blob        Returns a short-lived presigned POST URL. POST the raw file bytes to
+                     that URL (Content-Type header; optional ?name=&tags=); the HTTP response
+                     is the created blob record, whose id you pass in blob_ids. File bytes
+                     never pass through the MCP call — do NOT base64 a document into a tool
+                     argument.
+  get_blob_url       Presigned GET URL for a blob's bytes. Stream large files to disk.
+  get_blob_metadata  Blob metadata plus a reverse lookup: attached_to.{loads,facilities}.
+  list_blobs         List blob metadata (optional name, tag, content_type, limit).
+  delete_blob        Delete a blob (force? to override reference checks).
 
-### Facilities — /api/v1/facilities, /api/v1/facilities/:id
-Freight facilities (warehouses, loading docks). Address geocoding runs asynchronously.
-Used as stop locations on loads. Supports semantic search.
+Presigned URLs require OLLIE_PUBLIC_BASE_URL to be configured on the server.
 
-  POST   /api/v1/facilities     Create facility
-  GET    /api/v1/facilities     List or search facilities (?s=query for semantic search)
-  GET    /api/v1/facilities/:id Get facility
-  PATCH  /api/v1/facilities/:id Update facility fields
-  DELETE /api/v1/facilities/:id Delete (blocked if referenced by a load)
+### Presigned blob byte-transfer — /dispatch/blobs/presigned
 
-### Loads — /api/v1/loads, /api/v1/loads/:id
-Freight loads with multi-stop routes. Status lifecycle:
+The endpoints the blob tools hand out. Token-authenticated via ?token= (no JWT
+header), mounted outside the dispatcher middleware so a credential-less agent can
+use a minted URL directly. Each token is bound to one operation (and, for GET, one
+blob id) and expires (default 300s).
+
+  POST /dispatch/blobs/presigned?token=…       Upload raw body bytes (Content-Type header; optional ?name=&tags=). 50 MB limit. Returns the blob record.
+  GET  /dispatch/blobs/presigned/{id}?token=…  Download raw bytes.
+
+## Dispatcher REST — /dispatch/api/v1
+
+JWT auth; same response shapes as the resources above. Use when a needed operation
+has no MCP tool. Auth lives at /dispatch/auth/ (POST /login, POST /refresh — refresh
+within the 7-day window).
+
+  Loads      GET /loads, GET /loads/:id, POST /loads, PUT /loads/:id
+  Trips      GET /trips, GET /trips/:id,
+             POST /trips/:id/{assign,unassign,dispatch,undispatch,cancel,complete},
+             POST /trips/:id/stops/:seq/{arrive,depart,late}, POST /trips/:id/check-call
+  Drivers    GET /drivers, GET /drivers/:id
+  Trucks     GET /trucks, GET /trucks/:id, POST /trucks, PATCH /trucks/:id
+  Trailers   GET /trailers, GET /trailers/:id, POST /trailers, PATCH /trailers/:id
+  Facilities GET /facilities (?q, ?limit, ?offset), GET /facilities/:id, POST /facilities, PATCH /facilities/:id
+  Blobs      GET /blobs, GET /blob/:id, PUT /blob/:id, DELETE /blob/:id, POST /blobs/:id/query
+             (prefer the presigned flow above over multipart POST for uploads)
+  Events     GET /events (?trip_id, ?driver_id, ?limit, ?offset)
+  Counts     GET /loads/count, /drivers/count, /blobs/count, /events/count
+
+Truck/trailer PATCH: `status` is not settable — equipment transitions via the trip
+lifecycle; unknown body fields are rejected. Facility PATCH: setting `address`
+re-queues the geocoder, while explicit lat+lng set geocode_status=ready and reset
+the failure count.
+
+## Domain model
+
+### Load lifecycle
   planned → assigned → dispatched → in_transit → delivered → invoiced → settled
-  (cancel is allowed from planned, assigned, dispatched, or in_transit)
+  Cancel is allowed from planned, assigned, dispatched, or in_transit.
+  Creating a trip with both load_id and driver_id auto-assigns a planned load.
 
-Stop required fields: scheduled_arrive (naive local datetime, e.g. "2026-05-10T08:00:00"),
-timezone (IANA tz string, e.g. "America/Chicago"). Both must be present together — a stop
-with time but no timezone, or timezone but no time, is rejected (422).
-Stop optional fields: scheduled_arrive_end (window close; null = strict appointment),
-actual_arrive, actual_depart, expected_dwell_minutes, detention_free_minutes (default 120),
-detention_grace_minutes (default 15). Detention eligibility: FCFS stops (scheduled_arrive_end
-set) are eligible if actual_depart > actual_arrive + detention_free_minutes. Strict stops
-are eligible only if actual_arrive ≤ scheduled_arrive + grace_minutes (early = on-time).
-Time strings are stored as naive local datetimes; timezone is the authoritative offset source.
-Legacy stops (pre-v1.3.3) have timezone: null and times stored as UTC — not silently converted.
+### Trip lifecycle
+  planned → assigned → dispatched → in_transit → delivered
+  Assign/dispatch are reversible; cancel is allowed from planned, assigned, or
+  dispatched only (in_transit and delivered are terminal — use a relay trip instead).
+  A load may have multiple trips (relay). Trip responses include: previous_trip_id
+  (auto-chained to the driver's last non-cancelled trip unless provided),
+  deadhead_miles and loaded_miles (ORS HGV routing; null when facilities lack
+  coordinates), load_number (denormalized at creation), and per-stop address (from
+  the linked facility at creation). When `stops` is omitted or empty and `load_id`
+  is set, stops are inherited from the load; pass an explicit `stops` array to override.
 
-  POST   /api/v1/loads          Create load
-  GET    /api/v1/loads          List or search loads (?s, ?status, ?customer, ?from, ?to, ?tag)
-  GET    /api/v1/loads/:id      Get load detail
-  PATCH  /api/v1/loads/:id      Update load fields (unknown fields in the request body are silently ignored)
-  DELETE /api/v1/loads/:id      Delete load (409 if load has active trips — cancel or complete them first)
+### Stops, times, and detention
+  A stop needs scheduled_arrive (naive local datetime, e.g. "2026-05-10T08:00:00")
+  AND timezone (IANA, e.g. "America/Chicago") together — one without the other is 422.
+  Times are stored naive; timezone is the authoritative offset, so a Z/offset suffix
+  is rejected when a timezone is set. Legacy stops (pre-v1.3.3) carry timezone:null
+  with UTC times and are not silently converted.
+  Optional: scheduled_arrive_end (window close; null = strict appointment),
+  actual_arrive, actual_depart, expected_dwell_minutes, detention_free_minutes
+  (default 120), detention_grace_minutes (default 15). Detention: FCFS stops
+  (scheduled_arrive_end set) accrue when actual_depart > actual_arrive +
+  detention_free_minutes; strict stops are eligible only when actual_arrive ≤
+  scheduled_arrive + grace_minutes (early counts as on-time).
 
-  POST   /api/v1/loads/:id/invoice     Transition to invoiced (body: invoice_number?, invoice_date?)
-  POST   /api/v1/loads/:id/cancel      Transition to cancelled (body: reason?)
-  POST   /api/v1/loads/:id/settle      Transition to settled
-  POST   /api/v1/loads/:id/stops/:seq/arrive   Record actual arrival at stop (body: actual_arrive)
-  POST   /api/v1/loads/:id/stops/:seq/depart   Record actual departure from stop (body: actual_depart)
+### Facility resolution
+  On load create/update a stop may give facility_id, or name + address. Ambiguous
+  name+address matches return 200 with an array of FacilityResolutionResponse objects
+  (one per ambiguous stop, each with a stop_index). Retry with facility_id set, or
+  force_new_facility=true to create a new facility for that stop.
 
-### Trips — /api/v1/trips, /api/v1/trips/:id
-Trips represent the physical movement of a truck+driver on behalf of a load. A load may have
-multiple trips (relay). Status lifecycle:
-  planned → assigned (via /assign) → dispatched (via /dispatch) → in_transit → delivered
-  (assign/dispatch are reversible; cancel allowed from planned, assigned, dispatched only;
-   in_transit and delivered are terminal for cancel — use relay instead)
+### Document blobs
+  Files are content-addressed and deduplicated — identical bytes share storage and AI
+  output. Each upload is processed asynchronously: Ollama generates a text summary and
+  a vector embedding (status: pending → processing → ready | failed). Semantic search
+  via ?s=<query>. Ask a natural-language question about a ready document via
+  POST /dispatch/api/v1/blobs/:id/query (body: { prompt, model? }).
 
-When a trip with both load_id and driver_id is created and the linked load is planned,
-the load is automatically transitioned to assigned.
+### List vs. search counts
+  GET list endpoints return a `returned` field. Without ?s= it is the total matching
+  count (for pagination); with ?s=<query> it is the number of items in this response.
 
-Trip responses now include operational data:
-  previous_trip_id — auto-chained to driver's last non-cancelled trip, or dispatcher-provided
-  deadhead_miles, loaded_miles — calculated via ORS HGV routing; null if unavailable or
-    linked facilities lack coordinates
-  load_number — denormalized from linked load at creation time
+## Driver portal — /driver/api/v1 (driver app only)
 
-Trip stops now include:
-  address — populated from linked facility at creation time
+JWT auth (passkey or PIN); a driver sees only their own trips. Not part of the admin
+surface and not described in /openapi.json.
 
-  POST   /api/v1/trips          Create trip (trip_number auto-generated as T-YYYY-NNNN if omitted).
-                                BREAKING (v1.3.3): When `stops` is omitted or empty and `load_id`
-                                is provided, stops are automatically inherited from the linked load.
-                                To create a stopless trip linked to a load, provide `stops` with at
-                                least one explicit entry.
-  GET    /api/v1/trips          List trips (?load_id, ?driver_id, ?status, ?limit, ?offset)
-  GET    /api/v1/trips/:id      Get trip record
-  PATCH  /api/v1/trips/:id      Update trip fields (load_id, sequence, stops, notes)
-  DELETE /api/v1/trips/:id      Two-step delete: first DELETE soft-cancels (transitions to cancelled; blocked if
-                                in_transit, delivered, or completed → 204); second DELETE on an already-cancelled
-                                trip hard-deletes the row (→ 204). GET after hard-delete returns 404.
+  Auth:  POST /auth/{challenge,verify,pin,register-passkey,refresh}
+  Data:  GET /me, GET /trips (?tab=current|upcoming|past), GET /trips/:id,
+         GET /trips/:id/stops/:seq, GET /equipment, PUT /equipment/trailer, GET /trailers
+  PUT /equipment/trailer sets the driver's currently attached trailers (body:
+  trailer_ids OR trailer_unit_numbers) and cascades onto their active
+  Dispatched/InTransit trip unless they have arrived at the final delivery stop.
 
-  POST   /api/v1/trips/:id/assign           Assign driver, truck, trailers (body: driver_id, truck_id, trailer_ids?)
-  POST   /api/v1/trips/:id/unassign         Unassign resources and revert to planned
-  POST   /api/v1/trips/:id/dispatch         Dispatch trip (must be assigned)
-  POST   /api/v1/trips/:id/undispatch       Revert dispatched trip to assigned
-  POST   /api/v1/trips/:id/cancel           Cancel trip (blocked if in_transit or delivered)
-  POST   /api/v1/trips/:id/complete         Complete trip (must be delivered; releases driver/truck/trailers back to available); returns 204
-  POST   /api/v1/trips/:id/stops/:seq/arrive  Record actual arrival at stop (body: actual_arrive)
-  POST   /api/v1/trips/:id/stops/:seq/depart  Record actual departure from stop (body: actual_depart); triggers trip/load status cascades
-  POST   /api/v1/trips/:id/stops/:seq/late    Flag stop as late (body: eta?, notes?); returns 204
-  POST   /api/v1/trips/:id/check-call         Record driver check-in (body: location, notes?, eta_next_stop?); returns 204
+## Admin REST — /api/v1 (DEPRECATED)
 
-### Drivers — /api/v1/drivers, /api/v1/drivers/:id
-Driver records with state machine. Status: available → assigned → dispatched (last two driven by trip events).
-DELETE soft-deletes (sets status=inactive). PUT cannot set assigned or dispatched.
+Retained for backward compatibility and slated for removal — new integrations must use
+the dispatcher surface instead. The admin API mirrors the resources above under
+/api/v1/* with Authorization: Bearer <ADMIN_API_KEY>, plus a few admin-only endpoints:
 
-  POST   /api/v1/drivers              Create driver
-  GET    /api/v1/drivers              List or search drivers (?s, ?status, ?limit, ?offset)
-  GET    /api/v1/drivers/:id          Get driver
-  PUT    /api/v1/drivers/:id          Update driver fields (cannot manually set assigned/dispatched)
-  DELETE /api/v1/drivers/:id          Soft-delete (sets status=inactive)
-  POST   /api/v1/drivers/:id/pin      Set driver PIN (body: pin — 4–6 numeric digits); returns 204.
-                                      Used by dispatchers to provision portal access. Invalidates
-                                      any outstanding driver JWTs.
+  Dispatchers  POST/GET/PUT /api/v1/dispatchers[…], PUT /api/v1/dispatchers/:id/password
+  Drivers      POST/PUT/DELETE /api/v1/drivers[…], POST /api/v1/drivers/:id/pin
+  Loads, trips, trucks, trailers, facilities, blobs, events — full CRUD and lifecycle,
+    same shapes as the dispatcher surface.
 
-### Trucks — /api/v1/trucks, /api/v1/trucks/:id
-Truck records with state machine. Status: available → assigned → dispatched (assigned/dispatched driven by trip events).
-out_of_service can be set/cleared via PUT. DELETE soft-deletes (sets status=inactive).
+See /openapi.json for the complete admin endpoint reference.
 
-  POST   /api/v1/trucks          Create truck
-  GET    /api/v1/trucks          List or search trucks (?s, ?status, ?limit, ?offset)
-  GET    /api/v1/trucks/:id      Get truck
-  PUT    /api/v1/trucks/:id      Update truck fields (out_of_service allowed; assigned/dispatched rejected)
-  DELETE /api/v1/trucks/:id      Soft-delete (sets status=inactive)
-
-### Trailers — /api/v1/trailers, /api/v1/trailers/:id
-Trailer records with owner type (fleet|carrier|customer|other) and state machine.
-Non-fleet trailers require owner_name. out_of_service can be set/cleared via PUT.
-DELETE soft-deletes (sets status=inactive).
-
-  POST   /api/v1/trailers          Create trailer (owner_name required if owner != fleet)
-  GET    /api/v1/trailers          List or search trailers (?s, ?status, ?owner, ?limit, ?offset)
-  GET    /api/v1/trailers/:id      Get trailer
-  PUT    /api/v1/trailers/:id      Update trailer fields (out_of_service allowed; assigned/dispatched rejected)
-  DELETE /api/v1/trailers/:id      Soft-delete (sets status=inactive)
-
-### Dispatchers — /api/v1/dispatchers, /api/v1/dispatchers/:id
-Dispatcher accounts for admin users. Email is normalized (lowercase + trimmed) and must be unique.
-Passwords are hashed with bcrypt (cost 12). Token version increments on password reset to invalidate JWTs.
-
-  POST   /api/v1/dispatchers              Create dispatcher (body: email, name, password). Returns 409 if email already in use.
-  GET    /api/v1/dispatchers              List all dispatchers. Returns { dispatchers, returned }.
-  GET    /api/v1/dispatchers/:id          Get dispatcher by UUID.
-  PUT    /api/v1/dispatchers/:id          Update name and/or status (body: name?, status?).
-  PUT    /api/v1/dispatchers/:id/password Admin reset password (body: password). Returns 204.
-
-### Events — /api/v1/events, /api/v1/events/:id
-Append-only event journal recording entity lifecycle transitions. Written by internal
-pipeline workers; read-only via API. Timestamps are RFC3339 UTC+Z.
-
-  GET    /api/v1/events          List events (?entity_id, ?entity_type, ?event_type, ?from, ?to)
-  GET    /api/v1/events/:id      Get single event
-
-## Facility Resolution
-
-When creating or updating a load, stops can specify a facility by UUID (facility_id)
-or by name + address. If any name+address matches are ambiguous, the API returns 200
-with an array of FacilityResolutionResponse objects — one per ambiguous stop, each
-with a stop_index field identifying which stop needs resolution. Retry the request
-with facility_id set for each ambiguous stop, or set force_new_facility=true to
-create a new facility for that stop.
-
-## List vs. Search Response Counts
-
-GET endpoints that support ?s= return a `returned` field.
-- List mode (no ?s=): `returned` equals the total count of matching records (for pagination).
-- Search mode (?s=query): `returned` equals the number of items in this response (bounded by limit).
-
-## Dispatcher Portal
-
-The dispatcher portal has its own auth namespace at /dispatch/auth/ and a data API
-at /dispatch/api/v1/. These endpoints use JWT auth (not Bearer) and are intended for
-the dispatcher web app — not for admin automation. Auth is email+password based with
-bcrypt verification and exponential backoff lockout after 5 failed attempts
-(15 min × 2^(failures-5), capped at 24h).
-
-Auth endpoints (no auth required):
-  POST /dispatch/auth/login    Authenticate with email+password; returns JWT on success.
-                               Returns 423 with { error, locked_until } if account is locked.
-  POST /dispatch/auth/refresh  Refresh an expiring JWT (must be within 7-day refresh window).
-
-Data endpoints (dispatcher JWT required — same response shapes as admin API):
-  GET  /dispatch/api/v1/loads              List loads (?status, ?customer, ?from, ?to, ?tag, ?limit, ?offset)
-  GET  /dispatch/api/v1/loads/:id          Get load detail
-  POST /dispatch/api/v1/loads              Create load (same fields as admin POST /api/v1/loads)
-  PUT  /dispatch/api/v1/loads/:id          Update load fields
-
-  GET  /dispatch/api/v1/trips              List trips (?load_id, ?driver_id, ?status)
-  GET  /dispatch/api/v1/trips/:id          Get trip record
-  POST /dispatch/api/v1/trips/:id/assign     Assign driver + truck + trailers (body: driver_id, truck_id, trailer_ids?)
-  POST /dispatch/api/v1/trips/:id/unassign   Unassign resources and revert trip to planned
-  POST /dispatch/api/v1/trips/:id/dispatch   Dispatch trip (must be assigned)
-  POST /dispatch/api/v1/trips/:id/undispatch Revert dispatched trip to assigned
-  POST /dispatch/api/v1/trips/:id/cancel     Cancel trip (blocked if in_transit or delivered)
-  POST /dispatch/api/v1/trips/:id/complete   Complete trip (must be delivered; releases driver/truck/trailers); returns 204
-  POST /dispatch/api/v1/trips/:id/stops/:seq/arrive  Record actual arrival at stop (body: actual_arrive)
-  POST /dispatch/api/v1/trips/:id/stops/:seq/depart  Record actual departure (body: actual_depart); triggers trip/load status cascades
-  POST /dispatch/api/v1/trips/:id/stops/:seq/late    Flag stop as late (body: eta?, notes?); returns 204
-  POST /dispatch/api/v1/trips/:id/check-call         Record driver check-in (body: location, notes?, eta_next_stop?); returns 204
-
-  GET  /dispatch/api/v1/drivers            List drivers (?status)
-  GET  /dispatch/api/v1/drivers/:id        Get driver record
-
-  GET   /dispatch/api/v1/trucks             List trucks (?status)
-  GET   /dispatch/api/v1/trucks/:id         Get truck record
-  POST  /dispatch/api/v1/trucks             Create truck (body: unit_number, year?, make?, model?, vin?, plate?, plate_state?, notes?). Defaults status=available. Unknown fields are rejected.
-  PATCH /dispatch/api/v1/trucks/:id         Update truck fields. `status` is not settable — trucks transition via the trip lifecycle. Unknown fields are rejected.
-
-  GET   /dispatch/api/v1/trailers           List trailers (?status)
-  GET   /dispatch/api/v1/trailers/:id       Get trailer record
-  POST  /dispatch/api/v1/trailers           Create trailer (body: unit_number, owner [fleet|carrier|customer|other], owner_name? (required when owner != fleet), year?, make?, trailer_type?, length_ft?, vin?, plate?, plate_state?, notes?). Defaults status=available. Unknown fields are rejected.
-  PATCH /dispatch/api/v1/trailers/:id       Update trailer fields. `status` is not settable — trailers transition via the trip lifecycle. Unknown fields are rejected.
-
-  GET   /dispatch/api/v1/facilities         List facilities (?q for name/address substring, ?limit, ?offset)
-  GET   /dispatch/api/v1/facilities/:id     Get facility record
-  POST  /dispatch/api/v1/facilities         Create facility (body: name, address, contacts?, notes?, tags?, blob_ids?, lat?, lng?). Unknown fields are rejected.
-  PATCH /dispatch/api/v1/facilities/:id     Update facility fields. Setting `address` re-queues the geocoder; explicit `lat`+`lng` set status=ready and reset failure count. Unknown fields are rejected.
-
-  GET  /dispatch/api/v1/events             List recent events (?trip_id, ?driver_id, ?limit, ?offset)
-
-## Driver Portal
-
-The driver-facing PWA has its own API namespace at /driver/api/v1/. These endpoints
-use JWT auth (not Bearer) and are intended for the driver mobile app only — not for
-admin automation. They are not part of the Bearer-protected admin API surface and are
-not described in /openapi.json.
-
-Auth endpoints (no auth required):
-  POST /driver/api/v1/auth/challenge         Begin WebAuthn assertion or PIN challenge
-  POST /driver/api/v1/auth/verify            Complete WebAuthn assertion (returns JWT)
-  POST /driver/api/v1/auth/pin               Authenticate with PIN (returns JWT)
-  POST /driver/api/v1/auth/register-passkey  Register a new passkey for the authenticated driver
-  POST /driver/api/v1/auth/refresh           Refresh an expiring JWT
-
-Data endpoints (JWT required — driver sees only their own trips):
-  GET  /driver/api/v1/me                     Driver profile and current status
-  GET  /driver/api/v1/trips                  Driver's trips (?tab=current|upcoming|past)
-  GET  /driver/api/v1/trips/:id              Trip detail (stops, load summary, equipment)
-  GET  /driver/api/v1/trips/:id/stops/:seq   Stop detail (facility contacts, commodity info)
-  GET  /driver/api/v1/equipment              Current truck + currently attached trailer(s)
-  PUT  /driver/api/v1/equipment/trailer      Set currently attached trailers (body: trailer_ids OR trailer_unit_numbers).
-                                             Cascades onto the driver's active Dispatched/InTransit trip's trailer_ids
-                                             unless the driver has arrived at the final delivery stop. Emits driver.trailer_changed.
-                                             At dispatch time, /trips/:id/dispatch reconciles the trip's trailer_ids to the
-                                             driver's current_trailer_ids when they differ.
-  GET  /driver/api/v1/trailers               List trailers available for selection (excludes inactive/out_of_service)
-
-## Dispatcher MCP Server
-
-POST /dispatch/mcp — MCP JSON-RPC endpoint for AI agent tool calls. Requires dispatcher JWT (Authorization: Bearer <token> from POST /dispatch/auth/login). Supports tools: list_loads, get_load, create_load, update_load, list_trips, get_trip, assign_driver, unassign_driver, dispatch_trip, undispatch_trip, cancel_trip, complete_trip, stop_arrive, stop_depart, stop_late, check_call, list_drivers, get_driver, list_trucks, list_trailers, list_events, and the blob-store tools below.
-
-### Blob-store MCP tools
-
-File bytes do not travel over MCP (except small inline create_blob payloads). Large transfers use short-lived presigned URLs minted by the tools and served by the token-authenticated routes below.
-
-  get_blob_upload_url   Mint a presigned POST URL. POST raw bytes to it (Content-Type header; optional ?name=&tags=); response is the created blob record. Use for files over the inline limit. (expires_in_seconds optional)
-  create_blob           Upload a small file inline as base64 (content_base64, content_type; optional filename, tags). Rejects payloads over the inline limit (default 256 KiB) — use get_blob_upload_url instead.
-  get_blob_url          Mint a presigned GET URL for a blob's bytes (id; expires_in_seconds optional). Stream large files to disk rather than into context.
-  get_blob_metadata     Blob metadata + reverse lookup attached_to.{loads,facilities} (id).
-  list_blobs            List blob metadata (optional name, tag, content_type, limit).
-  delete_blob           Delete a blob (id; force? default false — fails if referenced by a load/facility unless force). Returns { deleted, was_attached }.
-
-Presigned byte-transfer endpoints (token-authenticated via ?token=, no JWT header — mounted outside the dispatcher JWT middleware so credential-less agents can use them):
-  POST /dispatch/blobs/presigned?token=…             Upload raw body bytes (Content-Type header; optional ?name=&tags=). 50 MB limit. Returns the blob record.
-  GET  /dispatch/blobs/presigned/{id}?token=…        Download raw bytes. Token is bound to that single blob id and operation, and expires (default 300s).
-
-Requires OLLIE_PUBLIC_BASE_URL set for the presigned-URL tools to build absolute URLs; create_blob works without it.
-
-## Full Spec
+## Full spec
 
 Machine-readable OpenAPI 3.0 spec: GET /openapi.json
 "#;
