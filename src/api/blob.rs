@@ -122,15 +122,20 @@ pub async fn delete_blob(
         ));
     }
 
-    let ref_count = state.db.count_by_checksum(&record.checksum).await?;
-    if ref_count <= 1 {
+    // Delete the DB row first so a concurrent dedup upload of the same content
+    // increments the checksum refcount before we recount. This closes a TOCTOU
+    // race: old order (count → delete bytes → delete row) could delete bytes
+    // that a newly inserted sibling row still needs. With this order a mid-op
+    // crash orphans a file rather than losing referenced data.
+    state.db.delete_by_id(id).await?;
+    let remaining = state.db.count_by_checksum(&record.checksum).await?;
+    if remaining == 0 {
         state.store.delete(&record.checksum).await?;
         let extract_base = std::path::Path::new(&state.config.extract_store_path);
         if let Err(e) = delete_extract(extract_base, &record.checksum).await {
             tracing::warn!("failed to delete extract cache for {}: {e}", record.checksum);
         }
     }
-    state.db.delete_by_id(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
