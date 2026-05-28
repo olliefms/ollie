@@ -1,6 +1,6 @@
 // src/api/blob.rs
 use crate::{
-    ai::extract::{bytes_to_base64, extract_content, Extractable},
+    ai::extract::{extract_content, Extractable},
     api::utils::sanitize_filename,
     error::AppError,
     models::{BlobStatus, UpdateBlobRequest},
@@ -227,17 +227,17 @@ pub async fn query_blob(
             state.ai.generate(&model, &prompt, None).await?
         }
         ExtractForQuery::ScannedPdf(raw_text) => {
-            let data = state.store.read(&record.checksum).await?;
-            let b64 = bytes_to_base64(&data);
+            // Raw PDF bytes are not a decodable image and crash the Ollama
+            // vision runner (#281); answer from the extracted text using the
+            // text model instead of forwarding bytes to the vision model.
             let truncated: String = raw_text.chars().take(2000).collect();
-            let vision_model = state.ai.vision_model.clone();
             let prompt = format!(
                 "You are reading a scanned freight document. The raw text extracted is provided \
-                as auxiliary context (may be garbled due to font encoding).\n\
+                as the only context (may be garbled due to font encoding).\n\
                 RAW TEXT:\n{truncated}\n\nUser question: {}",
                 body.prompt
             );
-            state.ai.generate(&vision_model, &prompt, Some(b64)).await?
+            state.ai.generate(&model, &prompt, None).await?
         }
     };
 

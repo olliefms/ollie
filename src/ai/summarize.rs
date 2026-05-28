@@ -25,23 +25,6 @@ pub async fn describe_image(client: &OllamaClient, data: &Bytes) -> Result<Strin
     client.generate(&client.vision_model.clone(), prompt, Some(b64)).await
 }
 
-pub async fn describe_scanned_pdf(
-    client: &OllamaClient,
-    pdf_bytes: &Bytes,
-    raw_text: &str,
-) -> Result<String, AppError> {
-    let b64 = bytes_to_base64(pdf_bytes);
-    let truncated = if raw_text.len() > 2000 { &raw_text[..2000] } else { raw_text };
-    let prompt = format!(
-        "This is a scanned PDF document. The raw text extracted from it is garbled due to \
-        custom font encoding, but is provided as auxiliary context:\n\n\
-        RAW TEXT (may be garbled):\n{truncated}\n\n\
-        Use both the image and the raw text to provide a concise 1-2 sentence summary of \
-        what this document contains. Respond with only the summary, no preamble."
-    );
-    client.generate(&client.vision_model.clone(), &prompt, Some(b64)).await
-}
-
 #[cfg(test)]
 mod tests {
     #[tokio::test]

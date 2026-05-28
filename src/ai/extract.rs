@@ -29,7 +29,14 @@ pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
     }
 
     if mime_type.starts_with("image/") {
-        return Extractable::ImageBytes(data.clone());
+        // Guard the vision model: only forward bytes that are actually a
+        // decodable raster image. Non-image bytes (e.g. a mislabeled upload)
+        // crash Ollama's CLIP tokenizer with a SIGSEGV rather than erroring
+        // cleanly — see is_supported_image. (#281)
+        if is_supported_image(data) {
+            return Extractable::ImageBytes(data.clone());
+        }
+        return Extractable::Unsupported;
     }
 
     Extractable::Unsupported
@@ -37,6 +44,21 @@ pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
 
 pub fn bytes_to_base64(data: &Bytes) -> String {
     general_purpose::STANDARD.encode(data)
+}
+
+/// Sniff common raster-image magic bytes. The Ollama vision model
+/// (`moondream`/`llava`) segfaults its CLIP/multimodal tokenizer when handed
+/// non-image input, so every byte payload bound for the vision model must
+/// pass through this check first. Recognizes PNG, JPEG, GIF, BMP, and WebP —
+/// notably NOT `application/pdf` (`%PDF` magic), which is exactly the input
+/// that crashed the runner in #281.
+pub(crate) fn is_supported_image(data: &[u8]) -> bool {
+    let png = data.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]);
+    let jpeg = data.starts_with(&[0xFF, 0xD8, 0xFF]);
+    let gif = data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a");
+    let bmp = data.starts_with(b"BM");
+    let webp = data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP";
+    png || jpeg || gif || bmp || webp
 }
 
 fn extract_pdf_text(data: &[u8]) -> String {
@@ -67,6 +89,31 @@ mod tests {
     fn test_extract_image_returns_bytes() {
         let data = Bytes::from(vec![0xFF, 0xD8, 0xFF]);
         assert!(matches!(extract_content(&data, "image/jpeg"), Extractable::ImageBytes(_)));
+    }
+
+    #[test]
+    fn test_extract_image_mime_with_non_image_bytes_is_unsupported() {
+        // A mislabeled upload (image/* MIME but the bytes are a PDF) must not
+        // reach the vision model — it crashes the Ollama runner. (#281)
+        let data = Bytes::from(&b"%PDF-1.7\n..."[..]);
+        assert!(matches!(extract_content(&data, "image/png"), Extractable::Unsupported));
+    }
+
+    #[test]
+    fn test_is_supported_image_recognizes_formats() {
+        assert!(is_supported_image(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]));
+        assert!(is_supported_image(&[0xFF, 0xD8, 0xFF, 0xE0]));
+        assert!(is_supported_image(b"GIF89a..."));
+        assert!(is_supported_image(b"BM......"));
+        assert!(is_supported_image(b"RIFF\0\0\0\0WEBP"));
+    }
+
+    #[test]
+    fn test_is_supported_image_rejects_pdf_and_junk() {
+        assert!(!is_supported_image(b"%PDF-1.7"));
+        assert!(!is_supported_image(&[0x00, 0x01, 0x02, 0x03]));
+        assert!(!is_supported_image(b""));
+        assert!(!is_supported_image(b"RIFF1234WAVE")); // RIFF but not WebP
     }
 
     #[test]
