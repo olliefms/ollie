@@ -94,6 +94,7 @@ git push
 - The specific task from the plan
 - The Critical Constraints from the project guide
 - The branch name
+- **Do not bump version numbers.** No edits to `Cargo.toml` / `package.json` / `pyproject.toml` versions or version-coupled stamps (PWA `CACHE_NAME`, `?v=` asset stamps). Versioning is `cut-release`'s job — a sprint that hardcodes a version desyncs the release.
 
 After every subagent:
 
@@ -190,3 +191,4 @@ Tell the user the sprint is merged and ask whether to `/cut-release` now or accu
 | Forgetting to check `git diff --stat HEAD` after each subagent | Silent commit skip is a real failure mode |
 | Skipping the lessons step "to be safe" | Only add lessons if something genuinely reusable surfaced. Skip if not. |
 | Running the sprint directly in the main checkout | Worktrees are the default. They keep main untouched and let multiple sessions run in parallel without interfering. |
+| Bumping a version number or cache stamp | Versioning is `cut-release`'s job. Leave `Cargo.toml`, `package.json`, PWA `CACHE_NAME`/`?v=` stamps, etc. untouched in sprint PRs. |

@@ -51,6 +51,8 @@ Edit, test, commit in small focused commits. Use the project's test command afte
 
 If the work expands beyond the issue scope, stop and ask the user. Don't quietly grow the PR.
 
+**Never bump version numbers.** Do not edit the version in `Cargo.toml` / `package.json` / `pyproject.toml`, and do not touch version-coupled stamps (e.g. a PWA `CACHE_NAME` or `?v=` asset stamp). Version renumbering is exclusively the `cut-release` skill's job — an issue PR that hardcodes a version desyncs the release. Leave all version strings untouched.
+
 ### 5. Self-review with triage
 
 Before opening the PR, review your own diff against the Shippability Bar from the project guide:
@@ -152,3 +154,4 @@ git checkout main && git pull
 | Skipping the project guide read | The Shippability Bar and Triage Rules live there. Don't invent them. |
 | Growing the PR scope mid-flight | If scope expands, stop and ask. Don't grow the PR silently. |
 | Branching from a red baseline | Verify tests green on main before branching. |
+| Bumping a version number or cache stamp | Versioning is `cut-release`'s job. Leave `Cargo.toml`, `package.json`, PWA `CACHE_NAME`/`?v=` stamps, etc. untouched. |
