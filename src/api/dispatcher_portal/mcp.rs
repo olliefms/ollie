@@ -22,12 +22,11 @@ use crate::{
         self, CheckCallRequest, StopArriveRequest, StopDepartRequest, StopLateRequest,
     },
     events,
-    models::{BlobVisibility, DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
+    models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
     AppState,
 };
 
 use super::blob_links::{self, BlobUrlOp};
-use base64::Engine as _;
 
 // ---------------------------------------------------------------------------
 // JSON-RPC 2.0 envelope types
@@ -569,27 +568,13 @@ fn tools_list() -> Value {
                 }
             },
             {
-                "name": "get_blob_upload_url",
-                "description": "Mint a short-lived presigned URL for uploading a file (PDF, scan, contract, etc.) to the blob store. POST the raw file bytes to the returned url with a Content-Type header; optional query params name and tags (comma-separated). The HTTP response is the created blob record — use its id in create_load/update_load/create_facility/update_facility blob_ids. Use this for any file over a few hundred KB. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
+                "name": "upload_blob",
+                "description": "Upload a file (PDF, scan, contract, etc.) to the blob store. Returns a short-lived presigned URL — do NOT stream file bytes through this tool call. POST the raw file bytes to the returned url with a Content-Type header (optional query params name and tags, comma-separated), e.g. curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<url>&name=doc.pdf'. The HTTP response is the created blob record; use its id in create_load/update_load/create_facility/update_facility blob_ids. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "expires_in_seconds": { "type": "integer", "minimum": 1, "description": "TTL for the URL; clamped to the server max (default 300s)." }
                     }
-                }
-            },
-            {
-                "name": "create_blob",
-                "description": "Upload a small file inline as base64. For files larger than the inline limit (default 256 KiB) use get_blob_upload_url instead — this tool rejects oversized payloads. Returns the created blob record; its `checksum` is the SHA-256 and its `id` is used in blob_ids.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "content_base64": { "type": "string", "description": "Standard base64-encoded file bytes." },
-                        "content_type":   { "type": "string", "description": "MIME type, e.g. application/pdf." },
-                        "filename":       { "type": "string" },
-                        "tags":           { "type": "array", "items": { "type": "string" } }
-                    },
-                    "required": ["content_base64", "content_type"]
                 }
             },
             {
@@ -740,8 +725,7 @@ async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, Str
         "trip_doctor" => tool_trip_doctor(state, args).await,
         "load_doctor" => tool_load_doctor(state, args).await,
         "facility_doctor" => tool_facility_doctor(state, args).await,
-        "get_blob_upload_url" => tool_get_blob_upload_url(state, args).await,
-        "create_blob" => tool_create_blob(state, args).await,
+        "upload_blob" => tool_upload_blob(state, args).await,
         "get_blob_url" => tool_get_blob_url(state, args).await,
         "get_blob_metadata" => tool_get_blob_metadata(state, args).await,
         "list_blobs" => tool_list_blobs(state, args).await,
@@ -1375,9 +1359,9 @@ async fn tool_facility_doctor(state: &AppState, args: &Value) -> Result<Value, S
 // ---------------------------------------------------------------------------
 // Blob store tools.
 //
-// File bytes never traverse MCP except for small inline `create_blob` payloads
-// (capped by config). Large transfers go through presigned URLs minted here and
-// served by the token-authenticated routes in `blobs::presigned_{upload,download}`.
+// File bytes never traverse MCP. All transfers go through presigned URLs minted
+// here and served by the token-authenticated routes in
+// `blobs::presigned_{upload,download}`.
 // ---------------------------------------------------------------------------
 
 /// Clamp a caller-requested TTL to [1, server max], defaulting when omitted.
@@ -1392,7 +1376,7 @@ fn require_base_url(state: &AppState) -> Result<String, String> {
     let base = &state.config.public_base_url;
     if base.is_empty() {
         Err("OLLIE_PUBLIC_BASE_URL is not configured, so presigned URLs cannot be built. \
-             Use create_blob for small inline uploads, or ask an operator to set OLLIE_PUBLIC_BASE_URL."
+             Ask an operator to set OLLIE_PUBLIC_BASE_URL."
             .to_string())
     } else {
         Ok(base.clone())
@@ -1405,7 +1389,7 @@ fn unix_to_rfc3339(ts: i64) -> String {
         .unwrap_or_default()
 }
 
-async fn tool_get_blob_upload_url(state: &AppState, args: &Value) -> Result<Value, String> {
+async fn tool_upload_blob(state: &AppState, args: &Value) -> Result<Value, String> {
     let base = require_base_url(state)?;
     let ttl = resolve_presign_ttl(state, args);
     let (token, exp) = blob_links::mint_token(&state.config.dispatcher_jwt_secret, BlobUrlOp::Post, None, ttl)
@@ -1421,54 +1405,6 @@ async fn tool_get_blob_upload_url(state: &AppState, args: &Value) -> Result<Valu
             Example: curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<upload_url>&name=doc.pdf&tags=invoice,2026'. \
             The JSON response is the created blob record — use its id in blob_ids."
     })))
-}
-
-async fn tool_create_blob(state: &AppState, args: &Value) -> Result<Value, String> {
-    let content_b64 = args["content_base64"]
-        .as_str()
-        .ok_or("missing or non-string field 'content_base64'")?;
-    let content_type = args["content_type"]
-        .as_str()
-        .ok_or("missing or non-string field 'content_type'")?
-        .to_string();
-    // content_type becomes the blob's mime_type and is later emitted verbatim in a
-    // Content-Type response header. Unlike the multipart paths (whose header parsing
-    // already excludes control bytes), this inline path takes an arbitrary string, so
-    // reject empty values and any control character — otherwise a CR/LF would make
-    // every later download fail at header emission. Mirrors the AGENTS.md header lesson.
-    if content_type.is_empty() || content_type.bytes().any(|b| b < 0x20 || b == 0x7f) {
-        return Err("content_type must be a non-empty MIME type with no control characters".to_string());
-    }
-    let filename = args["filename"].as_str().unwrap_or("unnamed").to_string();
-    let tags: Vec<String> = match args.get("tags") {
-        None | Some(Value::Null) => vec![],
-        Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("invalid tags: {e}"))?,
-    };
-
-    let data = base64::engine::general_purpose::STANDARD
-        .decode(content_b64.trim())
-        .map_err(|e| format!("content_base64 is not valid base64: {e}"))?;
-
-    let max = state.config.mcp_inline_blob_max_bytes;
-    if data.len() > max {
-        return Err(format!(
-            "inline content is {} bytes, exceeding the {} byte inline limit — use get_blob_upload_url for files this large",
-            data.len(),
-            max
-        ));
-    }
-
-    let (_status, record) = crate::api::blobs::ingest_blob(
-        state,
-        bytes::Bytes::from(data),
-        content_type,
-        filename,
-        tags,
-        BlobVisibility::Private,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(mcp_content(record))
 }
 
 async fn tool_get_blob_url(state: &AppState, args: &Value) -> Result<Value, String> {

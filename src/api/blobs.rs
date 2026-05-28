@@ -50,7 +50,7 @@ pub struct BlobUploadRequest {
 }
 
 /// Max bytes accepted by the presigned upload route. Shared so the route's
-/// `DefaultBodyLimit` and the `max_bytes` advertised by `get_blob_upload_url`
+/// `DefaultBodyLimit` and the `max_bytes` advertised by `upload_blob`
 /// cannot drift apart.
 pub(crate) const PRESIGNED_UPLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
 

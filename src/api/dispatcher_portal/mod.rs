@@ -93,14 +93,12 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
                 .delete(blobs::delete_blob),
         )
         .route("/dispatch/api/v1/blobs/:id/query", post(blobs::query_blob))
-        // MCP JSON-RPC 2.0 endpoint for AI agent tool calls.
-        // Body limit must clear the inline-base64 ceiling of `create_blob`: a
-        // base64 payload is ~4/3 the raw size, plus JSON envelope overhead.
+        // MCP JSON-RPC 2.0 endpoint for AI agent tool calls. File bytes never
+        // travel over MCP (uploads go through presigned URLs), so tool-call
+        // payloads are small JSON envelopes; 1 MiB is generous.
         .route(
             "/dispatch/mcp",
-            post(mcp::handle).layer(DefaultBodyLimit::max(
-                state.config.mcp_inline_blob_max_bytes * 4 / 3 + 64 * 1024,
-            )),
+            post(mcp::handle).layer(DefaultBodyLimit::max(1024 * 1024)),
         )
         // API key management (GET allowed for both JWT and API-key auth; POST/DELETE require JWT)
         .route("/dispatch/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))

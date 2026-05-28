@@ -368,7 +368,7 @@ pub async fn query_blob(
 //
 // These two routes are mounted OUTSIDE the dispatcher JWT middleware. They are
 // authenticated by a short-lived, blob-scoped token in the `token` query param
-// (minted by the MCP tools `get_blob_upload_url` / `get_blob_url`), letting an
+// (minted by the MCP tools `upload_blob` / `get_blob_url`), letting an
 // agent that holds no dispatcher JWT move file bytes over plain HTTP without
 // putting large payloads on the MCP transport. See `blob_links.rs`.
 // ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ pub struct PresignedDownloadQuery {
 
 #[derive(Debug, Deserialize)]
 pub struct PresignedUploadQuery {
-    /// Presigned token from `get_blob_upload_url`.
+    /// Presigned token from `upload_blob`.
     pub token: String,
     /// Optional display name; defaults to "unnamed". MIME is inferred from it when
     /// the `Content-Type` header is absent.
@@ -394,7 +394,7 @@ pub struct PresignedUploadQuery {
     post,
     path = "/dispatch/blobs/presigned",
     params(
-        ("token" = String, Query, description = "Presigned upload token from get_blob_upload_url"),
+        ("token" = String, Query, description = "Presigned upload token from upload_blob"),
         ("name" = Option<String>, Query, description = "Display name; MIME inferred from it if Content-Type header absent"),
         ("tags" = Option<String>, Query, description = "Comma-separated tags")
     ),

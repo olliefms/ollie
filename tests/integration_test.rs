@@ -5631,6 +5631,23 @@ fn mint_download_token(id: uuid::Uuid) -> String {
     .0
 }
 
+/// Upload bytes through the presigned POST route (the path the `upload_blob`
+/// MCP tool hands agents) and return the created blob record.
+async fn upload_blob_via_presigned(
+    server: &axum_test::TestServer,
+    data: Vec<u8>,
+    content_type: &str,
+    name: &str,
+) -> serde_json::Value {
+    let token = mint_upload_token();
+    server
+        .post(&format!("/dispatch/blobs/presigned?token={token}&name={name}"))
+        .add_header(header::CONTENT_TYPE, content_type)
+        .bytes(data.into())
+        .await
+        .json()
+}
+
 #[tokio::test]
 async fn test_presigned_blob_round_trip() {
     let (server, _b, _d, _rx) = test_server().await;
@@ -5703,111 +5720,14 @@ async fn test_presigned_upload_rejects_download_token() {
     assert_eq!(resp.status_code(), 401);
 }
 
-/// Like `mcp_call` but returns the full JSON-RPC envelope without asserting
-/// success, so error-path tests can inspect `error.message`.
-async fn mcp_call_raw(
-    server: &axum_test::TestServer,
-    token: &str,
-    name: &str,
-    args: serde_json::Value,
-) -> serde_json::Value {
-    server
-        .post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": name, "arguments": args }
-        }))
-        .await
-        .json()
-}
-
-#[tokio::test]
-async fn test_mcp_create_blob_inline_and_cap() {
-    use base64::Engine as _;
-    let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobmcp1@example.com", "password-blobmcp1").await;
-
-    // Small inline upload succeeds.
-    let small = base64::engine::general_purpose::STANDARD.encode(b"hello inline");
-    let record = mcp_call(
-        &server,
-        &token,
-        "create_blob",
-        serde_json::json!({ "content_base64": small, "content_type": "text/plain", "filename": "hi.txt" }),
-    )
-    .await;
-    assert_eq!(record["mime_type"], "text/plain");
-    assert_eq!(record["name"], "hi.txt");
-    assert_eq!(record["size"], 12);
-
-    // Oversize (> 256 KiB default cap) is rejected before touching storage.
-    let big = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 260 * 1024]);
-    let resp = mcp_call_raw(
-        &server,
-        &token,
-        "create_blob",
-        serde_json::json!({ "content_base64": big, "content_type": "application/octet-stream" }),
-    )
-    .await;
-    assert!(
-        resp["error"]["message"].as_str().unwrap_or("").contains("inline limit"),
-        "expected inline-limit rejection, got: {resp}"
-    );
-}
-
-#[tokio::test]
-async fn test_mcp_create_blob_rejects_bad_base64() {
-    let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobmcp2@example.com", "password-blobmcp2").await;
-    let resp = mcp_call_raw(
-        &server,
-        &token,
-        "create_blob",
-        serde_json::json!({ "content_base64": "not!!base64!!", "content_type": "text/plain" }),
-    )
-    .await;
-    assert!(
-        resp["error"]["message"].as_str().unwrap_or("").contains("base64"),
-        "expected base64 error, got: {resp}"
-    );
-}
-
-#[tokio::test]
-async fn test_mcp_create_blob_rejects_control_chars_in_content_type() {
-    use base64::Engine as _;
-    let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobmcp4@example.com", "password-blobmcp4").await;
-    let content = base64::engine::general_purpose::STANDARD.encode(b"x");
-    // A CR/LF-laden content_type would otherwise be stored and break every download.
-    let resp = mcp_call_raw(
-        &server,
-        &token,
-        "create_blob",
-        serde_json::json!({ "content_base64": content, "content_type": "text/plain\r\nX-Injected: evil" }),
-    )
-    .await;
-    assert!(
-        resp["error"]["message"].as_str().unwrap_or("").contains("control characters"),
-        "expected control-character rejection, got: {resp}"
-    );
-}
-
 #[tokio::test]
 async fn test_mcp_get_blob_metadata_and_delete() {
-    use base64::Engine as _;
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "blobmcp3@example.com", "password-blobmcp3").await;
 
-    // Create a blob inline.
-    let content = base64::engine::general_purpose::STANDARD.encode(b"settlement statement");
-    let created = mcp_call(
-        &server,
-        &token,
-        "create_blob",
-        serde_json::json!({ "content_base64": content, "content_type": "text/plain", "filename": "stmt.txt" }),
-    )
-    .await;
+    // Create a blob via the presigned upload path.
+    let created =
+        upload_blob_via_presigned(&server, b"settlement statement".to_vec(), "text/plain", "stmt.txt").await;
     let id = created["id"].as_str().unwrap().to_string();
 
     // Metadata carries an (empty) attached_to reverse lookup.
@@ -5830,17 +5750,13 @@ async fn test_mcp_get_blob_metadata_and_delete() {
 
 #[tokio::test]
 async fn test_mcp_delete_blob_keeps_bytes_when_checksum_shared() {
-    use base64::Engine as _;
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "blobmcp5@example.com", "password-blobmcp5").await;
 
     // Two records, identical content → same checksum (the second dedups).
     let raw = b"shared-content document body".to_vec();
-    let content = base64::engine::general_purpose::STANDARD.encode(&raw);
-    let a = mcp_call(&server, &token, "create_blob",
-        serde_json::json!({ "content_base64": content, "content_type": "text/plain", "filename": "a.txt" })).await;
-    let b = mcp_call(&server, &token, "create_blob",
-        serde_json::json!({ "content_base64": content, "content_type": "text/plain", "filename": "b.txt" })).await;
+    let a = upload_blob_via_presigned(&server, raw.clone(), "text/plain", "a.txt").await;
+    let b = upload_blob_via_presigned(&server, raw.clone(), "text/plain", "b.txt").await;
     let id_a = a["id"].as_str().unwrap().to_string();
     let id_b = b["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap();
     assert_eq!(a["checksum"], b["checksum"], "identical content must share a checksum");
