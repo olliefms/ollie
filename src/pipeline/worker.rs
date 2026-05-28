@@ -3,7 +3,7 @@ use crate::{
     ai::{
         embed::embed_text,
         extract::{extract_content, Extractable},
-        summarize::{describe_image, describe_scanned_pdf, summarize_text},
+        summarize::{describe_image, summarize_text},
         OllamaClient,
     },
     db::DbClient,
@@ -55,19 +55,22 @@ pub async fn process_blob(
                     Ok((Some(summary), Some(embedding)))
                 }
             }
-            Extractable::ScannedPdf(bytes, raw_text) => {
-                let description = if bytes.len() > MAX_VISION_BYTES {
-                    tracing::info!(
-                        "PDF {} bytes exceeds vision threshold {}; using text fallback",
-                        bytes.len(),
-                        MAX_VISION_BYTES
-                    );
-                    summarize_text(ai, &raw_text).await?
+            Extractable::ScannedPdf(_bytes, raw_text) => {
+                // There is no PDF→image rasterizer in the tree, so the raw PDF
+                // bytes are NOT a decodable image — feeding them to the vision
+                // model crashes Ollama's CLIP tokenizer (SIGSEGV). Until page
+                // rasterization is added, summarize whatever text we extracted.
+                // A scanned PDF with no extractable text degrades to no summary
+                // rather than a hard failure. (#281)
+                if raw_text.trim().is_empty() {
+                    tracing::info!("scanned PDF {id} has no extractable text; skipping summarization");
+                    Ok((None, None))
                 } else {
-                    describe_scanned_pdf(ai, &bytes, &raw_text).await?
-                };
-                let embedding = embed_text(ai, &description).await?;
-                Ok((Some(description), Some(embedding)))
+                    let summary = summarize_text(ai, &raw_text).await?;
+                    let embed_source = if summary.is_empty() { &raw_text } else { &summary };
+                    let embedding = embed_text(ai, embed_source).await?;
+                    Ok((Some(summary), Some(embedding)))
+                }
             }
             Extractable::ImageBytes(bytes) => {
                 if bytes.len() > MAX_VISION_BYTES {
