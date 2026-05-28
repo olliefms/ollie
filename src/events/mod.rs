@@ -93,6 +93,26 @@ pub async fn on_driver_trailer_changed(
     tracing::info!(driver_id = %driver_id, trip_cascade, "driver trailer changed");
 }
 
+pub async fn on_driver_equipment_changed(
+    db: &DbClient,
+    driver_id: Uuid,
+    action: &str,
+    truck_id: Option<Uuid>,
+    trailer_ids: &[Uuid],
+    trip_id: Option<Uuid>,
+    trip_cascade: bool,
+) {
+    let payload = serde_json::json!({
+        "action": action,
+        "truck_id": truck_id.map(|u| u.to_string()),
+        "trailer_ids": trailer_ids.iter().map(|u| u.to_string()).collect::<Vec<_>>(),
+        "trip_id": trip_id.map(|u| u.to_string()),
+        "trip_cascade": trip_cascade,
+    });
+    let _ = db.append_event("driver", driver_id, "driver.equipment_changed", Some(payload), None, &now_z(), None).await;
+    tracing::info!(driver_id = %driver_id, action, trip_cascade, "driver equipment changed");
+}
+
 pub async fn on_check_call(db: &DbClient, trip_id: Uuid, location: String, notes: Option<String>, eta_next_stop: Option<String>) {
     let payload = serde_json::json!({ "location": location, "notes": notes, "eta_next_stop": eta_next_stop });
     let _ = db.append_event("trip", trip_id, "check_call", Some(payload), None, &now_z(), None).await;

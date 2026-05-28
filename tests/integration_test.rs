@@ -5865,3 +5865,257 @@ async fn test_openapi_includes_presigned_blob_paths() {
     assert!(!paths["/dispatch/blobs/presigned"].is_null(), "upload path missing from spec");
     assert!(!paths["/dispatch/blobs/presigned/{id}"].is_null(), "download path missing from spec");
 }
+
+// ── #181: dispatcher-facing driver equipment attach/detach ──────────────────
+
+const AUTH: &str = "Bearer test-secret";
+
+async fn make_driver(server: &TestServer, name: &str) -> String {
+    server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "name": name }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn make_truck(server: &TestServer, unit: &str) -> String {
+    server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "unit_number": unit }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn make_trailer(server: &TestServer, unit: &str) -> String {
+    server.post("/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "unit_number": unit, "owner": "fleet" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn get_truck_status(server: &TestServer, id: &str) -> String {
+    server.get(&format!("/api/v1/trucks/{id}"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .await
+        .json::<serde_json::Value>()["status"].as_str().unwrap().to_string()
+}
+
+async fn get_trailer_status(server: &TestServer, id: &str) -> String {
+    server.get(&format!("/api/v1/trailers/{id}"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .await
+        .json::<serde_json::Value>()["status"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_attach_equipment_seats_truck_and_trailers() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = make_driver(&server, "Eq Driver").await;
+    let truck_id = make_truck(&server, "T-EQ-1").await;
+    let trailer_a = make_trailer(&server, "TRL-EQ-A").await;
+    let trailer_b = make_trailer(&server, "TRL-EQ-B").await;
+
+    // Attach truck + trailer A
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "truck_id": truck_id, "trailer_ids": [trailer_a] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["current_truck_id"].as_str(), Some(truck_id.as_str()));
+    assert_eq!(body["current_trailer_ids"].as_array().unwrap().len(), 1);
+
+    assert_eq!(get_truck_status(&server, &truck_id).await, "assigned");
+    assert_eq!(get_trailer_status(&server, &trailer_a).await, "assigned");
+
+    // Attaching trailer B is additive — both trailers remain
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "trailer_ids": [trailer_b] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let trailers = resp.json::<serde_json::Value>()["current_trailer_ids"]
+        .as_array().unwrap().clone();
+    assert_eq!(trailers.len(), 2, "trailer attach should be additive");
+}
+
+#[tokio::test]
+async fn test_attach_truck_releases_previous_truck() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = make_driver(&server, "Swap Driver").await;
+    let truck_a = make_truck(&server, "T-SWAP-A").await;
+    let truck_b = make_truck(&server, "T-SWAP-B").await;
+
+    server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "truck_id": truck_a }))
+        .await;
+    assert_eq!(get_truck_status(&server, &truck_a).await, "assigned");
+
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "truck_id": truck_b }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(resp.json::<serde_json::Value>()["current_truck_id"].as_str(), Some(truck_b.as_str()));
+    assert_eq!(get_truck_status(&server, &truck_a).await, "available", "previous truck released");
+    assert_eq!(get_truck_status(&server, &truck_b).await, "assigned");
+}
+
+#[tokio::test]
+async fn test_detach_unseats_truck_and_all_trailers() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = make_driver(&server, "Dismiss Driver").await;
+    let truck_id = make_truck(&server, "T-DET-1").await;
+    let trailer_a = make_trailer(&server, "TRL-DET-A").await;
+
+    server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "truck_id": truck_id, "trailer_ids": [trailer_a] }))
+        .await;
+
+    // Un-seat everything (dismissal scenario)
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/detach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "truck": true, "all_trailers": true }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["current_truck_id"].is_null(), "truck cleared");
+    assert_eq!(body["current_trailer_ids"].as_array().unwrap().len(), 0);
+
+    assert_eq!(get_truck_status(&server, &truck_id).await, "available");
+    assert_eq!(get_trailer_status(&server, &trailer_a).await, "available");
+}
+
+#[tokio::test]
+async fn test_detach_specific_trailer_keeps_others() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = make_driver(&server, "Partial Driver").await;
+    let trailer_a = make_trailer(&server, "TRL-PART-A").await;
+    let trailer_b = make_trailer(&server, "TRL-PART-B").await;
+
+    server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "trailer_ids": [trailer_a, trailer_b] }))
+        .await;
+
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/detach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "trailer_ids": [trailer_a] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let trailers = resp.json::<serde_json::Value>()["current_trailer_ids"].as_array().unwrap().clone();
+    assert_eq!(trailers.len(), 1);
+    assert_eq!(trailers[0].as_str(), Some(trailer_b.as_str()));
+    assert_eq!(get_trailer_status(&server, &trailer_a).await, "available");
+    assert_eq!(get_trailer_status(&server, &trailer_b).await, "assigned");
+}
+
+#[tokio::test]
+async fn test_attach_syncs_active_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = make_driver(&server, "Active Driver").await;
+    let truck_id = make_truck(&server, "T-ACT-1").await;
+    let trailer_new = make_trailer(&server, "TRL-ACT-NEW").await;
+
+    // Create + assign + dispatch a trip so the driver has an active (dispatched) trip
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Dest" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .await;
+    let dispatch = server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    // Attach a new trailer — should cascade onto the active trip and mark it dispatched
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "trailer_ids": [trailer_new] }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    let trip = server.get(&format!("/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .await
+        .json::<serde_json::Value>();
+    let trip_trailers = trip["trailer_ids"].as_array().unwrap();
+    assert!(trip_trailers.iter().any(|t| t.as_str() == Some(trailer_new.as_str())),
+        "new trailer should cascade onto active trip");
+    assert_eq!(get_trailer_status(&server, &trailer_new).await, "dispatched",
+        "trailer on an active trip should be dispatched");
+}
+
+#[tokio::test]
+async fn test_attach_rejects_equipment_on_another_active_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_a = make_driver(&server, "Driver A").await;
+    let driver_b = make_driver(&server, "Driver B").await;
+    let truck_a = make_truck(&server, "T-CONF-A").await;
+    let trailer_x = make_trailer(&server, "TRL-CONF-X").await;
+
+    // Driver A gets a dispatched trip with trailer X
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 0, "stop_type": "pickup", "name": "Origin" },
+                { "sequence": 1, "stop_type": "delivery", "name": "Dest" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    server.post(&format!("/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "driver_id": driver_a, "truck_id": truck_a, "trailer_ids": [trailer_x] }))
+        .await;
+    server.post(&format!("/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .await;
+
+    // Driver B tries to attach the same trailer → 409
+    let resp = server.post(&format!("/api/v1/drivers/{driver_b}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "trailer_ids": [trailer_x] }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "trailer on another driver's active trip must conflict");
+}
+
+#[tokio::test]
+async fn test_attach_empty_body_is_bad_request() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = make_driver(&server, "Empty Driver").await;
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_attach_to_inactive_driver_conflicts() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let driver_id = make_driver(&server, "Inactive Driver").await;
+    let truck_id = make_truck(&server, "T-INA-1").await;
+    // Soft-delete → inactive
+    server.delete(&format!("/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .await;
+    let resp = server.post(&format!("/api/v1/drivers/{driver_id}/attach-equipment"))
+        .add_header(header::AUTHORIZATION, AUTH)
+        .json(&serde_json::json!({ "truck_id": truck_id }))
+        .await;
+    assert_eq!(resp.status_code(), 409);
+}

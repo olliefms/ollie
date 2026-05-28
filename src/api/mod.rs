@@ -6,6 +6,7 @@ pub mod version;
 pub mod blobs;
 pub mod dispatchers;
 pub mod dispatcher_portal;
+pub mod driver_actions;
 pub mod driver_portal;
 pub mod drivers;
 pub mod events;
@@ -75,6 +76,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         drivers::update_driver,
         drivers::delete_driver,
         drivers::set_driver_pin,
+        driver_actions::attach_equipment,
+        driver_actions::detach_equipment,
         trucks::create_truck,
         trucks::list_trucks,
         trucks::get_truck,
@@ -212,6 +215,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             trip_actions::StopDepartRequest,
             trip_actions::StopLateRequest,
             trip_actions::CheckCallRequest,
+            driver_actions::AttachEquipmentRequest,
+            driver_actions::DetachEquipmentRequest,
             dispatcher_portal::trip_writes::RecalculateMilesBody,
             dispatcher_portal::trip_writes::PatchTripBody,
             dispatcher_portal::facility_writes::CreateFacilityBody,
@@ -422,6 +427,13 @@ DELETE soft-deletes (sets status=inactive). PUT cannot set assigned or dispatche
   POST   /api/v1/drivers/:id/pin      Set driver PIN (body: pin — 4–6 numeric digits); returns 204.
                                       Used by dispatchers to provision portal access. Invalidates
                                       any outstanding driver JWTs.
+  POST   /api/v1/drivers/:id/attach-equipment  Seat driver on a truck and/or add trailers (body: truck_id?, trailer_ids?).
+                                      Trailers are additive; attaching a truck releases any previous truck to available.
+                                      Releases conflict if equipment is on another driver's active trip. Syncs the driver's
+                                      active Dispatched/InTransit trip. Emits driver.equipment_changed.
+  POST   /api/v1/drivers/:id/detach-equipment  Un-seat truck and/or drop trailers (body: truck?, trailer_ids?, all_trailers?).
+                                      Released equipment returns to available. Dispatcher-only (drivers cannot un-seat a truck);
+                                      use for dismissal/resignation to free equipment. Syncs the active trip. Emits driver.equipment_changed.
 
 ### Trucks — /api/v1/trucks, /api/v1/trucks/:id
 Truck records with state machine. Status: available → assigned → dispatched (assigned/dispatched driven by trip events).
@@ -621,6 +633,7 @@ pub fn router(state: AppState) -> Router {
         .merge(dispatchers::router())
         // Drivers, trucks, trailers, trips, trip actions, events (stubs — filled in by Wave 2/3/4)
         .merge(drivers::router())
+        .merge(driver_actions::router())
         .merge(trucks::router())
         .merge(trailers::router())
         .merge(trips::router())
