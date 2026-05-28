@@ -217,6 +217,7 @@ mod tests {
 
     #[test]
     fn test_terminal_timezone_default() {
+        let _g = ENV_LOCK.lock().unwrap();
         let prior = std::env::var("TERMINAL_TIMEZONE").ok();
         std::env::remove_var("TERMINAL_TIMEZONE");
         std::env::set_var("ADMIN_API_KEY", "k");
@@ -273,6 +274,7 @@ mod tests {
 
     #[test]
     fn test_terminal_timezone_invalid_rejects() {
+        let _g = ENV_LOCK.lock().unwrap();
         let prior = std::env::var("TERMINAL_TIMEZONE").ok();
         std::env::set_var("TERMINAL_TIMEZONE", "Not/A/Zone");
         std::env::set_var("ADMIN_API_KEY", "k");

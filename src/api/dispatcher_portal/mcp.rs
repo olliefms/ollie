@@ -11,6 +11,8 @@
 
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -682,23 +684,38 @@ fn parse_uuid_opt(args: &Value, key: &str) -> Result<Option<Uuid>, String> {
 pub async fn handle(
     State(state): State<AppState>,
     Json(req): Json<JsonRpcRequest>,
-) -> Json<JsonRpcResponse> {
+) -> Response {
+    // A JSON-RPC notification (no `id`) gets no Response. Per Streamable HTTP a
+    // notification-only POST must return 202 Accepted with an empty body, never a
+    // JSON-RPC error — a stock `type: "http"` client treats an error reply to
+    // `notifications/initialized` as a broken handshake.
+    if req.id.is_none() {
+        return StatusCode::ACCEPTED.into_response();
+    }
+
     let id = req.id.clone();
 
     if req.jsonrpc != "2.0" {
-        return Json(JsonRpcResponse::err(id, -32600, "invalid JSON-RPC version"));
+        return Json(JsonRpcResponse::err(id, -32600, "invalid JSON-RPC version")).into_response();
     }
 
     let result = match req.method.as_str() {
         "initialize" => handle_initialize(),
         "tools/list" => Ok(tools_list()),
         "tools/call" => handle_tool_call(&state, &req.params).await,
-        _ => return Json(JsonRpcResponse::err(id, -32601, format!("method not found: {}", req.method))),
+        _ => {
+            return Json(JsonRpcResponse::err(
+                id,
+                -32601,
+                format!("method not found: {}", req.method),
+            ))
+            .into_response()
+        }
     };
 
     match result {
-        Ok(value) => Json(JsonRpcResponse::ok(id, value)),
-        Err(e) => Json(JsonRpcResponse::err(id, -32603, e)),
+        Ok(value) => Json(JsonRpcResponse::ok(id, value)).into_response(),
+        Err(e) => Json(JsonRpcResponse::err(id, -32603, e)).into_response(),
     }
 }
 
@@ -1550,4 +1567,138 @@ async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, Strin
         }
     }
     Ok(mcp_content(serde_json::json!({ "deleted": true, "was_attached": was_attached })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        ai::OllamaClient, config::Config, db::DbClient, routing::RoutingClient,
+        storage::BlobStore,
+    };
+    use axum::body::to_bytes;
+    use axum::http::StatusCode;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    async fn test_state() -> (AppState, TempDir, TempDir) {
+        let blob_dir = TempDir::new().unwrap();
+        let db_dir = TempDir::new().unwrap();
+        std::env::set_var("ADMIN_API_KEY", "test-secret");
+        std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
+        std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-jwt-secret-that-is-long-enough");
+        std::env::set_var("DRIVER_RP_ID", "localhost");
+        std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+        let config = Arc::new(Config::from_env().unwrap());
+        let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
+        let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
+        let ai = Arc::new(OllamaClient::new(
+            "http://localhost:11434",
+            "nomic-embed-text",
+            "llama3.2",
+            "llava",
+        ));
+        let geocoding = Arc::new(crate::geocoding::GeocodingClient::new());
+        let ors = Arc::new(RoutingClient::new(""));
+        let (geocoding_tx, _rx) = async_channel::bounded(10);
+        let (routing_tx, _rx2) = async_channel::bounded(10);
+        let (pipeline_tx, _rx3) = async_channel::bounded(10);
+        let rp_origin = webauthn_rs::prelude::Url::parse("http://localhost:3000").unwrap();
+        let webauthn = Arc::new(
+            webauthn_rs::prelude::WebauthnBuilder::new("localhost", &rp_origin)
+                .unwrap()
+                .build()
+                .unwrap(),
+        );
+        let auth_challenge_store = Arc::new(dashmap::DashMap::new());
+        let reg_challenge_store = Arc::new(dashmap::DashMap::new());
+        let state = AppState {
+            db,
+            store,
+            ai,
+            geocoding,
+            ors,
+            pipeline_tx,
+            geocoding_tx,
+            routing_tx,
+            config,
+            webauthn,
+            auth_challenge_store,
+            reg_challenge_store,
+        };
+        (state, blob_dir, db_dir)
+    }
+
+    /// Call `handle` directly and return (status, body bytes).
+    async fn call(state: &AppState, body: Value) -> (StatusCode, Vec<u8>) {
+        let req: JsonRpcRequest = serde_json::from_value(body).unwrap();
+        let resp = handle(State(state.clone()), Json(req)).await;
+        let (parts, body) = resp.into_parts();
+        let bytes = to_bytes(body, usize::MAX).await.unwrap();
+        (parts.status, bytes.to_vec())
+    }
+
+    #[tokio::test]
+    async fn notifications_initialized_returns_202_empty() {
+        let (state, _b, _d) = test_state().await;
+        let (status, body) = call(
+            &state,
+            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(body.is_empty(), "notification response body must be empty");
+    }
+
+    #[tokio::test]
+    async fn arbitrary_notification_returns_202_empty() {
+        let (state, _b, _d) = test_state().await;
+        let (status, body) = call(
+            &state,
+            json!({ "jsonrpc": "2.0", "method": "some/unknown/notification" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn initialize_request_returns_200_result() {
+        let (state, _b, _d) = test_state().await;
+        let (status, body) = call(
+            &state,
+            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {} }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["result"]["serverInfo"]["name"], "ollie-dispatcher");
+        assert!(v.get("error").is_none());
+    }
+
+    #[tokio::test]
+    async fn tools_list_request_returns_200_tools() {
+        let (state, _b, _d) = test_state().await;
+        let (status, body) = call(
+            &state,
+            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert!(!v["result"]["tools"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unknown_method_with_id_returns_200_error() {
+        let (state, _b, _d) = test_state().await;
+        let (status, body) = call(
+            &state,
+            json!({ "jsonrpc": "2.0", "id": 2, "method": "no/such/method" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(v["error"]["code"], -32601);
+    }
 }
