@@ -62,6 +62,8 @@ Update version in the project's manifest file(s). Common locations:
 | `package.json` | `"version"` |
 | `pyproject.toml` | `[project] version` or `[tool.poetry] version` |
 
+Also update any **version-coupled asset stamps** the project uses — these are not in the manifest but must match the release version. Grep for the previous version string to find them. In this repo: the driver PWA cache stamp (`CACHE_NAME = 'ollie-vX.Y.Z'` in `static/driver/sw.js` and the `?v=X.Y.Z` query stamps in `static/driver/*.html`). Issue/sprint PRs are told *not* to touch these, so they are cut-release's responsibility to set to the chosen version.
+
 Run the lockfile update if applicable (`cargo build`, `npm install`, etc.) so the lockfile matches.
 
 Commit:
