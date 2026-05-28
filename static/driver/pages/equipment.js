@@ -94,13 +94,16 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
 
   const currentList = document.createElement('div');
   currentList.className = 'equipment-current';
-  if (current.length === 0) {
-    const p = document.createElement('p');
-    p.className = 'muted';
-    p.textContent = 'No trailer currently attached.';
-    currentList.appendChild(p);
-  } else {
-    current.forEach(t => {
+  const renderCurrentList = (trailers) => {
+    currentList.replaceChildren();
+    if (trailers.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = 'No trailer currently attached.';
+      currentList.appendChild(p);
+      return;
+    }
+    trailers.forEach(t => {
       const row = document.createElement('div');
       row.className = 'equipment-row';
       const unit = document.createElement('span');
@@ -116,7 +119,8 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
       if (parts.length) row.appendChild(meta);
       currentList.appendChild(row);
     });
-  }
+  };
+  renderCurrentList(current);
   card.appendChild(currentList);
 
   // Picker
@@ -201,6 +205,11 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
     status.className = 'equipment-status muted';
     try {
       const result = await onSubmit(Array.from(selectedSet));
+      const updatedTrailers = result.trailers || [];
+      renderCurrentList(updatedTrailers);
+      selectedSet.clear();
+      updatedTrailers.forEach(t => selectedSet.add(t.id));
+      renderList();
       status.className = 'equipment-status success';
       status.textContent = result.trip_cascade
         ? 'Updated. Active trip trailer also updated.'
