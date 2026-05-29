@@ -156,7 +156,11 @@ export async function renderAccount(container) {
   logoutRow.type = 'button';
   logoutRow.className = 'account-row account-row--button';
   logoutRow.textContent = 'Log Out';
-  logoutRow.addEventListener('click', () => {
+  logoutRow.addEventListener('click', async () => {
+    await fetch('/driver/api/v1/auth/logout', {
+      method: 'POST',
+      credentials: 'same-origin',
+    }).catch(() => {});
     clearAuth();
     navigate('/driver');
   });

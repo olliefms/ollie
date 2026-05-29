@@ -14,15 +14,60 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use utoipa::ToSchema;
-use uuid::Uuid;
 
-use super::jwt::{decode_dispatcher_jwt, encode_dispatcher_jwt};
+use super::jwt::encode_dispatcher_jwt;
+use crate::api::refresh_tokens;
+use axum::http::header::SET_COOKIE;
 
 // Pre-computed dummy hash used to equalise response time for unknown-email logins.
 // Computed once at cost 12 (same as real passwords) so the timing profile matches.
 static DUMMY_HASH: OnceLock<String> = OnceLock::new();
-fn dummy_hash() -> &'static str {
+pub(crate) fn dummy_hash() -> &'static str {
     DUMMY_HASH.get_or_init(|| bcrypt::hash("dummy-sentinel", 12).expect("bcrypt init failed"))
+}
+
+/// Verify a dispatcher's password and maintain the failed-attempt lockout
+/// counter. Returns `Ok(true)` on a valid password (resetting the counter) and
+/// `Ok(false)` on an invalid one (incrementing `failed_attempts` and applying
+/// the lockout backoff). Persists `creds` either way. Callers MUST reject an
+/// already-locked account (`creds.locked_until`) BEFORE calling. Shared by
+/// `/dispatch/auth/login` and `/oauth/authorize` so the lockout gate cannot be
+/// bypassed by choosing a different endpoint.
+pub(crate) async fn verify_dispatcher_password(
+    state: &AppState,
+    creds: &mut crate::models::DispatcherCredentials,
+    password: &str,
+) -> Result<bool, AppError> {
+    let pw = password.to_string();
+    let hash = creds.password_hash.clone();
+    let valid = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &hash))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| AppError::Internal(format!("bcrypt error: {e}")))?;
+
+    if !valid {
+        creds.failed_attempts += 1;
+        if creds.failed_attempts >= 5 {
+            let extra_failures = creds.failed_attempts - 5;
+            let backoff_mins = 15u64 * 2u64.pow(extra_failures as u32);
+            let backoff_mins = backoff_mins.min(24 * 60);
+            creds.locked_until = Some(Utc::now() + chrono::Duration::minutes(backoff_mins as i64));
+            tracing::warn!(
+                failed_attempts = creds.failed_attempts,
+                locked_until = ?creds.locked_until,
+                "dispatcher lockout"
+            );
+        }
+        creds.updated_at = Utc::now();
+        state.db.upsert_dispatcher_credentials(creds).await?;
+        return Ok(false);
+    }
+
+    creds.failed_attempts = 0;
+    creds.locked_until = None;
+    creds.updated_at = Utc::now();
+    state.db.upsert_dispatcher_credentials(creds).await?;
+    Ok(true)
 }
 
 // --- Request/Response types ---
@@ -45,12 +90,6 @@ pub struct LockResponse {
 }
 
 // --- Helpers ---
-
-fn bearer_token(headers: &HeaderMap) -> Option<&str> {
-    headers.get("Authorization")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-}
 
 fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
@@ -107,53 +146,35 @@ pub async fn login(
         }
     }
 
-    // Always run bcrypt to avoid timing oracle
-    let password = req.password.clone();
-    let hash = creds.password_hash.clone();
-    let password_valid = tokio::task::spawn_blocking(move || bcrypt::verify(&password, &hash))
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .map_err(|e| AppError::Internal(format!("bcrypt error: {e}")))?;
-
-    if !password_valid {
-        creds.failed_attempts += 1;
-        if creds.failed_attempts >= 5 {
-            let extra_failures = creds.failed_attempts - 5;
-            let backoff_mins = 15u64 * 2u64.pow(extra_failures as u32);
-            let backoff_mins = backoff_mins.min(24 * 60);
-            creds.locked_until = Some(Utc::now() + chrono::Duration::minutes(backoff_mins as i64));
-            tracing::warn!(
-                dispatcher_id = %dispatcher.id,
-                failed_attempts = creds.failed_attempts,
-                locked_until = ?creds.locked_until,
-                "dispatcher login lockout"
-            );
-        }
-        creds.updated_at = Utc::now();
-        state.db.upsert_dispatcher_credentials(&creds).await?;
+    // Verify password + maintain the failed-attempt lockout (shared with /oauth/authorize).
+    if !verify_dispatcher_password(&state, &mut creds, &req.password).await? {
         return Err(AppError::Unauthorized);
     }
-
-    // Valid password — reset lockout state
-    creds.failed_attempts = 0;
-    creds.locked_until = None;
-    creds.updated_at = Utc::now();
-    state.db.upsert_dispatcher_credentials(&creds).await?;
 
     let token = encode_dispatcher_jwt(dispatcher.id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
 
     tracing::info!(dispatcher_id = %dispatcher.id, "dispatcher login succeeded");
 
-    Ok((StatusCode::OK, Json(LoginResponse { token })).into_response())
+    let issued = refresh_tokens::issue(
+        &state.db, "dispatcher", dispatcher.id, None, creds.token_version, Utc::now(),
+    ).await?;
+    let cookie = refresh_tokens::set_cookie_header(&issued.secret, state.config.cookie_secure);
+
+    let mut response = (StatusCode::OK, Json(LoginResponse { token })).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+    );
+    Ok(response)
 }
 
-/// Refresh a dispatcher JWT. The existing token must be valid and issued within the last 7 days.
+/// Refresh a dispatcher JWT using the httpOnly refresh-token cookie.
 #[utoipa::path(
     post,
     path = "/dispatch/auth/refresh",
     responses(
         (status = 200, description = "New JWT token", body = LoginResponse),
-        (status = 401, description = "Invalid, expired, or too-old token"),
+        (status = 401, description = "Invalid or revoked refresh token"),
     ),
     tag = "dispatch-auth"
 )]
@@ -161,25 +182,16 @@ pub async fn refresh(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let token = bearer_token(&headers).ok_or(AppError::Unauthorized)?;
-    let claims = decode_dispatcher_jwt(token, &state.config.dispatcher_jwt_secret)?;
+    let secret = refresh_tokens::read_cookie(&headers).ok_or(AppError::Unauthorized)?;
 
-    // Check iat: refresh window is 7 days
-    let now = jsonwebtoken::get_current_timestamp() as usize;
-    let max_refresh_secs = 7 * 24 * 3600;
-    if now.saturating_sub(claims.iat) > max_refresh_secs {
-        return Err(AppError::Unauthorized);
-    }
-
-    let dispatcher_id: Uuid = claims.dispatcher_id.parse()
-        .map_err(|_| AppError::Unauthorized)?;
-
-    let creds = state.db.get_dispatcher_credentials(dispatcher_id).await?
+    let hash = refresh_tokens::hash_token(&secret);
+    let row = state.db.get_refresh_token_by_hash(&hash).await?
         .ok_or(AppError::Unauthorized)?;
-
-    if creds.token_version != claims.token_version {
+    if row.subject_type != "dispatcher" {
         return Err(AppError::Unauthorized);
     }
+    let creds = state.db.get_dispatcher_credentials(row.subject_id).await?
+        .ok_or(AppError::Unauthorized)?;
 
     if let Some(locked_until) = creds.locked_until {
         if locked_until > Utc::now() {
@@ -187,13 +199,51 @@ pub async fn refresh(
         }
     }
 
-    let dispatcher = state.db.get_dispatcher_by_id(dispatcher_id).await
+    // Reject inactive accounts before rotating, so an inactive dispatcher's
+    // refresh attempt doesn't needlessly consume their token.
+    let dispatcher = state.db.get_dispatcher_by_id(row.subject_id).await
         .map_err(|_| AppError::Unauthorized)?;
     if dispatcher.status == DispatcherStatus::Inactive {
         return Err(AppError::Unauthorized);
     }
 
-    let new_token = encode_dispatcher_jwt(dispatcher_id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
+    match refresh_tokens::rotate(&state.db, &secret, creds.token_version, Utc::now()).await? {
+        refresh_tokens::RotateResult::Rotated(next) => {
+            let token = encode_dispatcher_jwt(row.subject_id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
+            let cookie = refresh_tokens::set_cookie_header(&next.secret, state.config.cookie_secure);
+            let mut response = Json(LoginResponse { token }).into_response();
+            response.headers_mut().insert(
+                SET_COOKIE,
+                cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+            );
+            Ok(response)
+        }
+        _ => Err(AppError::Unauthorized),
+    }
+}
 
-    Ok(Json(LoginResponse { token: new_token }))
+/// Revoke the caller's refresh-token family and clear the cookie.
+#[utoipa::path(
+    post,
+    path = "/dispatch/auth/logout",
+    responses((status = 200, description = "Logged out")),
+    tag = "dispatch-auth"
+)]
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    if let Some(secret) = refresh_tokens::read_cookie(&headers) {
+        let hash = refresh_tokens::hash_token(&secret);
+        if let Some(row) = state.db.get_refresh_token_by_hash(&hash).await? {
+            state.db.revoke_refresh_token_family(row.family_id, Utc::now()).await?;
+        }
+    }
+    let cookie = refresh_tokens::clear_cookie_header(state.config.cookie_secure);
+    let mut response = StatusCode::OK.into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+    );
+    Ok(response)
 }

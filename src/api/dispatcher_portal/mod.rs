@@ -15,15 +15,38 @@ pub mod truck_writes;
 
 use crate::AppState;
 use axum::{
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
+    response::Response,
     Router,
     routing::{delete, get, post},
 };
+
+/// Injects `WWW-Authenticate` on 401 responses from the MCP endpoint only.
+/// The header tells OAuth clients where to find the protected-resource metadata.
+async fn mcp_www_authenticate(
+    State(state): State<AppState>,
+    response: Response,
+) -> Response {
+    if response.status() != axum::http::StatusCode::UNAUTHORIZED {
+        return response;
+    }
+    let prm_url = format!(
+        "{}/.well-known/oauth-protected-resource/dispatch/mcp",
+        state.config.public_base_url.trim_end_matches('/'),
+    );
+    let header_val = format!("Bearer resource_metadata=\"{prm_url}\"");
+    let mut response = response;
+    if let Ok(v) = header_val.parse() {
+        response.headers_mut().insert(axum::http::header::WWW_AUTHENTICATE, v);
+    }
+    response
+}
 
 pub fn auth_router() -> Router<AppState> {
     Router::new()
         .route("/dispatch/auth/login", post(auth::login))
         .route("/dispatch/auth/refresh", post(auth::refresh))
+        .route("/dispatch/auth/logout", post(auth::logout))
 }
 
 pub fn data_router(state: &AppState) -> Router<AppState> {
@@ -102,13 +125,6 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
                 .delete(blobs::delete_blob),
         )
         .route("/dispatch/api/v1/blobs/:id/query", post(blobs::query_blob))
-        // MCP JSON-RPC 2.0 endpoint for AI agent tool calls. File bytes never
-        // travel over MCP (uploads go through presigned URLs), so tool-call
-        // payloads are small JSON envelopes; 1 MiB is generous.
-        .route(
-            "/dispatch/mcp",
-            post(mcp::handle).layer(DefaultBodyLimit::max(1024 * 1024)),
-        )
         // API key management (GET allowed for both JWT and API-key auth; POST/DELETE require JWT)
         .route("/dispatch/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))
         .route("/dispatch/api-keys/:id", delete(api_keys::revoke_api_key))
@@ -116,6 +132,32 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
             state.clone(),
             middleware::require_dispatcher_auth,
         ))
+        // MCP route: auth + body limit + WWW-Authenticate on 401.
+        // Mounted separately (outside the shared route_layer) so that the
+        // map_response_with_state layer wraps the entire auth+handler stack and
+        // can inject WWW-Authenticate on the auth 401 too.
+        .merge(mcp_router(state))
+}
+
+/// MCP endpoint with its own layering stack:
+///   map_response_with_state (outer, sees auth 401s)
+///     → require_dispatcher_auth (route_layer)
+///       → post(mcp::handle) with DefaultBodyLimit
+///
+/// Keeping it separate from data_router ensures the map_response layer wraps
+/// the whole auth+handler stack — a route-level layer on a route inside a
+/// router with route_layer would NOT see the auth 401.
+fn mcp_router(state: &AppState) -> Router<AppState> {
+    Router::new()
+        .route(
+            "/dispatch/mcp",
+            post(mcp::handle).layer(DefaultBodyLimit::max(1024 * 1024)),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            middleware::require_dispatcher_auth,
+        ))
+        .layer(axum::middleware::map_response_with_state(state.clone(), mcp_www_authenticate))
 }
 
 /// Presigned blob byte-transfer routes. Token-authenticated via the `token` query

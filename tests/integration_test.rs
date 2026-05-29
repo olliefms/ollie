@@ -1317,14 +1317,18 @@ async fn test_dispatcher_refresh() {
         }))
         .await;
     assert_eq!(login.status_code(), 200);
-    let token = login.json::<serde_json::Value>()["token"]
-        .as_str()
+    let set_cookie = login.headers()
+        .get("set-cookie")
+        .expect("login should return refresh cookie")
+        .to_str()
         .unwrap()
         .to_string();
+    // Extract the `ollie_refresh=<value>` portion from the Set-Cookie header.
+    let cookie_kv = set_cookie.split(';').next().unwrap().trim().to_string();
 
-    // Refresh the token
+    // Refresh using the HttpOnly cookie (no Authorization header needed).
     let refresh = server.post("/dispatch/auth/refresh")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header(header::COOKIE, cookie_kv)
         .await;
     assert_eq!(refresh.status_code(), 200);
     let body = refresh.json::<serde_json::Value>();

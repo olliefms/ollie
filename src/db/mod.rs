@@ -1,6 +1,9 @@
 // src/db/mod.rs
 pub mod blob_ops;
 pub mod dispatcher_api_key_ops;
+pub mod oauth_client_ops;
+pub mod refresh_token_ops;
+pub mod authorization_code_ops;
 pub mod dispatcher_ops;
 pub mod driver_credentials_ops;
 pub mod driver_ops;
@@ -26,6 +29,9 @@ pub struct DbClient {
     pub dispatcher_table: Table,
     pub dispatcher_credentials_table: Table,
     pub dispatcher_api_key_table: Table,
+    pub refresh_token_table: Table,
+    pub oauth_client_table: Table,
+    pub authorization_code_table: Table,
     pub driver_credentials_table: Table,
     pub driver_passkey_credentials_table: Table,
     pub driver_table: Table,
@@ -103,11 +109,35 @@ impl DbClient {
             empty_dispatcher_api_key_batch,
         ).await?;
 
+        let refresh_token_table = open_or_create(
+            &conn,
+            "refresh_tokens",
+            refresh_token_schema(),
+            empty_refresh_token_batch,
+        ).await?;
+
+        let oauth_client_table = open_or_create(
+            &conn,
+            "oauth_clients",
+            oauth_client_schema(),
+            empty_oauth_client_batch,
+        ).await?;
+
+        let authorization_code_table = open_or_create(
+            &conn,
+            "authorization_codes",
+            authorization_code_schema(),
+            empty_authorization_code_batch,
+        ).await?;
+
         Ok(Self {
             blob_table,
             dispatcher_table,
             dispatcher_credentials_table,
             dispatcher_api_key_table,
+            refresh_token_table,
+            oauth_client_table,
+            authorization_code_table,
             driver_credentials_table,
             driver_passkey_credentials_table,
             driver_table,
@@ -736,6 +766,90 @@ fn empty_dispatcher_api_key_batch(schema: Arc<Schema>) -> Result<RecordBatch, Ap
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn oauth_client_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("client_name", DataType::Utf8, true),
+        Field::new("redirect_uris", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_oauth_client_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn authorization_code_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("code_hash", DataType::Utf8, false),
+        Field::new("client_id", DataType::Utf8, false),
+        Field::new("redirect_uri", DataType::Utf8, false),
+        Field::new("code_challenge", DataType::Utf8, false),
+        Field::new("subject_type", DataType::Utf8, false),
+        Field::new("subject_id", DataType::Utf8, false),
+        Field::new("resource", DataType::Utf8, false),
+        Field::new("scope", DataType::Utf8, true),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("expires_at", DataType::Utf8, false),
+        Field::new("consumed_at", DataType::Utf8, true),
+    ]))
+}
+
+fn empty_authorization_code_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn refresh_token_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("token_hash", DataType::Utf8, false),
+        Field::new("subject_type", DataType::Utf8, false),
+        Field::new("subject_id", DataType::Utf8, false),
+        Field::new("client_id", DataType::Utf8, true),
+        Field::new("family_id", DataType::Utf8, false),
+        Field::new("token_version", DataType::Int64, false),
+        Field::new("issued_at", DataType::Utf8, false),
+        Field::new("expires_at", DataType::Utf8, false),
+        Field::new("consumed_at", DataType::Utf8, true),
+        Field::new("revoked_at", DataType::Utf8, true),
+        Field::new("last_used_at", DataType::Utf8, true),
+    ]))
+}
+
+fn empty_refresh_token_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
