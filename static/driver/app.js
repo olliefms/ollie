@@ -1,4 +1,5 @@
 import { isAuthenticated } from './utils/auth.js';
+import { tryRefresh } from './utils/api.js';
 import { renderLogin } from './pages/login.js';
 import { renderTrips } from './pages/trips.js';
 
@@ -16,6 +17,12 @@ export function replaceNavigate(path) {
 
 async function route() {
   const path = window.location.pathname;
+
+  // If no access token in storage, attempt a silent refresh via HttpOnly cookie
+  // before deciding whether the user is authenticated.
+  if (!isAuthenticated()) {
+    await tryRefresh();
+  }
 
   if (path === '/driver' || path === '/driver/') {
     if (isAuthenticated()) {
