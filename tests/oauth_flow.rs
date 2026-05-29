@@ -12,7 +12,7 @@ use ollie::{
     api,
     config::Config,
     db::DbClient,
-    models::{DispatcherCredentials, DispatcherRecord, DispatcherStatus},
+    models::{DispatcherApiKey, DispatcherCredentials, DispatcherRecord, DispatcherStatus},
     storage::BlobStore,
     AppState,
 };
@@ -297,6 +297,56 @@ async fn full_oauth_dance() {
     assert!(!new_access.is_empty(),  "refreshed access_token must be non-empty");
     assert!(!new_refresh.is_empty(), "rotated refresh_token must be non-empty");
     assert_ne!(new_refresh, refresh_token, "refresh_token must be rotated");
+}
+
+/// 5b. Static olld_ API key authenticates /dispatch/mcp after mcp_router extraction.
+///     Regression guard for the headless/scripting auth path.
+#[tokio::test]
+async fn olld_api_key_authenticates_mcp() {
+    let (server, db, _b, _d) = build_app().await;
+
+    let email    = "apikey_mcp@example.com";
+    let password = "hunter2_long_enough_password";
+    let dispatcher_id = seed_dispatcher(&db, email, password).await;
+
+    let plaintext  = format!("olld_{}", "s3cr3tSuffix1234567890abcdef");
+    let key_hash   = hex::encode(Sha256::digest(plaintext.as_bytes()));
+    let key_prefix = plaintext.chars().take(12).collect::<String>();
+    let now        = Utc::now();
+
+    db.insert_dispatcher_api_key(&DispatcherApiKey {
+        id:           Uuid::new_v4(),
+        dispatcher_id,
+        label:        "test".into(),
+        key_hash,
+        key_prefix,
+        created_at:   now,
+        expires_at:   now + chrono::Duration::days(30),
+        revoked_at:   None,
+        last_used_at: None,
+    }).await.unwrap();
+
+    let mcp_resp = server.post("/dispatch/mcp")
+        .add_header(header::AUTHORIZATION, format!("Bearer {plaintext}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "t", "version": "1" }
+            }
+        }))
+        .await;
+
+    assert_eq!(
+        mcp_resp.status_code(),
+        200,
+        "olld_ API key must authenticate /dispatch/mcp; status={}, body={:?}",
+        mcp_resp.status_code(),
+        mcp_resp.text(),
+    );
 }
 
 /// 5. Bad PKCE verifier → 400 with error == "invalid_grant".
