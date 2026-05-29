@@ -29,6 +29,8 @@ pub struct Config {
     /// Empty when unset — the presigned MCP tools error clearly in that case rather than
     /// emitting an unusable relative URL.
     pub public_base_url: String,
+    /// True when `public_base_url` starts with `https://`; used to set the Secure flag on cookies.
+    pub cookie_secure: bool,
     /// Default TTL (seconds) for presigned blob URLs when the caller omits one.
     pub blob_presign_ttl_secs: u64,
     /// Hard cap (seconds) on presigned blob URL TTL, regardless of caller request.
@@ -57,6 +59,11 @@ impl Config {
             .unwrap_or_else(|_| "America/New_York".into());
         terminal_timezone.parse::<chrono_tz::Tz>()
             .map_err(|_| format!("TERMINAL_TIMEZONE '{terminal_timezone}' is not a valid IANA timezone"))?;
+        let public_base_url = env::var("OLLIE_PUBLIC_BASE_URL")
+            .unwrap_or_default()
+            .trim_end_matches('/')
+            .to_string();
+        let cookie_secure = public_base_url.starts_with("https://");
         Ok(Self {
             admin_api_key,
             port: env::var("PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(3000),
@@ -96,10 +103,8 @@ impl Config {
             terminal_timezone,
             free_dwell_minutes: env::var("OLLIE_FREE_DWELL_MINUTES")
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(120),
-            public_base_url: env::var("OLLIE_PUBLIC_BASE_URL")
-                .unwrap_or_default()
-                .trim_end_matches('/')
-                .to_string(),
+            public_base_url,
+            cookie_secure,
             blob_presign_ttl_secs: env::var("OLLIE_BLOB_PRESIGN_TTL_SECS")
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(300),
             blob_presign_max_ttl_secs: env::var("OLLIE_BLOB_PRESIGN_MAX_TTL_SECS")
