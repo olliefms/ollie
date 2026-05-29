@@ -72,7 +72,9 @@ async function tryRefresh() {
     });
     if (!res.ok) return false;
     const data = await res.json();
-    saveToken(data.token || data.access_token);
+    const token = data.token || data.access_token;
+    if (!token) return false;
+    saveToken(token);
     return true;
   } catch {
     return false;
