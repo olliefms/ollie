@@ -177,6 +177,12 @@ pub async fn refresh(
     let creds = state.db.get_dispatcher_credentials(row.subject_id).await?
         .ok_or(AppError::Unauthorized)?;
 
+    if let Some(locked_until) = creds.locked_until {
+        if locked_until > Utc::now() {
+            return Err(AppError::Unauthorized);
+        }
+    }
+
     match refresh_tokens::rotate(&state.db, &secret, creds.token_version, Utc::now()).await? {
         refresh_tokens::RotateResult::Rotated(next) => {
             let dispatcher = state.db.get_dispatcher_by_id(row.subject_id).await
