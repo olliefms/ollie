@@ -44,6 +44,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 bcrypt = "0.15"
 dashmap = "5"
 rand = "0.8"
+url = "2"
 
 [dev-dependencies]
 axum-test = "15"
