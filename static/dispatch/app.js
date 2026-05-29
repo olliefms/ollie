@@ -62,6 +62,25 @@ function isAuthenticated() {
   return true;
 }
 
+// ─── Token refresh ───────────────────────────────────────────
+
+async function tryRefresh() {
+  try {
+    const res = await fetch(`${AUTH_BASE}/refresh`, {
+      method: 'POST',
+      credentials: 'same-origin',
+    });
+    if (!res.ok) return false;
+    const data = await res.json();
+    const token = data.token || data.access_token;
+    if (!token) return false;
+    saveToken(token);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ─── API fetch wrapper ───────────────────────────────────────
 
 async function apiFetch(path, options = {}) {
@@ -76,6 +95,17 @@ async function apiFetch(path, options = {}) {
   const res = await fetch(path, { ...options, headers });
 
   if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      const newToken = getToken();
+      const retryHeaders = {
+        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
+        ...(newToken ? { Authorization: `Bearer ${newToken}` } : {}),
+        ...(options.headers || {}),
+      };
+      const retry = await fetch(path, { ...options, headers: retryHeaders });
+      if (retry.status !== 401) return retry;
+    }
     clearToken();
     showLogin();
     throw new Error('Unauthorized — please sign in again.');
@@ -1582,7 +1612,11 @@ function initSidebar() {
 
   const logoutBtn = document.getElementById('logout-btn');
   if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => {
+    logoutBtn.addEventListener('click', async () => {
+      await fetch(`${AUTH_BASE}/logout`, {
+        method: 'POST',
+        credentials: 'same-origin',
+      }).catch(() => {});
       clearToken();
       clearEventsRefresh();
       showLogin();
@@ -1592,7 +1626,7 @@ function initSidebar() {
 
 // ─── Boot ────────────────────────────────────────────────────
 
-function boot() {
+async function boot() {
   initLoginForm();
   initSidebar();
 
@@ -1601,7 +1635,14 @@ function boot() {
     const { view, params } = decodeViewHash(window.location.hash);
     _renderView(view, params);
   } else {
-    showLogin();
+    const refreshed = await tryRefresh();
+    if (refreshed) {
+      showApp();
+      const { view, params } = decodeViewHash(window.location.hash);
+      _renderView(view, params);
+    } else {
+      showLogin();
+    }
   }
 }
 
