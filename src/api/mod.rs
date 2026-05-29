@@ -556,6 +556,7 @@ pub fn router(state: AppState) -> Router {
         .merge(dispatcher_auth)
         .merge(dispatcher_public)
         .merge(driver_portal)
+        .merge(oauth::router())
         .nest_service("/driver", driver_static)
         .nest_service("/dispatch", dispatch_static)
         .with_state(state)
