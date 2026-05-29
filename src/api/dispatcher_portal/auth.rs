@@ -26,6 +26,50 @@ pub(crate) fn dummy_hash() -> &'static str {
     DUMMY_HASH.get_or_init(|| bcrypt::hash("dummy-sentinel", 12).expect("bcrypt init failed"))
 }
 
+/// Verify a dispatcher's password and maintain the failed-attempt lockout
+/// counter. Returns `Ok(true)` on a valid password (resetting the counter) and
+/// `Ok(false)` on an invalid one (incrementing `failed_attempts` and applying
+/// the lockout backoff). Persists `creds` either way. Callers MUST reject an
+/// already-locked account (`creds.locked_until`) BEFORE calling. Shared by
+/// `/dispatch/auth/login` and `/oauth/authorize` so the lockout gate cannot be
+/// bypassed by choosing a different endpoint.
+pub(crate) async fn verify_dispatcher_password(
+    state: &AppState,
+    creds: &mut crate::models::DispatcherCredentials,
+    password: &str,
+) -> Result<bool, AppError> {
+    let pw = password.to_string();
+    let hash = creds.password_hash.clone();
+    let valid = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &hash))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| AppError::Internal(format!("bcrypt error: {e}")))?;
+
+    if !valid {
+        creds.failed_attempts += 1;
+        if creds.failed_attempts >= 5 {
+            let extra_failures = creds.failed_attempts - 5;
+            let backoff_mins = 15u64 * 2u64.pow(extra_failures as u32);
+            let backoff_mins = backoff_mins.min(24 * 60);
+            creds.locked_until = Some(Utc::now() + chrono::Duration::minutes(backoff_mins as i64));
+            tracing::warn!(
+                failed_attempts = creds.failed_attempts,
+                locked_until = ?creds.locked_until,
+                "dispatcher lockout"
+            );
+        }
+        creds.updated_at = Utc::now();
+        state.db.upsert_dispatcher_credentials(creds).await?;
+        return Ok(false);
+    }
+
+    creds.failed_attempts = 0;
+    creds.locked_until = None;
+    creds.updated_at = Utc::now();
+    state.db.upsert_dispatcher_credentials(creds).await?;
+    Ok(true)
+}
+
 // --- Request/Response types ---
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -102,38 +146,10 @@ pub async fn login(
         }
     }
 
-    // Always run bcrypt to avoid timing oracle
-    let password = req.password.clone();
-    let hash = creds.password_hash.clone();
-    let password_valid = tokio::task::spawn_blocking(move || bcrypt::verify(&password, &hash))
-        .await
-        .map_err(|e| AppError::Internal(e.to_string()))?
-        .map_err(|e| AppError::Internal(format!("bcrypt error: {e}")))?;
-
-    if !password_valid {
-        creds.failed_attempts += 1;
-        if creds.failed_attempts >= 5 {
-            let extra_failures = creds.failed_attempts - 5;
-            let backoff_mins = 15u64 * 2u64.pow(extra_failures as u32);
-            let backoff_mins = backoff_mins.min(24 * 60);
-            creds.locked_until = Some(Utc::now() + chrono::Duration::minutes(backoff_mins as i64));
-            tracing::warn!(
-                dispatcher_id = %dispatcher.id,
-                failed_attempts = creds.failed_attempts,
-                locked_until = ?creds.locked_until,
-                "dispatcher login lockout"
-            );
-        }
-        creds.updated_at = Utc::now();
-        state.db.upsert_dispatcher_credentials(&creds).await?;
+    // Verify password + maintain the failed-attempt lockout (shared with /oauth/authorize).
+    if !verify_dispatcher_password(&state, &mut creds, &req.password).await? {
         return Err(AppError::Unauthorized);
     }
-
-    // Valid password — reset lockout state
-    creds.failed_attempts = 0;
-    creds.locked_until = None;
-    creds.updated_at = Utc::now();
-    state.db.upsert_dispatcher_credentials(&creds).await?;
 
     let token = encode_dispatcher_jwt(dispatcher.id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
 

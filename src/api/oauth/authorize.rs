@@ -140,7 +140,7 @@ pub async fn authorize_decision(
         return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
     }
 
-    let creds = match state.db.get_dispatcher_credentials(dispatcher.id).await {
+    let mut creds = match state.db.get_dispatcher_credentials(dispatcher.id).await {
         Ok(Some(c)) => c,
         _ => {
             // Equalize timing for missing-credentials path.
@@ -157,10 +157,12 @@ pub async fn authorize_decision(
         }
     }
 
-    let pw = f.password.clone();
-    let hash = creds.password_hash.clone();
-    let ok = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &hash)).await
-        .ok().and_then(|r| r.ok()).unwrap_or(false);
+    // Shared verify + lockout policy — increments failed_attempts / locks the
+    // account on failure, so OAuth can't be used to bypass the login lockout.
+    let ok = match crate::api::dispatcher_portal::auth::verify_dispatcher_password(&state, &mut creds, &f.password).await {
+        Ok(v) => v,
+        Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Html("<h1>Server error</h1>".to_string())).into_response(),
+    };
     if !ok {
         return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
     }

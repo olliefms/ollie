@@ -23,14 +23,32 @@ pub struct RegisterResponse {
     pub client_name: Option<String>,
 }
 
-/// A redirect URI is acceptable if it is an https URL or a loopback http URL.
+/// Script-capable / dangerous URI schemes that must never be accepted as a
+/// redirect target, even though a desktop client may register a custom scheme.
+const DENIED_SCHEMES: &[&str] = &[
+    "javascript", "data", "vbscript", "file", "blob", "about", "mailto", "ftp",
+];
+
+/// A scheme name must be well-formed per RFC 3986: `[a-z][a-z0-9+.-]*`
+/// (url::Url already lowercases the scheme).
+fn is_valid_scheme_name(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '+' | '-' | '.'))
+}
+
+/// A redirect URI is acceptable if it is an https URL, a loopback http URL, or
+/// a well-formed custom scheme (for native/desktop clients) that is not in the
+/// script-capable denylist. Arbitrary non-loopback `http://` is rejected.
 fn redirect_uri_ok(uri: &str) -> bool {
     if let Ok(u) = url::Url::parse(uri) {
         match u.scheme() {
             "https" => true,
             "http" => matches!(u.host_str(), Some("127.0.0.1") | Some("localhost") | Some("[::1]")),
-            // Desktop custom schemes (e.g. claude://) are allowed.
-            s => !s.is_empty() && s != "http",
+            s => is_valid_scheme_name(s) && !DENIED_SCHEMES.contains(&s),
         }
     } else {
         false
@@ -75,7 +93,14 @@ mod tests {
         assert!(redirect_uri_ok("http://127.0.0.1:33418/callback"));
         assert!(redirect_uri_ok("http://localhost:8080/cb"));
         assert!(redirect_uri_ok("claude://callback"));
+        assert!(redirect_uri_ok("cursor://anysphere.cursor-retrieval/oauth/cb"));
         assert!(!redirect_uri_ok("http://evil.com/cb"));
         assert!(!redirect_uri_ok("not a url"));
+        // Script-capable / dangerous schemes must be rejected.
+        assert!(!redirect_uri_ok("javascript:alert(1)"));
+        assert!(!redirect_uri_ok("data:text/html,<script>alert(1)</script>"));
+        assert!(!redirect_uri_ok("vbscript:msgbox(1)"));
+        assert!(!redirect_uri_ok("file:///etc/passwd"));
+        assert!(!redirect_uri_ok("blob:https://x/uuid"));
     }
 }
