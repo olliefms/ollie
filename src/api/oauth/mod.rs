@@ -35,9 +35,9 @@ pub fn router() -> Router<AppState> {
 
 /// OAuth error rendered per-spec. Token/DCR → JSON; authorize handles its own
 /// (redirect vs error page) in `authorize.rs`.
-#[allow(dead_code)] // filled in by later tasks
 pub enum OauthError {
     InvalidRequest(String),
+    #[allow(dead_code)] // no endpoint uses client-credentials auth yet
     InvalidClient(String),
     InvalidGrant(String),
     UnsupportedGrantType,

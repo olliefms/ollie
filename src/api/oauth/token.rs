@@ -115,7 +115,13 @@ async fn refresh_grant(state: &AppState, f: TokenForm) -> Result<Json<TokenRespo
                 scope: None,
             }))
         }
-        _ => Err(OauthError::InvalidGrant("refresh_token invalid or reused".into())),
+        refresh_tokens::RotateResult::ReusedFamilyRevoked => {
+            tracing::warn!(subject_id = %row.subject_id, "oauth refresh-token reuse detected; family revoked");
+            Err(OauthError::InvalidGrant("refresh_token invalid or reused".into()))
+        }
+        refresh_tokens::RotateResult::Invalid => {
+            Err(OauthError::InvalidGrant("refresh_token invalid or reused".into()))
+        }
     }
 }
 
