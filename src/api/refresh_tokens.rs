@@ -148,7 +148,10 @@ pub fn clear_cookie_header(secure: bool) -> String {
 pub fn read_cookie(headers: &axum::http::HeaderMap) -> Option<String> {
     let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
     raw.split(';')
-        .filter_map(|kv| kv.trim().split_once('='))
+        .filter_map(|kv| {
+            let mut parts = kv.trim().splitn(2, '=');
+            Some((parts.next()?, parts.next()?))
+        })
         .find(|(k, _)| *k == REFRESH_COOKIE)
         .map(|(_, v)| v.to_string())
 }
