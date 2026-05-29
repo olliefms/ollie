@@ -1,6 +1,7 @@
 // src/db/mod.rs
 pub mod blob_ops;
 pub mod dispatcher_api_key_ops;
+pub mod oauth_client_ops;
 pub mod refresh_token_ops;
 pub mod dispatcher_ops;
 pub mod driver_credentials_ops;
