@@ -18,6 +18,8 @@ use uuid::Uuid;
 use webauthn_rs::prelude::Passkey;
 
 use super::jwt::{decode_driver_jwt, encode_driver_jwt};
+use crate::api::refresh_tokens;
+use axum::http::header::SET_COOKIE;
 
 // --- Phone normalization ---
 
@@ -170,7 +172,17 @@ pub async fn verify(
 
     tracing::info!(driver_id = %req.driver_id, "driver auth via passkey succeeded");
 
-    Ok(Json(json!({ "token": token })))
+    let issued = refresh_tokens::issue(
+        &state.db, "driver", req.driver_id, None, creds.token_version, Utc::now(),
+    ).await?;
+    let cookie = refresh_tokens::set_cookie_header(&issued.secret, state.config.cookie_secure);
+
+    let mut response = Json(json!({ "token": token })).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+    );
+    Ok(response)
 }
 
 pub async fn pin_auth(
@@ -241,7 +253,17 @@ pub async fn pin_auth(
 
     tracing::info!(driver_id = %driver.id, "driver auth via PIN succeeded");
 
-    Ok(Json(json!({ "token": token })).into_response())
+    let issued = refresh_tokens::issue(
+        &state.db, "driver", driver.id, None, creds.token_version, Utc::now(),
+    ).await?;
+    let cookie = refresh_tokens::set_cookie_header(&issued.secret, state.config.cookie_secure);
+
+    let mut response = Json(json!({ "token": token })).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+    );
+    Ok(response)
 }
 
 pub async fn register_passkey(
@@ -341,41 +363,60 @@ pub async fn refresh(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
-    let token = bearer_token(&headers).ok_or(AppError::Unauthorized)?;
-    let claims = decode_driver_jwt(token, &state.config.driver_jwt_secret)?;
+    let secret = refresh_tokens::read_cookie(&headers).ok_or(AppError::Unauthorized)?;
 
-    // Check iat: refresh window is 7 days
-    let now = jsonwebtoken::get_current_timestamp() as usize;
-    let max_refresh_secs = 7 * 24 * 3600;
-    if now.saturating_sub(claims.iat) > max_refresh_secs {
+    let hash = refresh_tokens::hash_token(&secret);
+    let row = state.db.get_refresh_token_by_hash(&hash).await?
+        .ok_or(AppError::Unauthorized)?;
+    if row.subject_type != "driver" {
         return Err(AppError::Unauthorized);
     }
-
-    let driver_id: Uuid = claims.driver_id.parse()
-        .map_err(|_| AppError::Unauthorized)?;
-
-    let creds = state.db.get_driver_credentials(driver_id).await?
+    let creds = state.db.get_driver_credentials(row.subject_id).await?
         .ok_or(AppError::Unauthorized)?;
 
-    if creds.token_version != claims.token_version {
-        return Err(AppError::Unauthorized);
-    }
-
-    // Fix 3: locked drivers must not be able to extend a session
     if let Some(locked_until) = creds.locked_until {
         if locked_until > Utc::now() {
             return Err(AppError::Unauthorized);
         }
     }
 
-    let driver = state.db.get_driver_by_id(driver_id).await?;
-    if driver.status == DriverStatus::Inactive {
-        return Err(AppError::Unauthorized);
+    match refresh_tokens::rotate(&state.db, &secret, creds.token_version, Utc::now()).await? {
+        refresh_tokens::RotateResult::Rotated(next) => {
+            let driver = state.db.get_driver_by_id(row.subject_id).await
+                .map_err(|_| AppError::Unauthorized)?;
+            if driver.status == DriverStatus::Inactive {
+                return Err(AppError::Unauthorized);
+            }
+            let token = encode_driver_jwt(row.subject_id, creds.token_version, &state.config.driver_jwt_secret)?;
+            let cookie = refresh_tokens::set_cookie_header(&next.secret, state.config.cookie_secure);
+            let mut response = Json(json!({ "token": token })).into_response();
+            response.headers_mut().insert(
+                SET_COOKIE,
+                cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+            );
+            Ok(response)
+        }
+        _ => Err(AppError::Unauthorized),
     }
+}
 
-    let new_token = encode_driver_jwt(driver_id, creds.token_version, &state.config.driver_jwt_secret)?;
-
-    Ok(Json(json!({ "token": new_token })))
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, AppError> {
+    if let Some(secret) = refresh_tokens::read_cookie(&headers) {
+        let hash = refresh_tokens::hash_token(&secret);
+        if let Some(row) = state.db.get_refresh_token_by_hash(&hash).await? {
+            state.db.revoke_refresh_token_family(row.family_id, Utc::now()).await?;
+        }
+    }
+    let cookie = refresh_tokens::clear_cookie_header(state.config.cookie_secure);
+    let mut response = StatusCode::OK.into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+    );
+    Ok(response)
 }
 
 #[cfg(test)]

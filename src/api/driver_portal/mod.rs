@@ -16,6 +16,7 @@ pub fn auth_router() -> Router<AppState> {
         .route("/auth/pin", post(auth::pin_auth))
         .route("/auth/register-passkey", post(auth::register_passkey))
         .route("/auth/refresh", post(auth::refresh))
+        .route("/auth/logout", post(auth::logout))
 }
 
 pub fn portal_router(state: &AppState) -> Router<AppState> {
