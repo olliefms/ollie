@@ -24,6 +24,7 @@ pub fn auth_router() -> Router<AppState> {
     Router::new()
         .route("/dispatch/auth/login", post(auth::login))
         .route("/dispatch/auth/refresh", post(auth::refresh))
+        .route("/dispatch/auth/logout", post(auth::logout))
 }
 
 pub fn data_router(state: &AppState) -> Router<AppState> {
