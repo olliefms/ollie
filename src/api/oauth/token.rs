@@ -97,9 +97,23 @@ async fn refresh_grant(state: &AppState, f: TokenForm) -> Result<Json<TokenRespo
     let row = state.db.get_refresh_token_by_hash(&hash).await
         .map_err(|e| OauthError::ServerError(e.to_string()))?
         .ok_or_else(|| OauthError::InvalidGrant("unknown refresh_token".into()))?;
+    if row.subject_type != "dispatcher" {
+        return Err(OauthError::InvalidGrant("unsupported subject".into()));
+    }
     let creds = state.db.get_dispatcher_credentials(row.subject_id).await
         .map_err(|e| OauthError::ServerError(e.to_string()))?
         .ok_or_else(|| OauthError::InvalidGrant("unknown subject".into()))?;
+
+    if let Some(locked_until) = creds.locked_until {
+        if locked_until > Utc::now() {
+            return Err(OauthError::InvalidGrant("account locked".into()));
+        }
+    }
+    let dispatcher = state.db.get_dispatcher_by_id(row.subject_id).await
+        .map_err(|_| OauthError::InvalidGrant("unknown subject".into()))?;
+    if dispatcher.status == crate::models::DispatcherStatus::Inactive {
+        return Err(OauthError::InvalidGrant("account inactive".into()));
+    }
 
     match refresh_tokens::rotate(&state.db, &secret, creds.token_version, Utc::now()).await
         .map_err(|e| OauthError::ServerError(e.to_string()))?
