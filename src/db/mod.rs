@@ -26,6 +26,7 @@ pub struct DbClient {
     pub dispatcher_table: Table,
     pub dispatcher_credentials_table: Table,
     pub dispatcher_api_key_table: Table,
+    pub refresh_token_table: Table,
     pub driver_credentials_table: Table,
     pub driver_passkey_credentials_table: Table,
     pub driver_table: Table,
@@ -103,11 +104,19 @@ impl DbClient {
             empty_dispatcher_api_key_batch,
         ).await?;
 
+        let refresh_token_table = open_or_create(
+            &conn,
+            "refresh_tokens",
+            refresh_token_schema(),
+            empty_refresh_token_batch,
+        ).await?;
+
         Ok(Self {
             blob_table,
             dispatcher_table,
             dispatcher_credentials_table,
             dispatcher_api_key_table,
+            refresh_token_table,
             driver_credentials_table,
             driver_passkey_credentials_table,
             driver_table,
@@ -736,6 +745,40 @@ fn empty_dispatcher_api_key_batch(schema: Arc<Schema>) -> Result<RecordBatch, Ap
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn refresh_token_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("token_hash", DataType::Utf8, false),
+        Field::new("subject_type", DataType::Utf8, false),
+        Field::new("subject_id", DataType::Utf8, false),
+        Field::new("client_id", DataType::Utf8, true),
+        Field::new("family_id", DataType::Utf8, false),
+        Field::new("token_version", DataType::Int64, false),
+        Field::new("issued_at", DataType::Utf8, false),
+        Field::new("expires_at", DataType::Utf8, false),
+        Field::new("consumed_at", DataType::Utf8, true),
+        Field::new("revoked_at", DataType::Utf8, true),
+        Field::new("last_used_at", DataType::Utf8, true),
+    ]))
+}
+
+fn empty_refresh_token_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
