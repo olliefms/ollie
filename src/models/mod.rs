@@ -1,3 +1,4 @@
+pub mod authorization_code;
 pub mod blob;
 pub mod dispatcher;
 pub mod dispatcher_api_key;
@@ -7,11 +8,13 @@ pub mod driver_credentials;
 pub mod event;
 pub mod facility;
 pub mod load;
+pub mod oauth_client;
 pub mod refresh_token;
 pub mod trailer;
 pub mod trip;
 pub mod truck;
 
+pub use authorization_code::*;
 pub use blob::*;
 pub use dispatcher::*;
 pub use dispatcher_api_key::*;
@@ -21,6 +24,7 @@ pub use driver_credentials::*;
 pub use event::*;
 pub use facility::*;
 pub use load::*;
+pub use oauth_client::*;
 pub use refresh_token::*;
 pub use trailer::*;
 pub use trip::*;
