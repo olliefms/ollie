@@ -286,6 +286,7 @@ async fn full_oauth_dance() {
         .form(&[
             ("grant_type",    "refresh_token"),
             ("refresh_token", &refresh_token),
+            ("client_id",     &client_id),
         ])
         .await;
     assert_eq!(refresh_resp.status_code(), 200, "refresh grant must be 200");
@@ -297,6 +298,23 @@ async fn full_oauth_dance() {
     assert!(!new_access.is_empty(),  "refreshed access_token must be non-empty");
     assert!(!new_refresh.is_empty(), "rotated refresh_token must be non-empty");
     assert_ne!(new_refresh, refresh_token, "refresh_token must be rotated");
+
+    // 4f. A refresh with a client_id that doesn't match the token's bound
+    //     client must be rejected (OAuth 2.1 §4.1.3). The check runs before
+    //     rotation, so new_refresh is left intact.
+    let bad_client = server.post("/oauth/token")
+        .form(&[
+            ("grant_type",    "refresh_token"),
+            ("refresh_token", &new_refresh),
+            ("client_id",     "00000000-0000-0000-0000-000000000000"),
+        ])
+        .await;
+    assert_eq!(bad_client.status_code(), 400, "refresh with mismatched client_id must be 400");
+    assert_eq!(
+        bad_client.json::<serde_json::Value>()["error"].as_str(),
+        Some("invalid_grant"),
+        "mismatched client_id must yield invalid_grant",
+    );
 }
 
 /// 5b. Static olld_ API key authenticates /dispatch/mcp after mcp_router extraction.
