@@ -1,6 +1,7 @@
 // src/api/mod.rs
 pub mod auth;
 pub mod blob;
+pub mod refresh_tokens;
 pub mod utils;
 pub mod version;
 pub mod blobs;

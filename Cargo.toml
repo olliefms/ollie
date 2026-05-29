@@ -43,6 +43,7 @@ webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"]
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 bcrypt = "0.15"
 dashmap = "5"
+rand = "0.8"
 
 [dev-dependencies]
 axum-test = "15"
