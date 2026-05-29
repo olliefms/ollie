@@ -1,5 +1,5 @@
 // src/api/oauth/authorize.rs
-use crate::{models::AuthorizationCode, AppState};
+use crate::{models::{AuthorizationCode, DispatcherStatus}, AppState};
 use axum::{
     extract::{Query, State},
     http::{header::LOCATION, StatusCode},
@@ -69,9 +69,11 @@ pub async fn authorize_page(
     if p.response_type != "code" {
         return (StatusCode::BAD_REQUEST, "unsupported response_type").into_response();
     }
-    if let Err(e) = validate(&state, &p.client_id, &p.redirect_uri, &p.code_challenge, &p.code_challenge_method).await {
-        return (StatusCode::BAD_REQUEST, Html(format!("<h1>Authorization error</h1><p>{}</p>", h(&e)))).into_response();
-    }
+    let client = match validate(&state, &p.client_id, &p.redirect_uri, &p.code_challenge, &p.code_challenge_method).await {
+        Ok(c) => c,
+        Err(e) => return (StatusCode::BAD_REQUEST, Html(format!("<h1>Authorization error</h1><p>{}</p>", h(&e)))).into_response(),
+    };
+    let client_label = client.client_name.clone().unwrap_or_else(|| client.id.to_string());
     let hidden = |k: &str, v: &str| format!(r#"<input type="hidden" name="{k}" value="{}">"#, h(v));
     let page = format!(
         r#"<!doctype html><html><head><meta charset="utf-8"><title>Authorize Ollie</title>
@@ -88,7 +90,7 @@ button{{padding:.6rem 1rem;margin-right:.5rem}}</style></head>
 <button type="submit" name="decision" value="allow">Allow</button>
 <button type="submit" name="decision" value="deny">Deny</button>
 </form></body></html>"#,
-        client = h("Claude"),
+        client = h(&client_label),
         p_rt = hidden("response_type", &p.response_type),
         p_cid = hidden("client_id", &p.client_id),
         p_ru = hidden("redirect_uri", &p.redirect_uri),
@@ -125,12 +127,36 @@ pub async fn authorize_decision(
     let email = f.email.trim().to_lowercase();
     let dispatcher = match state.db.get_dispatcher_by_email(&email).await {
         Ok(Some(d)) => d,
-        _ => return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response(),
+        _ => {
+            // Equalize timing for unknown-email path: run bcrypt against a dummy hash (#107).
+            let pw = f.password.clone();
+            let dummy = crate::api::dispatcher_portal::auth::dummy_hash().to_string();
+            let _ = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &dummy)).await;
+            return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
+        }
     };
+
+    if dispatcher.status == DispatcherStatus::Inactive {
+        return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
+    }
+
     let creds = match state.db.get_dispatcher_credentials(dispatcher.id).await {
         Ok(Some(c)) => c,
-        _ => return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response(),
+        _ => {
+            // Equalize timing for missing-credentials path.
+            let pw = f.password.clone();
+            let dummy = crate::api::dispatcher_portal::auth::dummy_hash().to_string();
+            let _ = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &dummy)).await;
+            return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
+        }
     };
+
+    if let Some(locked_until) = creds.locked_until {
+        if locked_until > Utc::now() {
+            return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
+        }
+    }
+
     let pw = f.password.clone();
     let hash = creds.password_hash.clone();
     let ok = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &hash)).await

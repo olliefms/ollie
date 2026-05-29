@@ -22,7 +22,7 @@ use axum::http::header::SET_COOKIE;
 // Pre-computed dummy hash used to equalise response time for unknown-email logins.
 // Computed once at cost 12 (same as real passwords) so the timing profile matches.
 static DUMMY_HASH: OnceLock<String> = OnceLock::new();
-fn dummy_hash() -> &'static str {
+pub(crate) fn dummy_hash() -> &'static str {
     DUMMY_HASH.get_or_init(|| bcrypt::hash("dummy-sentinel", 12).expect("bcrypt init failed"))
 }
 
