@@ -380,13 +380,16 @@ pub async fn refresh(
         }
     }
 
+    // Reject inactive accounts before rotating, so an inactive driver's
+    // refresh attempt doesn't needlessly consume their token.
+    let driver = state.db.get_driver_by_id(row.subject_id).await
+        .map_err(|_| AppError::Unauthorized)?;
+    if driver.status == DriverStatus::Inactive {
+        return Err(AppError::Unauthorized);
+    }
+
     match refresh_tokens::rotate(&state.db, &secret, creds.token_version, Utc::now()).await? {
         refresh_tokens::RotateResult::Rotated(next) => {
-            let driver = state.db.get_driver_by_id(row.subject_id).await
-                .map_err(|_| AppError::Unauthorized)?;
-            if driver.status == DriverStatus::Inactive {
-                return Err(AppError::Unauthorized);
-            }
             let token = encode_driver_jwt(row.subject_id, creds.token_version, &state.config.driver_jwt_secret)?;
             let cookie = refresh_tokens::set_cookie_header(&next.secret, state.config.cookie_secure);
             let mut response = Json(json!({ "token": token })).into_response();
