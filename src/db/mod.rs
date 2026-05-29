@@ -28,6 +28,8 @@ pub struct DbClient {
     pub dispatcher_credentials_table: Table,
     pub dispatcher_api_key_table: Table,
     pub refresh_token_table: Table,
+    pub oauth_client_table: Table,
+    pub authorization_code_table: Table,
     pub driver_credentials_table: Table,
     pub driver_passkey_credentials_table: Table,
     pub driver_table: Table,
@@ -112,12 +114,28 @@ impl DbClient {
             empty_refresh_token_batch,
         ).await?;
 
+        let oauth_client_table = open_or_create(
+            &conn,
+            "oauth_clients",
+            oauth_client_schema(),
+            empty_oauth_client_batch,
+        ).await?;
+
+        let authorization_code_table = open_or_create(
+            &conn,
+            "authorization_codes",
+            authorization_code_schema(),
+            empty_authorization_code_batch,
+        ).await?;
+
         Ok(Self {
             blob_table,
             dispatcher_table,
             dispatcher_credentials_table,
             dispatcher_api_key_table,
             refresh_token_table,
+            oauth_client_table,
+            authorization_code_table,
             driver_credentials_table,
             driver_passkey_credentials_table,
             driver_table,
@@ -742,6 +760,56 @@ pub fn dispatcher_api_key_schema() -> Arc<Schema> {
 
 fn empty_dispatcher_api_key_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
     RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn oauth_client_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("client_name", DataType::Utf8, true),
+        Field::new("redirect_uris", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_oauth_client_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+pub fn authorization_code_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("code_hash", DataType::Utf8, false),
+        Field::new("client_id", DataType::Utf8, false),
+        Field::new("redirect_uri", DataType::Utf8, false),
+        Field::new("code_challenge", DataType::Utf8, false),
+        Field::new("subject_type", DataType::Utf8, false),
+        Field::new("subject_id", DataType::Utf8, false),
+        Field::new("resource", DataType::Utf8, false),
+        Field::new("scope", DataType::Utf8, true),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("expires_at", DataType::Utf8, false),
+        Field::new("consumed_at", DataType::Utf8, true),
+    ]))
+}
+
+fn empty_authorization_code_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
