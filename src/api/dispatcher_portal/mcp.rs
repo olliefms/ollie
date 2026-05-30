@@ -28,7 +28,7 @@ use rmcp::{
     model::{
         CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult,
         ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
-        Tool,
+        Tool, ToolAnnotations,
     },
     service::RequestContext,
     transport::streamable_http_server::{
@@ -140,9 +140,54 @@ fn tool_catalog() -> Vec<Tool> {
             let name = t["name"].as_str()?.to_string();
             let description = t["description"].as_str().unwrap_or("").to_string();
             let schema = t["inputSchema"].as_object().cloned().unwrap_or_default();
-            Some(Tool::new(name, description, Arc::new(schema)))
+            Some(
+                Tool::new(name.clone(), description, Arc::new(schema))
+                    .with_title(title_case(&name))
+                    .with_annotations(annotations_for(&name)),
+            )
         })
         .collect()
+}
+
+/// Behavioral hints for a tool (MCP `annotations`). Advisory only — the server
+/// still enforces its own guards; these just let clients gate/auto-confirm calls
+/// and let the agent reason about safety. Reviewed against actual tool behavior:
+/// `*_doctor` tools can apply repairs, so they are NOT marked read-only.
+fn annotations_for(name: &str) -> ToolAnnotations {
+    if name.starts_with("list_") || name.starts_with("get_") {
+        // Pure reads. destructive/idempotent hints are meaningless when read-only.
+        return ToolAnnotations::from_raw(None, Some(true), None, None, None);
+    }
+    let destructive = matches!(
+        name,
+        "delete_blob" | "cancel_trip" | "unassign_driver" | "detach_equipment"
+    );
+    // update_* set fields to a target value; dispatch/undispatch converge to a
+    // status — re-running with the same args is a no-op.
+    let idempotent =
+        name.starts_with("update_") || matches!(name, "dispatch_trip" | "undispatch_trip");
+    ToolAnnotations::from_raw(
+        None,
+        Some(false),
+        destructive.then_some(true),
+        idempotent.then_some(true),
+        None,
+    )
+}
+
+/// `list_loads` -> `List Loads`. Human-friendly display title; `name` stays the
+/// programmatic id.
+fn title_case(name: &str) -> String {
+    name.split('_')
+        .map(|word| {
+            let mut chars = word.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Serialize a tool handler's payload to a JSON `Value`. The ServerHandler wraps
@@ -1693,5 +1738,53 @@ mod tests {
                 "tool catalog must contain {expected}"
             );
         }
+    }
+
+    #[test]
+    fn tool_catalog_carries_titles_and_annotations() {
+        let catalog = tool_catalog();
+        let find = |n: &str| {
+            catalog
+                .iter()
+                .find(|t| t.name == n)
+                .unwrap_or_else(|| panic!("missing tool {n}"))
+        };
+
+        // Every tool has a human-friendly title and behavioral annotations.
+        for t in &catalog {
+            assert!(t.title.is_some(), "{} missing title", t.name);
+            assert!(t.annotations.is_some(), "{} missing annotations", t.name);
+        }
+        assert_eq!(find("list_loads").title.as_deref(), Some("List Loads"));
+
+        // read-only reads.
+        let a = find("list_drivers").annotations.as_ref().unwrap();
+        assert_eq!(a.read_only_hint, Some(true));
+        let a = find("get_load").annotations.as_ref().unwrap();
+        assert_eq!(a.read_only_hint, Some(true));
+
+        // destructive mutations.
+        let a = find("delete_blob").annotations.as_ref().unwrap();
+        assert_eq!(a.read_only_hint, Some(false));
+        assert_eq!(a.destructive_hint, Some(true));
+        let a = find("cancel_trip").annotations.as_ref().unwrap();
+        assert_eq!(a.destructive_hint, Some(true));
+
+        // idempotent mutations.
+        let a = find("update_trip").annotations.as_ref().unwrap();
+        assert_eq!(a.idempotent_hint, Some(true));
+        assert_eq!(a.read_only_hint, Some(false));
+        let a = find("dispatch_trip").annotations.as_ref().unwrap();
+        assert_eq!(a.idempotent_hint, Some(true));
+
+        // a plain additive write is neither read-only, destructive, nor idempotent.
+        let a = find("create_load").annotations.as_ref().unwrap();
+        assert_eq!(a.read_only_hint, Some(false));
+        assert_eq!(a.destructive_hint, None);
+        assert_eq!(a.idempotent_hint, None);
+
+        // *_doctor tools can apply repairs -> must NOT be read-only.
+        let a = find("facility_doctor").annotations.as_ref().unwrap();
+        assert_eq!(a.read_only_hint, Some(false));
     }
 }
