@@ -39,7 +39,7 @@ Other sessions — interactive or GHA-driven — may be working this repo at the
 
 2. **Start from green.** Run the test command on `main` before you touch anything. If it's red before you've done a thing, stop and tell the user — never build on a broken baseline, you'll never know which red is yours.
 
-3. **Implement on a branch, staying inside the issue's scope.** If the work starts pulling in things the issue didn't ask for, stop and ask rather than quietly growing the PR — scope creep is invisible to the reviewer until it's too late to undo.
+3. **Implement on a branch, staying inside the issue's scope.** For anything beyond a trivial fix, drive the implementation with subagents (`superpowers:subagent-driven-development`) rather than editing everything in this context — hand each subagent a scoped task plus the Critical Constraints and the version prohibition (below), and check `git diff --stat HEAD` after each one (subagents silently skip commits occasionally). This keeps the main context for triage and decisions instead of line-by-line edits. A genuinely one-line change doesn't need a subagent; most issues aren't one-line changes. If the work starts pulling in things the issue didn't ask for, stop and ask rather than quietly growing the PR — scope creep is invisible to the reviewer until it's too late to undo.
 
 4. **Self-review against the Shippability Bar**, then run one capped Opus pass (see below).
 
@@ -88,6 +88,7 @@ PR title: `<type>(<area>): <headline> (#<N>)`, body closes the issue. If any con
 | Inventing a Shippability Bar | It lives in the project guide. No bar there → stop. |
 | Growing PR scope mid-flight | Scope expands → stop and ask. |
 | Branching from a red baseline | Tests green on main *before* you branch. |
+| Hand-editing every file in the main context | Beyond a trivial fix, delegate to subagents (`superpowers:subagent-driven-development`). Keep this context for triage. |
 | Racing an issue another session holds | `work:in-progress` already set → stop. Take over only if the user confirms it's stale. |
 | Forgetting to claim before branching | Add `work:in-progress` + claim comment *before* the branch, or two sessions collide. |
 | Leaving `work:in-progress` stuck after you stop | Release on every exit — merge drops it, leave-open → `work:ready-for-review`, escalate → `work:blocked`, bail → remove. |
