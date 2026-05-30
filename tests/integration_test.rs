@@ -1642,39 +1642,59 @@ async fn test_mcp_structured_content_validates_against_output_schema() {
     let token = dispatcher_login(&server, "mcp_struct@example.com", "password-mcp-struct").await;
     let fac = create_test_facility(&server, "Struct Dock", "Dallas, TX").await;
     let load_id = create_test_load(&server, &fac).await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    upload_blob_via_presigned(&server, b"struct test blob".to_vec(), "text/plain", "struct.txt").await;
     let session = mcp_session(&server, &token).await;
 
     let tools = mcp_rpc(&server, &token, &session, "tools/list", serde_json::json!({})).await;
-    let out_schema = |name: &str| {
-        tools["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["name"] == name)
-            .unwrap_or_else(|| panic!("missing tool {name}"))["outputSchema"]
-            .clone()
-    };
 
-    // list_loads: the populated envelope validates against its declared schema.
-    let ll_schema = out_schema("list_loads");
-    assert!(ll_schema.is_object(), "list_loads must advertise an outputSchema");
-    let ll = mcp_rpc(&server, &token, &session, "tools/call",
-        serde_json::json!({ "name": "list_loads", "arguments": {} })).await;
-    let ll_struct = ll["result"]["structuredContent"].clone();
+    // Envelope-shape tools: a populated page that conforms to the declared schema.
+    assert_structured(&server, &token, &session, &tools, "list_loads", serde_json::json!({}), true).await;
+    assert_structured(&server, &token, &session, &tools, "list_trips", serde_json::json!({}), true).await;
+    assert_structured(&server, &token, &session, &tools, "list_blobs", serde_json::json!({}), true).await;
+    // Record-shape tools.
+    let gl = assert_structured(&server, &token, &session, &tools, "get_load", serde_json::json!({ "id": load_id }), false).await;
+    assert_eq!(gl["id"], load_id, "get_load structuredContent should carry the id");
+    let gt = assert_structured(&server, &token, &session, &tools, "get_trip", serde_json::json!({ "id": trip_id }), false).await;
+    assert_eq!(gt["id"], trip_id, "get_trip structuredContent should carry the id");
+
+    // search_blobs declares the envelope schema too (its populated path needs Ollama).
+    let search = tools["result"]["tools"].as_array().unwrap().iter()
+        .find(|t| t["name"] == "search_blobs").unwrap();
+    assert!(search["outputSchema"].is_object(), "search_blobs must advertise an outputSchema");
+}
+
+/// Call a tool, then assert its structuredContent conforms to the outputSchema it
+/// advertised in `tools`, that the backward-compatible text block is still emitted,
+/// and (for list tools) that the page is populated. Returns the structuredContent.
+async fn assert_structured(
+    server: &axum_test::TestServer,
+    token: &str,
+    session: &str,
+    tools: &serde_json::Value,
+    tool: &str,
+    args: serde_json::Value,
+    expect_items: bool,
+) -> serde_json::Value {
+    let schema = tools["result"]["tools"].as_array().unwrap().iter()
+        .find(|t| t["name"] == tool)
+        .unwrap_or_else(|| panic!("missing tool {tool}"))["outputSchema"].clone();
+    assert!(schema.is_object(), "{tool} must advertise an outputSchema");
+    let r = mcp_rpc(server, token, session, "tools/call",
+        serde_json::json!({ "name": tool, "arguments": args })).await;
+    let structured = r["result"]["structuredContent"].clone();
+    assert!(r["result"]["content"][0]["text"].is_string(), "{tool}: text block still emitted");
+    if expect_items {
+        assert!(
+            structured["items"].as_array().is_some_and(|a| !a.is_empty()),
+            "{tool} structuredContent should be populated: {structured}"
+        );
+    }
     assert!(
-        ll_struct["items"].as_array().is_some_and(|a| !a.is_empty()),
-        "structuredContent should carry the created load: {ll_struct}"
+        structured_conforms(&schema, &structured),
+        "{tool} structuredContent must conform to its outputSchema: {structured}"
     );
-    assert!(ll["result"]["content"][0]["text"].is_string(), "backward-compat text block still emitted");
-    assert!(structured_conforms(&ll_schema, &ll_struct), "list_loads structuredContent must conform to its outputSchema: {ll_struct}");
-
-    // get_load: a single-record structuredContent validates against its schema.
-    let gl_schema = out_schema("get_load");
-    let gl = mcp_rpc(&server, &token, &session, "tools/call",
-        serde_json::json!({ "name": "get_load", "arguments": { "id": load_id } })).await;
-    let gl_struct = gl["result"]["structuredContent"].clone();
-    assert_eq!(gl_struct["id"], load_id, "get_load structuredContent should carry the id");
-    assert!(structured_conforms(&gl_schema, &gl_struct), "get_load structuredContent must conform to its outputSchema: {gl_struct}");
+    structured
 }
 
 /// Cursor pagination over the MCP surface: following `nextCursor` to exhaustion
