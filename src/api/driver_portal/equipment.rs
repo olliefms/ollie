@@ -313,11 +313,18 @@ pub async fn list_available_trailers(
 
 /// The driver's current trip for equipment display. A trip the driver is
 /// physically running (Dispatched/InTransit — dispatch allows at most one per
-/// driver) always wins over a queued Assigned trip, so the tab reflects the
-/// equipment actually attached rather than the newest queued assignment.
+/// driver) always wins over a queued Planned/Assigned trip, so the tab reflects
+/// the equipment actually attached rather than the newest queued assignment.
 /// Within a status tier the most recent trip wins. Used to source the
 /// dispatch-managed truck and to fall back for trailers when the driver has no
 /// self-recorded equipment.
+///
+/// `Planned` is included because a trip can be created with driver/truck/trailer
+/// already attached (the dispatcher fills equipment at creation time) and never
+/// pass through the explicit `/assign` step — those trips show on the driver's
+/// "Upcoming" tab, so their equipment must surface here too. Without it the
+/// Equipment tab renders empty for any driver whose only assignment is a freshly
+/// created (still `Planned`) trip.
 async fn active_trip_for_driver(
     state: &AppState,
     driver_id: Uuid,
@@ -326,7 +333,7 @@ async fn active_trip_for_driver(
         .into_iter()
         .filter(|t| matches!(
             t.status,
-            TripStatus::Assigned | TripStatus::Dispatched | TripStatus::InTransit
+            TripStatus::Planned | TripStatus::Assigned | TripStatus::Dispatched | TripStatus::InTransit
         ))
         .collect();
     let status_rank = |s: &TripStatus| match s {
