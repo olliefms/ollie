@@ -23,6 +23,7 @@ use axum::{
     extract::{Path, State},
     Json,
 };
+use base64::Engine;
 use rmcp::{
     handler::server::ServerHandler,
     model::{
@@ -139,7 +140,10 @@ fn tool_catalog() -> Vec<Tool> {
         .filter_map(|t| {
             let name = t["name"].as_str()?.to_string();
             let description = t["description"].as_str().unwrap_or("").to_string();
-            let schema = t["inputSchema"].as_object().cloned().unwrap_or_default();
+            let mut schema = t["inputSchema"].as_object().cloned().unwrap_or_default();
+            if PAGINATED_LIST_TOOLS.contains(&name.as_str()) {
+                advertise_cursor(&mut schema);
+            }
             Some(
                 Tool::new(name.clone(), description, Arc::new(schema))
                     .with_title(title_case(&name))
@@ -147,6 +151,36 @@ fn tool_catalog() -> Vec<Tool> {
             )
         })
         .collect()
+}
+
+/// Cursor-paginated list tools — they accept `cursor` and return `nextCursor`.
+const PAGINATED_LIST_TOOLS: &[&str] = &[
+    "list_loads",
+    "list_trips",
+    "list_drivers",
+    "list_trucks",
+    "list_trailers",
+    "list_facilities",
+    "list_blobs",
+    "list_events",
+];
+
+/// Advertise the `cursor` pagination param on a list tool's input schema. The
+/// handlers read `cursor` regardless; this just makes it discoverable in
+/// tools/list (defined once rather than duplicated across eight schemas).
+fn advertise_cursor(schema: &mut serde_json::Map<String, Value>) {
+    let props = schema
+        .entry("properties")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(props) = props.as_object_mut() {
+        props.insert(
+            "cursor".to_string(),
+            serde_json::json!({
+                "type": "string",
+                "description": "Opaque pagination cursor from a prior response's nextCursor; omit for the first page. Absence of nextCursor means the list is complete."
+            }),
+        );
+    }
 }
 
 /// Behavioral hints for a tool (MCP `annotations`). Advisory only — the server
@@ -831,11 +865,11 @@ async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<
         "get_driver" => tool_get_driver(state, args).await,
         "attach_equipment" => tool_attach_equipment(state, args).await,
         "detach_equipment" => tool_detach_equipment(state, args).await,
-        "list_trucks" => tool_list_trucks(state).await,
+        "list_trucks" => tool_list_trucks(state, args).await,
         "get_truck" => tool_get_truck(state, args).await,
         "create_truck" => tool_create_truck(state, args).await,
         "update_truck" => tool_update_truck(state, args).await,
-        "list_trailers" => tool_list_trailers(state).await,
+        "list_trailers" => tool_list_trailers(state, args).await,
         "get_trailer" => tool_get_trailer(state, args).await,
         "create_trailer" => tool_create_trailer(state, args).await,
         "update_trailer" => tool_update_trailer(state, args).await,
@@ -860,10 +894,62 @@ async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<
 // Tool implementations
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Cursor pagination
+//
+// List tools accept an opaque `cursor` and return `nextCursor` when more results
+// exist, so an agent can page through the full set deterministically. The cursor
+// is the URL-safe base64 of the next 0-based offset; absence of `nextCursor`
+// reliably signals end-of-list. Without this, list tools silently truncated at
+// the first page (the latent bug in #296).
+// ---------------------------------------------------------------------------
+
+/// Default page size for cursor-paginated list tools (tools with their own
+/// `limit` arg pass that instead).
+const PAGE_SIZE: usize = 100;
+
+/// Decode the opaque `cursor` arg into a 0-based offset. Absent → first page.
+fn cursor_offset(args: &Value) -> Result<usize, String> {
+    match args["cursor"].as_str() {
+        None => Ok(0),
+        Some(c) => base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(c)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or_else(|| "invalid cursor".to_string()),
+    }
+}
+
+/// Assemble a paginated list payload: the page `items`, how many were `returned`,
+/// the full match `total`, and `nextCursor` when records remain past this page.
+fn paged(items: impl Serialize, returned: usize, total: usize, offset: usize) -> Value {
+    let mut obj = serde_json::json!({
+        "items": items,
+        "returned": returned,
+        "total": total,
+    });
+    let next = offset + returned;
+    if next < total {
+        let cursor = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(next.to_string());
+        obj["nextCursor"] = Value::String(cursor);
+    }
+    obj
+}
+
+/// Paginate an already-materialized, fully-filtered list in memory (for tools
+/// whose filtering happens after the DB fetch). Consumes the list and returns
+/// (page, returned, total).
+fn paginate_slice<T>(all: Vec<T>, offset: usize, page: usize) -> (Vec<T>, usize, usize) {
+    let total = all.len();
+    let items: Vec<T> = all.into_iter().skip(offset).take(page).collect();
+    let returned = items.len();
+    (items, returned, total)
+}
+
 async fn tool_list_loads(state: &AppState, args: &Value) -> Result<Value, String> {
     let status = args["status"].as_str();
-    let limit = 100usize;
-    let offset = 0usize;
+    let offset = cursor_offset(args)?;
 
     let (total, items) = state.db.list_loads(
         status,
@@ -871,11 +957,12 @@ async fn tool_list_loads(state: &AppState, args: &Value) -> Result<Value, String
         &[],  // tags
         None, // from
         None, // to
-        limit,
+        PAGE_SIZE,
         offset,
     ).await.map_err(|e| e.to_string())?;
 
-    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+    let returned = items.len();
+    Ok(mcp_content(paged(items, returned, total, offset)))
 }
 
 async fn tool_get_load(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -1017,10 +1104,12 @@ async fn tool_list_trips(state: &AppState, args: &Value) -> Result<Value, String
         trip_number: args["trip_number"].as_str().map(|s| s.to_string()),
         load_number: args["load_number"].as_str().map(|s| s.to_string()),
     };
-    let items = super::data::build_trip_list_items(state, q).await
+    let offset = cursor_offset(args)?;
+    // build_trip_list_items returns the full matching set; paginate it in memory.
+    let all = super::data::build_trip_list_items(state, q).await
         .map_err(|e| e.to_string())?;
-    let returned = items.len();
-    Ok(mcp_content(serde_json::json!({ "returned": returned, "items": items })))
+    let (page, returned, total) = paginate_slice(all, offset, PAGE_SIZE);
+    Ok(mcp_content(paged(page, returned, total, offset)))
 }
 
 async fn tool_get_trip(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -1299,9 +1388,11 @@ async fn tool_check_call(state: &AppState, args: &Value) -> Result<Value, String
 
 async fn tool_list_drivers(state: &AppState, args: &Value) -> Result<Value, String> {
     let status = args["status"].as_str();
-    let (total, items) = state.db.list_drivers(status, 100, 0)
+    let offset = cursor_offset(args)?;
+    let (total, items) = state.db.list_drivers(status, PAGE_SIZE, offset)
         .await.map_err(|e| e.to_string())?;
-    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+    let returned = items.len();
+    Ok(mcp_content(paged(items, returned, total, offset)))
 }
 
 async fn tool_get_driver(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -1334,16 +1425,20 @@ async fn tool_detach_equipment(state: &AppState, args: &Value) -> Result<Value, 
     Ok(mcp_content(change))
 }
 
-async fn tool_list_trucks(state: &AppState) -> Result<Value, String> {
-    let (total, items) = state.db.list_trucks(None, 100, 0)
+async fn tool_list_trucks(state: &AppState, args: &Value) -> Result<Value, String> {
+    let offset = cursor_offset(args)?;
+    let (total, items) = state.db.list_trucks(None, PAGE_SIZE, offset)
         .await.map_err(|e| e.to_string())?;
-    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+    let returned = items.len();
+    Ok(mcp_content(paged(items, returned, total, offset)))
 }
 
-async fn tool_list_trailers(state: &AppState) -> Result<Value, String> {
-    let (total, items) = state.db.list_trailers(None, None, 100, 0)
+async fn tool_list_trailers(state: &AppState, args: &Value) -> Result<Value, String> {
+    let offset = cursor_offset(args)?;
+    let (total, items) = state.db.list_trailers(None, None, PAGE_SIZE, offset)
         .await.map_err(|e| e.to_string())?;
-    Ok(mcp_content(serde_json::json!({ "returned": total, "items": items })))
+    let returned = items.len();
+    Ok(mcp_content(paged(items, returned, total, offset)))
 }
 
 async fn tool_get_truck(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -1402,18 +1497,21 @@ async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, Strin
     // trip_id takes priority as entity_id filter
     let entity_id = trip_id.or(driver_id);
 
-    let (_total, records) = state.db.query_events(
+    const EVENTS_PAGE: usize = 20;
+    let offset = cursor_offset(args)?;
+    let (total, records) = state.db.query_events(
         entity_id,
         None,
         None,
         None,
         None,
-        20,
-        0,
+        EVENTS_PAGE,
+        offset,
     ).await.map_err(|e| e.to_string())?;
 
     let items: Vec<crate::models::EventResponse> = records.into_iter().map(crate::models::EventResponse::from).collect();
-    Ok(mcp_content(serde_json::json!({ "returned": items.len(), "items": items })))
+    let returned = items.len();
+    Ok(mcp_content(paged(items, returned, total, offset)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,26 +1521,28 @@ async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, Strin
 // ---------------------------------------------------------------------------
 
 async fn tool_list_facilities(state: &AppState, args: &Value) -> Result<Value, String> {
-    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(100).min(1000);
+    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(PAGE_SIZE).min(1000);
     let q = args["q"].as_str().map(|s| s.to_string());
+    let offset = cursor_offset(args)?;
 
     let (_total, items) = state.db.list_facilities(None, &[], 1000, 0)
         .await.map_err(|e| e.to_string())?;
 
-    let filtered: Vec<_> = if let Some(needle) = q.as_deref().filter(|s| !s.is_empty()) {
+    // `q` filtering happens after the DB fetch, so paginate the filtered set in
+    // memory; `limit` is the page size and the cursor offsets into it.
+    let matched: Vec<_> = if let Some(needle) = q.as_deref().filter(|s| !s.is_empty()) {
         let needle = needle.to_lowercase();
         items.into_iter()
             .filter(|f| {
                 f.name.to_lowercase().contains(&needle)
                     || f.address.to_lowercase().contains(&needle)
             })
-            .take(limit)
             .collect()
     } else {
-        items.into_iter().take(limit).collect()
+        items
     };
-    let returned = filtered.len();
-    Ok(mcp_content(serde_json::json!({ "returned": returned, "items": filtered })))
+    let (page, returned, total) = paginate_slice(matched, offset, limit);
+    Ok(mcp_content(paged(page, returned, total, offset)))
 }
 
 async fn tool_get_facility(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -1589,33 +1689,39 @@ async fn tool_get_blob_metadata(state: &AppState, args: &Value) -> Result<Value,
 }
 
 async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String> {
-    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(100).min(1000);
+    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(PAGE_SIZE).min(1000);
     let name = args["name"].as_str();
     let content_type = args["content_type"].as_str();
     let tags: Vec<String> = args["tag"].as_str().map(|t| vec![t.to_string()]).unwrap_or_default();
+    let offset = cursor_offset(args)?;
 
-    // content_type isn't a DB-level filter, so it's applied in memory over a bounded
-    // scan window. Fetch a wider window first so the post-filter page isn't starved.
-    let fetch = if content_type.is_some() { limit.max(1000) } else { limit };
-    let (total, items) = state.db.list(name, &tags, fetch, 0).await.map_err(|e| e.to_string())?;
-    let scanned = items.len();
-
-    let filtered: Vec<_> = match content_type {
-        Some(ct) => items.into_iter().filter(|i| i.mime_type == ct).take(limit).collect(),
-        None => items.into_iter().take(limit).collect(),
-    };
-    let returned = filtered.len();
-    // `total` counts the name/tag filter (not content_type, which is applied in
-    // memory). `truncated` tells the caller results are incomplete: for the no-MIME
-    // path that's exactly `returned < total`; for the MIME path it's whether the scan
-    // window was saturated (matches may lie beyond it).
-    let truncated = match content_type {
-        Some(_) => scanned >= fetch,
-        None => returned < total,
-    };
-    Ok(mcp_content(serde_json::json!({
-        "returned": returned, "total": total, "truncated": truncated, "items": filtered
-    })))
+    match content_type {
+        // No content_type filter: the DB applies name/tag at the source, so cursor
+        // pagination is exact — nextCursor when records remain past this page.
+        None => {
+            let (total, items) = state.db.list(name, &tags, limit, offset)
+                .await.map_err(|e| e.to_string())?;
+            let returned = items.len();
+            Ok(mcp_content(paged(items, returned, total, offset)))
+        }
+        // content_type isn't a DB-level filter, so it's applied in memory over a
+        // bounded scan window from the start. We paginate the filtered matches and
+        // flag `truncated` when the scan window saturated (matches may lie beyond it,
+        // unreachable by cursor) — following nextCursor still advances within view.
+        Some(ct) => {
+            let window = (offset + limit).max(1000);
+            let (_total, items) = state.db.list(name, &tags, window, 0)
+                .await.map_err(|e| e.to_string())?;
+            let scanned = items.len();
+            let matched: Vec<_> = items.into_iter().filter(|i| i.mime_type == ct).collect();
+            let (page, returned, matched_total) = paginate_slice(matched, offset, limit);
+            let mut obj = paged(page, returned, matched_total, offset);
+            // The in-memory MIME filter scans a bounded window; `truncated` tells the
+            // caller matches may lie beyond it (unreachable by cursor here).
+            obj["truncated"] = Value::Bool(scanned >= window);
+            Ok(mcp_content(obj))
+        }
+    }
 }
 
 async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -1786,5 +1892,62 @@ mod tests {
         // *_doctor tools can apply repairs -> must NOT be read-only.
         let a = find("facility_doctor").annotations.as_ref().unwrap();
         assert_eq!(a.read_only_hint, Some(false));
+    }
+
+    #[test]
+    fn paginated_list_tools_advertise_cursor() {
+        let catalog = tool_catalog();
+        for name in PAGINATED_LIST_TOOLS {
+            let tool = catalog
+                .iter()
+                .find(|t| &t.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            assert!(
+                tool.input_schema["properties"].get("cursor").is_some(),
+                "{name} should advertise a cursor param"
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_roundtrips_and_signals_end_of_list() {
+        // Absent cursor = first page.
+        assert_eq!(cursor_offset(&json!({})).unwrap(), 0);
+
+        // More results -> a nextCursor that decodes back to the next offset.
+        let page = paged(json!([1, 2, 3]), 3, 10, 0);
+        assert_eq!(page["returned"], 3);
+        assert_eq!(page["total"], 10);
+        let cursor = page["nextCursor"].as_str().expect("more results -> nextCursor");
+        assert_eq!(cursor_offset(&json!({ "cursor": cursor })).unwrap(), 3);
+
+        // Final page -> no nextCursor (reliable end-of-list signal).
+        let last = paged(json!([1]), 1, 4, 3);
+        assert!(last.get("nextCursor").is_none(), "exhausted list must omit nextCursor");
+
+        // Garbage cursor is rejected, not silently treated as offset 0.
+        assert!(cursor_offset(&json!({ "cursor": "***not-base64***" })).is_err());
+    }
+
+    #[test]
+    fn paginate_slice_yields_every_item_exactly_once() {
+        // Page size 2 over 5 items: pages of [0,1] [2,3] [4], then stop.
+        let mut seen = Vec::new();
+        let mut offset = 0;
+        let mut pages = 0;
+        loop {
+            let all: Vec<i32> = (0..5).collect();
+            let (page, returned, total) = paginate_slice(all, offset, 2);
+            assert_eq!(total, 5);
+            seen.extend(page);
+            pages += 1;
+            if offset + returned >= total {
+                break;
+            }
+            offset += returned;
+            assert!(pages < 10, "must terminate");
+        }
+        assert_eq!(seen, vec![0, 1, 2, 3, 4], "every item once, in order");
+        assert_eq!(pages, 3);
     }
 }
