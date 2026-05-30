@@ -21,9 +21,21 @@ Read the project guide (`AGENTS.md` / `CLAUDE.md` / `GEMINI.md`) in full and pul
 
 If the guide defines no Shippability Bar, stop and tell the user. Don't invent one — a made-up bar is worse than none, because it looks authoritative.
 
+## The work-in-flight lock
+
+Other sessions — interactive or GHA-driven — may be working this repo at the same time. The `work:in-progress` label is the lock that keeps two of them off the same issue. It's the agreed state-model primitive, not an ad-hoc convention (see `docs/automation/agent-automation-design.md` §6 / §12). Treat it as mandatory:
+
+- **Respect the circuit breaker first.** If this issue carries `pause:agents` (or the repo's pause tracking issue does), stop — all agent automation is paused.
+- **Refuse a contended issue.** If the issue already has `work:in-progress`, another session is on it — **stop and tell the user**, don't race it. Take over only if the user confirms it's stale (a crashed session left the label stuck).
+- **Claim before you branch.** `gh issue edit <N> --add-label work:in-progress`, then post a one-line claim comment naming your branch (`issue-<N>-<slug>`) so a colliding session has the context to work around you. That's the moment the issue becomes yours.
+- **See what else is in flight.** `gh issue list --label work:in-progress` lists every issue another session holds. If your change touches code one of those issues also touches, coordinate or pick a different issue — don't step on an in-flight change.
+- **Release on every exit path** (merge, leave-open, escalate, bail — see the flow). A label left stuck after the session ends blocks the next session for nothing.
+
 ## The flow
 
 1. **Read the issue *and its comments*.** Bodies go stale; the live scope lives in the comments. If scope is still ambiguous after reading both, ask before branching — a clarifying question is far cheaper than rework.
+
+   Then **claim the issue** per the lock above: honor `pause:agents`, refuse if `work:in-progress` is already set, otherwise add the label and post the claim comment. Do this *before* you branch.
 
 2. **Start from green.** Run the test command on `main` before you touch anything. If it's red before you've done a thing, stop and tell the user — never build on a broken baseline, you'll never know which red is yours.
 
@@ -31,7 +43,7 @@ If the guide defines no Shippability Bar, stop and tell the user. Don't invent o
 
 4. **Self-review against the Shippability Bar**, then run one capped Opus pass (see below).
 
-5. **Self-merge only if it's clean** (see gate below), then close the issue with a one-line verification comment noting what you actually tested.
+5. **Self-merge only if it's clean** (see gate below), then close the issue with a one-line verification comment noting what you actually tested. **Release the lock** as you go: on self-merge the closed issue no longer holds the repo, so drop `work:in-progress`. If you leave the PR open for a human, swap `work:in-progress` → `work:ready-for-review`. If you escalate or bail mid-flight, swap → `work:blocked` (escalated) or just remove `work:in-progress` (abandoned with no progress). Never leave `work:in-progress` set on an issue you've stopped working.
 
 ### Never touch version numbers
 
@@ -63,7 +75,7 @@ Squash-merge and close the issue **only if all** hold:
 - CI green
 - local test suite green
 
-PR title: `<type>(<area>): <headline> (#<N>)`, body closes the issue. If any condition fails, leave the PR open and tell the user — never self-merge with a deferred significant.
+PR title: `<type>(<area>): <headline> (#<N>)`, body closes the issue. If any condition fails, leave the PR open, swap the lock to `work:ready-for-review`, and tell the user — never self-merge with a deferred significant.
 
 ## Common mistakes
 
@@ -76,4 +88,8 @@ PR title: `<type>(<area>): <headline> (#<N>)`, body closes the issue. If any con
 | Inventing a Shippability Bar | It lives in the project guide. No bar there → stop. |
 | Growing PR scope mid-flight | Scope expands → stop and ask. |
 | Branching from a red baseline | Tests green on main *before* you branch. |
+| Racing an issue another session holds | `work:in-progress` already set → stop. Take over only if the user confirms it's stale. |
+| Forgetting to claim before branching | Add `work:in-progress` + claim comment *before* the branch, or two sessions collide. |
+| Leaving `work:in-progress` stuck after you stop | Release on every exit — merge drops it, leave-open → `work:ready-for-review`, escalate → `work:blocked`, bail → remove. |
+| Ignoring `pause:agents` | It's the circuit breaker — present on the issue or repo means stop, full stop. |
 | Bumping a version or cache stamp | That's `cut-release`'s job. Leave `Cargo.toml`, `package.json`, PWA `CACHE_NAME`/`?v=` alone. |
