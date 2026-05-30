@@ -340,11 +340,16 @@ async fn completion_values(
 ) -> Result<Vec<String>, McpError> {
     let internal = |e: crate::error::AppError| McpError::internal_error(e.to_string(), None);
     let prefix = req.argument.value.to_lowercase();
+    // Validate the context `status` against the LoadStatus enum before it reaches
+    // the DB filter — defense-in-depth, since this path bypasses the HTTP-layer
+    // enum deserialization other callers get. An unrecognized status is treated as
+    // no narrowing rather than passed through.
     let ctx_status = req
         .context
         .as_ref()
         .and_then(|c| c.arguments.as_ref())
         .and_then(|m| m.get("status"))
+        .filter(|s| s.parse::<LoadStatus>().is_ok())
         .map(String::as_str);
 
     // Pull a bounded candidate set, then prefix-filter in memory.
