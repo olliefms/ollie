@@ -33,11 +33,12 @@
 - `src/models/trip.rs` — trip rate overrides, settlement fields, `driver_pay_snapshot`, `driver_pay` on `TripListItem`/response.
 - `src/models/driver.rs` — `terminal_id` + rate overrides on record/requests/list-item.
 - `src/db/mod.rs` — `terminal_schema()`, `open_or_create_terminal()` (with Default seed), driver + trip migrations, register `terminal_table`.
-- `src/db/trip_ops.rs` — read/write new trip columns; `update_trip_settlement`; pay-period list filter.
-- `src/db/driver_ops.rs` — read/write `terminal_id` + driver rate columns.
-- `src/api/trips.rs` — compute `driver_pay` on read; settlement PATCH; pay-period query; edit-lock.
-- `src/api/trip_actions.rs` — edit-lock on `record_arrive`/`record_depart` for settled trips.
-- `src/api/dispatcher_portal/mod.rs` — register terminal routes; add settlement to trip PATCH body.
+- `src/db/trip_ops.rs` — read/write new trip columns; `update_trip_rate_overrides`; `update_trip_settlement`; pay-period list filter.
+- `src/db/driver_ops.rs` — read/write `terminal_id` + driver rate columns (add `opt_f64`/`opt_i64` to `row_to_driver`).
+- `src/api/dispatcher_portal/data.rs` — `driver_pay_for_record` helper; attach `driver_pay` in `build_trip_detail`; pay-period query param; edit-lock in `stop_arrive`/`stop_depart`.
+- `src/api/dispatcher_portal/trip_writes.rs` — extend `PatchTripBody` with rate overrides + settlement fields; settlement freeze + edit-lock in `apply_trip_patch`.
+- `src/api/trips.rs` (admin) — only updated to match the new `db::list_trips` signature (pass `None` for new bounds). NOT where pay/settlement live.
+- `src/api/dispatcher_portal/mod.rs` — register terminal routes.
 - `src/config.rs` — remove `terminal_timezone` field; keep `free_dwell_minutes` only for the Default-terminal seed.
 - `src/api/driver_portal/data.rs` — read free-dwell from driver's terminal, not `config.terminal_timezone`/`config.free_dwell_minutes`.
 - `static/dispatch/index.html` + `static/dispatch/app.js` — Terminals list/create/edit view.
@@ -390,7 +391,8 @@ impl DbClient {
         for batch in &batches {
             if batch.num_rows() > 0 { return row_to_terminal(batch, 0); }
         }
-        Err(AppError::NotFound(format!("terminal {id} not found")))
+        // NOTE: AppError::NotFound is a UNIT variant (src/error.rs) — no String payload.
+        Err(AppError::NotFound)
     }
 
     pub async fn batch_get_terminals(&self, ids: &[Uuid])
@@ -675,7 +677,7 @@ In `src/api/dispatcher_portal/mod.rs`, add `pub mod terminal_writes;` and inside
 ```rust
         .route("/dispatch/api/v1/terminals",
             get(terminal_writes::list_terminals).post(terminal_writes::create_terminal))
-        .route("/dispatch/api/v1/terminals/:id",
+        .route("/dispatch/api/v1/terminals/{id}",  // axum 0.8 path syntax — NOT :id (would panic at build)
             get(terminal_writes::get_terminal)
                 .put(terminal_writes::update_terminal)
                 .delete(terminal_writes::delete_terminal))
@@ -871,7 +873,7 @@ After both `terminal_table` and `driver_table` are opened, add a helper call:
         };
         // For each driver row with NULL terminal_id, set it to default_terminal_id via merge_insert.
 ```
-Implementation: add a free function `backfill_driver_terminals(driver_table: &Table, default_terminal_id: &str) -> Result<(), AppError>` in `mod.rs` that scans driver rows, and for any with null `terminal_id`, writes the default id. Use `update` via `driver_table.update().only_if("terminal_id IS NULL").column("terminal_id", format!("'{default_terminal_id}'"))` if the LanceDB `UpdateBuilder` is available (grep existing `.update()` usages); otherwise read-modify-upsert each null row. Prefer the SQL `update` form if already used elsewhere.
+Implementation: add a free function `backfill_driver_terminals(driver_table: &Table, default_terminal_id: Uuid) -> Result<(), AppError>` in `mod.rs` that scans all driver rows, and for any with null `terminal_id`, sets it and re-writes the row via `merge_insert(&["id"])`. ⚠️ Do NOT use `driver_table.update()` — the LanceDB `UpdateBuilder` is used NOWHERE in `src/db/` (no precedent, unverified API). Use the read-modify-upsert path: collect rows with null `terminal_id` into `DriverRecord`s (reuse `row_to_driver`), set `terminal_id`, and upsert each. This runs once on startup over a small table, so per-row upsert is fine.
 
 - [ ] **Step 5: Build**
 
@@ -918,7 +920,22 @@ Add the same six fields (all `#[serde(default)] Option<...>`) to `CreateDriverRe
 - [ ] **Step 2: Read/write columns in `driver_ops.rs`**
 
 In `driver_to_batch`, append the new columns to the `RecordBatch::try_new` value vector in schema order: `terminal_id` (StringArray of `r.terminal_id.map(|u| u.to_string())`), the four rate fields (Float64Array from `Option<f64>` — use `Float64Array::from(vec![r.loaded_rate_per_mile])` since `From<Vec<Option<f64>>>` is supported), and `free_dwell_minutes` (Int64Array from `r.free_dwell_minutes.map(|v| v as i64)`).
-In `row_to_driver`, read them with the existing `opt_f64`/`opt_str` helpers and add `opt_i64` if needed:
+In `row_to_driver`, read them. ⚠️ `row_to_driver` currently defines ONLY `opt_str` (unlike `row_to_trip`, which has `opt_f64`). You must ADD both `opt_f64` and `opt_i64` closures to `row_to_driver` (copy `opt_f64` from `trip_ops.rs::row_to_trip` and write the `Int64Array` analog for `opt_i64`):
+
+```rust
+    let opt_f64 = |name: &str| -> Option<f64> {
+        batch.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
+    };
+    let opt_i64 = |name: &str| -> Option<i64> {
+        batch.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
+            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
+    };
+```
+
+then:
 ```rust
     terminal_id: opt_str("terminal_id").map(|s| s.parse()).transpose()
         .map_err(|e| AppError::Internal(format!("{e}")))?,
@@ -1277,54 +1294,62 @@ git commit -m "feat(pay): DriverPay struct + compute_driver_pay with detention (
 
 ---
 
-### Task 11: Compute `driver_pay` on read in trip GET/list
+### Task 11: Compute `driver_pay` on read — DISPATCHER portal
+
+**⚠️ Retarget note (from plan review):** The dispatcher trip GET/list does NOT use `src/api/trips.rs` (that's the deprecated admin `/api/v1` path, per Constraint #5). The dispatcher detail is built by `build_trip_detail()` in `src/api/dispatcher_portal/data.rs`, which returns a **`DispatcherTripListItem`** (a wrapper carrying `mileage_summary`, enriched driver/truck names, and flattened miles — NOT a bare `TripRecord`/`TripListItem`). Attach `driver_pay` there.
 
 **Files:**
-- Modify: `src/models/trip.rs` (add `driver_pay: Option<DriverPay>` to `TripListItem` and a response field on the GET path)
-- Modify: `src/api/trips.rs` (`get_trip`, `list_trips` assembly)
+- Modify: `src/api/dispatcher_portal/data.rs` (`DispatcherTripListItem` struct, `build_trip_detail`, the list builder) + add a shared `driver_pay_for_record` helper.
 
-The trip GET handler returns a `TripRecord` (Json(record)). To attach `driver_pay`, return a response that includes it. Simplest: add `#[serde(skip_serializing_if = "Option::is_none")] pub driver_pay: Option<DriverPay>` to `TripListItem`, and change `get_trip` to return a `TripListItem` (it already carries all trip fields) OR add a dedicated `driver_pay` field to a thin response wrapper. **Decision: add `driver_pay` + `driver_pay_snapshot` passthrough to `TripListItem`, and have `get_trip` return `TripListItem` built from the record.** (Confirm no consumer depends on `get_trip` returning the exact `TripRecord` shape — `total_miles`, `stops`, etc. are all present on `TripListItem`; the only `TripRecord`-only field is `embedding`, which is `#[serde(skip)]`.)
+- [ ] **Step 1: Add `driver_pay` to `DispatcherTripListItem`**
 
-- [ ] **Step 1: Add `driver_pay` to `TripListItem`**
-
+In `src/api/dispatcher_portal/data.rs`, add to the `DispatcherTripListItem` struct (near the flattened mileage fields):
 ```rust
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver_pay: Option<crate::models::pay::DriverPay>,
 ```
-Set it to `None` in `From<TripRecord>`.
+Set `driver_pay: None` wherever `DispatcherTripListItem` is constructed (e.g. in `enrich_trip`).
 
-- [ ] **Step 2: Add a pay-assembly helper in `src/api/trips.rs`**
+- [ ] **Step 2: Add the shared `driver_pay_for_record` helper in `data.rs`**
+
+This is the single source of truth for pay-on-read. Snapshot wins (freeze); else live-compute. Resolves driver overrides + terminal floor.
 
 ```rust
-async fn attach_driver_pay(state: &AppState, item: &mut TripListItem,
-    trip_overrides: &crate::models::pay::RateOverrides,
-    driver_id: Option<Uuid>)
-{
+/// Computes driver pay for a trip on read. Returns the frozen snapshot if the
+/// trip is settled; otherwise resolves rates (trip ?? driver ?? terminal floor)
+/// and computes live. None when there are no loaded miles to pay on.
+pub async fn driver_pay_for_record(
+    state: &AppState,
+    record: &crate::models::TripRecord,
+) -> Option<crate::models::pay::DriverPay> {
     use crate::models::pay::*;
-    // Freeze: if a snapshot exists on the record, the caller sets item.driver_pay to it
-    // BEFORE calling this (see Step 3). This fn only computes the live value.
-    if item.loaded_miles.is_none() { return; }
-    // Resolve terminal via driver -> terminal_id (fallback to default terminal).
-    let (driver_ov, terminal) = match driver_id {
-        Some(did) => {
-            let d = state.db.get_driver_by_id(did).await.ok();
-            let tid = d.as_ref().and_then(|d| d.terminal_id);
-            let term = match tid {
-                Some(t) => state.db.get_terminal_by_id(t).await.ok(),
-                None => None,
-            };
-            let term = match term { Some(t) => t, None => match state.db.default_terminal().await {
-                Ok(t) => t, Err(_) => return } };
-            let dov = d.map(|d| RateOverrides {
-                loaded_rate_per_mile: d.loaded_rate_per_mile,
-                deadhead_rate_per_mile: d.deadhead_rate_per_mile,
-                extra_stop_fee: d.extra_stop_fee,
-                detention_rate_per_hour: d.detention_rate_per_hour,
-                free_dwell_minutes: d.free_dwell_minutes,
-            }).unwrap_or_default();
-            (dov, term)
-        }
-        None => match state.db.default_terminal().await { Ok(t) => (RateOverrides::default(), t), Err(_) => return },
+    if let Some(snap) = &record.driver_pay_snapshot {
+        return Some(snap.clone());
+    }
+    record.loaded_miles?; // no loaded miles -> no pay
+    // Driver overrides + terminal floor.
+    let driver = match record.driver_id {
+        Some(did) => state.db.get_driver_by_id(did).await.ok(),
+        None => None,
+    };
+    let terminal = {
+        let tid = driver.as_ref().and_then(|d| d.terminal_id);
+        let by_id = match tid { Some(t) => state.db.get_terminal_by_id(t).await.ok(), None => None };
+        match by_id { Some(t) => t, None => state.db.default_terminal().await.ok()? }
+    };
+    let driver_ov = driver.as_ref().map(|d| RateOverrides {
+        loaded_rate_per_mile: d.loaded_rate_per_mile,
+        deadhead_rate_per_mile: d.deadhead_rate_per_mile,
+        extra_stop_fee: d.extra_stop_fee,
+        detention_rate_per_hour: d.detention_rate_per_hour,
+        free_dwell_minutes: d.free_dwell_minutes,
+    }).unwrap_or_default();
+    let trip_ov = RateOverrides {
+        loaded_rate_per_mile: record.loaded_rate_per_mile,
+        deadhead_rate_per_mile: record.deadhead_rate_per_mile,
+        extra_stop_fee: record.extra_stop_fee,
+        detention_rate_per_hour: record.detention_rate_per_hour,
+        free_dwell_minutes: record.free_dwell_minutes,
     };
     let floor = TerminalRates {
         loaded_rate_per_mile: terminal.loaded_rate_per_mile,
@@ -1333,53 +1358,45 @@ async fn attach_driver_pay(state: &AppState, item: &mut TripListItem,
         detention_rate_per_hour: terminal.detention_rate_per_hour,
         free_dwell_minutes: terminal.free_dwell_minutes,
     };
-    let rates = resolve_rates(trip_overrides, &driver_ov, &floor);
-    let stops: Vec<PayStopInput> = item.stops.iter().map(|s| PayStopInput {
-        detention_free_minutes: s.detention_free_minutes,
-        actual_arrive_utc: s.actual_arrive_utc.clone(),
-        actual_depart_utc: s.actual_depart_utc.clone(),
+    let rates = resolve_rates(&trip_ov, &driver_ov, &floor);
+    // Build PayStopInput from stops — derive UTC times via fill_utc_fields semantics.
+    let stops: Vec<PayStopInput> = record.stops.iter().map(|s| {
+        let mut s2 = s.clone();
+        s2.fill_utc_fields();
+        PayStopInput {
+            detention_free_minutes: s2.detention_free_minutes,
+            actual_arrive_utc: s2.actual_arrive_utc,
+            actual_depart_utc: s2.actual_depart_utc,
+        }
     }).collect();
-    item.driver_pay = Some(compute_driver_pay(item.loaded_miles, item.deadhead_miles, &stops, &rates));
+    Some(compute_driver_pay(record.loaded_miles, record.deadhead_miles, &stops, &rates))
 }
 ```
 
-Note: `stops` must have `fill_utc_fields()` already called (it is, in the handlers) so `actual_*_utc` is populated.
+- [ ] **Step 3: Wire into `build_trip_detail` (detail GET)**
 
-- [ ] **Step 3: Wire into `get_trip` and `list_trips`**
-
-`get_trip`: build a `TripListItem` from the record, call `fill_utc_fields` on its stops, then either set `item.driver_pay = record.driver_pay_snapshot.clone()` if present (Task 12 adds the field) — else call `attach_driver_pay`. Build `trip_overrides` from the record's five override fields.
-
+In `build_trip_detail`, after `enriched` is assembled and before the `Ok(enriched)`, add:
 ```rust
-pub async fn get_trip(State(state): State<AppState>, Path(id): Path<Uuid>)
-    -> Result<impl IntoResponse, AppError>
-{
-    let record = state.db.get_trip(id).await?;
-    let overrides = trip_overrides_of(&record);
-    let driver_id = record.driver_id;
-    let mut item = TripListItem::from(record.clone());
-    for s in &mut item.stops { s.fill_utc_fields(); }
-    if let Some(snap) = record.driver_pay_snapshot.clone() {
-        item.driver_pay = Some(snap);            // freeze (Task 12 field)
-    } else {
-        attach_driver_pay(&state, &mut item, &overrides, driver_id).await;
-    }
-    Ok(Json(item))
-}
+    enriched.driver_pay = driver_pay_for_record(state, &record).await;
 ```
-where `trip_overrides_of(&TripRecord) -> RateOverrides` maps the five fields. Add it as a small free fn in `trips.rs`. Apply the same loop in `list_trips` (per item; the record's overrides/driver/snapshot are needed — note `list_trips` returns `TripListItem`s from the DB layer which won't carry `driver_pay_snapshot`/overrides unless added; ensure `TripListItem` includes the override fields (Task 8 added them) and `driver_pay_snapshot` (Task 12), so the DB list already has what's needed without re-fetching the record).
+(`record` is already in scope in `build_trip_detail`.)
 
-- [ ] **Step 4: Integration test**
+- [ ] **Step 4: Wire into the dispatcher list builder**
 
-In `tests/terminals_pay_settlement_test.rs`: set Default terminal rates (PUT), create a driver on the default terminal, create a trip with `loaded_miles`/`deadhead_miles` + 3 stops, GET the trip, assert `driver_pay.loaded_pay`/`total_pay` match the expected arithmetic. Then PUT a driver `loaded_rate_per_mile` override and assert GET reflects it. (Setting miles directly may require the create path or a PATCH; use whatever the trip create/update API exposes — if miles are ORS-computed only, set terminal rates and assert `driver_pay` is present with `loaded_pay == loaded_miles * rate`, computing expected from the GET'd `loaded_miles`.)
+In `data::list_trips`, after the per-trip `DispatcherTripListItem`s are built, populate `driver_pay` for each. The list already `batch_get_drivers`; to keep it simple and correct, call `driver_pay_for_record(state, &record).await` per trip (N+1, acceptable at this app's fleet scale and only for filtered lists). If `list_trips` works from `TripListItem`s rather than full `TripRecord`s, fetch the record via `state.db.get_trip(id)` only when needed, OR skip live compute in the list and set `driver_pay` from the snapshot only (frozen trips show pay in lists; unsettled show it on detail). **Decision: list shows snapshot-only** to avoid N+1 in list views; detail always computes live. Add a one-line `// list shows frozen pay only; live pay is on the detail endpoint` comment so the cap is explicit.
 
-- [ ] **Step 5: Run + Commit**
+- [ ] **Step 5: Integration test**
+
+In `tests/terminals_pay_settlement_test.rs`: PUT Default terminal rates (e.g. loaded 0.50, deadhead 0.40, extra-stop 30, detention 20), create a driver on the default terminal, create a trip (with stops; obtain its `loaded_miles`/`deadhead_miles` from the GET response since miles are ORS-computed), GET the trip detail, assert `driver_pay.loaded_pay == loaded_miles * 0.50` (compute expected from the returned miles) and `driver_pay.total_pay` equals the sum. Then PUT a driver `loaded_rate_per_mile` override and assert the detail GET reflects it.
+
+- [ ] **Step 6: Run + Commit**
 
 Run: `cargo test --test terminals_pay_settlement_test`
 Expected: PASS.
 
 ```bash
-git add src/models/trip.rs src/api/trips.rs tests/terminals_pay_settlement_test.rs
-git commit -m "feat(trips): compute driver_pay on read with tiered resolution (#132)"
+git add src/api/dispatcher_portal/data.rs tests/terminals_pay_settlement_test.rs
+git commit -m "feat(trips): compute driver_pay on dispatcher trip read with tiered resolution (#132)"
 ```
 
 ---
@@ -1446,24 +1463,42 @@ git commit -m "feat(trips): settlement fields + driver_pay_snapshot column (#134
 
 ---
 
-### Task 13: Settlement PATCH + freeze snapshot + edit-lock
+### Task 13: Settlement PATCH + freeze snapshot + edit-lock (DISPATCHER portal)
+
+**⚠️ Retarget note (from plan review):** The dispatcher trip PATCH is `apply_trip_patch()` in `src/api/dispatcher_portal/trip_writes.rs` (HTTP `patch_trip_handler` + the MCP `update_trip` tool both call it). It deserializes a `PatchTripBody` (with `#[serde(deny_unknown_fields)]`) and already rejects raw mileage fields. The dispatcher arrive/depart handlers are `data::stop_arrive`/`data::stop_depart` in `src/api/dispatcher_portal/data.rs` (NOT `trip_actions::record_arrive` — no such fn; the admin ones are `trip_actions::stop_arrive`/`stop_depart`).
 
 **Files:**
-- Modify: `src/api/trips.rs` (or the dispatcher trip PATCH handler — locate the existing trip update endpoint; grep `UpdateTripRequest` usage) and `src/models/trip.rs` (`UpdateTripRequest`)
-- Modify: `src/db/trip_ops.rs` (`update_trip_settlement`, and extend the metadata/mileage updaters to refuse when settled — or gate at the handler)
-- Modify: `src/api/trip_actions.rs` (`record_arrive`/`record_depart` edit-lock)
+- Modify: `src/api/dispatcher_portal/trip_writes.rs` (`PatchTripBody` + `apply_trip_patch`)
+- Modify: `src/api/dispatcher_portal/data.rs` (`stop_arrive`/`stop_depart` edit-lock)
+- Modify: `src/db/trip_ops.rs` (`update_trip_settlement`, `update_trip_rate_overrides`)
 
 **Freeze rules:**
-- When `settlement_ref` transitions `None → Some`, compute the current `DriverPay` (same resolution as Task 11) and store it in `driver_pay_snapshot` in the same update.
-- While `settlement_ref.is_some()`: reject PATCHes that change trip rate overrides, `loaded_miles`/`deadhead_miles`, and reject `record_arrive`/`record_depart` (stop time edits). Return `409 Conflict` (or the existing nearest variant) with a clear message.
+- When `settlement_ref` transitions `None → Some`, compute the current `DriverPay` via `driver_pay_for_record` (Task 11) on the live record BEFORE persisting the snapshot, and store it in `driver_pay_snapshot` in the same update.
+- While `settlement_ref.is_some()`: reject PATCHes that change trip rate overrides; reject `stop_arrive`/`stop_depart`. Return `AppError::Conflict(...)` (→ 409).
 
-- [ ] **Step 1: Extend `UpdateTripRequest`**
+- [ ] **Step 1: Extend `PatchTripBody`**
 
-Add `#[serde(default)]` optional fields: `settlement_ref`, `pay_period_start`, `pay_period_end`, and the five rate overrides (`loaded_rate_per_mile`, etc.).
+In `trip_writes.rs`, add `#[serde(default)]` optional fields to `PatchTripBody`: `settlement_ref: Option<String>`, `pay_period_start: Option<String>`, `pay_period_end: Option<String>`, and the five rate overrides (`loaded_rate_per_mile: Option<f64>`, `deadhead_rate_per_mile`, `extra_stop_fee`, `detention_rate_per_hour`, `free_dwell_minutes: Option<u32>`). `deny_unknown_fields` stays — these are now known fields.
 
-- [ ] **Step 2: Add `update_trip_settlement` to `trip_ops.rs`**
+- [ ] **Step 2: Add ops methods to `trip_ops.rs`**
 
 ```rust
+pub async fn update_trip_rate_overrides(
+    &self, id: Uuid,
+    loaded: Option<f64>, deadhead: Option<f64>, extra_stop: Option<f64>,
+    detention: Option<f64>, free_dwell: Option<u32>,
+) -> Result<TripRecord, AppError> {
+    let mut t = self.get_trip(id).await?;
+    if loaded.is_some() { t.loaded_rate_per_mile = loaded; }
+    if deadhead.is_some() { t.deadhead_rate_per_mile = deadhead; }
+    if extra_stop.is_some() { t.extra_stop_fee = extra_stop; }
+    if detention.is_some() { t.detention_rate_per_hour = detention; }
+    if free_dwell.is_some() { t.free_dwell_minutes = free_dwell; }
+    t.updated_at = Utc::now();
+    self.upsert_trip(&t).await?;
+    Ok(t)
+}
+
 pub async fn update_trip_settlement(
     &self, id: Uuid,
     settlement_ref: Option<String>,
@@ -1482,57 +1517,58 @@ pub async fn update_trip_settlement(
 }
 ```
 
-- [ ] **Step 3: Handler logic — freeze + lock**
+- [ ] **Step 3: Freeze + lock logic in `apply_trip_patch`**
 
-In the trip PATCH handler:
+After `parsed` is built (and the existing notes/previous_trip_id handling), add this block. Fetch the existing record once at the top of `apply_trip_patch` (it currently doesn't — add `let existing = state.db.get_trip(id).await?;` near the start, reused below):
+
 ```rust
-    let existing = state.db.get_trip(id).await?;
     let was_settled = existing.settlement_ref.is_some();
 
-    // Edit-lock: once settled, reject pay-affecting changes.
-    if was_settled {
-        let touches_pay = req.loaded_rate_per_mile.is_some() || req.deadhead_rate_per_mile.is_some()
-            || req.extra_stop_fee.is_some() || req.detention_rate_per_hour.is_some()
-            || req.free_dwell_minutes.is_some();
-        if touches_pay {
-            return Err(AppError::Conflict(
-                "trip is settled; pay-affecting fields are frozen".into()));
-        }
+    let touches_rate = parsed.loaded_rate_per_mile.is_some()
+        || parsed.deadhead_rate_per_mile.is_some()
+        || parsed.extra_stop_fee.is_some()
+        || parsed.detention_rate_per_hour.is_some()
+        || parsed.free_dwell_minutes.is_some();
+
+    if was_settled && touches_rate {
+        return Err(AppError::Conflict(
+            "trip is settled; pay-affecting fields are frozen".into()));
     }
 
-    // Apply non-pay metadata updates as today ...
+    // Apply trip rate overrides (allowed only when not settled).
+    if touches_rate {
+        state.db.update_trip_rate_overrides(id,
+            parsed.loaded_rate_per_mile, parsed.deadhead_rate_per_mile,
+            parsed.extra_stop_fee, parsed.detention_rate_per_hour,
+            parsed.free_dwell_minutes).await?;
+    }
 
-    // Settlement transition None -> Some: compute & freeze snapshot.
-    if !was_settled && req.settlement_ref.is_some() {
-        // Build a TripListItem to reuse attach_driver_pay, then snapshot the result.
-        let mut item = TripListItem::from(existing.clone());
-        for s in &mut item.stops { s.fill_utc_fields(); }
-        let overrides = trip_overrides_of(&existing);
-        attach_driver_pay(&state, &mut item, &overrides, existing.driver_id).await;
-        let snapshot = item.driver_pay.clone();
+    // Settlement transition None -> Some: compute snapshot from the LIVE record, then persist.
+    if !was_settled && parsed.settlement_ref.is_some() {
+        // Re-fetch to include any rate overrides just written above.
+        let live = state.db.get_trip(id).await?;
+        let snapshot = crate::api::dispatcher_portal::data::driver_pay_for_record(state, &live).await;
         state.db.update_trip_settlement(id,
-            req.settlement_ref.clone(), req.pay_period_start.clone(),
-            req.pay_period_end.clone(), snapshot).await?;
-    } else if was_settled {
-        // allow updating pay_period_* metadata but not re-freezing/un-settling
-        // (settlement_ref change while settled is rejected unless equal)
+            parsed.settlement_ref.clone(), parsed.pay_period_start.clone(),
+            parsed.pay_period_end.clone(), snapshot).await?;
+    } else if parsed.pay_period_start.is_some() || parsed.pay_period_end.is_some() {
+        // Updating pay-period metadata is allowed; does not re-freeze or un-settle.
         state.db.update_trip_settlement(id, None,
-            req.pay_period_start.clone(), req.pay_period_end.clone(), None).await?;
+            parsed.pay_period_start.clone(), parsed.pay_period_end.clone(), None).await?;
     }
 ```
-Adapt to the actual handler structure; keep the existing metadata-update behavior intact for non-settled trips.
+Keep the existing best-effort mileage recompute and `build_trip_detail(state, id)` return at the end — the returned detail will now carry the (possibly frozen) `driver_pay`.
 
-- [ ] **Step 4: Edit-lock in `trip_actions.rs`**
+- [ ] **Step 4: Edit-lock in `data::stop_arrive` / `data::stop_depart`**
 
-In `record_arrive` and `record_depart` (around lines 399 and 437), after loading the trip, before writing:
+In each of `data::stop_arrive` and `data::stop_depart`, after the trip is loaded (or add a fetch), before persisting the time:
 ```rust
     let trip = state.db.get_trip(id).await?;
     if trip.settlement_ref.is_some() {
-        return Err(AppError::Conflict(
-            "trip is settled; stop times are frozen".into()));
+        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
     }
 ```
-(Confirm the handler already fetches the trip; if so, reuse that fetch rather than adding a second one.)
+Reuse an existing fetch if the handler already loads the trip. If these handlers delegate to `trip_actions::stop_arrive`/`stop_depart`, add the guard in the dispatcher wrapper (before delegating) so the admin path is unaffected.
 
 - [ ] **Step 5: Tests**
 
@@ -1541,7 +1577,7 @@ In `tests/terminals_pay_settlement_test.rs`:
 2. PATCH `settlement_ref = "S-2026-009"`, `pay_period_start/end`. GET → `driver_pay_snapshot` present and `driver_pay == snapshot` and `total_pay == T`.
 3. PUT a new (higher) Default terminal `loaded_rate_per_mile`. GET the settled trip → `driver_pay.total_pay` STILL `T` (frozen).
 4. PATCH the settled trip's `loaded_rate_per_mile` override → expect 409.
-5. POST `record_arrive` on the settled trip → expect 409.
+5. POST the dispatcher `stop_arrive` on the settled trip → expect 409.
 6. GET `/dispatch/api/v1/trips?pay_period_start=...&pay_period_end=...` returns the trip (Task 14).
 
 - [ ] **Step 6: Run + Commit**
@@ -1550,27 +1586,27 @@ Run: `cargo test --test terminals_pay_settlement_test`
 Expected: PASS.
 
 ```bash
-git add src/api/trips.rs src/api/trip_actions.rs src/models/trip.rs src/db/trip_ops.rs
+git add src/api/dispatcher_portal/trip_writes.rs src/api/dispatcher_portal/data.rs src/db/trip_ops.rs
 git commit -m "feat(trips): settlement PATCH freezes driver_pay + locks pay edits (#134)"
 ```
 
 ---
 
-### Task 14: `GET /trips` pay-period range filter
+### Task 14: `GET /dispatch/api/v1/trips` pay-period range filter
 
 **Files:**
-- Modify: `src/api/trips.rs` (`ListTripsQuery` + `list_trips`)
+- Modify: `src/api/dispatcher_portal/data.rs` (the dispatcher `list_trips` query struct + handler)
 - Modify: `src/db/trip_ops.rs` (`list_trips` accepts pay-period bounds)
 
 Filter semantics (from #134): trips where `pay_period_start >= X AND pay_period_end <= Y`.
 
 - [ ] **Step 1: Add query params**
 
-Add to `ListTripsQuery`: `pub pay_period_start: Option<String>`, `pub pay_period_end: Option<String>`.
+Add `pay_period_start: Option<String>` and `pay_period_end: Option<String>` to the dispatcher `list_trips` query struct (find the `Query<...>` extractor type used by `data::list_trips`).
 
 - [ ] **Step 2: Push the filter into `db::list_trips`**
 
-Extend the `list_trips` signature with the two optional bounds and add `.only_if(...)` string conditions when present (mirror the existing `status`/`load_id` filtering). Build conditions like `pay_period_start >= '{x}'` and `pay_period_end <= '{y}'` joined with ` AND ` (string ISO dates compare lexicographically).
+Extend the `db::list_trips` signature with the two optional bounds and add `.only_if(...)` string conditions when present (mirror the existing `status`/`load_id`/`driver_id` filtering — note its current signature is `(load_id, driver_id, status)`, so add the two bounds and update ALL callers, including the admin `src/api/trips.rs::list_trips`, to pass `None, None`). Build conditions like `pay_period_start >= '{x}'` and `pay_period_end <= '{y}'` joined with ` AND ` (ISO date strings compare lexicographically).
 
 - [ ] **Step 3: Test**
 
@@ -1582,8 +1618,8 @@ Run: `cargo test --test terminals_pay_settlement_test`
 Expected: PASS.
 
 ```bash
-git add src/api/trips.rs src/db/trip_ops.rs
-git commit -m "feat(trips): filter GET /trips by pay_period range (#134)"
+git add src/api/dispatcher_portal/data.rs src/api/trips.rs src/db/trip_ops.rs
+git commit -m "feat(trips): filter dispatcher GET /trips by pay_period range (#134)"
 ```
 
 ---
