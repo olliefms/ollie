@@ -1595,6 +1595,108 @@ async fn test_mcp_search_blobs_rejects_blank_query() {
     }
 }
 
+/// Minimal JSON-Schema conformance check for the simple object schemas the MCP
+/// tools declare: every `required` property is present with its declared `type`,
+/// and any declared property that *is* present matches its `type`. Enough to prove
+/// structuredContent honors the contract without a heavyweight schema dependency.
+fn structured_conforms(schema: &serde_json::Value, instance: &serde_json::Value) -> bool {
+    fn type_ok(expected: &str, val: &serde_json::Value) -> bool {
+        match expected {
+            "array" => val.is_array(),
+            "integer" => val.is_i64() || val.is_u64(),
+            "number" => val.is_number(),
+            "string" => val.is_string(),
+            "object" => val.is_object(),
+            "boolean" => val.is_boolean(),
+            _ => true,
+        }
+    }
+    let Some(obj) = instance.as_object() else { return false };
+    let props = &schema["properties"];
+    if let Some(required) = schema["required"].as_array() {
+        for r in required {
+            let Some(key) = r.as_str() else { return false };
+            let Some(val) = obj.get(key) else { return false };
+            if !type_ok(props[key]["type"].as_str().unwrap_or(""), val) {
+                return false;
+            }
+        }
+    }
+    if let Some(declared) = props.as_object() {
+        for (key, spec) in declared {
+            if let Some(val) = obj.get(key) {
+                if !type_ok(spec["type"].as_str().unwrap_or(""), val) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// #293: high-traffic tools advertise an outputSchema and return structuredContent
+/// that conforms to it, while still emitting a backward-compatible text block.
+#[tokio::test]
+async fn test_mcp_structured_content_validates_against_output_schema() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_struct@example.com", "password-mcp-struct").await;
+    let fac = create_test_facility(&server, "Struct Dock", "Dallas, TX").await;
+    let load_id = create_test_load(&server, &fac).await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    upload_blob_via_presigned(&server, b"struct test blob".to_vec(), "text/plain", "struct.txt").await;
+    let session = mcp_session(&server, &token).await;
+
+    let tools = mcp_rpc(&server, &token, &session, "tools/list", serde_json::json!({})).await;
+
+    // Envelope-shape tools: a populated page that conforms to the declared schema.
+    assert_structured(&server, &token, &session, &tools, "list_loads", serde_json::json!({}), true).await;
+    assert_structured(&server, &token, &session, &tools, "list_trips", serde_json::json!({}), true).await;
+    assert_structured(&server, &token, &session, &tools, "list_blobs", serde_json::json!({}), true).await;
+    // Record-shape tools.
+    let gl = assert_structured(&server, &token, &session, &tools, "get_load", serde_json::json!({ "id": load_id }), false).await;
+    assert_eq!(gl["id"], load_id, "get_load structuredContent should carry the id");
+    let gt = assert_structured(&server, &token, &session, &tools, "get_trip", serde_json::json!({ "id": trip_id }), false).await;
+    assert_eq!(gt["id"], trip_id, "get_trip structuredContent should carry the id");
+
+    // search_blobs declares the envelope schema too (its populated path needs Ollama).
+    let search = tools["result"]["tools"].as_array().unwrap().iter()
+        .find(|t| t["name"] == "search_blobs").unwrap();
+    assert!(search["outputSchema"].is_object(), "search_blobs must advertise an outputSchema");
+}
+
+/// Call a tool, then assert its structuredContent conforms to the outputSchema it
+/// advertised in `tools`, that the backward-compatible text block is still emitted,
+/// and (for list tools) that the page is populated. Returns the structuredContent.
+async fn assert_structured(
+    server: &axum_test::TestServer,
+    token: &str,
+    session: &str,
+    tools: &serde_json::Value,
+    tool: &str,
+    args: serde_json::Value,
+    expect_items: bool,
+) -> serde_json::Value {
+    let schema = tools["result"]["tools"].as_array().unwrap().iter()
+        .find(|t| t["name"] == tool)
+        .unwrap_or_else(|| panic!("missing tool {tool}"))["outputSchema"].clone();
+    assert!(schema.is_object(), "{tool} must advertise an outputSchema");
+    let r = mcp_rpc(server, token, session, "tools/call",
+        serde_json::json!({ "name": tool, "arguments": args })).await;
+    let structured = r["result"]["structuredContent"].clone();
+    assert!(r["result"]["content"][0]["text"].is_string(), "{tool}: text block still emitted");
+    if expect_items {
+        assert!(
+            structured["items"].as_array().is_some_and(|a| !a.is_empty()),
+            "{tool} structuredContent should be populated: {structured}"
+        );
+    }
+    assert!(
+        structured_conforms(&schema, &structured),
+        "{tool} structuredContent must conform to its outputSchema: {structured}"
+    );
+    structured
+}
+
 /// Cursor pagination over the MCP surface: following `nextCursor` to exhaustion
 /// must yield every record exactly once, and the final page must omit nextCursor.
 /// Uses list_facilities with a page size of 2 so a 5-record dataset spans 3 pages.
