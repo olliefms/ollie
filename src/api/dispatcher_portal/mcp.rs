@@ -97,12 +97,25 @@ impl ServerHandler for OllieMcp {
             Ok(value) => Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string(&value).unwrap_or_default(),
             )])),
-            // Tool-execution failures stay on the JSON-RPC error channel for now,
-            // preserving the pre-rmcp behaviour. Migrating domain failures to
-            // `isError` results is tracked separately (#297).
-            Err(msg) => Err(McpError::internal_error(msg, None)),
+            // Domain failures ("trip can't be cancelled, it's in_transit") are
+            // recoverable feedback the model should read and adapt to, so they come
+            // back as a normal result with isError: true — NOT a JSON-RPC error.
+            Err(ToolError::Domain(msg)) => Ok(CallToolResult::error(vec![Content::text(msg)])),
+            // An unknown tool name is a genuine protocol fault → JSON-RPC error.
+            Err(ToolError::Unknown) => Err(McpError::invalid_params(
+                format!("unknown tool: {}", request.name),
+                None,
+            )),
         }
     }
+}
+
+/// Why a `tools/call` did not produce a result. `Domain` failures are recoverable
+/// tool-execution feedback (surfaced as an isError result); `Unknown` is a
+/// protocol fault (surfaced as a JSON-RPC error).
+enum ToolError {
+    Unknown,
+    Domain(String),
 }
 
 /// Build the rmcp Streamable HTTP service for mounting under `/dispatch/mcp`.
@@ -838,10 +851,11 @@ fn parse_uuid_opt(args: &Value, key: &str) -> Result<Option<Uuid>, String> {
 // ---------------------------------------------------------------------------
 
 /// Dispatch a `tools/call` by name to the matching tool shim. Returns the raw
-/// JSON payload (the ServerHandler wraps it into an MCP content block) or an
-/// error string (surfaced as a JSON-RPC error).
-async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<Value, String> {
-    match name {
+/// JSON payload (the ServerHandler wraps it into an MCP content block). An unknown
+/// tool is a protocol fault (`ToolError::Unknown`); any shim error is a domain
+/// failure (`ToolError::Domain`) surfaced to the model as an isError result.
+async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<Value, ToolError> {
+    let result: Result<Value, String> = match name {
         "list_loads" => tool_list_loads(state, args).await,
         "get_load" => tool_get_load(state, args).await,
         "create_load" => tool_create_load(state, args).await,
@@ -886,8 +900,9 @@ async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<
         "get_blob_metadata" => tool_get_blob_metadata(state, args).await,
         "list_blobs" => tool_list_blobs(state, args).await,
         "delete_blob" => tool_delete_blob(state, args).await,
-        _ => Err(format!("unknown tool: {name}")),
-    }
+        _ => return Err(ToolError::Unknown),
+    };
+    result.map_err(ToolError::Domain)
 }
 
 // ---------------------------------------------------------------------------
