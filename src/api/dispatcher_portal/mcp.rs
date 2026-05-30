@@ -1,21 +1,42 @@
 // src/api/dispatcher_portal/mcp.rs
 //
-// MCP transport: hand-rolled JSON-RPC 2.0 over HTTP POST.
+// MCP server for the dispatcher agent surface, built on rmcp's Streamable HTTP
+// transport (the official Rust MCP SDK, adopted in #105 once the project moved
+// to Axum 0.8). rmcp owns the JSON-RPC envelope, protocol-version negotiation,
+// the MCP-Protocol-Version header check, the notifications→202 behaviour, and
+// session/SSE plumbing. This module only implements the semantic ServerHandler
+// (server info + tool list + tool dispatch) and wires the 47 existing tool
+// shims into it; no business logic lives here.
 //
-// rmcp (official Rust MCP SDK) was evaluated but targets Axum 0.8, which
-// conflicts with this project's Axum 0.7 dependency. Rather than upgrading
-// Axum (a large breaking change mid-release), we hand-roll the thin JSON-RPC
-// envelope (~150 lines). Tool handlers are thin shims into existing DB ops;
-// no business logic lives here. Switch to rmcp once the project upgrades to
-// Axum 0.8.
+// Auth is enforced at the HTTP layer — the require_dispatcher_auth route_layer
+// in mod.rs runs BEFORE the request reaches this service, so rmcp tool handlers
+// receive no auth context and enforce none themselves.
+//
+// Transport config (see `mcp_service`): stateful Streamable HTTP. An `initialize`
+// POST opens a session (returned in the Mcp-Session-Id header) and responses
+// stream back as text/event-stream — the server→client channel that resource
+// subscriptions (#299) and elicitation (#300) build on.
+
+use std::sync::Arc;
 
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
-    response::{IntoResponse, Response},
     Json,
 };
-use serde::{Deserialize, Serialize};
+use rmcp::{
+    handler::server::ServerHandler,
+    model::{
+        CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult,
+        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
+        Tool,
+    },
+    service::RequestContext,
+    transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    },
+    ErrorData as McpError, RoleServer,
+};
+use serde::Serialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -31,53 +52,103 @@ use crate::{
 use super::blob_links::{self, BlobUrlOp};
 
 // ---------------------------------------------------------------------------
-// JSON-RPC 2.0 envelope types
+// rmcp ServerHandler
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
-pub struct JsonRpcRequest {
-    pub jsonrpc: String,
-    pub id: Option<Value>,
-    pub method: String,
-    #[serde(default)]
-    pub params: Value,
+/// The dispatcher MCP server. Holds shared app state; the transport's service
+/// factory builds one per session (a cheap clone of `AppState`).
+#[derive(Clone)]
+pub struct OllieMcp {
+    state: AppState,
 }
 
-#[derive(Serialize)]
-pub struct JsonRpcResponse {
-    pub jsonrpc: String,
-    pub id: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub result: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<JsonRpcError>,
+impl OllieMcp {
+    pub fn new(state: AppState) -> Self {
+        Self { state }
+    }
 }
 
-#[derive(Serialize)]
-pub struct JsonRpcError {
-    pub code: i32,
-    pub message: String,
-}
-
-impl JsonRpcResponse {
-    fn ok(id: Option<Value>, result: Value) -> Self {
-        Self { jsonrpc: "2.0".into(), id, result: Some(result), error: None }
+impl ServerHandler for OllieMcp {
+    fn get_info(&self) -> ServerInfo {
+        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2025_06_18)
+            .with_server_info(Implementation::new(
+                "ollie-dispatcher",
+                env!("CARGO_PKG_VERSION"),
+            ))
     }
 
-    fn err(id: Option<Value>, code: i32, message: impl Into<String>) -> Self {
-        Self {
-            jsonrpc: "2.0".into(),
-            id,
-            result: None,
-            error: Some(JsonRpcError { code, message: message.into() }),
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(ListToolsResult::with_all_items(tool_catalog()))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let args = Value::Object(request.arguments.unwrap_or_default());
+        match handle_tool_call(&self.state, &request.name, &args).await {
+            Ok(value) => Ok(CallToolResult::success(vec![Content::text(
+                serde_json::to_string(&value).unwrap_or_default(),
+            )])),
+            // Tool-execution failures stay on the JSON-RPC error channel for now,
+            // preserving the pre-rmcp behaviour. Migrating domain failures to
+            // `isError` results is tracked separately (#297).
+            Err(msg) => Err(McpError::internal_error(msg, None)),
         }
     }
 }
 
-/// Wrap a serializable value in the MCP content format.
+/// Build the rmcp Streamable HTTP service for mounting under `/dispatch/mcp`.
+///
+/// Stateful mode (the full Streamable HTTP transport): an `initialize` POST opens
+/// a session (returned in the `Mcp-Session-Id` response header), and responses
+/// stream back as `text/event-stream`. This is what unblocks server→client
+/// messages for resource subscriptions (#299) and elicitation (#300).
+///
+/// `sse_keep_alive` is disabled so each request's response stream terminates as
+/// soon as its single JSON-RPC reply is delivered, instead of being held open by
+/// periodic pings. DNS-rebinding host allow-listing is disabled because the only
+/// client contract is a `Bearer` token over a public domain (no browser/cookie
+/// ambient authority), and the default allow-list (loopback only) would 403 every
+/// production request.
+pub fn mcp_service(state: &AppState) -> StreamableHttpService<OllieMcp, LocalSessionManager> {
+    let state = state.clone();
+    StreamableHttpService::new(
+        move || Ok(OllieMcp::new(state.clone())),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default()
+            .with_sse_keep_alive(None)
+            .disable_allowed_hosts(),
+    )
+}
+
+/// The full tool catalogue as rmcp `Tool`s, derived from the hand-authored
+/// `tools_list()` JSON schema so the per-tool input schemas live in one place.
+fn tool_catalog() -> Vec<Tool> {
+    tools_list()["tools"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|t| {
+            let name = t["name"].as_str()?.to_string();
+            let description = t["description"].as_str().unwrap_or("").to_string();
+            let schema = t["inputSchema"].as_object().cloned().unwrap_or_default();
+            Some(Tool::new(name, description, Arc::new(schema)))
+        })
+        .collect()
+}
+
+/// Serialize a tool handler's payload to a JSON `Value`. The ServerHandler wraps
+/// the result into an MCP text content block; handlers just return their data.
 fn mcp_content(value: impl Serialize) -> Value {
-    let text = serde_json::to_string(&value).unwrap_or_default();
-    json!({ "content": [{ "type": "text", "text": text }] })
+    serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
 // ---------------------------------------------------------------------------
@@ -678,59 +749,13 @@ fn parse_uuid_opt(args: &Value, key: &str) -> Result<Option<Uuid>, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Main handler
+// Tool dispatch
 // ---------------------------------------------------------------------------
 
-pub async fn handle(
-    State(state): State<AppState>,
-    Json(req): Json<JsonRpcRequest>,
-) -> Response {
-    // A JSON-RPC notification (no `id`) gets no Response. Per Streamable HTTP a
-    // notification-only POST must return 202 Accepted with an empty body, never a
-    // JSON-RPC error — a stock `type: "http"` client treats an error reply to
-    // `notifications/initialized` as a broken handshake.
-    if req.id.is_none() {
-        return StatusCode::ACCEPTED.into_response();
-    }
-
-    let id = req.id.clone();
-
-    if req.jsonrpc != "2.0" {
-        return Json(JsonRpcResponse::err(id, -32600, "invalid JSON-RPC version")).into_response();
-    }
-
-    let result = match req.method.as_str() {
-        "initialize" => handle_initialize(),
-        "tools/list" => Ok(tools_list()),
-        "tools/call" => handle_tool_call(&state, &req.params).await,
-        _ => {
-            return Json(JsonRpcResponse::err(
-                id,
-                -32601,
-                format!("method not found: {}", req.method),
-            ))
-            .into_response()
-        }
-    };
-
-    match result {
-        Ok(value) => Json(JsonRpcResponse::ok(id, value)).into_response(),
-        Err(e) => Json(JsonRpcResponse::err(id, -32603, e)).into_response(),
-    }
-}
-
-fn handle_initialize() -> Result<Value, String> {
-    Ok(json!({
-        "protocolVersion": "2024-11-05",
-        "capabilities": { "tools": {} },
-        "serverInfo": { "name": "ollie-dispatcher", "version": "1.0" }
-    }))
-}
-
-async fn handle_tool_call(state: &AppState, params: &Value) -> Result<Value, String> {
-    let name = params["name"].as_str().ok_or("missing tool name")?;
-    let args = &params["arguments"];
-
+/// Dispatch a `tools/call` by name to the matching tool shim. Returns the raw
+/// JSON payload (the ServerHandler wraps it into an MCP content block) or an
+/// error string (surfaced as a JSON-RPC error).
+async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<Value, String> {
     match name {
         "list_loads" => tool_list_loads(state, args).await,
         "get_load" => tool_get_load(state, args).await,
@@ -1576,8 +1601,6 @@ mod tests {
         ai::OllamaClient, config::Config, db::DbClient, routing::RoutingClient,
         storage::BlobStore,
     };
-    use axum::body::to_bytes;
-    use axum::http::StatusCode;
     use std::sync::Arc;
     use tempfile::TempDir;
 
@@ -1629,76 +1652,27 @@ mod tests {
         (state, blob_dir, db_dir)
     }
 
-    /// Call `handle` directly and return (status, body bytes).
-    async fn call(state: &AppState, body: Value) -> (StatusCode, Vec<u8>) {
-        let req: JsonRpcRequest = serde_json::from_value(body).unwrap();
-        let resp = handle(State(state.clone()), Json(req)).await;
-        let (parts, body) = resp.into_parts();
-        let bytes = to_bytes(body, usize::MAX).await.unwrap();
-        (parts.status, bytes.to_vec())
+    #[tokio::test]
+    async fn get_info_advertises_protocol_server_and_tools() {
+        let (state, _b, _d) = test_state().await;
+        let info = OllieMcp::new(state).get_info();
+        assert_eq!(info.protocol_version, ProtocolVersion::V_2025_06_18);
+        assert_eq!(info.server_info.name, "ollie-dispatcher");
+        assert!(
+            info.capabilities.tools.is_some(),
+            "server must advertise tools capability"
+        );
     }
 
-    #[tokio::test]
-    async fn notifications_initialized_returns_202_empty() {
-        let (state, _b, _d) = test_state().await;
-        let (status, body) = call(
-            &state,
-            json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert!(body.is_empty(), "notification response body must be empty");
-    }
-
-    #[tokio::test]
-    async fn arbitrary_notification_returns_202_empty() {
-        let (state, _b, _d) = test_state().await;
-        let (status, body) = call(
-            &state,
-            json!({ "jsonrpc": "2.0", "method": "some/unknown/notification" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::ACCEPTED);
-        assert!(body.is_empty());
-    }
-
-    #[tokio::test]
-    async fn initialize_request_returns_200_result() {
-        let (state, _b, _d) = test_state().await;
-        let (status, body) = call(
-            &state,
-            json!({ "jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {} }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["result"]["serverInfo"]["name"], "ollie-dispatcher");
-        assert!(v.get("error").is_none());
-    }
-
-    #[tokio::test]
-    async fn tools_list_request_returns_200_tools() {
-        let (state, _b, _d) = test_state().await;
-        let (status, body) = call(
-            &state,
-            json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert!(!v["result"]["tools"].as_array().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn unknown_method_with_id_returns_200_error() {
-        let (state, _b, _d) = test_state().await;
-        let (status, body) = call(
-            &state,
-            json!({ "jsonrpc": "2.0", "id": 2, "method": "no/such/method" }),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let v: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(v["error"]["code"], -32601);
+    #[test]
+    fn tool_catalog_lists_expected_tools() {
+        let catalog = tool_catalog();
+        assert!(!catalog.is_empty(), "tool catalog must not be empty");
+        for expected in ["list_loads", "assign_driver", "list_events"] {
+            assert!(
+                catalog.iter().any(|t| t.name == expected),
+                "tool catalog must contain {expected}"
+            );
+        }
     }
 }

@@ -331,8 +331,15 @@ is required; an API-key session cannot mint more keys):
 
 ## Dispatcher MCP server — POST /dispatch/mcp
 
-JSON-RPC 2.0. Call `tools/list` for input schemas, `tools/call` to invoke. Requires
-a dispatcher JWT or API key in the Authorization header.
+MCP Streamable HTTP transport (protocol 2025-06-18), JSON-RPC 2.0. Requires a
+dispatcher JWT or API key in the Authorization header. Every POST must send
+`Accept: application/json, text/event-stream` and `Content-Type: application/json`;
+responses stream back as `text/event-stream`.
+
+Lifecycle: POST `initialize` first — the response carries an `Mcp-Session-Id`
+header; send it back as the `Mcp-Session-Id` request header on every subsequent
+call. Then call `tools/list` for input schemas and `tools/call` to invoke. A stock
+MCP client (e.g. an `type: "http"` config) handles all of this for you.
 
 Loads & trips:
   list_loads, get_load, create_load, update_load

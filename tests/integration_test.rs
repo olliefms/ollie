@@ -1525,6 +1525,7 @@ async fn test_dispatcher_mcp_requires_auth() {
 
     // POST /dispatch/mcp without auth header → 401
     let resp = server.post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -1540,20 +1541,10 @@ async fn test_dispatcher_mcp_tools_list() {
     let (server, _b, _d, _rx) = test_server().await;
 
     let token = dispatcher_login(&server, "mcp1@example.com", "password-mcp1").await;
+    let session = mcp_session(&server, &token).await;
 
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/list",
-            "params": {}
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 200);
-    let body = resp.json::<serde_json::Value>();
+    let body = mcp_rpc(&server, &token, &session, "tools/list", serde_json::json!({})).await;
     assert_eq!(body["jsonrpc"], "2.0");
-    assert_eq!(body["id"], 1);
     let tools = body["result"]["tools"].as_array().expect("tools should be an array");
     assert!(!tools.is_empty(), "tools list should not be empty");
     // Verify some expected tools are present
@@ -1570,23 +1561,13 @@ async fn test_dispatcher_mcp_list_loads() {
     let (server, _b, _d, _rx) = test_server().await;
 
     let token = dispatcher_login(&server, "mcp2@example.com", "password-mcp2").await;
+    let session = mcp_session(&server, &token).await;
 
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "list_loads",
-                "arguments": {}
-            }
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 200);
-    let body = resp.json::<serde_json::Value>();
+    let body = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
+        "name": "list_loads",
+        "arguments": {}
+    })).await;
     assert_eq!(body["jsonrpc"], "2.0");
-    assert_eq!(body["id"], 2);
     // Result should have MCP content format
     let content = &body["result"]["content"];
     assert!(content.is_array(), "result.content should be an array");
@@ -1907,15 +1888,10 @@ async fn test_dispatcher_cancel_trip() {
 async fn test_dispatcher_mcp_lifecycle_tools_listed() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "mcp_lc@example.com", "password-mcp-lc").await;
+    let session = mcp_session(&server, &token).await;
 
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 200);
-    let tools = resp.json::<serde_json::Value>()["result"]["tools"].as_array().unwrap().clone();
+    let body = mcp_rpc(&server, &token, &session, "tools/list", serde_json::json!({})).await;
+    let tools = body["result"]["tools"].as_array().unwrap().clone();
     let names: Vec<String> = tools.iter()
         .filter_map(|t| t["name"].as_str().map(|s| s.to_string()))
         .collect();
@@ -1932,6 +1908,7 @@ async fn test_dispatcher_mcp_lifecycle_tools_listed() {
 async fn test_dispatcher_mcp_dispatch_and_complete() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "mcp_dc@example.com", "password-mcp-dc").await;
+    let session = mcp_session(&server, &token).await;
 
     let fac_id = create_test_facility(&server, "MCP Dock", "Dallas, TX").await;
 
@@ -1966,18 +1943,8 @@ async fn test_dispatcher_mcp_dispatch_and_complete() {
         .await;
 
     // Dispatch via MCP
-    let dispatch_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "dispatch_trip", "arguments": { "trip_id": trip_id } }
-        }))
-        .await;
-    assert_eq!(dispatch_resp.status_code(), 200);
-    let body = dispatch_resp.json::<serde_json::Value>();
-    assert!(body["error"].is_null(), "MCP error: {:?}", body["error"]);
-    let content_text = body["result"]["content"][0]["text"].as_str().expect("text payload");
-    let trip: serde_json::Value = serde_json::from_str(content_text).expect("inner JSON");
+    let trip = mcp_call(&server, &token, "dispatch_trip",
+        serde_json::json!({ "trip_id": trip_id })).await;
     assert_eq!(trip["status"], "dispatched");
 
     // Drive to delivered via MCP stop_arrive/stop_depart
@@ -1985,40 +1952,21 @@ async fn test_dispatcher_mcp_dispatch_and_complete() {
         (1u32, "2026-07-02T08:05:00", "2026-07-02T09:00:00"),
         (2u32, "2026-07-02T16:05:00", "2026-07-02T17:00:00"),
     ] {
-        let r = server.post("/dispatch/mcp")
-            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-                "params": { "name": "stop_arrive",
-                    "arguments": { "trip_id": trip_id, "sequence": seq, "actual_arrive": arrive } }
-            }))
-            .await;
-        assert_eq!(r.status_code(), 200);
-        let r = server.post("/dispatch/mcp")
-            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-            .json(&serde_json::json!({
-                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-                "params": { "name": "stop_depart",
-                    "arguments": { "trip_id": trip_id, "sequence": seq, "actual_depart": depart } }
-            }))
-            .await;
-        assert_eq!(r.status_code(), 200);
+        let r = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
+            "name": "stop_arrive",
+            "arguments": { "trip_id": trip_id, "sequence": seq, "actual_arrive": arrive }
+        })).await;
+        assert!(r["error"].is_null(), "stop_arrive error: {:?}", r["error"]);
+        let r = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
+            "name": "stop_depart",
+            "arguments": { "trip_id": trip_id, "sequence": seq, "actual_depart": depart }
+        })).await;
+        assert!(r["error"].is_null(), "stop_depart error: {:?}", r["error"]);
     }
 
     // Complete via MCP
-    let complete_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-            "params": { "name": "complete_trip", "arguments": { "trip_id": trip_id } }
-        }))
-        .await;
-    assert_eq!(complete_resp.status_code(), 200);
-    let body = complete_resp.json::<serde_json::Value>();
-    assert!(body["error"].is_null(), "MCP error: {:?}", body["error"]);
-    let trip: serde_json::Value = serde_json::from_str(
-        body["result"]["content"][0]["text"].as_str().unwrap()
-    ).unwrap();
+    let trip = mcp_call(&server, &token, "complete_trip",
+        serde_json::json!({ "trip_id": trip_id })).await;
     assert_eq!(trip["status"], "completed");
 }
 
@@ -3740,16 +3688,22 @@ async fn test_api_key_auth_works_on_mcp_endpoint() {
     let api_key = body["key"].as_str().unwrap();
 
     let resp = server.post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "initialize"
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "ollie-test", "version": "1.0" }
+            }
         }))
         .await;
     assert_eq!(resp.status_code(), 200);
-    let result = resp.json::<serde_json::Value>();
-    assert_eq!(result["result"]["protocolVersion"], "2024-11-05");
+    let result = sse_json(&resp.text());
+    assert_eq!(result["result"]["protocolVersion"], "2025-06-18");
 }
 
 #[tokio::test]
@@ -4262,23 +4216,98 @@ async fn test_load_doctor_flags_ungeocoded_facility() {
 
 // ── Task 5: MCP create_trip/update_trip/recalculate_trip_miles + filters ───────
 
+/// Extract the single JSON-RPC message from a Streamable-HTTP SSE response body.
+/// rmcp frames each POST reply as one `event: message` / `data: {…}` SSE event.
+fn sse_json(body: &str) -> serde_json::Value {
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                continue; // priming/keep-alive frames carry no JSON payload
+            }
+            return serde_json::from_str(rest)
+                .unwrap_or_else(|e| panic!("SSE data not JSON ({e}): {rest}"));
+        }
+    }
+    panic!("no SSE `data:` event in body: {body:?}");
+}
+
+/// Open an MCP session: `initialize` then the `notifications/initialized` ack.
+/// Returns the `Mcp-Session-Id` the server assigned (used on subsequent calls).
+async fn mcp_session(server: &axum_test::TestServer, token: &str) -> String {
+    let resp = server
+        .post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "ollie-test", "version": "1.0" }
+            }
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "initialize HTTP {}", resp.status_code());
+    let session = resp
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize must return an Mcp-Session-Id header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    server
+        .post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.clone())
+        .json(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    session
+}
+
+/// Send one JSON-RPC request on an existing session and return the parsed reply
+/// (the full JSON-RPC envelope: `{ jsonrpc, id, result | error }`).
+async fn mcp_rpc(
+    server: &axum_test::TestServer,
+    token: &str,
+    session: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let resp = server
+        .post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.to_string())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "MCP {method} HTTP {}", resp.status_code());
+    sse_json(&resp.text())
+}
+
+/// Full convenience path: open a session, invoke a tool, and return the tool's
+/// decoded payload (the JSON object inside the result's text content block).
 async fn mcp_call(
     server: &axum_test::TestServer,
     token: &str,
     name: &str,
     args: serde_json::Value,
 ) -> serde_json::Value {
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": name, "arguments": args }
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 200, "MCP {name} HTTP {}", resp.status_code());
-    let body = resp.json::<serde_json::Value>();
+    let session = mcp_session(server, token).await;
+    let body = mcp_rpc(
+        server,
+        token,
+        &session,
+        "tools/call",
+        serde_json::json!({ "name": name, "arguments": args }),
+    )
+    .await;
     assert!(body["error"].is_null(), "MCP {name} error: {:?}", body["error"]);
-    let text = body["result"]["content"][0]["text"].as_str()
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
         .expect("MCP content[0].text missing");
     serde_json::from_str(text).expect("inner JSON parse")
 }
@@ -4331,18 +4360,16 @@ async fn test_mcp_update_trip_rejects_raw_mileage() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "mcp_ut2@example.com", "password-mcp-ut2").await;
     let trip_id = make_trip_with_two_stops(&server).await;
+    let session = mcp_session(&server, &token).await;
 
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "update_trip", "arguments": {
-                "trip_id": trip_id, "total_miles": 999.0
-            } }
-        }))
-        .await;
-    let body = resp.json::<serde_json::Value>();
-    assert!(body["error"].is_object(), "expected MCP error for total_miles set");
+    let body = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
+        "name": "update_trip",
+        "arguments": { "trip_id": trip_id, "total_miles": 999.0 }
+    })).await;
+    assert!(
+        body["error"].is_object() || body["result"]["isError"] == serde_json::json!(true),
+        "expected MCP error for total_miles set: {body:?}"
+    );
 }
 
 #[tokio::test]
@@ -4812,39 +4839,18 @@ async fn test_dispatcher_facility_patch_rejects_unknown_field() {
 async fn test_dispatcher_facility_mcp_create_and_update() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "fac-mcp@example.com", "password-mcp-fac").await;
-    let auth = format!("Bearer {token}");
 
     // MCP create_facility
-    let create_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "create_facility", "arguments": {
-                "name": "MCP Facility", "address": "1 MCP Way",
-            }}
-        }))
-        .await;
-    assert_eq!(create_resp.status_code(), 200);
-    let body: serde_json::Value = create_resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let record: serde_json::Value = serde_json::from_str(text).unwrap();
+    let record = mcp_call(&server, &token, "create_facility", serde_json::json!({
+        "name": "MCP Facility", "address": "1 MCP Way",
+    })).await;
     let id = record["id"].as_str().unwrap().to_string();
     assert_eq!(record["geocode_status"], "pending");
 
     // MCP update_facility — set explicit coords
-    let upd_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": { "name": "update_facility", "arguments": {
-                "facility_id": id, "lat": 30.0, "lng": -90.0,
-            }}
-        }))
-        .await;
-    assert_eq!(upd_resp.status_code(), 200);
-    let upd: serde_json::Value = upd_resp.json();
-    let upd_text = upd["result"]["content"][0]["text"].as_str().unwrap();
-    let upd_record: serde_json::Value = serde_json::from_str(upd_text).unwrap();
+    let upd_record = mcp_call(&server, &token, "update_facility", serde_json::json!({
+        "facility_id": id, "lat": 30.0, "lng": -90.0,
+    })).await;
     assert_eq!(upd_record["geocode_status"], "ready");
     assert!((upd_record["lat"].as_f64().unwrap() - 30.0).abs() < 1e-9);
 }
@@ -4853,7 +4859,6 @@ async fn test_dispatcher_facility_mcp_create_and_update() {
 async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
     let token = dispatcher_login(&server, "fac-doc@example.com", "password-fac-doc").await;
-    let auth = format!("Bearer {token}");
 
     let now = chrono::Utc::now();
     let id = uuid::Uuid::new_v4();
@@ -4870,19 +4875,9 @@ async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
         embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "facility_doctor", "arguments": {
-                "facility_id": id.to_string(), "apply": true,
-            }}
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 200);
-    let body: serde_json::Value = resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let report: serde_json::Value = serde_json::from_str(text).unwrap();
+    let report = mcp_call(&server, &token, "facility_doctor", serde_json::json!({
+        "facility_id": id.to_string(), "apply": true,
+    })).await;
     let applied = report["applied"].as_array().unwrap();
     assert!(applied.iter().any(|c| c == "facility.geocode_retry"),
         "expected facility.geocode_retry in applied; got {applied:?}");
@@ -5533,56 +5528,27 @@ async fn test_dispatcher_truck_patch_rejects_status_and_unknown_fields() {
 async fn test_dispatcher_trailer_mcp_create_get_update() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "trl-mcp@example.com", "password-trl-mcp").await;
-    let auth = format!("Bearer {token}");
 
     // create_trailer
-    let create_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "create_trailer", "arguments": {
-                "unit_number": "MCP-TRL-001",
-                "owner": "fleet",
-                "trailer_type": "reefer",
-            }}
-        }))
-        .await;
-    assert_eq!(create_resp.status_code(), 200);
-    let body: serde_json::Value = create_resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let record: serde_json::Value = serde_json::from_str(text).unwrap();
+    let record = mcp_call(&server, &token, "create_trailer", serde_json::json!({
+        "unit_number": "MCP-TRL-001",
+        "owner": "fleet",
+        "trailer_type": "reefer",
+    })).await;
     let id = record["id"].as_str().unwrap().to_string();
     assert_eq!(record["status"], "available");
     assert_eq!(record["trailer_type"], "reefer");
 
     // get_trailer
-    let get_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": { "name": "get_trailer", "arguments": { "trailer_id": id }}
-        }))
-        .await;
-    assert_eq!(get_resp.status_code(), 200);
-    let body: serde_json::Value = get_resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let got: serde_json::Value = serde_json::from_str(text).unwrap();
+    let got = mcp_call(&server, &token, "get_trailer", serde_json::json!({
+        "trailer_id": id
+    })).await;
     assert_eq!(got["unit_number"], "MCP-TRL-001");
 
     // update_trailer
-    let upd_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": { "name": "update_trailer", "arguments": {
-                "trailer_id": id, "notes": "via MCP",
-            }}
-        }))
-        .await;
-    assert_eq!(upd_resp.status_code(), 200);
-    let body: serde_json::Value = upd_resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let upd: serde_json::Value = serde_json::from_str(text).unwrap();
+    let upd = mcp_call(&server, &token, "update_trailer", serde_json::json!({
+        "trailer_id": id, "notes": "via MCP",
+    })).await;
     assert_eq!(upd["notes"], "via MCP");
 }
 
@@ -5590,51 +5556,22 @@ async fn test_dispatcher_trailer_mcp_create_get_update() {
 async fn test_dispatcher_truck_mcp_create_get_update() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "trk-mcp@example.com", "password-trk-mcp").await;
-    let auth = format!("Bearer {token}");
 
-    let create_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "create_truck", "arguments": {
-                "unit_number": "MCP-TRK-001", "make": "Peterbilt",
-            }}
-        }))
-        .await;
-    assert_eq!(create_resp.status_code(), 200);
-    let body: serde_json::Value = create_resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let record: serde_json::Value = serde_json::from_str(text).unwrap();
+    let record = mcp_call(&server, &token, "create_truck", serde_json::json!({
+        "unit_number": "MCP-TRK-001", "make": "Peterbilt",
+    })).await;
     let id = record["id"].as_str().unwrap().to_string();
     assert_eq!(record["status"], "available");
     assert_eq!(record["make"], "Peterbilt");
 
-    let get_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": { "name": "get_truck", "arguments": { "truck_id": id }}
-        }))
-        .await;
-    assert_eq!(get_resp.status_code(), 200);
-    let body: serde_json::Value = get_resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let got: serde_json::Value = serde_json::from_str(text).unwrap();
+    let got = mcp_call(&server, &token, "get_truck", serde_json::json!({
+        "truck_id": id
+    })).await;
     assert_eq!(got["unit_number"], "MCP-TRK-001");
 
-    let upd_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": { "name": "update_truck", "arguments": {
-                "truck_id": id, "model": "579",
-            }}
-        }))
-        .await;
-    assert_eq!(upd_resp.status_code(), 200);
-    let body: serde_json::Value = upd_resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let upd: serde_json::Value = serde_json::from_str(text).unwrap();
+    let upd = mcp_call(&server, &token, "update_truck", serde_json::json!({
+        "truck_id": id, "model": "579",
+    })).await;
     assert_eq!(upd["model"], "579");
 }
 
@@ -5644,7 +5581,6 @@ async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
     // mid-conversation via MCP and immediately references them in assign_driver.
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "asg-mcp@example.com", "password-asg-mcp").await;
-    let auth = format!("Bearer {token}");
 
     // Driver (admin API — there's no dispatcher driver-create)
     let driver_resp = server.post("/api/v1/drivers")
@@ -5655,32 +5591,14 @@ async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
     let driver_id = driver_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create truck via MCP
-    let tk_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "create_truck", "arguments": { "unit_number": "ASG-TRK-001" }}
-        }))
-        .await;
-    let tk_text = tk_resp.json::<serde_json::Value>()["result"]["content"][0]["text"]
-        .as_str().unwrap().to_string();
-    let truck_id = serde_json::from_str::<serde_json::Value>(&tk_text).unwrap()["id"]
-        .as_str().unwrap().to_string();
+    let truck_id = mcp_call(&server, &token, "create_truck", serde_json::json!({
+        "unit_number": "ASG-TRK-001"
+    })).await["id"].as_str().unwrap().to_string();
 
     // Create trailer via MCP
-    let tl_resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": { "name": "create_trailer", "arguments": {
-                "unit_number": "ASG-TRL-001", "owner": "fleet",
-            }}
-        }))
-        .await;
-    let tl_text = tl_resp.json::<serde_json::Value>()["result"]["content"][0]["text"]
-        .as_str().unwrap().to_string();
-    let trailer_id = serde_json::from_str::<serde_json::Value>(&tl_text).unwrap()["id"]
-        .as_str().unwrap().to_string();
+    let trailer_id = mcp_call(&server, &token, "create_trailer", serde_json::json!({
+        "unit_number": "ASG-TRL-001", "owner": "fleet",
+    })).await["id"].as_str().unwrap().to_string();
 
     // Trip
     let fac_id = create_test_facility(&server, "MCP Origin", "Dallas, TX").await;
@@ -5699,23 +5617,12 @@ async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
     let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // assign_driver via MCP using the freshly-created truck and trailer
-    let asg = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-            "params": { "name": "assign_driver", "arguments": {
-                "trip_id": trip_id,
-                "driver_id": driver_id,
-                "truck_id": truck_id,
-                "trailer_ids": [trailer_id],
-            }}
-        }))
-        .await;
-    assert_eq!(asg.status_code(), 200);
-    let body: serde_json::Value = asg.json();
-    assert!(body["error"].is_null(), "assign_driver returned error: {body}");
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let trip: serde_json::Value = serde_json::from_str(text).unwrap();
+    let trip = mcp_call(&server, &token, "assign_driver", serde_json::json!({
+        "trip_id": trip_id,
+        "driver_id": driver_id,
+        "truck_id": truck_id,
+        "trailer_ids": [trailer_id],
+    })).await;
     assert_eq!(trip["status"], "assigned");
     assert_eq!(trip["driver_id"], driver_id);
     assert_eq!(trip["truck_id"], truck_id);
@@ -6272,42 +6179,21 @@ async fn test_detach_equipment_empty_body_400() {
 async fn test_attach_equipment_via_mcp() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "mcpattach@example.com", "password-mcpattach").await;
-    let auth = format!("Bearer {token}");
 
     let driver = make_driver(&server, "MCP Attach Driver").await;
     let truck = make_truck(&server, "MCP-TRK-1").await;
     let trailer = make_trailer(&server, "MCP-TRL-1").await;
 
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": "attach_equipment", "arguments": {
-                "driver_id": driver, "truck": truck, "trailer_ids": [trailer]
-            }}
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 200);
-    let body: serde_json::Value = resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let change: serde_json::Value = serde_json::from_str(text).unwrap();
+    let change = mcp_call(&server, &token, "attach_equipment", serde_json::json!({
+        "driver_id": driver, "truck": truck, "trailer_ids": [trailer]
+    })).await;
     assert_eq!(change["truck_id"], truck);
     assert_eq!(change["trailer_ids"].as_array().unwrap().len(), 1);
 
     // detach via MCP
-    let resp = server.post("/dispatch/mcp")
-        .add_header(header::AUTHORIZATION, &auth)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": { "name": "detach_equipment", "arguments": {
-                "driver_id": driver, "truck": true, "all_trailers": true
-            }}
-        }))
-        .await;
-    assert_eq!(resp.status_code(), 200);
-    let body: serde_json::Value = resp.json();
-    let text = body["result"]["content"][0]["text"].as_str().unwrap();
-    let change: serde_json::Value = serde_json::from_str(text).unwrap();
+    let change = mcp_call(&server, &token, "detach_equipment", serde_json::json!({
+        "driver_id": driver, "truck": true, "all_trailers": true
+    })).await;
     assert!(change["truck_id"].is_null());
     assert_eq!(change["trailer_ids"].as_array().unwrap().len(), 0);
 }
