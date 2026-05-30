@@ -1105,7 +1105,10 @@ async fn tool_list_trips(state: &AppState, args: &Value) -> Result<Value, String
         load_number: args["load_number"].as_str().map(|s| s.to_string()),
     };
     let offset = cursor_offset(args)?;
-    // build_trip_list_items returns the full matching set; paginate it in memory.
+    // build_trip_list_items materializes the full matching set (a pre-existing
+    // shared-path constraint — it has no limit/offset; the REST trips list uses it
+    // too), so this is O(N) per page regardless of page size. Acceptable for now;
+    // pushing limit/offset into that helper is the proper fix when trip counts grow.
     let all = super::data::build_trip_list_items(state, q).await
         .map_err(|e| e.to_string())?;
     let (page, returned, total) = paginate_slice(all, offset, PAGE_SIZE);
@@ -1705,19 +1708,18 @@ async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String
             Ok(mcp_content(paged(items, returned, total, offset)))
         }
         // content_type isn't a DB-level filter, so it's applied in memory over a
-        // bounded scan window from the start. We paginate the filtered matches and
-        // flag `truncated` when the scan window saturated (matches may lie beyond it,
-        // unreachable by cursor) — following nextCursor still advances within view.
+        // FIXED scan window from the start (independent of cursor depth, to bound
+        // memory). We paginate the matches found within that window; `truncated`
+        // flags that more matches may lie beyond it (unreachable by cursor here),
+        // so a paging agent knows the MIME-filtered view is incomplete.
         Some(ct) => {
-            let window = (offset + limit).max(1000);
+            let window = limit.max(1000);
             let (_total, items) = state.db.list(name, &tags, window, 0)
                 .await.map_err(|e| e.to_string())?;
             let scanned = items.len();
             let matched: Vec<_> = items.into_iter().filter(|i| i.mime_type == ct).collect();
             let (page, returned, matched_total) = paginate_slice(matched, offset, limit);
             let mut obj = paged(page, returned, matched_total, offset);
-            // The in-memory MIME filter scans a bounded window; `truncated` tells the
-            // caller matches may lie beyond it (unreachable by cursor here).
             obj["truncated"] = Value::Bool(scanned >= window);
             Ok(mcp_content(obj))
         }
