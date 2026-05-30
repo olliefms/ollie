@@ -27,9 +27,11 @@ use base64::Engine;
 use rmcp::{
     handler::server::ServerHandler,
     model::{
-        CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult,
-        ListToolsResult, PaginatedRequestParams, ProtocolVersion, ServerCapabilities, ServerInfo,
-        Tool, ToolAnnotations,
+        AnnotateAble, CallToolRequestParams, CallToolResult, Content, Implementation,
+        InitializeResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
+        PaginatedRequestParams, ProtocolVersion, RawResource, RawResourceTemplate,
+        ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
+        ServerInfo, Tool, ToolAnnotations,
     },
     service::RequestContext,
     transport::streamable_http_server::{
@@ -71,12 +73,17 @@ impl OllieMcp {
 
 impl ServerHandler for OllieMcp {
     fn get_info(&self) -> ServerInfo {
-        InitializeResult::new(ServerCapabilities::builder().enable_tools().build())
-            .with_protocol_version(ProtocolVersion::V_2025_06_18)
-            .with_server_info(Implementation::new(
-                "ollie-dispatcher",
-                env!("CARGO_PKG_VERSION"),
-            ))
+        InitializeResult::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .build(),
+        )
+        .with_protocol_version(ProtocolVersion::V_2025_06_18)
+        .with_server_info(Implementation::new(
+            "ollie-dispatcher",
+            env!("CARGO_PKG_VERSION"),
+        ))
     }
 
     async fn list_tools(
@@ -108,6 +115,48 @@ impl ServerHandler for OllieMcp {
             )),
         }
     }
+
+    /// Browse blobs as first-class MCP resources (paginated). Each blob is exposed
+    /// at `ollie://blob/{id}`; load/trip resources are reachable by templated URI
+    /// (see `list_resource_templates`) but aren't enumerated here.
+    async fn list_resources(
+        &self,
+        request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        let offset = resource_offset(request.and_then(|r| r.cursor).as_deref())?;
+        let (total, blobs) = self
+            .state
+            .db
+            .list(None, &[], PAGE_SIZE, offset)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let returned = blobs.len();
+        let resources = blobs.iter().map(blob_resource).collect();
+        let mut result = ListResourcesResult::with_all_items(resources);
+        if offset + returned < total {
+            result.next_cursor = Some(encode_offset(offset + returned));
+        }
+        Ok(result)
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, McpError> {
+        Ok(ListResourceTemplatesResult::with_all_items(resource_templates()))
+    }
+
+    /// Resolve an `ollie://{kind}/{id}` URI to a JSON view of the record.
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let contents = read_ollie_resource(&self.state, &request.uri).await?;
+        Ok(ReadResourceResult::new(vec![contents]))
+    }
 }
 
 /// Why a `tools/call` did not produce a result. `Domain` failures are recoverable
@@ -116,6 +165,102 @@ impl ServerHandler for OllieMcp {
 enum ToolError {
     Unknown,
     Domain(String),
+}
+
+// ---------------------------------------------------------------------------
+// Resources (MCP `resources` capability, #299)
+//
+// Blobs are enumerable via resources/list under `ollie://blob/{id}`; loads and
+// trips are reachable by templated URI (resources/read of `ollie://load/{id}` /
+// `ollie://trip/{id}`) but not enumerated. read_resource returns a JSON view of
+// the record. Cursor pagination mirrors the list-tool scheme.
+// ---------------------------------------------------------------------------
+
+/// Stable URI templates for the record types exposed as resources.
+fn resource_templates() -> Vec<rmcp::model::ResourceTemplate> {
+    [
+        ("ollie://blob/{id}", "Blob", "A stored document/blob, by UUID."),
+        ("ollie://load/{id}", "Load", "A freight load record, by UUID."),
+        ("ollie://trip/{id}", "Trip", "A trip record, by UUID."),
+    ]
+    .into_iter()
+    .map(|(uri, name, desc)| {
+        RawResourceTemplate::new(uri, name)
+            .with_description(desc)
+            .with_mime_type("application/json")
+            .no_annotation()
+    })
+    .collect()
+}
+
+/// Describe a blob as an MCP resource.
+fn blob_resource(b: &crate::models::BlobListItem) -> rmcp::model::Resource {
+    RawResource::new(format!("ollie://blob/{}", b.id), b.name.clone())
+        .with_mime_type(b.mime_type.clone())
+        .with_size(b.size.max(0) as u32)
+        .no_annotation()
+}
+
+/// Resolve an `ollie://{kind}/{id}` URI to JSON resource contents.
+async fn read_ollie_resource(state: &AppState, uri: &str) -> Result<ResourceContents, McpError> {
+    let rest = uri
+        .strip_prefix("ollie://")
+        .ok_or_else(|| McpError::invalid_params(format!("unsupported resource URI: {uri}"), None))?;
+    let (kind, id_str) = rest
+        .split_once('/')
+        .ok_or_else(|| McpError::invalid_params(format!("malformed resource URI: {uri}"), None))?;
+    let id = Uuid::parse_str(id_str)
+        .map_err(|_| McpError::invalid_params(format!("resource id is not a UUID: {uri}"), None))?;
+
+    let json = match kind {
+        "blob" => serde_json::to_value(
+            state.db.get_by_id(id).await.map_err(|e| map_record_err(uri, e))?,
+        ),
+        "load" => serde_json::to_value(
+            state.db.get_load_by_id(id).await.map_err(|e| map_record_err(uri, e))?,
+        ),
+        "trip" => serde_json::to_value(
+            super::data::build_trip_detail(state, id).await.map_err(|e| map_record_err(uri, e))?,
+        ),
+        _ => {
+            return Err(McpError::invalid_params(
+                format!("unknown resource kind '{kind}' in {uri}"),
+                None,
+            ))
+        }
+    }
+    .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+    Ok(ResourceContents::text(json.to_string(), uri).with_mime_type("application/json"))
+}
+
+/// Map a record-fetch error to the right MCP code: a genuine miss is
+/// `resource_not_found` (-32002), but a transient/internal failure must stay an
+/// `internal_error` so clients don't treat a DB outage as a definitive 404.
+fn map_record_err(uri: &str, e: crate::error::AppError) -> McpError {
+    match e {
+        crate::error::AppError::NotFound => {
+            McpError::resource_not_found(format!("{uri}: not found"), None)
+        }
+        other => McpError::internal_error(format!("{uri}: {other}"), None),
+    }
+}
+
+/// Decode a resources/list pagination cursor into a 0-based offset.
+fn resource_offset(cursor: Option<&str>) -> Result<usize, McpError> {
+    match cursor {
+        None => Ok(0),
+        Some(c) => base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(c)
+            .ok()
+            .and_then(|b| String::from_utf8(b).ok())
+            .and_then(|s| s.parse::<usize>().ok())
+            .ok_or_else(|| McpError::invalid_params("invalid cursor", None)),
+    }
+}
+
+fn encode_offset(offset: usize) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(offset.to_string())
 }
 
 /// Build the rmcp Streamable HTTP service for mounting under `/dispatch/mcp`.

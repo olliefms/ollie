@@ -1595,6 +1595,75 @@ async fn test_mcp_search_blobs_rejects_blank_query() {
     }
 }
 
+/// #299: the server advertises the resources capability, lists blobs as resources,
+/// and resources/read resolves ollie:// URIs (blob and load) to JSON content.
+#[tokio::test]
+async fn test_mcp_resources_list_and_read_roundtrip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_res@example.com", "password-mcp-res").await;
+    let created = upload_blob_via_presigned(&server, b"resource blob body".to_vec(), "text/plain", "res.txt").await;
+    let blob_id = created["id"].as_str().unwrap().to_string();
+    let fac = create_test_facility(&server, "Res Dock", "Dallas, TX").await;
+    let load_id = create_test_load(&server, &fac).await;
+
+    // initialize advertises the resources capability.
+    let init_resp = server
+        .post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "t", "version": "1" } }
+        }))
+        .await;
+    let init = sse_json(&init_resp.text());
+    assert!(
+        init["result"]["capabilities"]["resources"].is_object(),
+        "initialize must advertise the resources capability: {init}"
+    );
+
+    let session = mcp_session(&server, &token).await;
+
+    // resources/list includes our blob at ollie://blob/{id}.
+    let list = mcp_rpc(&server, &token, &session, "resources/list", serde_json::json!({})).await;
+    let resources = list["result"]["resources"].as_array().expect("resources array");
+    let blob_uri = format!("ollie://blob/{blob_id}");
+    let found = resources
+        .iter()
+        .find(|r| r["uri"] == blob_uri)
+        .unwrap_or_else(|| panic!("blob resource {blob_uri} not listed: {list}"));
+    assert_eq!(found["mimeType"], "text/plain");
+
+    // resources/read of the blob yields JSON content carrying the record.
+    let read = mcp_rpc(&server, &token, &session, "resources/read",
+        serde_json::json!({ "uri": blob_uri })).await;
+    let contents = &read["result"]["contents"][0];
+    assert_eq!(contents["uri"], blob_uri);
+    assert_eq!(contents["mimeType"], "application/json");
+    let body: serde_json::Value =
+        serde_json::from_str(contents["text"].as_str().expect("resource text")).expect("resource JSON");
+    assert_eq!(body["id"], blob_id, "blob resource content carries the record id");
+
+    // a load is also readable as a resource (a second record type).
+    let load_uri = format!("ollie://load/{load_id}");
+    let read_load = mcp_rpc(&server, &token, &session, "resources/read",
+        serde_json::json!({ "uri": load_uri })).await;
+    let load_body: serde_json::Value = serde_json::from_str(
+        read_load["result"]["contents"][0]["text"].as_str().expect("load resource text"),
+    ).expect("load resource JSON");
+    assert_eq!(load_body["id"], load_id);
+
+    // and a trip (the third record type / templated URI).
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let trip_uri = format!("ollie://trip/{trip_id}");
+    let read_trip = mcp_rpc(&server, &token, &session, "resources/read",
+        serde_json::json!({ "uri": trip_uri })).await;
+    let trip_body: serde_json::Value = serde_json::from_str(
+        read_trip["result"]["contents"][0]["text"].as_str().expect("trip resource text"),
+    ).expect("trip resource JSON");
+    assert_eq!(trip_body["id"], trip_id);
+}
+
 /// Minimal JSON-Schema conformance check for the simple object schemas the MCP
 /// tools declare: every `required` property is present with its declared `type`,
 /// and any declared property that *is* present matches its `type`. Enough to prove
