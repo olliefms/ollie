@@ -190,19 +190,21 @@ fn tools_list() -> Value {
                         "trailer_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
                         "stops": { "type": "array", "items": { "type": "object" } },
                         "notes": { "type": "string" },
-                        "previous_trip_id": { "type": "string", "format": "uuid" }
+                        "previous_trip_id": { "type": "string", "format": "uuid" },
+                        "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     }
                 }
             },
             {
                 "name": "update_trip",
-                "description": "Update a trip's notes and/or previous_trip_id link. Setting previous_trip_id triggers a mileage recompute. Mileage fields cannot be set directly.",
+                "description": "Update a trip's notes, blob_ids, and/or previous_trip_id link. Setting previous_trip_id triggers a mileage recompute. Mileage fields cannot be set directly.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "trip_id": { "type": "string", "format": "uuid" },
                         "notes": { "type": "string" },
-                        "previous_trip_id": { "type": "string", "format": "uuid" }
+                        "previous_trip_id": { "type": "string", "format": "uuid" },
+                        "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     },
                     "required": ["trip_id"]
                 }
@@ -409,7 +411,8 @@ fn tools_list() -> Value {
                         "vin":         { "type": "string" },
                         "plate":       { "type": "string" },
                         "plate_state": { "type": "string" },
-                        "notes":       { "type": "string" }
+                        "notes":       { "type": "string" },
+                        "blob_ids":    { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     },
                     "required": ["unit_number"]
                 }
@@ -428,7 +431,8 @@ fn tools_list() -> Value {
                         "vin":         { "type": "string" },
                         "plate":       { "type": "string" },
                         "plate_state": { "type": "string" },
-                        "notes":       { "type": "string" }
+                        "notes":       { "type": "string" },
+                        "blob_ids":    { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     },
                     "required": ["truck_id"]
                 }
@@ -463,7 +467,8 @@ fn tools_list() -> Value {
                         "vin":          { "type": "string" },
                         "plate":        { "type": "string" },
                         "plate_state":  { "type": "string" },
-                        "notes":        { "type": "string" }
+                        "notes":        { "type": "string" },
+                        "blob_ids":     { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     },
                     "required": ["unit_number", "owner"]
                 }
@@ -485,7 +490,8 @@ fn tools_list() -> Value {
                         "vin":          { "type": "string" },
                         "plate":        { "type": "string" },
                         "plate_state":  { "type": "string" },
-                        "notes":        { "type": "string" }
+                        "notes":        { "type": "string" },
+                        "blob_ids":     { "type": "array", "items": { "type": "string", "format": "uuid" } }
                     },
                     "required": ["trailer_id"]
                 }
@@ -598,7 +604,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "upload_blob",
-                "description": "Upload a file (PDF, scan, contract, etc.) to the blob store. Returns a short-lived presigned URL — do NOT stream file bytes through this tool call. POST the raw file bytes to the returned url with a Content-Type header (optional query params name and tags, comma-separated), e.g. curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<url>&name=doc.pdf'. The HTTP response is the created blob record; use its id in create_load/update_load/create_facility/update_facility blob_ids. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
+                "description": "Upload a file (PDF, scan, contract, etc.) to the blob store. Returns a short-lived presigned URL — do NOT stream file bytes through this tool call. POST the raw file bytes to the returned url with a Content-Type header (optional query params name and tags, comma-separated), e.g. curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<url>&name=doc.pdf'. The HTTP response is the created blob record; use its id in the blob_ids of create_load/update_load, create_facility/update_facility, create_trip/update_trip, create_driver/update_driver (admin API), create_truck/update_truck, and create_trailer/update_trailer. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -620,7 +626,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "get_blob_metadata",
-                "description": "Fetch a blob's metadata (no bytes) plus a reverse lookup of what references it: attached_to.loads and attached_to.facilities.",
+                "description": "Fetch a blob's metadata (no bytes) plus a reverse lookup of what references it: attached_to.loads, attached_to.facilities, attached_to.trips, attached_to.drivers, attached_to.trucks, and attached_to.trailers.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1500,8 +1506,15 @@ async fn tool_get_blob_metadata(state: &AppState, args: &Value) -> Result<Value,
     let record = state.db.get_by_id(id).await.map_err(|e| e.to_string())?;
     let loads = state.db.loads_referencing_blob(id).await.map_err(|e| e.to_string())?;
     let facilities = state.db.facilities_referencing_blob(id).await.map_err(|e| e.to_string())?;
+    let trips = state.db.trips_referencing_blob(id).await.map_err(|e| e.to_string())?;
+    let drivers = state.db.drivers_referencing_blob(id).await.map_err(|e| e.to_string())?;
+    let trucks = state.db.trucks_referencing_blob(id).await.map_err(|e| e.to_string())?;
+    let trailers = state.db.trailers_referencing_blob(id).await.map_err(|e| e.to_string())?;
     let mut value = serde_json::to_value(&record).map_err(|e| e.to_string())?;
-    value["attached_to"] = serde_json::json!({ "loads": loads, "facilities": facilities });
+    value["attached_to"] = serde_json::json!({
+        "loads": loads, "facilities": facilities, "trips": trips,
+        "drivers": drivers, "trucks": trucks, "trailers": trailers,
+    });
     Ok(mcp_content(value))
 }
 
@@ -1543,11 +1556,17 @@ async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, Strin
 
     let attached_to_load = state.db.any_load_references_blob(id).await.map_err(|e| e.to_string())?;
     let attached_to_facility = state.db.any_facility_references_blob(id).await.map_err(|e| e.to_string())?;
-    let was_attached = attached_to_load || attached_to_facility;
+    let attached_to_trip = state.db.any_trip_references_blob(id).await.map_err(|e| e.to_string())?;
+    let attached_to_driver = state.db.any_driver_references_blob(id).await.map_err(|e| e.to_string())?;
+    let attached_to_truck = state.db.any_truck_references_blob(id).await.map_err(|e| e.to_string())?;
+    let attached_to_trailer = state.db.any_trailer_references_blob(id).await.map_err(|e| e.to_string())?;
+    let was_attached = attached_to_load || attached_to_facility || attached_to_trip
+        || attached_to_driver || attached_to_truck || attached_to_trailer;
 
     if was_attached && !force {
         return Err(format!(
-            "blob {id} is referenced by one or more loads/facilities; pass force=true to delete anyway"
+            "blob {id} is referenced by one or more loads/facilities/trips/drivers/trucks/trailers; \
+             pass force=true to delete anyway"
         ));
     }
 

@@ -2782,7 +2782,7 @@ async fn test_admin_get_trip_legacy_z_row_reads_utc_field() {
         actual_arrive_utc: None,
         actual_depart_utc: None,
     }];
-    state.db.update_trip_metadata(trip_uuid, None, None, Some(legacy_stops), None, None).await.unwrap();
+    state.db.update_trip_metadata(trip_uuid, None, None, Some(legacy_stops), None, None, None).await.unwrap();
 
     let resp = server.get(&format!("/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
@@ -2826,7 +2826,7 @@ async fn test_patch_stop_accepts_z_suffix_when_no_timezone() {
         actual_arrive_utc: None,
         actual_depart_utc: None,
     };
-    state.db.update_trip_metadata(trip_uuid, None, None, Some(stops), None, None).await.unwrap();
+    state.db.update_trip_metadata(trip_uuid, None, None, Some(stops), None, None, None).await.unwrap();
 
     let resp = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/1"))
         .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))

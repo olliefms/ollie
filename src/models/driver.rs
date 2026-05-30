@@ -63,6 +63,8 @@ pub struct DriverRecord {
     pub current_truck_id: Option<Uuid>,
     #[serde(default)]
     pub current_trailer_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub blob_ids: Vec<Uuid>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -86,6 +88,8 @@ pub struct CreateDriverRequest {
     pub license_state: Option<String>,
     pub license_expiry: Option<String>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub blob_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -97,6 +101,7 @@ pub struct UpdateDriverRequest {
     pub license_state: Option<String>,
     pub license_expiry: Option<String>,
     pub notes: Option<String>,
+    pub blob_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -115,6 +120,7 @@ pub struct DriverListItem {
     pub license_expiry: Option<String>,
     pub status: DriverStatus,
     pub notes: Option<String>,
+    pub blob_ids: Vec<Uuid>,
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -133,6 +139,7 @@ impl From<DriverRecord> for DriverListItem {
             license_expiry: r.license_expiry,
             status: r.status,
             notes: r.notes,
+            blob_ids: r.blob_ids,
             owner_id: r.owner_id,
             created_at: r.created_at,
             score: None,
@@ -178,6 +185,7 @@ mod tests {
             license_state: None, license_expiry: None,
             status: DriverStatus::Available, notes: None,
             current_truck_id: None, current_trailer_ids: vec![],
+            blob_ids: vec![],
             embedding: Some(vec![0.1]),
             owner_id: 0, created_at: now, updated_at: now,
         };

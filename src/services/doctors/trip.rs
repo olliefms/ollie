@@ -350,7 +350,7 @@ async fn apply_safe_fixes(
                 if let Some(load) = load {
                     let merged = resync_stops_from_load(state, &trip.stops, &load.stops).await?;
                     state.db
-                        .update_trip_metadata(trip.id, None, None, Some(merged), None, None)
+                        .update_trip_metadata(trip.id, None, None, Some(merged), None, None, None)
                         .await?;
                     report.applied.push(check_id);
                 }
