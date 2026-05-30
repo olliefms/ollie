@@ -1562,6 +1562,37 @@ async fn test_dispatcher_mcp_tools_list() {
     assert_eq!(list_loads["annotations"]["readOnlyHint"], true);
     assert_eq!(by_name("delete_blob")["annotations"]["destructiveHint"], true);
     assert_eq!(by_name("update_trip")["annotations"]["idempotentHint"], true);
+
+    // search_blobs is advertised as a read-only semantic-search tool (#292).
+    let search = by_name("search_blobs");
+    assert_eq!(search["annotations"]["readOnlyHint"], true);
+    assert!(search["inputSchema"]["properties"]["query"].is_object());
+    assert!(
+        search["description"].as_str().unwrap().to_lowercase().contains("semantic"),
+        "search_blobs description should flag it as semantic vs literal"
+    );
+}
+
+/// #292: search_blobs rejects an empty/blank query before touching Ollama, as a
+/// recoverable isError result (so the agent can correct the call). The ranked-hit /
+/// filter / limit behavior mirrors the REST `?s=` path and requires Ollama, so it
+/// is not exercised in the Ollama-free integration suite.
+#[tokio::test]
+async fn test_mcp_search_blobs_rejects_blank_query() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_sb@example.com", "password-mcp-sb").await;
+    let session = mcp_session(&server, &token).await;
+
+    for q in ["", "   "] {
+        let body = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
+            "name": "search_blobs",
+            "arguments": { "query": q }
+        })).await;
+        assert!(body["error"].is_null(), "blank query is a domain rejection, not a protocol error: {body:?}");
+        assert_eq!(body["result"]["isError"], serde_json::json!(true), "blank query must isError");
+        let msg = body["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(msg.contains("query"), "message should mention the query requirement: {msg}");
+    }
 }
 
 /// Cursor pagination over the MCP surface: following `nextCursor` to exhaustion
