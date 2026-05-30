@@ -1696,6 +1696,8 @@ async fn test_mcp_blob_tools_emit_resource_links() {
             .any(|c| c["type"] == "resource_link" && c["uri"] == blob_uri),
         "get_blob_metadata should emit a resource_link: {m}"
     );
+    // get_blob_url's args-based link path is unit-tested in mcp.rs (its tool needs
+    // OLLIE_PUBLIC_BASE_URL, which the test server doesn't set).
 }
 
 /// Minimal JSON-Schema conformance check for the simple object schemas the MCP
