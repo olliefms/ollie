@@ -10,6 +10,7 @@ pub mod driver_ops;
 pub mod event_ops;
 pub mod facility_ops;
 pub mod load_ops;
+pub mod terminal_ops;
 pub mod trailer_ops;
 pub mod trip_ops;
 pub mod truck_ops;
