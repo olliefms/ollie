@@ -102,8 +102,15 @@ impl ServerHandler for OllieMcp {
         let args = Value::Object(request.arguments.unwrap_or_default());
         match handle_tool_call(&self.state, &request.name, &args).await {
             // Emit the payload as structuredContent (typed, schema-checkable) AND a
-            // backward-compatible JSON text block, per MCP 2025-06-18 (#293).
-            Ok(value) => Ok(CallToolResult::structured(value)),
+            // backward-compatible JSON text block, per MCP 2025-06-18 (#293). Blob-
+            // returning tools also attach resource_link items pointing at the
+            // ollie://blob/{id} resources (#294).
+            Ok(value) => {
+                let links = blob_resource_links(&request.name, &value, &args);
+                let mut result = CallToolResult::structured(value);
+                result.content.extend(links);
+                Ok(result)
+            }
             // Domain failures ("trip can't be cancelled, it's in_transit") are
             // recoverable feedback the model should read and adapt to, so they come
             // back as a normal result with isError: true — NOT a JSON-RPC error.
@@ -199,6 +206,44 @@ fn blob_resource(b: &crate::models::BlobListItem) -> rmcp::model::Resource {
         .with_mime_type(b.mime_type.clone())
         .with_size(b.size.max(0) as u32)
         .no_annotation()
+}
+
+/// Build `resource_link` content items for blob-returning tools (#294), so clients
+/// recognize blobs as referenceable `ollie://blob/{id}` resources (resolvable via
+/// the Resources capability, #299) rather than opaque strings to parse. Fields
+/// beyond the URI are attached where known. `upload_blob` returns a presigned POST
+/// URL for a blob that does not exist yet, so it has nothing to link.
+fn blob_resource_links(tool: &str, value: &Value, args: &Value) -> Vec<Content> {
+    fn link_from(obj: &Value) -> Option<Content> {
+        let id = obj["id"].as_str()?;
+        let name = obj["name"].as_str().unwrap_or(id);
+        let mut raw = RawResource::new(format!("ollie://blob/{id}"), name);
+        if let Some(mime) = obj["mime_type"].as_str().or_else(|| obj["content_type"].as_str()) {
+            raw = raw.with_mime_type(mime);
+        }
+        if let Some(size) = obj["size"].as_i64() {
+            raw = raw.with_size(size.max(0) as u32);
+        }
+        Some(Content::resource_link(raw))
+    }
+    match tool {
+        "list_blobs" | "search_blobs" => value["items"]
+            .as_array()
+            .map(|items| items.iter().filter_map(link_from).collect())
+            .unwrap_or_default(),
+        "get_blob_metadata" => link_from(value).into_iter().collect(),
+        // get_blob_url's payload is the URL, not the record — link by id from args.
+        "get_blob_url" => args["id"]
+            .as_str()
+            .map(|id| {
+                vec![Content::resource_link(RawResource::new(
+                    format!("ollie://blob/{id}"),
+                    id,
+                ))]
+            })
+            .unwrap_or_default(),
+        _ => vec![],
+    }
 }
 
 /// Resolve an `ollie://{kind}/{id}` URI to JSON resource contents.
@@ -2187,5 +2232,41 @@ mod tests {
         }
         assert_eq!(seen, vec![0, 1, 2, 3, 4], "every item once, in order");
         assert_eq!(pages, 3);
+    }
+
+    #[test]
+    fn blob_resource_links_cover_each_tool_shape() {
+        let uri_of = |c: &Content| c.as_resource_link().map(|r| r.uri.clone());
+
+        // list_blobs/search_blobs: one link per item, with mime + size.
+        let value = json!({ "items": [
+            { "id": "11111111-1111-1111-1111-111111111111", "name": "a.pdf", "mime_type": "application/pdf", "size": 12 },
+            { "id": "22222222-2222-2222-2222-222222222222", "name": "b.txt", "content_type": "text/plain", "size": 3 },
+        ]});
+        let links = blob_resource_links("list_blobs", &value, &json!({}));
+        assert_eq!(links.len(), 2);
+        assert_eq!(uri_of(&links[0]).as_deref(), Some("ollie://blob/11111111-1111-1111-1111-111111111111"));
+        let r0 = links[0].as_resource_link().unwrap();
+        assert_eq!(r0.mime_type.as_deref(), Some("application/pdf"));
+        assert_eq!(r0.size, Some(12));
+
+        // get_blob_metadata: a single link from the record value.
+        let rec = json!({ "id": "33333333-3333-3333-3333-333333333333", "name": "c", "mime_type": "image/png", "size": 9 });
+        let links = blob_resource_links("get_blob_metadata", &rec, &json!({}));
+        assert_eq!(links.len(), 1);
+        assert_eq!(uri_of(&links[0]).as_deref(), Some("ollie://blob/33333333-3333-3333-3333-333333333333"));
+
+        // get_blob_url: the distinct args-based path (payload is the URL, not the record).
+        let links = blob_resource_links(
+            "get_blob_url",
+            &json!({ "url": "https://x/y", "method": "GET" }),
+            &json!({ "id": "44444444-4444-4444-4444-444444444444" }),
+        );
+        assert_eq!(links.len(), 1);
+        assert_eq!(uri_of(&links[0]).as_deref(), Some("ollie://blob/44444444-4444-4444-4444-444444444444"));
+
+        // non-blob tools and upload_blob produce no links.
+        assert!(blob_resource_links("list_loads", &json!({ "items": [] }), &json!({})).is_empty());
+        assert!(blob_resource_links("upload_blob", &json!({ "url": "https://x" }), &json!({})).is_empty());
     }
 }
