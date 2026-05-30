@@ -94,9 +94,9 @@ impl ServerHandler for OllieMcp {
     ) -> Result<CallToolResult, McpError> {
         let args = Value::Object(request.arguments.unwrap_or_default());
         match handle_tool_call(&self.state, &request.name, &args).await {
-            Ok(value) => Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string(&value).unwrap_or_default(),
-            )])),
+            // Emit the payload as structuredContent (typed, schema-checkable) AND a
+            // backward-compatible JSON text block, per MCP 2025-06-18 (#293).
+            Ok(value) => Ok(CallToolResult::structured(value)),
             // Domain failures ("trip can't be cancelled, it's in_transit") are
             // recoverable feedback the model should read and adapt to, so they come
             // back as a normal result with isError: true — NOT a JSON-RPC error.
@@ -157,13 +157,52 @@ fn tool_catalog() -> Vec<Tool> {
             if PAGINATED_LIST_TOOLS.contains(&name.as_str()) {
                 advertise_cursor(&mut schema);
             }
-            Some(
-                Tool::new(name.clone(), description, Arc::new(schema))
-                    .with_title(title_case(&name))
-                    .with_annotations(annotations_for(&name)),
-            )
+            let mut tool = Tool::new(name.clone(), description, Arc::new(schema))
+                .with_title(title_case(&name))
+                .with_annotations(annotations_for(&name));
+            if let Some(out) = output_schema_for(&name) {
+                tool = tool.with_raw_output_schema(Arc::new(out));
+            }
+            Some(tool)
         })
         .collect()
+}
+
+/// Declared `outputSchema` for high-traffic tools (MCP 2025-06-18), so clients get
+/// a machine-checkable contract for `structuredContent` instead of re-parsing free
+/// text. Schemas name the guaranteed fields and allow extra ones
+/// (`additionalProperties` defaults to true), so they stay forward-compatible as
+/// records gain fields. Returns None for tools without a declared output schema.
+fn output_schema_for(name: &str) -> Option<serde_json::Map<String, Value>> {
+    // Shared wrapper for the paginated/ranked list tools: a page of objects plus
+    // counts and (when present) the pagination cursor / truncation flag.
+    let list_envelope = || {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "items":      { "type": "array", "items": { "type": "object" } },
+                "returned":   { "type": "integer" },
+                "total":      { "type": "integer" },
+                "nextCursor": { "type": "string" },
+                "truncated":  { "type": "boolean" }
+            },
+            "required": ["items", "returned"]
+        })
+    };
+    // A single record always carries at least a UUID `id`.
+    let record = || {
+        serde_json::json!({
+            "type": "object",
+            "properties": { "id": { "type": "string", "format": "uuid" } },
+            "required": ["id"]
+        })
+    };
+    let schema = match name {
+        "list_loads" | "list_trips" | "list_blobs" | "search_blobs" => list_envelope(),
+        "get_load" | "get_trip" => record(),
+        _ => return None,
+    };
+    schema.as_object().cloned()
 }
 
 /// Cursor-paginated list tools — they accept `cursor` and return `nextCursor`.

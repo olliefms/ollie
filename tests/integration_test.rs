@@ -1595,6 +1595,88 @@ async fn test_mcp_search_blobs_rejects_blank_query() {
     }
 }
 
+/// Minimal JSON-Schema conformance check for the simple object schemas the MCP
+/// tools declare: every `required` property is present with its declared `type`,
+/// and any declared property that *is* present matches its `type`. Enough to prove
+/// structuredContent honors the contract without a heavyweight schema dependency.
+fn structured_conforms(schema: &serde_json::Value, instance: &serde_json::Value) -> bool {
+    fn type_ok(expected: &str, val: &serde_json::Value) -> bool {
+        match expected {
+            "array" => val.is_array(),
+            "integer" => val.is_i64() || val.is_u64(),
+            "number" => val.is_number(),
+            "string" => val.is_string(),
+            "object" => val.is_object(),
+            "boolean" => val.is_boolean(),
+            _ => true,
+        }
+    }
+    let Some(obj) = instance.as_object() else { return false };
+    let props = &schema["properties"];
+    if let Some(required) = schema["required"].as_array() {
+        for r in required {
+            let Some(key) = r.as_str() else { return false };
+            let Some(val) = obj.get(key) else { return false };
+            if !type_ok(props[key]["type"].as_str().unwrap_or(""), val) {
+                return false;
+            }
+        }
+    }
+    if let Some(declared) = props.as_object() {
+        for (key, spec) in declared {
+            if let Some(val) = obj.get(key) {
+                if !type_ok(spec["type"].as_str().unwrap_or(""), val) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// #293: high-traffic tools advertise an outputSchema and return structuredContent
+/// that conforms to it, while still emitting a backward-compatible text block.
+#[tokio::test]
+async fn test_mcp_structured_content_validates_against_output_schema() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_struct@example.com", "password-mcp-struct").await;
+    let fac = create_test_facility(&server, "Struct Dock", "Dallas, TX").await;
+    let load_id = create_test_load(&server, &fac).await;
+    let session = mcp_session(&server, &token).await;
+
+    let tools = mcp_rpc(&server, &token, &session, "tools/list", serde_json::json!({})).await;
+    let out_schema = |name: &str| {
+        tools["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("missing tool {name}"))["outputSchema"]
+            .clone()
+    };
+
+    // list_loads: the populated envelope validates against its declared schema.
+    let ll_schema = out_schema("list_loads");
+    assert!(ll_schema.is_object(), "list_loads must advertise an outputSchema");
+    let ll = mcp_rpc(&server, &token, &session, "tools/call",
+        serde_json::json!({ "name": "list_loads", "arguments": {} })).await;
+    let ll_struct = ll["result"]["structuredContent"].clone();
+    assert!(
+        ll_struct["items"].as_array().is_some_and(|a| !a.is_empty()),
+        "structuredContent should carry the created load: {ll_struct}"
+    );
+    assert!(ll["result"]["content"][0]["text"].is_string(), "backward-compat text block still emitted");
+    assert!(structured_conforms(&ll_schema, &ll_struct), "list_loads structuredContent must conform to its outputSchema: {ll_struct}");
+
+    // get_load: a single-record structuredContent validates against its schema.
+    let gl_schema = out_schema("get_load");
+    let gl = mcp_rpc(&server, &token, &session, "tools/call",
+        serde_json::json!({ "name": "get_load", "arguments": { "id": load_id } })).await;
+    let gl_struct = gl["result"]["structuredContent"].clone();
+    assert_eq!(gl_struct["id"], load_id, "get_load structuredContent should carry the id");
+    assert!(structured_conforms(&gl_schema, &gl_struct), "get_load structuredContent must conform to its outputSchema: {gl_struct}");
+}
+
 /// Cursor pagination over the MCP surface: following `nextCursor` to exhaustion
 /// must yield every record exactly once, and the final page must omit nextCursor.
 /// Uses list_facilities with a page size of 2 so a 5-record dataset spans 3 pages.
