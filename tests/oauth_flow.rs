@@ -109,6 +109,7 @@ async fn mcp_401_has_www_authenticate() {
     let (server, _db, _b, _d) = build_app().await;
 
     let resp = server.post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -260,6 +261,7 @@ async fn full_oauth_dance() {
 
     // 4d. Use access_token at /dispatch/mcp — should NOT be 401
     let mcp_resp = server.post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {access_token}"))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -345,6 +347,7 @@ async fn olld_api_key_authenticates_mcp() {
     }).await.unwrap();
 
     let mcp_resp = server.post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {plaintext}"))
         .json(&serde_json::json!({
             "jsonrpc": "2.0",

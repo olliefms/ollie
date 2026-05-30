@@ -15,7 +15,7 @@ path = "src/main.rs"
 axum = { version = "0.8", features = ["multipart"] }
 axum-extra = { version = "0.10", features = ["query"] }
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["trace", "fs"] }
+tower-http = { version = "0.6", features = ["trace", "fs", "limit"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -45,6 +45,7 @@ bcrypt = "0.15"
 dashmap = "5"
 rand = "0.8"
 url = "2"
+rmcp = { version = "1.7", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "tower"] }
 
 [dev-dependencies]
 axum-test = "17"
