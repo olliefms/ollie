@@ -1664,6 +1664,40 @@ async fn test_mcp_resources_list_and_read_roundtrip() {
     assert_eq!(trip_body["id"], trip_id);
 }
 
+/// #294: blob-returning tools attach resource_link content items pointing at the
+/// ollie://blob/{id} resource, alongside the backward-compatible text block.
+#[tokio::test]
+async fn test_mcp_blob_tools_emit_resource_links() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_link@example.com", "password-mcp-link").await;
+    let created = upload_blob_via_presigned(&server, b"link body".to_vec(), "text/plain", "link.txt").await;
+    let blob_id = created["id"].as_str().unwrap().to_string();
+    let blob_uri = format!("ollie://blob/{blob_id}");
+    let session = mcp_session(&server, &token).await;
+
+    // list_blobs result carries a well-formed resource_link for the blob.
+    let r = mcp_rpc(&server, &token, &session, "tools/call",
+        serde_json::json!({ "name": "list_blobs", "arguments": {} })).await;
+    let content = r["result"]["content"].as_array().expect("content array");
+    assert!(content.iter().any(|c| c["type"] == "text"), "text block still emitted");
+    let link = content
+        .iter()
+        .find(|c| c["type"] == "resource_link" && c["uri"] == blob_uri)
+        .unwrap_or_else(|| panic!("no resource_link for {blob_uri}: {r}"));
+    assert_eq!(link["name"], "link.txt");
+    assert_eq!(link["mimeType"], "text/plain");
+    assert!(link["size"].is_number(), "resource_link should carry size where known");
+
+    // get_blob_metadata also emits the link.
+    let m = mcp_rpc(&server, &token, &session, "tools/call",
+        serde_json::json!({ "name": "get_blob_metadata", "arguments": { "id": blob_id } })).await;
+    assert!(
+        m["result"]["content"].as_array().unwrap().iter()
+            .any(|c| c["type"] == "resource_link" && c["uri"] == blob_uri),
+        "get_blob_metadata should emit a resource_link: {m}"
+    );
+}
+
 /// Minimal JSON-Schema conformance check for the simple object schemas the MCP
 /// tools declare: every `required` property is present with its declared `type`,
 /// and any declared property that *is* present matches its `type`. Enough to prove
