@@ -6,7 +6,7 @@ This file is for AI coding agents working on this codebase. Read it before makin
 
 ollie is a RAG-enabled blob store written in Rust. It accepts file uploads, stores them content-addressed on disk, and uses Ollama to generate summaries and embeddings. Blobs are indexed in LanceDB for semantic search.
 
-**Stack:** Axum 0.7, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, lopdf 0.32
+**Stack:** Axum 0.8, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, lopdf 0.32
 
 ## Codebase Layout
 
