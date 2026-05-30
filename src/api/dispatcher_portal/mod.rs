@@ -142,21 +142,24 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
 /// MCP endpoint with its own layering stack:
 ///   map_response_with_state (outer, sees auth 401s)
 ///     → require_dispatcher_auth (route_layer)
-///       → post(mcp::handle) with DefaultBodyLimit
+///       → rmcp StreamableHttpService (nested; owns GET/POST/DELETE + JSON-RPC)
 ///
-/// Keeping it separate from data_router ensures the map_response layer wraps
-/// the whole auth+handler stack — a route-level layer on a route inside a
-/// router with route_layer would NOT see the auth 401.
+/// The rmcp service is mounted with `nest_service` (not `post(...)`) because it
+/// dispatches on the HTTP method internally. A `RequestBodyLimitLayer` replaces
+/// the old `DefaultBodyLimit` — the rmcp service reads the body itself rather
+/// than through an axum extractor, so the tower-level limit is what applies.
+///
+/// Keeping it separate from data_router ensures the map_response layer wraps the
+/// whole auth+handler stack — a route-level layer on a route inside a router
+/// with route_layer would NOT see the auth 401.
 fn mcp_router(state: &AppState) -> Router<AppState> {
     Router::new()
-        .route(
-            "/dispatch/mcp",
-            post(mcp::handle).layer(DefaultBodyLimit::max(1024 * 1024)),
-        )
+        .nest_service("/dispatch/mcp", mcp::mcp_service(state))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_dispatcher_auth,
         ))
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(1024 * 1024))
         .layer(axum::middleware::map_response_with_state(state.clone(), mcp_www_authenticate))
 }
 
