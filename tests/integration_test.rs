@@ -1652,6 +1652,16 @@ async fn test_mcp_resources_list_and_read_roundtrip() {
         read_load["result"]["contents"][0]["text"].as_str().expect("load resource text"),
     ).expect("load resource JSON");
     assert_eq!(load_body["id"], load_id);
+
+    // and a trip (the third record type / templated URI).
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let trip_uri = format!("ollie://trip/{trip_id}");
+    let read_trip = mcp_rpc(&server, &token, &session, "resources/read",
+        serde_json::json!({ "uri": trip_uri })).await;
+    let trip_body: serde_json::Value = serde_json::from_str(
+        read_trip["result"]["contents"][0]["text"].as_str().expect("trip resource text"),
+    ).expect("trip resource JSON");
+    assert_eq!(trip_body["id"], trip_id);
 }
 
 /// Minimal JSON-Schema conformance check for the simple object schemas the MCP

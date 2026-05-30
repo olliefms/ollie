@@ -214,13 +214,13 @@ async fn read_ollie_resource(state: &AppState, uri: &str) -> Result<ResourceCont
 
     let json = match kind {
         "blob" => serde_json::to_value(
-            state.db.get_by_id(id).await.map_err(|e| resource_not_found(uri, e))?,
+            state.db.get_by_id(id).await.map_err(|e| map_record_err(uri, e))?,
         ),
         "load" => serde_json::to_value(
-            state.db.get_load_by_id(id).await.map_err(|e| resource_not_found(uri, e))?,
+            state.db.get_load_by_id(id).await.map_err(|e| map_record_err(uri, e))?,
         ),
         "trip" => serde_json::to_value(
-            super::data::build_trip_detail(state, id).await.map_err(|e| resource_not_found(uri, e))?,
+            super::data::build_trip_detail(state, id).await.map_err(|e| map_record_err(uri, e))?,
         ),
         _ => {
             return Err(McpError::invalid_params(
@@ -234,8 +234,16 @@ async fn read_ollie_resource(state: &AppState, uri: &str) -> Result<ResourceCont
     Ok(ResourceContents::text(json.to_string(), uri).with_mime_type("application/json"))
 }
 
-fn resource_not_found(uri: &str, e: impl std::fmt::Display) -> McpError {
-    McpError::resource_not_found(format!("{uri}: {e}"), None)
+/// Map a record-fetch error to the right MCP code: a genuine miss is
+/// `resource_not_found` (-32002), but a transient/internal failure must stay an
+/// `internal_error` so clients don't treat a DB outage as a definitive 404.
+fn map_record_err(uri: &str, e: crate::error::AppError) -> McpError {
+    match e {
+        crate::error::AppError::NotFound => {
+            McpError::resource_not_found(format!("{uri}: not found"), None)
+        }
+        other => McpError::internal_error(format!("{uri}: {other}"), None),
+    }
 }
 
 /// Decode a resources/list pagination cursor into a 0-based offset.
