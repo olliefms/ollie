@@ -80,6 +80,7 @@ pub async fn create_driver(
         notes: body.notes,
         current_truck_id: None,
         current_trailer_ids: vec![],
+        blob_ids: body.blob_ids,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -175,6 +176,7 @@ pub async fn update_driver(
         body.license_state,
         body.license_expiry,
         body.notes,
+        body.blob_ids,
     ).await?;
 
     if let Ok(embedding) = embed_text(&state.ai, &updated.embedding_text()).await {

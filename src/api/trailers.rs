@@ -72,6 +72,7 @@ pub async fn create_trailer(
         plate_state: body.plate_state,
         status: TrailerStatus::Available,
         notes: body.notes,
+        blob_ids: body.blob_ids,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -184,6 +185,7 @@ pub async fn update_trailer(
         body.plate,
         body.plate_state,
         body.notes,
+        body.blob_ids,
     ).await?;
 
     let updated = if let Some(status) = body.status {

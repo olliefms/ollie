@@ -60,13 +60,9 @@ impl DbClient {
 
         let driver_table = open_or_create_driver(&conn, embed_dim).await?;
 
-        let truck_table = open_or_create(&conn, "trucks", truck_schema(embed_dim), |schema| {
-            empty_truck_batch(schema, embed_dim)
-        }).await?;
+        let truck_table = open_or_create_truck(&conn, embed_dim).await?;
 
-        let trailer_table = open_or_create(&conn, "trailers", trailer_schema(embed_dim), |schema| {
-            empty_trailer_batch(schema, embed_dim)
-        }).await?;
+        let trailer_table = open_or_create_trailer(&conn, embed_dim).await?;
 
         let trip_table = open_or_create_trip(&conn, embed_dim).await?;
 
@@ -204,6 +200,9 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
             if existing.field_with_name("segment_miles").is_err() {
                 transforms.push(("segment_miles".into(), "CAST(NULL AS string)".into()));
             }
+            if existing.field_with_name("blob_ids").is_err() {
+                transforms.push(("blob_ids".into(), "'[]'".into()));
+            }
             if !transforms.is_empty() {
                 tracing::info!("migrating trips table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
@@ -232,6 +231,9 @@ async fn open_or_create_driver(conn: &lancedb::Connection, embed_dim: usize) -> 
             }
             if existing.field_with_name("current_trailer_ids").is_err() {
                 transforms.push(("current_trailer_ids".into(), "'[]'".into()));
+            }
+            if existing.field_with_name("blob_ids").is_err() {
+                transforms.push(("blob_ids".into(), "'[]'".into()));
             }
             if !transforms.is_empty() {
                 tracing::info!("migrating drivers table: adding {} column(s)", transforms.len());
@@ -297,6 +299,58 @@ async fn open_or_create_facility(conn: &lancedb::Connection, embed_dim: usize) -
                 tracing::info!("migrating facilities table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
                     .map_err(|e| AppError::Internal(format!("facility schema migration failed: {e}")))?;
+            }
+            Ok(table)
+        }
+    }
+}
+
+async fn open_or_create_truck(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = truck_schema(embed_dim);
+    match conn.open_table("trucks").execute().await {
+        Err(_) => {
+            let batch = empty_truck_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("trucks", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            if existing.field_with_name("blob_ids").is_err() {
+                transforms.push(("blob_ids".into(), "'[]'".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating trucks table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("truck schema migration failed: {e}")))?;
+            }
+            Ok(table)
+        }
+    }
+}
+
+async fn open_or_create_trailer(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = trailer_schema(embed_dim);
+    match conn.open_table("trailers").execute().await {
+        Err(_) => {
+            let batch = empty_trailer_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("trailers", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            if existing.field_with_name("blob_ids").is_err() {
+                transforms.push(("blob_ids".into(), "'[]'".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating trailers table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("trailer schema migration failed: {e}")))?;
             }
             Ok(table)
         }
@@ -400,6 +454,7 @@ pub fn driver_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("updated_at", DataType::Utf8, false),
         Field::new("current_truck_id", DataType::Utf8, true),
         Field::new("current_trailer_ids", DataType::Utf8, false),
+        Field::new("blob_ids", DataType::Utf8, false),
     ]))
 }
 
@@ -423,6 +478,7 @@ fn empty_driver_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBat
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // current_truck_id
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // current_trailer_ids
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // blob_ids
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -526,6 +582,7 @@ pub fn truck_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("owner_id", DataType::Int64, false),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("blob_ids", DataType::Utf8, false),
     ]))
 }
 
@@ -548,6 +605,7 @@ fn empty_truck_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatc
         Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // blob_ids
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -573,6 +631,7 @@ pub fn trailer_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("owner_id", DataType::Int64, false),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("blob_ids", DataType::Utf8, false),
     ]))
 }
 
@@ -598,6 +657,7 @@ fn empty_trailer_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBa
         Arc::new(Int64Array::from(Vec::<i64>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // blob_ids
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -626,6 +686,7 @@ pub fn trip_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("loaded_miles", DataType::Float64, true),
         Field::new("total_miles", DataType::Float64, true),
         Field::new("segment_miles", DataType::Utf8, true),  // JSON-encoded Vec<f64>
+        Field::new("blob_ids", DataType::Utf8, false),
     ]))
 }
 
@@ -654,6 +715,7 @@ fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // loaded_miles
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // total_miles
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // segment_miles
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // blob_ids
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

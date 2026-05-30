@@ -54,6 +54,10 @@ pub struct PatchTripBody {
     /// endpoint (would require a `double_option` serde pattern); see follow-up.
     #[serde(default)]
     pub previous_trip_id: Option<Uuid>,
+    /// Document blobs to attach to this trip (BOLs, PODs, lumper receipts, scale
+    /// tickets). Replaces the trip's `blob_ids` when present; omitted = no change.
+    #[serde(default)]
+    pub blob_ids: Option<Vec<Uuid>>,
 }
 
 #[utoipa::path(
@@ -140,9 +144,9 @@ pub async fn apply_trip_patch(
     let parsed: PatchTripBody = serde_json::from_value(body)
         .map_err(|e| AppError::BadRequest(format!("invalid request body: {e}")))?;
 
-    if parsed.notes.is_some() {
+    if parsed.notes.is_some() || parsed.blob_ids.is_some() {
         state.db.update_trip_metadata(
-            id, None, None, None, parsed.notes.clone(), None,
+            id, None, None, None, parsed.notes.clone(), None, parsed.blob_ids.clone(),
         ).await?;
     }
 

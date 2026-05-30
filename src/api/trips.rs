@@ -150,6 +150,7 @@ pub async fn create_trip(
         status: TripStatus::Planned,
         stops,
         notes: body.notes,
+        blob_ids: body.blob_ids,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -248,7 +249,7 @@ pub async fn update_trip(
     let embedding = embed_text(&state.ai, &embed_text_str).await.ok();
 
     let mut record = state.db.update_trip_metadata(
-        id, body.load_id, body.sequence, body.stops, body.notes, embedding,
+        id, body.load_id, body.sequence, body.stops, body.notes, embedding, body.blob_ids,
     ).await?;
     for s in &mut record.stops { s.fill_utc_fields(); }
     Ok(Json(record))

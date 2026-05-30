@@ -63,6 +63,8 @@ pub struct TruckRecord {
     pub plate_state: Option<String>,
     pub status: TruckStatus,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub blob_ids: Vec<Uuid>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -93,6 +95,8 @@ pub struct CreateTruckRequest {
     pub plate: Option<String>,
     pub plate_state: Option<String>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub blob_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -106,6 +110,7 @@ pub struct UpdateTruckRequest {
     pub plate_state: Option<String>,
     pub notes: Option<String>,
     pub status: Option<TruckStatus>,
+    pub blob_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -120,6 +125,7 @@ pub struct TruckListItem {
     pub plate_state: Option<String>,
     pub status: TruckStatus,
     pub notes: Option<String>,
+    pub blob_ids: Vec<Uuid>,
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -139,6 +145,7 @@ impl From<TruckRecord> for TruckListItem {
             plate_state: r.plate_state,
             status: r.status,
             notes: r.notes,
+            blob_ids: r.blob_ids,
             owner_id: r.owner_id,
             created_at: r.created_at,
             score: None,
@@ -189,6 +196,7 @@ mod tests {
             plate_state: None,
             status: TruckStatus::Available,
             notes: None,
+            blob_ids: vec![],
             embedding: Some(vec![0.1]),
             owner_id: 0,
             created_at: now,

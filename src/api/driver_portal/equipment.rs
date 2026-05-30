@@ -411,6 +411,7 @@ mod tests {
                 actual_depart_utc: None,
             }],
             notes: None,
+            blob_ids: vec![],
             owner_id: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),
