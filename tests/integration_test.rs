@@ -1554,6 +1554,14 @@ async fn test_dispatcher_mcp_tools_list() {
     assert!(tool_names.contains(&"list_loads"), "should have list_loads tool");
     assert!(tool_names.contains(&"assign_driver"), "should have assign_driver tool");
     assert!(tool_names.contains(&"list_events"), "should have list_events tool");
+
+    // Behavioral annotations + titles reach the wire (camelCase, per MCP spec).
+    let by_name = |n: &str| tools.iter().find(|t| t["name"] == n).expect("tool present");
+    let list_loads = by_name("list_loads");
+    assert_eq!(list_loads["title"], "List Loads");
+    assert_eq!(list_loads["annotations"]["readOnlyHint"], true);
+    assert_eq!(by_name("delete_blob")["annotations"]["destructiveHint"], true);
+    assert_eq!(by_name("update_trip")["annotations"]["idempotentHint"], true);
 }
 
 #[tokio::test]
