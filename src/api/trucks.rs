@@ -204,7 +204,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/trucks", post(create_truck))
         .route("/api/v1/trucks", get(list_trucks))
-        .route("/api/v1/trucks/:id", get(get_truck))
-        .route("/api/v1/trucks/:id", put(update_truck))
-        .route("/api/v1/trucks/:id", delete(delete_truck))
+        .route("/api/v1/trucks/{id}", get(get_truck))
+        .route("/api/v1/trucks/{id}", put(update_truck))
+        .route("/api/v1/trucks/{id}", delete(delete_truck))
 }

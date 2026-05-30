@@ -226,7 +226,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/trailers", post(create_trailer))
         .route("/api/v1/trailers", get(list_trailers))
-        .route("/api/v1/trailers/:id", get(get_trailer))
-        .route("/api/v1/trailers/:id", put(update_trailer))
-        .route("/api/v1/trailers/:id", delete(delete_trailer))
+        .route("/api/v1/trailers/{id}", get(get_trailer))
+        .route("/api/v1/trailers/{id}", put(update_trailer))
+        .route("/api/v1/trailers/{id}", delete(delete_trailer))
 }

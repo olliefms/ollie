@@ -89,5 +89,5 @@ pub fn router() -> axum::Router<AppState> {
     use axum::routing::get;
     axum::Router::new()
         .route("/api/v1/events", get(list_events))
-        .route("/api/v1/events/:id", get(get_event_handler))
+        .route("/api/v1/events/{id}", get(get_event_handler))
 }
