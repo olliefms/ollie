@@ -357,7 +357,8 @@ Document blobs:
                      never pass through the MCP call — do NOT base64 a document into a tool
                      argument.
   get_blob_url       Presigned GET URL for a blob's bytes. Stream large files to disk.
-  get_blob_metadata  Blob metadata plus a reverse lookup: attached_to.{loads,facilities}.
+  get_blob_metadata  Blob metadata plus a reverse lookup:
+                     attached_to.{loads,facilities,trips,drivers,trucks,trailers}.
   list_blobs         List blob metadata (optional name, tag, content_type, limit).
   delete_blob        Delete a blob (force? to override reference checks).
 

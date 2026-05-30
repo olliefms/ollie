@@ -194,6 +194,8 @@ pub struct TripRecord {
     pub status: TripStatus,
     pub stops: Vec<TripStop>,
     pub notes: Option<String>,
+    #[serde(default)]
+    pub blob_ids: Vec<Uuid>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -224,6 +226,8 @@ pub struct CreateTripRequest {
     pub stops: Vec<TripStop>,
     pub notes: Option<String>,
     pub previous_trip_id: Option<Uuid>,
+    #[serde(default)]
+    pub blob_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -232,6 +236,7 @@ pub struct UpdateTripRequest {
     pub sequence: Option<u32>,
     pub stops: Option<Vec<TripStop>>,
     pub notes: Option<String>,
+    pub blob_ids: Option<Vec<Uuid>>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -253,6 +258,7 @@ pub struct TripListItem {
     pub status: TripStatus,
     pub stops: Vec<TripStop>,
     pub notes: Option<String>,
+    pub blob_ids: Vec<Uuid>,
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -279,6 +285,7 @@ impl From<TripRecord> for TripListItem {
             status: r.status,
             stops: r.stops,
             notes: r.notes,
+            blob_ids: r.blob_ids,
             owner_id: r.owner_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -374,6 +381,7 @@ mod tests {
                 },
             ],
             notes: Some("urgent".into()),
+            blob_ids: vec![],
             embedding: None,
             owner_id: 0,
             created_at: now,
@@ -405,6 +413,7 @@ mod tests {
             status: TripStatus::Planned,
             stops: vec![],
             notes: None,
+            blob_ids: vec![],
             embedding: Some(vec![0.1, 0.2]),
             owner_id: 0,
             created_at: now,

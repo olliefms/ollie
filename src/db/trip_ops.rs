@@ -107,6 +107,7 @@ impl DbClient {
         Ok(record)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_trip_metadata(
         &self, id: Uuid,
         load_id: Option<Uuid>,
@@ -114,6 +115,7 @@ impl DbClient {
         stops: Option<Vec<TripStop>>,
         notes: Option<String>,
         embedding: Option<Vec<f32>>,
+        blob_ids: Option<Vec<Uuid>>,
     ) -> Result<TripRecord, AppError> {
         let mut record = self.get_trip(id).await?;
         if let Some(v) = load_id { record.load_id = Some(v); }
@@ -121,6 +123,7 @@ impl DbClient {
         if let Some(v) = stops { record.stops = v; }
         if let Some(v) = notes { record.notes = Some(v); }
         if let Some(v) = embedding { record.embedding = Some(v); }
+        if let Some(v) = blob_ids { record.blob_ids = v; }
         record.updated_at = Utc::now();
         self.upsert_trip(&record).await?;
         Ok(record)
@@ -234,6 +237,27 @@ impl DbClient {
         trips.sort_by_key(|t| std::cmp::Reverse(t.created_at));
         Ok(trips.into_iter().next())
     }
+
+    pub async fn any_trip_references_blob(&self, blob_id: Uuid) -> Result<bool, AppError> {
+        let id_str = blob_id.to_string();
+        // Use JSON string boundaries to avoid false positives from UUID substrings
+        let count = self.trip_table
+            .count_rows(Some(format!("blob_ids LIKE '%\"{id_str}\"%'")))
+            .await.map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    /// Ids of trips that reference `blob_id` in their `blob_ids`.
+    /// Used for the MCP `attached_to` reverse lookup.
+    pub async fn trips_referencing_blob(&self, blob_id: Uuid) -> Result<Vec<Uuid>, AppError> {
+        let id_str = blob_id.to_string();
+        let stream = self.trip_table.query()
+            .only_if(format!("blob_ids LIKE '%\"{id_str}\"%'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_trips(collect_stream(stream).await?)?
+            .into_iter().map(|r| r.id).collect())
+    }
 }
 
 // --- Helpers ---
@@ -254,6 +278,8 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
     let updated_at_str = record.updated_at.to_rfc3339();
     let load_number_str = record.load_number.as_deref();
     let previous_trip_id_str = record.previous_trip_id.map(|u| u.to_string());
+    let blob_ids_json = serde_json::to_string(&record.blob_ids)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let embedding_col: Arc<dyn arrow_array::Array> = match &record.embedding {
         Some(v) => {
@@ -291,6 +317,7 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
             if record.segment_miles.is_empty() { None }
             else { Some(serde_json::to_string(&record.segment_miles).unwrap_or_default()) }
         ])),
+        Arc::new(StringArray::from(vec![blob_ids_json.as_str()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -367,6 +394,7 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
         stops,
         notes: opt_str("notes"),
+        blob_ids: serde_json::from_str(&str_col("blob_ids")).unwrap_or_default(),
         embedding,
         owner_id: i64_col("owner_id"),
         created_at: str_col("created_at").parse()
@@ -445,6 +473,7 @@ mod tests {
                 },
             ],
             notes: Some("test trip".into()),
+            blob_ids: vec![],
             embedding: None,
             owner_id: 0,
             created_at: now,

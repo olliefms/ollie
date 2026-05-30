@@ -73,6 +73,7 @@ impl DbClient {
         plate: Option<String>,
         plate_state: Option<String>,
         notes: Option<String>,
+        blob_ids: Option<Vec<Uuid>>,
     ) -> Result<TruckRecord, AppError> {
         let mut record = self.get_truck_by_id(id).await?;
         if let Some(v) = unit_number { record.unit_number = v; }
@@ -83,6 +84,7 @@ impl DbClient {
         if let Some(v) = plate { record.plate = Some(v); }
         if let Some(v) = plate_state { record.plate_state = Some(v); }
         if let Some(v) = notes { record.notes = Some(v); }
+        if let Some(v) = blob_ids { record.blob_ids = v; }
         record.updated_at = Utc::now();
         self.upsert_truck(&record).await?;
         Ok(record)
@@ -156,6 +158,27 @@ impl DbClient {
         Ok(items)
     }
 
+    pub async fn any_truck_references_blob(&self, blob_id: Uuid) -> Result<bool, AppError> {
+        let id_str = blob_id.to_string();
+        // Use JSON string boundaries to avoid false positives from UUID substrings
+        let count = self.truck_table
+            .count_rows(Some(format!("blob_ids LIKE '%\"{id_str}\"%'")))
+            .await.map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(count > 0)
+    }
+
+    /// Ids of trucks that reference `blob_id` in their `blob_ids`.
+    /// Used for the MCP `attached_to` reverse lookup.
+    pub async fn trucks_referencing_blob(&self, blob_id: Uuid) -> Result<Vec<Uuid>, AppError> {
+        let id_str = blob_id.to_string();
+        let stream = self.truck_table.query()
+            .only_if(format!("blob_ids LIKE '%\"{id_str}\"%'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_trucks(collect_stream(stream).await?)?
+            .into_iter().map(|r| r.id).collect())
+    }
+
     pub async fn create_truck_vector_index(&self) -> Result<(), AppError> {
         self.truck_table
             .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
@@ -171,6 +194,8 @@ fn truck_to_batch(record: &TruckRecord, embed_dim: usize) -> Result<RecordBatch,
     let id_str = record.id.to_string();
     let created_str = record.created_at.to_rfc3339();
     let updated_str = record.updated_at.to_rfc3339();
+    let blob_ids_json = serde_json::to_string(&record.blob_ids)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let embedding_col: Arc<dyn arrow_array::Array> = match &record.embedding {
         Some(v) => {
@@ -199,6 +224,7 @@ fn truck_to_batch(record: &TruckRecord, embed_dim: usize) -> Result<RecordBatch,
         Arc::new(Int64Array::from(vec![record.owner_id])),
         Arc::new(StringArray::from(vec![created_str.as_str()])),
         Arc::new(StringArray::from(vec![updated_str.as_str()])),
+        Arc::new(StringArray::from(vec![blob_ids_json.as_str()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -252,6 +278,7 @@ fn row_to_truck(batch: &RecordBatch, i: usize) -> Result<TruckRecord, AppError> 
         plate_state: opt_str("plate_state"),
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
         notes: opt_str("notes"),
+        blob_ids: serde_json::from_str(&str_col("blob_ids")).unwrap_or_default(),
         embedding,
         owner_id: i64_col("owner_id"),
         created_at: str_col("created_at").parse()
@@ -295,6 +322,7 @@ mod tests {
             plate_state: Some("TN".into()),
             status: TruckStatus::Available,
             notes: Some("primary flatbed unit".into()),
+            blob_ids: vec![],
             embedding: None,
             owner_id: 0,
             created_at: now,
@@ -350,7 +378,7 @@ mod tests {
         let updated = db.update_truck_metadata(
             t.id,
             Some("T-202".into()),
-            None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None,
         ).await.unwrap();
         assert_eq!(updated.unit_number, "T-202");
     }

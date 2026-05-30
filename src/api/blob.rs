@@ -116,9 +116,16 @@ pub async fn delete_blob(
 ) -> Result<impl IntoResponse, AppError> {
     let record = state.db.get_by_id(id).await?;
 
-    if state.db.any_load_references_blob(id).await? {
+    if state.db.any_load_references_blob(id).await?
+        || state.db.any_facility_references_blob(id).await?
+        || state.db.any_trip_references_blob(id).await?
+        || state.db.any_driver_references_blob(id).await?
+        || state.db.any_truck_references_blob(id).await?
+        || state.db.any_trailer_references_blob(id).await?
+    {
         return Err(AppError::Conflict(
-            "blob is referenced by one or more loads and cannot be deleted".into(),
+            "blob is referenced by one or more loads, facilities, trips, drivers, \
+             trucks, or trailers and cannot be deleted".into(),
         ));
     }
 

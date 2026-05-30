@@ -63,6 +63,7 @@ pub async fn create_truck(
         plate_state: body.plate_state,
         status: TruckStatus::Available,
         notes: body.notes,
+        blob_ids: body.blob_ids,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -162,6 +163,7 @@ pub async fn update_truck(
         body.plate,
         body.plate_state,
         body.notes,
+        body.blob_ids,
     ).await?;
 
     let updated = if let Some(status) = body.status {

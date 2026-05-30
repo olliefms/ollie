@@ -47,6 +47,8 @@ pub struct CreateTruckBody {
     pub plate_state: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub blob_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -68,6 +70,8 @@ pub struct PatchTruckBody {
     pub plate_state: Option<String>,
     #[serde(default)]
     pub notes: Option<String>,
+    #[serde(default)]
+    pub blob_ids: Option<Vec<Uuid>>,
 }
 
 #[utoipa::path(
@@ -136,6 +140,7 @@ pub async fn apply_truck_create(
         plate_state: parsed.plate_state,
         status: TruckStatus::Available,
         notes: parsed.notes,
+        blob_ids: parsed.blob_ids,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -173,6 +178,7 @@ pub async fn apply_truck_patch(
         parsed.plate,
         parsed.plate_state,
         parsed.notes,
+        parsed.blob_ids,
     ).await?;
 
     if let Ok(embedding) = embed_text(&state.ai, &updated.embedding_text()).await {
