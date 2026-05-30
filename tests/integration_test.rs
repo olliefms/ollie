@@ -1700,6 +1700,84 @@ async fn test_mcp_blob_tools_emit_resource_links() {
     // OLLIE_PUBLIC_BASE_URL, which the test server doesn't set).
 }
 
+/// Send a completion/complete request for a reference argument and return the
+/// suggested values.
+async fn mcp_complete(
+    server: &axum_test::TestServer,
+    token: &str,
+    session: &str,
+    arg_name: &str,
+    value: &str,
+    context: Option<serde_json::Value>,
+) -> Vec<String> {
+    let mut params = serde_json::json!({
+        "ref": { "type": "ref/resource", "uri": "ollie://blob/00000000-0000-0000-0000-000000000000" },
+        "argument": { "name": arg_name, "value": value }
+    });
+    if let Some(ctx) = context {
+        params["context"] = ctx;
+    }
+    let body = mcp_rpc(server, token, session, "completion/complete", params).await;
+    body["result"]["completion"]["values"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
+}
+
+/// #301: the completions capability autocompletes reference args (customer_name,
+/// facility `q`, tag) from existing records, and honors `context` for a
+/// dependent-argument case.
+#[tokio::test]
+async fn test_mcp_completions_for_reference_args() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_cmp@example.com", "password-mcp-cmp").await;
+
+    // Seed: a load (customer "ACME"), a facility, and a tagged blob.
+    let fac = create_test_facility(&server, "Houston Terminal", "Houston, TX").await;
+    create_test_load(&server, &fac).await;
+    let up_token = mint_upload_token();
+    server
+        .post(&format!("/dispatch/blobs/presigned?token={up_token}&name=hz.txt&tags=hazmat"))
+        .add_header(header::CONTENT_TYPE, "text/plain")
+        .bytes(b"hz".to_vec().into())
+        .await;
+
+    // initialize advertises the completions capability.
+    let init_resp = server
+        .post("/dispatch/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "t", "version": "1" } }
+        }))
+        .await;
+    let init = sse_json(&init_resp.text());
+    assert!(
+        init["result"]["capabilities"]["completions"].is_object(),
+        "initialize must advertise completions: {init}"
+    );
+
+    let session = mcp_session(&server, &token).await;
+
+    let customers = mcp_complete(&server, &token, &session, "customer_name", "AC", None).await;
+    assert!(customers.contains(&"ACME".to_string()), "customer_name suggestions: {customers:?}");
+
+    let facilities = mcp_complete(&server, &token, &session, "q", "Hou", None).await;
+    assert!(facilities.iter().any(|v| v == "Houston Terminal"), "facility suggestions: {facilities:?}");
+
+    let tags = mcp_complete(&server, &token, &session, "tag", "haz", None).await;
+    assert!(tags.contains(&"hazmat".to_string()), "tag suggestions: {tags:?}");
+
+    // context-dependent: narrowing customer_name to a status with no loads yields none.
+    let narrowed = mcp_complete(&server, &token, &session, "customer_name", "AC",
+        Some(serde_json::json!({ "arguments": { "status": "delivered" } }))).await;
+    assert!(
+        narrowed.is_empty(),
+        "no delivered-status loads -> context must narrow away ACME: {narrowed:?}"
+    );
+}
+
 /// Minimal JSON-Schema conformance check for the simple object schemas the MCP
 /// tools declare: every `required` property is present with its declared `type`,
 /// and any declared property that *is* present matches its `type`. Enough to prove
