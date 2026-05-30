@@ -4416,10 +4416,32 @@ async fn test_mcp_update_trip_rejects_raw_mileage() {
         "name": "update_trip",
         "arguments": { "trip_id": trip_id, "total_miles": 999.0 }
     })).await;
+    // A domain rejection is recoverable feedback: an isError RESULT, not a
+    // JSON-RPC error (so the model reads the message and adapts) — see #297.
+    assert!(body["error"].is_null(), "domain failure must not be a JSON-RPC error: {body:?}");
+    assert_eq!(body["result"]["isError"], serde_json::json!(true));
+    let msg = body["result"]["content"][0]["text"].as_str().unwrap_or("");
+    assert!(!msg.is_empty(), "isError result must carry a human-readable message");
+}
+
+/// #297: protocol faults (unknown tool) stay on the JSON-RPC error channel, while
+/// tool-execution failures become isError results (covered above). These two
+/// channels must not be conflated.
+#[tokio::test]
+async fn test_mcp_unknown_tool_is_jsonrpc_error_not_iserror() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_unk@example.com", "password-mcp-unk").await;
+    let session = mcp_session(&server, &token).await;
+
+    let body = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
+        "name": "no_such_tool",
+        "arguments": {}
+    })).await;
     assert!(
-        body["error"].is_object() || body["result"]["isError"] == serde_json::json!(true),
-        "expected MCP error for total_miles set: {body:?}"
+        body["error"].is_object(),
+        "unknown tool is a protocol fault → JSON-RPC error, got: {body:?}"
     );
+    assert!(body["result"].is_null(), "protocol fault must not return a result");
 }
 
 #[tokio::test]
