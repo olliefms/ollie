@@ -16,7 +16,7 @@ pub mod truck_ops;
 
 use crate::error::AppError;
 use arrow_array::{
-    FixedSizeListArray, Float64Array, Int32Array, Int64Array, RecordBatch,
+    BooleanArray, FixedSizeListArray, Float64Array, Int32Array, Int64Array, RecordBatch,
     RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
@@ -38,6 +38,7 @@ pub struct DbClient {
     pub event_table: Table,
     pub facility_table: Table,
     pub load_table: Table,
+    pub terminal_table: Table,
     pub trailer_table: Table,
     pub trip_table: Table,
     pub truck_table: Table,
@@ -57,6 +58,8 @@ impl DbClient {
         let load_table = open_or_create(&conn, "loads", load_schema(embed_dim), |schema| {
             empty_load_batch(schema, embed_dim)
         }).await?;
+
+        let terminal_table = open_or_create_terminal(&conn).await?;
 
         let driver_table = open_or_create_driver(&conn, embed_dim).await?;
 
@@ -140,6 +143,7 @@ impl DbClient {
             event_table,
             facility_table,
             load_table,
+            terminal_table,
             trailer_table,
             trip_table,
             truck_table,
@@ -209,6 +213,58 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
                     .map_err(|e| AppError::Internal(format!("trip schema migration failed: {e}")))?;
             }
             Ok(table)
+        }
+    }
+}
+
+pub fn terminal_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("address", DataType::Utf8, true),
+        Field::new("timezone", DataType::Utf8, false),
+        Field::new("is_default", DataType::Boolean, false),
+        Field::new("loaded_rate_per_mile", DataType::Float64, false),
+        Field::new("deadhead_rate_per_mile", DataType::Float64, false),
+        Field::new("extra_stop_fee", DataType::Float64, false),
+        Field::new("detention_rate_per_hour", DataType::Float64, false),
+        Field::new("free_dwell_minutes", DataType::Int64, false),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+async fn open_or_create_terminal(conn: &lancedb::Connection) -> Result<Table, AppError> {
+    let schema = terminal_schema();
+    match conn.open_table("terminals").execute().await {
+        Ok(table) => Ok(table),
+        Err(_) => {
+            let tz = std::env::var("TERMINAL_TIMEZONE")
+                .unwrap_or_else(|_| "America/New_York".to_string());
+            let free_dwell: i64 = std::env::var("OLLIE_FREE_DWELL_MINUTES")
+                .ok().and_then(|v| v.parse().ok()).unwrap_or(120);
+            let now = chrono::Utc::now().to_rfc3339();
+            let id = uuid::Uuid::new_v4().to_string();
+            let batch = RecordBatch::try_new(schema.clone(), vec![
+                Arc::new(StringArray::from(vec![id.as_str()])),
+                Arc::new(StringArray::from(vec!["Default"])),
+                Arc::new(StringArray::from(vec![None::<&str>])),
+                Arc::new(StringArray::from(vec![tz.as_str()])),
+                Arc::new(BooleanArray::from(vec![true])),
+                Arc::new(Float64Array::from(vec![0.0_f64])),
+                Arc::new(Float64Array::from(vec![0.0_f64])),
+                Arc::new(Float64Array::from(vec![0.0_f64])),
+                Arc::new(Float64Array::from(vec![0.0_f64])),
+                Arc::new(Int64Array::from(vec![free_dwell])),
+                Arc::new(Int64Array::from(vec![0_i64])),
+                Arc::new(StringArray::from(vec![now.as_str()])),
+                Arc::new(StringArray::from(vec![now.as_str()])),
+            ]).map_err(|e| AppError::Internal(e.to_string()))?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("terminals", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
         }
     }
 }
