@@ -71,6 +71,20 @@ pub struct DriverRecord {
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// FK to terminals. Optional for backward-compat deserialization,
+    /// but always populated after migration (backfilled to the default terminal).
+    #[serde(default)]
+    pub terminal_id: Option<Uuid>,
+    #[serde(default)]
+    pub loaded_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub deadhead_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub extra_stop_fee: Option<f64>,
+    #[serde(default)]
+    pub detention_rate_per_hour: Option<f64>,
+    #[serde(default)]
+    pub free_dwell_minutes: Option<u32>,
 }
 
 impl DriverRecord {
@@ -90,6 +104,18 @@ pub struct CreateDriverRequest {
     pub notes: Option<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub terminal_id: Option<Uuid>,
+    #[serde(default)]
+    pub loaded_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub deadhead_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub extra_stop_fee: Option<f64>,
+    #[serde(default)]
+    pub detention_rate_per_hour: Option<f64>,
+    #[serde(default)]
+    pub free_dwell_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -102,6 +128,18 @@ pub struct UpdateDriverRequest {
     pub license_expiry: Option<String>,
     pub notes: Option<String>,
     pub blob_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub terminal_id: Option<Uuid>,
+    #[serde(default)]
+    pub loaded_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub deadhead_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub extra_stop_fee: Option<f64>,
+    #[serde(default)]
+    pub detention_rate_per_hour: Option<f64>,
+    #[serde(default)]
+    pub free_dwell_minutes: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -125,6 +163,12 @@ pub struct DriverListItem {
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+    pub terminal_id: Option<Uuid>,
+    pub loaded_rate_per_mile: Option<f64>,
+    pub deadhead_rate_per_mile: Option<f64>,
+    pub extra_stop_fee: Option<f64>,
+    pub detention_rate_per_hour: Option<f64>,
+    pub free_dwell_minutes: Option<u32>,
 }
 
 impl From<DriverRecord> for DriverListItem {
@@ -143,6 +187,12 @@ impl From<DriverRecord> for DriverListItem {
             owner_id: r.owner_id,
             created_at: r.created_at,
             score: None,
+            terminal_id: r.terminal_id,
+            loaded_rate_per_mile: r.loaded_rate_per_mile,
+            deadhead_rate_per_mile: r.deadhead_rate_per_mile,
+            extra_stop_fee: r.extra_stop_fee,
+            detention_rate_per_hour: r.detention_rate_per_hour,
+            free_dwell_minutes: r.free_dwell_minutes,
         }
     }
 }
@@ -188,6 +238,9 @@ mod tests {
             blob_ids: vec![],
             embedding: Some(vec![0.1]),
             owner_id: 0, created_at: now, updated_at: now,
+            terminal_id: None, loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None, extra_stop_fee: None,
+            detention_rate_per_hour: None, free_dwell_minutes: None,
         };
         let json = serde_json::to_value(&r).unwrap();
         assert!(json.get("embedding").is_none());

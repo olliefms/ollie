@@ -72,8 +72,8 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trips/{id}/stops/{seq}/depart", post(data::stop_depart))
         .route("/dispatch/api/v1/trips/{id}/stops/{seq}/late", post(data::stop_late))
         .route("/dispatch/api/v1/trips/{id}/check-call", post(data::check_call))
-        .route("/dispatch/api/v1/drivers", get(data::list_drivers))
-        .route("/dispatch/api/v1/drivers/{id}", get(data::get_driver))
+        .route("/dispatch/api/v1/drivers", get(data::list_drivers).post(driver_writes::create_driver_handler))
+        .route("/dispatch/api/v1/drivers/{id}", get(data::get_driver).patch(driver_writes::patch_driver_handler))
         .route(
             "/dispatch/api/v1/drivers/{id}/attach-equipment",
             post(driver_writes::attach_equipment_handler),

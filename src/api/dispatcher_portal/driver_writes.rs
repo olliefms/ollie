@@ -20,18 +20,21 @@ use std::collections::HashSet;
 
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
     Json,
 };
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
+    ai::embed::embed_text,
     error::AppError,
     events,
-    models::{DriverStatus, TrailerStatus, TripStatus, TruckStatus},
+    models::{CreateDriverRequest, DriverRecord, DriverStatus, TrailerStatus, TripStatus, TruckStatus, UpdateDriverRequest},
     AppState,
 };
 
@@ -409,6 +412,158 @@ pub async fn apply_detach_equipment(
         trip_cascade,
         trip_id,
     })
+}
+
+// --- Driver create / patch (dispatcher portal) ---
+
+/// Shared driver-create writer. Defaults terminal_id to the default terminal
+/// when the request omits it. Used by the HTTP handler (and optionally MCP).
+pub async fn apply_driver_create(
+    state: &AppState,
+    req: CreateDriverRequest,
+) -> Result<DriverRecord, AppError> {
+    let now = Utc::now();
+
+    let terminal_id = match req.terminal_id {
+        Some(tid) => {
+            // Validate the terminal exists.
+            state.db.get_terminal_by_id(tid).await?;
+            Some(tid)
+        }
+        None => state.db.default_terminal().await.ok().map(|t| t.id),
+    };
+
+    let record = DriverRecord {
+        id: Uuid::new_v4(),
+        name: req.name,
+        phone: req.phone,
+        email: req.email,
+        license_number: req.license_number,
+        license_state: req.license_state,
+        license_expiry: req.license_expiry,
+        status: DriverStatus::Available,
+        notes: req.notes,
+        current_truck_id: None,
+        current_trailer_ids: vec![],
+        blob_ids: req.blob_ids,
+        embedding: None,
+        owner_id: 0,
+        created_at: now,
+        updated_at: now,
+        terminal_id,
+        loaded_rate_per_mile: req.loaded_rate_per_mile,
+        deadhead_rate_per_mile: req.deadhead_rate_per_mile,
+        extra_stop_fee: req.extra_stop_fee,
+        detention_rate_per_hour: req.detention_rate_per_hour,
+        free_dwell_minutes: req.free_dwell_minutes,
+    };
+
+    let embedding = embed_text(&state.ai, &record.embedding_text()).await.ok();
+    let record = DriverRecord { embedding, ..record };
+    state.db.insert_driver(&record).await?;
+    Ok(record)
+}
+
+/// Shared driver-patch writer. Validates terminal exists when terminal_id is
+/// supplied. Used by the HTTP handler (and optionally MCP).
+pub async fn apply_driver_patch(
+    state: &AppState,
+    id: Uuid,
+    req: UpdateDriverRequest,
+) -> Result<DriverRecord, AppError> {
+    // Validate terminal exists if one is being set.
+    if let Some(tid) = req.terminal_id {
+        state.db.get_terminal_by_id(tid).await?;
+    }
+
+    let phone = req.phone.as_deref().map(|p| {
+        let stripped: String = p.chars().filter(|c| !matches!(c, ' ' | '-' | '(' | ')')).collect();
+        if stripped.starts_with('+') { return stripped; }
+        if stripped.len() == 10 && stripped.chars().all(|c| c.is_ascii_digit()) { return format!("+1{stripped}"); }
+        if stripped.chars().all(|c| c.is_ascii_digit()) { return format!("+{stripped}"); }
+        stripped
+    });
+
+    let mut updated = state.db.update_driver_metadata(
+        id,
+        req.name,
+        phone,
+        req.email,
+        req.license_number,
+        req.license_state,
+        req.license_expiry,
+        req.notes,
+        req.blob_ids,
+    ).await?;
+
+    let rate_changed = req.terminal_id.is_some()
+        || req.loaded_rate_per_mile.is_some()
+        || req.deadhead_rate_per_mile.is_some()
+        || req.extra_stop_fee.is_some()
+        || req.detention_rate_per_hour.is_some()
+        || req.free_dwell_minutes.is_some();
+
+    if rate_changed {
+        updated = state.db.update_driver_rate_overrides(
+            id,
+            req.terminal_id,
+            req.loaded_rate_per_mile,
+            req.deadhead_rate_per_mile,
+            req.extra_stop_fee,
+            req.detention_rate_per_hour,
+            req.free_dwell_minutes,
+        ).await?;
+    }
+
+    if let Ok(embedding) = embed_text(&state.ai, &updated.embedding_text()).await {
+        let _ = state.db.update_driver_embedding(id, embedding).await;
+    }
+
+    Ok(updated)
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/drivers",
+    request_body(content = CreateDriverRequest, description = "Driver to create"),
+    responses(
+        (status = 201, description = "Created driver record", body = DriverRecord),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Terminal not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn create_driver_handler(
+    State(state): State<AppState>,
+    Json(body): Json<CreateDriverRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = apply_driver_create(&state, body).await?;
+    Ok((StatusCode::CREATED, Json(record)))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/dispatch/api/v1/drivers/{id}",
+    params(("id" = Uuid, Path, description = "Driver UUID")),
+    request_body(content = UpdateDriverRequest, description = "Fields to update"),
+    responses(
+        (status = 200, description = "Updated driver record", body = DriverRecord),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Driver or terminal not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn patch_driver_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<UpdateDriverRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = apply_driver_patch(&state, id, body).await?;
+    Ok(Json(record))
 }
 
 /// Sync the driver's active trip's resources to the driver's current

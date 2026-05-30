@@ -68,6 +68,12 @@ pub async fn create_driver(
 ) -> Result<impl IntoResponse, AppError> {
     let now = Utc::now();
 
+    // Resolve terminal_id: use supplied value or fall back to default terminal.
+    let terminal_id = match body.terminal_id {
+        Some(tid) => Some(tid),
+        None => state.db.default_terminal().await.ok().map(|t| t.id),
+    };
+
     let record = DriverRecord {
         id: Uuid::new_v4(),
         name: body.name,
@@ -85,6 +91,12 @@ pub async fn create_driver(
         owner_id: 0,
         created_at: now,
         updated_at: now,
+        terminal_id,
+        loaded_rate_per_mile: body.loaded_rate_per_mile,
+        deadhead_rate_per_mile: body.deadhead_rate_per_mile,
+        extra_stop_fee: body.extra_stop_fee,
+        detention_rate_per_hour: body.detention_rate_per_hour,
+        free_dwell_minutes: body.free_dwell_minutes,
     };
 
     let embedding = embed_text(&state.ai, &record.embedding_text()).await.ok();
@@ -166,8 +178,12 @@ pub async fn update_driver(
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Validate terminal exists if one is being set.
+    if let Some(tid) = body.terminal_id {
+        state.db.get_terminal_by_id(tid).await?;
+    }
     let phone = body.phone.as_deref().map(normalize_phone);
-    let updated = state.db.update_driver_metadata(
+    let mut updated = state.db.update_driver_metadata(
         id,
         body.name,
         phone,
@@ -178,6 +194,26 @@ pub async fn update_driver(
         body.notes,
         body.blob_ids,
     ).await?;
+
+    // Apply rate-override + terminal_id fields if any are present.
+    let rate_changed = body.terminal_id.is_some()
+        || body.loaded_rate_per_mile.is_some()
+        || body.deadhead_rate_per_mile.is_some()
+        || body.extra_stop_fee.is_some()
+        || body.detention_rate_per_hour.is_some()
+        || body.free_dwell_minutes.is_some();
+
+    if rate_changed {
+        updated = state.db.update_driver_rate_overrides(
+            id,
+            body.terminal_id,
+            body.loaded_rate_per_mile,
+            body.deadhead_rate_per_mile,
+            body.extra_stop_fee,
+            body.detention_rate_per_hour,
+            body.free_dwell_minutes,
+        ).await?;
+    }
 
     if let Ok(embedding) = embed_text(&state.ai, &updated.embedding_text()).await {
         let _ = state.db.update_driver_embedding(id, embedding).await;

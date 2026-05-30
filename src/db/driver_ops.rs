@@ -5,7 +5,7 @@ use crate::{
     models::{DriverListItem, DriverRecord, DriverStatus},
 };
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Int64Array,
+    Array, FixedSizeListArray, Float32Array, Float64Array, Int64Array,
     RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use chrono::Utc;
@@ -127,6 +127,43 @@ impl DbClient {
         Ok(record)
     }
 
+    pub async fn update_driver_terminal(
+        &self,
+        id: Uuid,
+        terminal_id: Uuid,
+    ) -> Result<DriverRecord, AppError> {
+        let mut record = self.get_driver_by_id(id).await?;
+        record.terminal_id = Some(terminal_id);
+        record.updated_at = chrono::Utc::now();
+        self.upsert_driver(&record).await?;
+        Ok(record)
+    }
+
+    /// Patch optional rate-override fields + terminal_id on an existing driver record.
+    /// Only fields with `Some(...)` values are applied; `None` leaves the existing value.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_driver_rate_overrides(
+        &self,
+        id: Uuid,
+        terminal_id: Option<Uuid>,
+        loaded_rate_per_mile: Option<f64>,
+        deadhead_rate_per_mile: Option<f64>,
+        extra_stop_fee: Option<f64>,
+        detention_rate_per_hour: Option<f64>,
+        free_dwell_minutes: Option<u32>,
+    ) -> Result<DriverRecord, AppError> {
+        let mut record = self.get_driver_by_id(id).await?;
+        if let Some(v) = terminal_id { record.terminal_id = Some(v); }
+        if let Some(v) = loaded_rate_per_mile { record.loaded_rate_per_mile = Some(v); }
+        if let Some(v) = deadhead_rate_per_mile { record.deadhead_rate_per_mile = Some(v); }
+        if let Some(v) = extra_stop_fee { record.extra_stop_fee = Some(v); }
+        if let Some(v) = detention_rate_per_hour { record.detention_rate_per_hour = Some(v); }
+        if let Some(v) = free_dwell_minutes { record.free_dwell_minutes = Some(v); }
+        record.updated_at = chrono::Utc::now();
+        self.upsert_driver(&record).await?;
+        Ok(record)
+    }
+
     pub async fn soft_delete_driver(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_driver_by_id(id).await?;
         record.status = DriverStatus::Inactive;
@@ -235,6 +272,8 @@ fn driver_to_batch(record: &DriverRecord, embed_dim: usize) -> Result<RecordBatc
         >(vec![None::<Vec<Option<f32>>>], embed_dim as i32)),
     };
 
+    let terminal_id_str = record.terminal_id.map(|u| u.to_string());
+
     RecordBatch::try_new(schema, vec![
         Arc::new(StringArray::from(vec![id_str.as_str()])),
         Arc::new(StringArray::from(vec![record.name.as_str()])),
@@ -252,6 +291,12 @@ fn driver_to_batch(record: &DriverRecord, embed_dim: usize) -> Result<RecordBatc
         Arc::new(StringArray::from(vec![current_truck_str.as_deref()])),
         Arc::new(StringArray::from(vec![trailer_ids_json.as_str()])),
         Arc::new(StringArray::from(vec![blob_ids_json.as_str()])),
+        Arc::new(StringArray::from(vec![terminal_id_str.as_deref()])),
+        Arc::new(Float64Array::from(vec![record.loaded_rate_per_mile])),
+        Arc::new(Float64Array::from(vec![record.deadhead_rate_per_mile])),
+        Arc::new(Float64Array::from(vec![record.extra_stop_fee])),
+        Arc::new(Float64Array::from(vec![record.detention_rate_per_hour])),
+        Arc::new(Int64Array::from(vec![record.free_dwell_minutes.map(|v| v as i64)])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -273,6 +318,16 @@ fn row_to_driver(batch: &RecordBatch, i: usize) -> Result<DriverRecord, AppError
         batch.column_by_name(name)
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
             .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i).to_string()) })
+    };
+    let opt_f64 = |name: &str| -> Option<f64> {
+        batch.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
+    };
+    let opt_i64 = |name: &str| -> Option<i64> {
+        batch.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
+            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
     };
     let i64_col = |name: &str| -> i64 {
         batch.column_by_name(name)
@@ -299,6 +354,11 @@ fn row_to_driver(batch: &RecordBatch, i: usize) -> Result<DriverRecord, AppError
         strs.iter().filter_map(|s| s.parse::<Uuid>().ok()).collect()
     };
 
+    let terminal_id = opt_str("terminal_id")
+        .map(|s| s.parse())
+        .transpose()
+        .map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?;
+
     Ok(DriverRecord {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         name: str_col("name"),
@@ -318,6 +378,12 @@ fn row_to_driver(batch: &RecordBatch, i: usize) -> Result<DriverRecord, AppError
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
         updated_at: str_col("updated_at").parse()
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
+        terminal_id,
+        loaded_rate_per_mile: opt_f64("loaded_rate_per_mile"),
+        deadhead_rate_per_mile: opt_f64("deadhead_rate_per_mile"),
+        extra_stop_fee: opt_f64("extra_stop_fee"),
+        detention_rate_per_hour: opt_f64("detention_rate_per_hour"),
+        free_dwell_minutes: opt_i64("free_dwell_minutes").map(|v| v as u32),
     })
 }
 
@@ -357,6 +423,12 @@ mod tests {
             blob_ids: vec![],
             embedding: None, owner_id: 0,
             created_at: now, updated_at: now,
+            terminal_id: None,
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
         }
     }
 
@@ -410,5 +482,52 @@ mod tests {
             None, None, None, None, None, None, None,
         ).await.unwrap();
         assert_eq!(updated.name, "Bob Jones");
+    }
+
+    #[tokio::test]
+    async fn test_driver_rate_overrides_roundtrip() {
+        let (db, _dir) = test_db().await;
+        // Get the default terminal id from the seeded terminal.
+        let default_terminal = db.default_terminal().await.unwrap();
+        let mut d = sample_driver();
+        d.terminal_id = Some(default_terminal.id);
+        d.loaded_rate_per_mile = Some(0.62);
+        db.insert_driver(&d).await.unwrap();
+
+        let fetched = db.get_driver_by_id(d.id).await.unwrap();
+        assert_eq!(fetched.terminal_id, Some(default_terminal.id));
+        assert_eq!(fetched.loaded_rate_per_mile, Some(0.62));
+        // Fields left as None should round-trip as None.
+        assert_eq!(fetched.deadhead_rate_per_mile, None);
+        assert_eq!(fetched.extra_stop_fee, None);
+        assert_eq!(fetched.detention_rate_per_hour, None);
+        assert_eq!(fetched.free_dwell_minutes, None);
+    }
+
+    #[tokio::test]
+    async fn test_update_driver_rate_overrides() {
+        let (db, _dir) = test_db().await;
+        let default_terminal = db.default_terminal().await.unwrap();
+        let mut d = sample_driver();
+        d.terminal_id = Some(default_terminal.id);
+        db.insert_driver(&d).await.unwrap();
+
+        let updated = db.update_driver_rate_overrides(
+            d.id,
+            None,            // keep existing terminal_id
+            Some(0.70),      // loaded_rate_per_mile
+            Some(0.35),      // deadhead_rate_per_mile
+            None,            // extra_stop_fee unchanged
+            Some(28.0),      // detention_rate_per_hour
+            Some(90),        // free_dwell_minutes
+        ).await.unwrap();
+
+        assert_eq!(updated.loaded_rate_per_mile, Some(0.70));
+        assert_eq!(updated.deadhead_rate_per_mile, Some(0.35));
+        assert_eq!(updated.extra_stop_fee, None);
+        assert_eq!(updated.detention_rate_per_hour, Some(28.0));
+        assert_eq!(updated.free_dwell_minutes, Some(90));
+        // terminal_id unchanged
+        assert_eq!(updated.terminal_id, Some(default_terminal.id));
     }
 }
