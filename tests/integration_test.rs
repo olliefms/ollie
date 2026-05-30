@@ -1564,6 +1564,48 @@ async fn test_dispatcher_mcp_tools_list() {
     assert_eq!(by_name("update_trip")["annotations"]["idempotentHint"], true);
 }
 
+/// Cursor pagination over the MCP surface: following `nextCursor` to exhaustion
+/// must yield every record exactly once, and the final page must omit nextCursor.
+/// Uses list_facilities with a page size of 2 so a 5-record dataset spans 3 pages.
+#[tokio::test]
+async fn test_dispatcher_mcp_list_cursor_paginates_all_records() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_pg@example.com", "password-mcp-pg").await;
+
+    let mut created = std::collections::HashSet::new();
+    for i in 0..5 {
+        let id = create_test_facility(&server, &format!("Pager Dock {i}"), "Dallas, TX").await;
+        created.insert(id);
+    }
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let mut args = serde_json::json!({ "limit": 2 });
+        if let Some(c) = &cursor {
+            args["cursor"] = serde_json::json!(c);
+        }
+        let res = mcp_call(&server, &token, "list_facilities", args).await;
+        for item in res["items"].as_array().expect("items array") {
+            seen.push(item["id"].as_str().expect("facility id").to_string());
+        }
+        pages += 1;
+        assert!(pages <= 10, "pagination must terminate");
+        match res["nextCursor"].as_str() {
+            Some(c) => cursor = Some(c.to_string()),
+            None => break,
+        }
+    }
+
+    // Every created facility appears exactly once across all pages.
+    for id in &created {
+        let count = seen.iter().filter(|s| *s == id).count();
+        assert_eq!(count, 1, "facility {id} should appear exactly once, saw {count}");
+    }
+    assert!(pages >= 2, "5 records at page size 2 must span multiple pages, got {pages}");
+}
+
 #[tokio::test]
 async fn test_dispatcher_mcp_list_loads() {
     let (server, _b, _d, _rx) = test_server().await;
