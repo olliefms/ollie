@@ -201,7 +201,7 @@ fn advertise_cursor(schema: &mut serde_json::Map<String, Value>) {
 /// and let the agent reason about safety. Reviewed against actual tool behavior:
 /// `*_doctor` tools can apply repairs, so they are NOT marked read-only.
 fn annotations_for(name: &str) -> ToolAnnotations {
-    if name.starts_with("list_") || name.starts_with("get_") {
+    if name.starts_with("list_") || name.starts_with("get_") || name == "search_blobs" {
         // Pure reads. destructive/idempotent hints are meaningless when read-only.
         return ToolAnnotations::from_raw(None, Some(true), None, None, None);
     }
@@ -822,6 +822,20 @@ fn tools_list() -> Value {
                     },
                     "required": ["id"]
                 }
+            },
+            {
+                "name": "search_blobs",
+                "description": "SEMANTIC search over blobs by meaning, using vector similarity over Ollama embeddings of each blob's summary — use this for natural-language queries like 'rate con mentioning hazmat detention'. (Contrast list_blobs, which only does literal name-substring and exact-tag matching.) Returns ranked BlobListItems each with a `score` (higher = closer), best match first. Optional name/tag pre-filters and limit (default 10, max 100).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Natural-language search text." },
+                        "name":  { "type": "string", "description": "Optional name-substring pre-filter." },
+                        "tag":   { "type": "string", "description": "Optional exact-tag pre-filter." },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }
+                    },
+                    "required": ["query"]
+                }
             }
         ]
     })
@@ -899,6 +913,7 @@ async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<
         "get_blob_url" => tool_get_blob_url(state, args).await,
         "get_blob_metadata" => tool_get_blob_metadata(state, args).await,
         "list_blobs" => tool_list_blobs(state, args).await,
+        "search_blobs" => tool_search_blobs(state, args).await,
         "delete_blob" => tool_delete_blob(state, args).await,
         _ => return Err(ToolError::Unknown),
     };
@@ -1739,6 +1754,28 @@ async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String
             Ok(mcp_content(obj))
         }
     }
+}
+
+/// Semantic blob search — a thin shim over the same embedding + vector-search path
+/// the REST `GET /blobs?s=` endpoint uses (blobs.rs). The query is embedded via
+/// Ollama, then matched against blob-summary vectors; results carry a similarity
+/// `score`. Empty queries are rejected before touching Ollama.
+async fn tool_search_blobs(state: &AppState, args: &Value) -> Result<Value, String> {
+    let query = args["query"].as_str().unwrap_or("").trim();
+    if query.is_empty() {
+        return Err("search_blobs requires a non-empty `query`".to_string());
+    }
+    let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(10).clamp(1, 100);
+    let name = args["name"].as_str();
+    let tags: Vec<String> = args["tag"].as_str().map(|t| vec![t.to_string()]).unwrap_or_default();
+
+    let embedding = crate::ai::embed::embed_text(&state.ai, query)
+        .await
+        .map_err(|e| e.to_string())?;
+    let items = state.db.search(embedding, name, &tags, limit)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "returned": items.len(), "items": items })))
 }
 
 async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, String> {
