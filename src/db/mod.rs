@@ -64,6 +64,12 @@ impl DbClient {
 
         let driver_table = open_or_create_driver(&conn, embed_dim).await?;
 
+        // Backfill any driver rows with NULL terminal_id -> default terminal id.
+        // terminal_table must be open before driver_table for this to work.
+        if let Err(e) = backfill_driver_terminals(&terminal_table, &driver_table).await {
+            tracing::warn!("driver terminal backfill skipped: {e}");
+        }
+
         let truck_table = open_or_create_truck(&conn, embed_dim).await?;
 
         let trailer_table = open_or_create_trailer(&conn, embed_dim).await?;
@@ -270,6 +276,145 @@ async fn open_or_create_terminal(conn: &lancedb::Connection) -> Result<Table, Ap
     }
 }
 
+/// Backfill driver rows that have a NULL terminal_id by assigning them the
+/// default terminal's id. Uses read-modify-upsert (merge_insert) to avoid
+/// the unverified `.update()` API.
+async fn backfill_driver_terminals(
+    terminal_table: &Table,
+    driver_table: &Table,
+) -> Result<(), AppError> {
+    use arrow_array::Array;
+    use futures::TryStreamExt;
+    use lancedb::query::ExecutableQuery;
+
+    // Find the default terminal id.
+    let terminal_batches: Vec<RecordBatch> = terminal_table.query().execute().await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .try_collect().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let mut default_terminal_id: Option<String> = None;
+    'outer: for batch in &terminal_batches {
+        let id_col = batch.column_by_name("id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let default_col = batch.column_by_name("is_default")
+            .and_then(|c| c.as_any().downcast_ref::<arrow_array::BooleanArray>());
+        if let (Some(ids), Some(defaults)) = (id_col, default_col) {
+            for i in 0..batch.num_rows() {
+                if defaults.value(i) {
+                    default_terminal_id = Some(ids.value(i).to_string());
+                    break 'outer;
+                }
+            }
+        }
+    }
+
+    let Some(tid) = default_terminal_id else {
+        return Err(AppError::Internal("no default terminal found for backfill".into()));
+    };
+
+    // Collect driver batches.
+    let driver_batches: Vec<RecordBatch> = driver_table.query().execute().await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .try_collect().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    // Find rows that need backfill.
+    let mut needs_backfill: Vec<String> = Vec::new(); // list of driver ids
+    for batch in &driver_batches {
+        let id_col = batch.column_by_name("id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let terminal_col = batch.column_by_name("terminal_id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        if let Some(ids) = id_col {
+            for i in 0..batch.num_rows() {
+                let needs = match terminal_col {
+                    Some(tc) => tc.is_null(i) || tc.value(i).is_empty(),
+                    None => true,
+                };
+                if needs {
+                    needs_backfill.push(ids.value(i).to_string());
+                }
+            }
+        }
+    }
+
+    if needs_backfill.is_empty() {
+        return Ok(());
+    }
+
+    tracing::info!("backfilling terminal_id for {} driver(s)", needs_backfill.len());
+
+    // We need the full driver schema to do a proper upsert.
+    // We re-read each row and re-write it with the terminal_id set.
+    // To avoid depending on driver_ops (circular module issue), we do a minimal
+    // column-level patch: update only the terminal_id column in the batch.
+    // Since driver_ops isn't available here, we use a DataFusion SQL UPDATE-style
+    // approach via merge_insert on a per-driver basis.
+    //
+    // Actually: we build a minimal RecordBatch for each driver that only has
+    // id + terminal_id columns... but merge_insert requires ALL schema columns.
+    //
+    // Simplest approach: scan the full batch, rebuild it with terminal_id patched.
+    // We do this batch-by-batch to keep memory usage low.
+    for batch in &driver_batches {
+        let id_col = match batch.column_by_name("id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>()) {
+            Some(c) => c,
+            None => continue,
+        };
+        // Collect row indices that need backfill in this batch.
+        let terminal_col = batch.column_by_name("terminal_id")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        let rows_to_fix: Vec<usize> = (0..batch.num_rows()).filter(|&i| {
+            let needs = match terminal_col {
+                Some(tc) => tc.is_null(i) || tc.value(i).is_empty(),
+                None => true,
+            };
+            needs && needs_backfill.contains(&id_col.value(i).to_string())
+        }).collect();
+
+        if rows_to_fix.is_empty() { continue; }
+
+        // Build a new schema-matching batch with patched terminal_id.
+        // We replace the terminal_id column; all other columns are taken from the original.
+        let schema = batch.schema();
+        let terminal_idx = schema.index_of("terminal_id").ok();
+
+        let mut new_cols: Vec<Arc<dyn arrow_array::Array>> = Vec::new();
+        for col_idx in 0..batch.num_columns() {
+            if Some(col_idx) == terminal_idx {
+                // Rebuild this column with the default terminal id patched in.
+                let orig = batch.column(col_idx).as_any().downcast_ref::<StringArray>().unwrap();
+                let patched: Vec<Option<&str>> = (0..batch.num_rows()).map(|i| {
+                    if rows_to_fix.contains(&i) {
+                        Some(tid.as_str())
+                    } else if orig.is_null(i) {
+                        None
+                    } else {
+                        Some(orig.value(i))
+                    }
+                }).collect();
+                new_cols.push(Arc::new(StringArray::from(patched)));
+            } else {
+                new_cols.push(batch.column(col_idx).clone());
+            }
+        }
+
+        let patched_batch = RecordBatch::try_new(schema.clone(), new_cols)
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        let iter = RecordBatchIterator::new(vec![Ok(patched_batch)], schema);
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+        let mut op = driver_table.merge_insert(&["id"]);
+        op.when_matched_update_all(None).when_not_matched_insert_all();
+        op.execute(reader).await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+
+    Ok(())
+}
+
 async fn open_or_create_driver(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
     let schema = driver_schema(embed_dim);
     match conn.open_table("drivers").execute().await {
@@ -291,6 +436,18 @@ async fn open_or_create_driver(conn: &lancedb::Connection, embed_dim: usize) -> 
             }
             if existing.field_with_name("blob_ids").is_err() {
                 transforms.push(("blob_ids".into(), "'[]'".into()));
+            }
+            if existing.field_with_name("terminal_id").is_err() {
+                transforms.push(("terminal_id".into(), "CAST(NULL AS string)".into()));
+            }
+            for col in ["loaded_rate_per_mile", "deadhead_rate_per_mile",
+                        "extra_stop_fee", "detention_rate_per_hour"] {
+                if existing.field_with_name(col).is_err() {
+                    transforms.push((col.into(), "CAST(NULL AS double)".into()));
+                }
+            }
+            if existing.field_with_name("free_dwell_minutes").is_err() {
+                transforms.push(("free_dwell_minutes".into(), "CAST(NULL AS bigint)".into()));
             }
             if !transforms.is_empty() {
                 tracing::info!("migrating drivers table: adding {} column(s)", transforms.len());
@@ -512,6 +669,12 @@ pub fn driver_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("current_truck_id", DataType::Utf8, true),
         Field::new("current_trailer_ids", DataType::Utf8, false),
         Field::new("blob_ids", DataType::Utf8, false),
+        Field::new("terminal_id", DataType::Utf8, true),
+        Field::new("loaded_rate_per_mile", DataType::Float64, true),
+        Field::new("deadhead_rate_per_mile", DataType::Float64, true),
+        Field::new("extra_stop_fee", DataType::Float64, true),
+        Field::new("detention_rate_per_hour", DataType::Float64, true),
+        Field::new("free_dwell_minutes", DataType::Int64, true),
     ]))
 }
 
@@ -536,6 +699,12 @@ fn empty_driver_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBat
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // current_truck_id
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // current_trailer_ids
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // blob_ids
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // terminal_id
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // loaded_rate_per_mile
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // deadhead_rate_per_mile
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // extra_stop_fee
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // detention_rate_per_hour
+        Arc::new(Int64Array::from(Vec::<Option<i64>>::new())),    // free_dwell_minutes
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
