@@ -27,11 +27,11 @@ use base64::Engine;
 use rmcp::{
     handler::server::ServerHandler,
     model::{
-        AnnotateAble, CallToolRequestParams, CallToolResult, Content, Implementation,
-        InitializeResult, ListResourceTemplatesResult, ListResourcesResult, ListToolsResult,
-        PaginatedRequestParams, ProtocolVersion, RawResource, RawResourceTemplate,
-        ReadResourceRequestParams, ReadResourceResult, ResourceContents, ServerCapabilities,
-        ServerInfo, Tool, ToolAnnotations,
+        AnnotateAble, CallToolRequestParams, CallToolResult, CompleteRequestParams, CompleteResult,
+        CompletionInfo, Content, Implementation, InitializeResult, ListResourceTemplatesResult,
+        ListResourcesResult, ListToolsResult, PaginatedRequestParams, ProtocolVersion, RawResource,
+        RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+        ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
     },
     service::RequestContext,
     transport::streamable_http_server::{
@@ -77,6 +77,7 @@ impl ServerHandler for OllieMcp {
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_resources()
+                .enable_completions()
                 .build(),
         )
         .with_protocol_version(ProtocolVersion::V_2025_06_18)
@@ -163,6 +164,20 @@ impl ServerHandler for OllieMcp {
     ) -> Result<ReadResourceResult, McpError> {
         let contents = read_ollie_resource(&self.state, &request.uri).await?;
         Ok(ReadResourceResult::new(vec![contents]))
+    }
+
+    /// Autocomplete high-cardinality reference arguments (customer_name, facility
+    /// `q`, tag) from existing records, so an interactive client/agent can discover
+    /// valid values without a separate list round-trip (#301).
+    async fn complete(
+        &self,
+        request: CompleteRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CompleteResult, McpError> {
+        let values = completion_values(&self.state, &request).await?;
+        let info =
+            CompletionInfo::with_all_values(values).map_err(|e| McpError::internal_error(e, None))?;
+        Ok(CompleteResult::new(info))
     }
 }
 
@@ -306,6 +321,76 @@ fn resource_offset(cursor: Option<&str>) -> Result<usize, McpError> {
 
 fn encode_offset(offset: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(offset.to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Completions (MCP `completions` capability, #301)
+// ---------------------------------------------------------------------------
+
+/// Maximum suggestions returned for one completion request.
+const COMPLETION_LIMIT: usize = 50;
+
+/// Prefix-match suggestions for a reference argument, sourced from existing
+/// records. `customer_name` honors a `status` value in the request `context` to
+/// narrow to customers with loads in that status (a dependent-argument case).
+/// Unknown argument names yield no suggestions.
+async fn completion_values(
+    state: &AppState,
+    req: &CompleteRequestParams,
+) -> Result<Vec<String>, McpError> {
+    let internal = |e: crate::error::AppError| McpError::internal_error(e.to_string(), None);
+    let prefix = req.argument.value.to_lowercase();
+    // Validate the context `status` against the LoadStatus enum before it reaches
+    // the DB filter — defense-in-depth, since this path bypasses the HTTP-layer
+    // enum deserialization other callers get. An unrecognized status is treated as
+    // no narrowing rather than passed through.
+    let ctx_status = req
+        .context
+        .as_ref()
+        .and_then(|c| c.arguments.as_ref())
+        .and_then(|m| m.get("status"))
+        .filter(|s| s.parse::<LoadStatus>().is_ok())
+        .map(String::as_str);
+
+    // Pull a bounded candidate set, then prefix-filter in memory.
+    let candidates: Vec<String> = match req.argument.name.as_str() {
+        "customer_name" => state
+            .db
+            .list_loads(ctx_status, None, &[], None, None, 500, 0)
+            .await
+            .map_err(internal)?
+            .1
+            .into_iter()
+            .map(|l| l.customer_name)
+            .collect(),
+        "tag" => state
+            .db
+            .list(None, &[], 500, 0)
+            .await
+            .map_err(internal)?
+            .1
+            .into_iter()
+            .flat_map(|b| b.tags)
+            .collect(),
+        // facility search argument is named `q` (see list_facilities/get_facility).
+        "q" => state
+            .db
+            .list_facilities(None, &[], 500, 0)
+            .await
+            .map_err(internal)?
+            .1
+            .into_iter()
+            .map(|f| f.name)
+            .collect(),
+        _ => return Ok(vec![]),
+    };
+
+    // Case-insensitive prefix match; BTreeSet dedups + sorts; cap the count.
+    let matches: std::collections::BTreeSet<String> = candidates
+        .into_iter()
+        .filter(|v| prefix.is_empty() || v.to_lowercase().starts_with(&prefix))
+        .collect();
+    Ok(matches.into_iter().take(COMPLETION_LIMIT).collect())
 }
 
 /// Build the rmcp Streamable HTTP service for mounting under `/dispatch/mcp`.
