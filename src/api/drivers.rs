@@ -277,8 +277,8 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/drivers", post(create_driver))
         .route("/api/v1/drivers", get(list_drivers))
-        .route("/api/v1/drivers/:id", get(get_driver))
-        .route("/api/v1/drivers/:id", put(update_driver))
-        .route("/api/v1/drivers/:id", delete(delete_driver))
-        .route("/api/v1/drivers/:id/pin", post(set_driver_pin))
+        .route("/api/v1/drivers/{id}", get(get_driver))
+        .route("/api/v1/drivers/{id}", put(update_driver))
+        .route("/api/v1/drivers/{id}", delete(delete_driver))
+        .route("/api/v1/drivers/{id}/pin", post(set_driver_pin))
 }

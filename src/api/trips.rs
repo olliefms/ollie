@@ -281,9 +281,9 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/trips", post(create_trip))
         .route("/api/v1/trips", get(list_trips))
-        .route("/api/v1/trips/:id", get(get_trip))
-        .route("/api/v1/trips/:id", patch(update_trip))
-        .route("/api/v1/trips/:id", delete(delete_trip))
+        .route("/api/v1/trips/{id}", get(get_trip))
+        .route("/api/v1/trips/{id}", patch(update_trip))
+        .route("/api/v1/trips/{id}", delete(delete_trip))
 }
 
 struct ComputedMileage {

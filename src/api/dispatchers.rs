@@ -226,7 +226,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/dispatchers", post(create_dispatcher))
         .route("/api/v1/dispatchers", get(list_dispatchers))
-        .route("/api/v1/dispatchers/:id", get(get_dispatcher))
-        .route("/api/v1/dispatchers/:id", put(update_dispatcher))
-        .route("/api/v1/dispatchers/:id/password", put(reset_dispatcher_password))
+        .route("/api/v1/dispatchers/{id}", get(get_dispatcher))
+        .route("/api/v1/dispatchers/{id}", put(update_dispatcher))
+        .route("/api/v1/dispatchers/{id}/password", put(reset_dispatcher_password))
 }

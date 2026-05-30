@@ -52,34 +52,34 @@ pub fn auth_router() -> Router<AppState> {
 pub fn data_router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/dispatch/api/v1/loads", get(data::list_loads).post(data::create_load))
-        .route("/dispatch/api/v1/loads/:id", get(data::get_load).put(data::update_load))
+        .route("/dispatch/api/v1/loads/{id}", get(data::get_load).put(data::update_load))
         .route("/dispatch/api/v1/trips", get(data::list_trips))
         .route(
-            "/dispatch/api/v1/trips/:id",
+            "/dispatch/api/v1/trips/{id}",
             get(data::get_trip).patch(trip_writes::patch_trip_handler),
         )
         .route(
-            "/dispatch/api/v1/trips/:id/recalculate-miles",
+            "/dispatch/api/v1/trips/{id}/recalculate-miles",
             post(trip_writes::recalculate_miles_handler),
         )
-        .route("/dispatch/api/v1/trips/:id/assign", post(data::assign_trip))
-        .route("/dispatch/api/v1/trips/:id/unassign", post(data::unassign_trip))
-        .route("/dispatch/api/v1/trips/:id/dispatch", post(data::dispatch_trip))
-        .route("/dispatch/api/v1/trips/:id/undispatch", post(data::undispatch_trip))
-        .route("/dispatch/api/v1/trips/:id/cancel", post(data::cancel_trip))
-        .route("/dispatch/api/v1/trips/:id/complete", post(data::complete_trip))
-        .route("/dispatch/api/v1/trips/:id/stops/:seq/arrive", post(data::stop_arrive))
-        .route("/dispatch/api/v1/trips/:id/stops/:seq/depart", post(data::stop_depart))
-        .route("/dispatch/api/v1/trips/:id/stops/:seq/late", post(data::stop_late))
-        .route("/dispatch/api/v1/trips/:id/check-call", post(data::check_call))
+        .route("/dispatch/api/v1/trips/{id}/assign", post(data::assign_trip))
+        .route("/dispatch/api/v1/trips/{id}/unassign", post(data::unassign_trip))
+        .route("/dispatch/api/v1/trips/{id}/dispatch", post(data::dispatch_trip))
+        .route("/dispatch/api/v1/trips/{id}/undispatch", post(data::undispatch_trip))
+        .route("/dispatch/api/v1/trips/{id}/cancel", post(data::cancel_trip))
+        .route("/dispatch/api/v1/trips/{id}/complete", post(data::complete_trip))
+        .route("/dispatch/api/v1/trips/{id}/stops/{seq}/arrive", post(data::stop_arrive))
+        .route("/dispatch/api/v1/trips/{id}/stops/{seq}/depart", post(data::stop_depart))
+        .route("/dispatch/api/v1/trips/{id}/stops/{seq}/late", post(data::stop_late))
+        .route("/dispatch/api/v1/trips/{id}/check-call", post(data::check_call))
         .route("/dispatch/api/v1/drivers", get(data::list_drivers))
-        .route("/dispatch/api/v1/drivers/:id", get(data::get_driver))
+        .route("/dispatch/api/v1/drivers/{id}", get(data::get_driver))
         .route(
-            "/dispatch/api/v1/drivers/:id/attach-equipment",
+            "/dispatch/api/v1/drivers/{id}/attach-equipment",
             post(driver_writes::attach_equipment_handler),
         )
         .route(
-            "/dispatch/api/v1/drivers/:id/detach-equipment",
+            "/dispatch/api/v1/drivers/{id}/detach-equipment",
             post(driver_writes::detach_equipment_handler),
         )
         .route(
@@ -87,7 +87,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
             get(data::list_trucks).post(truck_writes::create_truck_handler),
         )
         .route(
-            "/dispatch/api/v1/trucks/:id",
+            "/dispatch/api/v1/trucks/{id}",
             get(data::get_truck).patch(truck_writes::update_truck_handler),
         )
         .route(
@@ -95,7 +95,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
             get(data::list_trailers).post(trailer_writes::create_trailer_handler),
         )
         .route(
-            "/dispatch/api/v1/trailers/:id",
+            "/dispatch/api/v1/trailers/{id}",
             get(data::get_trailer).patch(trailer_writes::update_trailer_handler),
         )
         .route("/dispatch/api/v1/events", get(data::list_events))
@@ -105,7 +105,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
             get(data::list_facilities).post(facility_writes::create_facility_handler),
         )
         .route(
-            "/dispatch/api/v1/facilities/:id",
+            "/dispatch/api/v1/facilities/{id}",
             get(data::get_facility).patch(facility_writes::update_facility_handler),
         )
         // KPI count endpoints
@@ -119,15 +119,15 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
             get(blobs::list_blobs).post(blobs::upload_blob).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .route(
-            "/dispatch/api/v1/blob/:id",
+            "/dispatch/api/v1/blob/{id}",
             get(blobs::get_blob)
                 .put(blobs::update_blob)
                 .delete(blobs::delete_blob),
         )
-        .route("/dispatch/api/v1/blobs/:id/query", post(blobs::query_blob))
+        .route("/dispatch/api/v1/blobs/{id}/query", post(blobs::query_blob))
         // API key management (GET allowed for both JWT and API-key auth; POST/DELETE require JWT)
         .route("/dispatch/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))
-        .route("/dispatch/api-keys/:id", delete(api_keys::revoke_api_key))
+        .route("/dispatch/api-keys/{id}", delete(api_keys::revoke_api_key))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_dispatcher_auth,
@@ -172,7 +172,7 @@ pub(crate) fn public_router() -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(crate::api::blobs::PRESIGNED_UPLOAD_MAX_BYTES)),
         )
         .route(
-            "/dispatch/blobs/presigned/:id",
+            "/dispatch/blobs/presigned/{id}",
             get(blobs::presigned_download),
         )
 }

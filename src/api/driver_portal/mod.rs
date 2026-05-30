@@ -23,20 +23,20 @@ pub fn portal_router(state: &AppState) -> Router<AppState> {
     let data = Router::new()
         .route("/me", get(data::me))
         .route("/trips", get(data::list_trips))
-        .route("/trips/:id", get(data::trip_detail))
-        .route("/trips/:id/stops/:seq", get(data::stop_detail).patch(data::update_stop_times))
+        .route("/trips/{id}", get(data::trip_detail))
+        .route("/trips/{id}/stops/{seq}", get(data::stop_detail).patch(data::update_stop_times))
         .route(
-            "/trips/:id/documents",
+            "/trips/{id}/documents",
             post(documents::upload_document)
                 .layer(axum::extract::DefaultBodyLimit::max(50 * 1024 * 1024))
                 .get(documents::list_documents),
         )
         .route(
-            "/trips/:id/documents/:blob_id",
+            "/trips/{id}/documents/{blob_id}",
             axum_delete(documents::delete_document),
         )
         .route(
-            "/trips/:id/documents/:blob_id/content",
+            "/trips/{id}/documents/{blob_id}/content",
             get(documents::get_document_content),
         )
         .route("/equipment", get(equipment::get_equipment))
