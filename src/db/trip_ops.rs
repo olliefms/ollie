@@ -323,6 +323,13 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
         Arc::new(Float64Array::from(vec![record.extra_stop_fee])),
         Arc::new(Float64Array::from(vec![record.detention_rate_per_hour])),
         Arc::new(Int64Array::from(vec![record.free_dwell_minutes.map(|v| v as i64)])),
+        Arc::new(StringArray::from(vec![record.settlement_ref.as_deref()])),
+        Arc::new(StringArray::from(vec![record.pay_period_start.as_deref()])),
+        Arc::new(StringArray::from(vec![record.pay_period_end.as_deref()])),
+        Arc::new(StringArray::from(vec![
+            record.driver_pay_snapshot.as_ref()
+                .map(|p| serde_json::to_string(p).unwrap_or_default())
+        ])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -410,6 +417,11 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
         extra_stop_fee: opt_f64("extra_stop_fee"),
         detention_rate_per_hour: opt_f64("detention_rate_per_hour"),
         free_dwell_minutes: opt_i64("free_dwell_minutes").map(|v| v as u32),
+        settlement_ref: opt_str("settlement_ref"),
+        pay_period_start: opt_str("pay_period_start"),
+        pay_period_end: opt_str("pay_period_end"),
+        driver_pay_snapshot: opt_str("driver_pay_snapshot")
+            .and_then(|s| serde_json::from_str(&s).ok()),
         embedding,
         owner_id: i64_col("owner_id"),
         created_at: str_col("created_at").parse()
@@ -494,6 +506,10 @@ mod tests {
             extra_stop_fee: None,
             detention_rate_per_hour: None,
             free_dwell_minutes: None,
+            settlement_ref: None,
+            pay_period_start: None,
+            pay_period_end: None,
+            driver_pay_snapshot: None,
             embedding: None,
             owner_id: 0,
             created_at: now,

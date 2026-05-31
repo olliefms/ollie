@@ -223,6 +223,11 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
             if existing.field_with_name("free_dwell_minutes").is_err() {
                 transforms.push(("free_dwell_minutes".into(), "CAST(NULL AS bigint)".into()));
             }
+            for col in ["settlement_ref", "pay_period_start", "pay_period_end", "driver_pay_snapshot"] {
+                if existing.field_with_name(col).is_err() {
+                    transforms.push((col.into(), "CAST(NULL AS string)".into()));
+                }
+            }
             if !transforms.is_empty() {
                 tracing::info!("migrating trips table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
@@ -927,6 +932,10 @@ pub fn trip_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("extra_stop_fee", DataType::Float64, true),
         Field::new("detention_rate_per_hour", DataType::Float64, true),
         Field::new("free_dwell_minutes", DataType::Int64, true),
+        Field::new("settlement_ref", DataType::Utf8, true),
+        Field::new("pay_period_start", DataType::Utf8, true),
+        Field::new("pay_period_end", DataType::Utf8, true),
+        Field::new("driver_pay_snapshot", DataType::Utf8, true),
     ]))
 }
 
@@ -961,6 +970,10 @@ fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // extra_stop_fee
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // detention_rate_per_hour
         Arc::new(Int64Array::from(Vec::<Option<i64>>::new())),    // free_dwell_minutes
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // settlement_ref
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // pay_period_start
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // pay_period_end
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // driver_pay_snapshot
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

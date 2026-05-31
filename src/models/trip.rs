@@ -206,6 +206,14 @@ pub struct TripRecord {
     pub detention_rate_per_hour: Option<f64>,
     #[serde(default)]
     pub free_dwell_minutes: Option<u32>,
+    #[serde(default)]
+    pub settlement_ref: Option<String>,
+    #[serde(default)]
+    pub pay_period_start: Option<String>,
+    #[serde(default)]
+    pub pay_period_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_pay_snapshot: Option<crate::models::pay::DriverPay>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -279,6 +287,14 @@ pub struct TripListItem {
     pub detention_rate_per_hour: Option<f64>,
     #[serde(default)]
     pub free_dwell_minutes: Option<u32>,
+    #[serde(default)]
+    pub settlement_ref: Option<String>,
+    #[serde(default)]
+    pub pay_period_start: Option<String>,
+    #[serde(default)]
+    pub pay_period_end: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_pay_snapshot: Option<crate::models::pay::DriverPay>,
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -311,6 +327,10 @@ impl From<TripRecord> for TripListItem {
             extra_stop_fee: r.extra_stop_fee,
             detention_rate_per_hour: r.detention_rate_per_hour,
             free_dwell_minutes: r.free_dwell_minutes,
+            settlement_ref: r.settlement_ref,
+            pay_period_start: r.pay_period_start,
+            pay_period_end: r.pay_period_end,
+            driver_pay_snapshot: r.driver_pay_snapshot,
             owner_id: r.owner_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -412,6 +432,10 @@ mod tests {
             extra_stop_fee: None,
             detention_rate_per_hour: None,
             free_dwell_minutes: None,
+            settlement_ref: None,
+            pay_period_start: None,
+            pay_period_end: None,
+            driver_pay_snapshot: None,
             embedding: None,
             owner_id: 0,
             created_at: now,
@@ -449,6 +473,10 @@ mod tests {
             extra_stop_fee: None,
             detention_rate_per_hour: None,
             free_dwell_minutes: None,
+            settlement_ref: None,
+            pay_period_start: None,
+            pay_period_end: None,
+            driver_pay_snapshot: None,
             embedding: Some(vec![0.1, 0.2]),
             owner_id: 0,
             created_at: now,
