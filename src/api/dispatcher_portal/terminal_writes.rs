@@ -62,8 +62,9 @@ pub async fn apply_terminal_patch(
     if let Some(v) = req.name {
         t.name = v;
     }
-    if req.address.is_some() {
-        t.address = req.address;
+    // Some(Some(s)) = set, Some(None) = clear to null, None = leave unchanged.
+    if let Some(addr) = req.address {
+        t.address = addr;
     }
     if let Some(v) = req.is_default {
         // Preserve the single-default invariant: you can't directly clear the

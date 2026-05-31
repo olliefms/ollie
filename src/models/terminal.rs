@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+/// serde helper for PATCH bodies: distinguishes an omitted field (`None`) from
+/// an explicit JSON `null` (`Some(None)`), so a nullable field can be cleared.
+/// Pair with `#[serde(default, deserialize_with = "double_option")]`.
+fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(de).map(Some)
+}
+
 /// A terminal (yard/HQ). Anchors pay-period timezone and the mandatory rate floor.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct TerminalRecord {
@@ -57,7 +68,12 @@ fn default_free_dwell() -> u32 {
 #[serde(deny_unknown_fields)]
 pub struct UpdateTerminalRequest {
     pub name: Option<String>,
-    pub address: Option<String>,
+    /// Nullable: omit to leave unchanged, send `null` to clear, send a string to set.
+    /// `double_option` distinguishes an absent field (`None`) from an explicit
+    /// JSON `null` (`Some(None)`).
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<String>)]
+    pub address: Option<Option<String>>,
     pub timezone: Option<String>,
     pub is_default: Option<bool>,
     pub loaded_rate_per_mile: Option<f64>,

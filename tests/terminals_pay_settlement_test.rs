@@ -250,6 +250,70 @@ async fn test_create_terminal_invalid_timezone_returns_422() {
     assert_eq!(resp.status_code(), 422, "expected 422 for invalid timezone");
 }
 
+// (g) PUT {address:null} clears the address (double_option distinguishes absent vs null)
+#[tokio::test]
+async fn test_patch_terminal_clears_address() {
+    let (server, _b, _d) = test_server().await;
+    let token = dispatcher_login(&server, "term7@example.com", "pw-term7").await;
+    let auth = format!("Bearer {token}");
+
+    let created: serde_json::Value = server.post("/dispatch/api/v1/terminals")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "name": "Addr Yard", "timezone": "America/New_York", "address": "100 Dock St"
+        }))
+        .await
+        .json();
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["address"].as_str(), Some("100 Dock St"));
+
+    // Omitting address must leave it unchanged.
+    let unchanged: serde_json::Value = server.put(&format!("/dispatch/api/v1/terminals/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Addr Yard 2" }))
+        .await
+        .json();
+    assert_eq!(unchanged["address"].as_str(), Some("100 Dock St"), "omitted address should persist");
+
+    // Explicit null clears it.
+    let cleared: serde_json::Value = server.put(&format!("/dispatch/api/v1/terminals/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "address": null }))
+        .await
+        .json();
+    assert!(cleared["address"].is_null(), "explicit null should clear address, got: {cleared:?}");
+}
+
+// (h) DELETE a terminal with assigned drivers → 409
+#[tokio::test]
+async fn test_delete_terminal_with_drivers_returns_409() {
+    let (server, _b, _d) = test_server().await;
+    let token = dispatcher_login(&server, "term8@example.com", "pw-term8").await;
+    let auth = format!("Bearer {token}");
+
+    // Create a non-default terminal.
+    let term: serde_json::Value = server.post("/dispatch/api/v1/terminals")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Staffed Yard", "timezone": "America/New_York" }))
+        .await
+        .json();
+    let term_id = term["id"].as_str().unwrap().to_string();
+
+    // Assign a driver to it.
+    let drv = server.post("/dispatch/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Yard Driver", "terminal_id": term_id }))
+        .await;
+    assert_eq!(drv.status_code(), 201, "driver create failed: {:?}", drv.text());
+
+    // Delete must be refused while a driver is assigned.
+    let del = server.delete(&format!("/dispatch/api/v1/terminals/{term_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(del.status_code(), 409,
+        "expected 409 deleting a terminal with assigned drivers: {:?}", del.text());
+}
+
 /// Returns the id of the seeded Default terminal.
 async fn default_terminal_id(server: &TestServer, auth: &str) -> String {
     let resp = server.get("/dispatch/api/v1/terminals")
