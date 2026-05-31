@@ -1,13 +1,19 @@
 # docker-compose.yml
 services:
-  blob-store:
+  ollie:
     build: .
     ports:
       - "3000:3000"
     environment:
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY is required}
+      DRIVER_JWT_SECRET: ${DRIVER_JWT_SECRET:?DRIVER_JWT_SECRET is required (min 32 bytes)}
+      DISPATCHER_JWT_SECRET: ${DISPATCHER_JWT_SECRET:?DISPATCHER_JWT_SECRET is required (min 32 bytes)}
+      DRIVER_RP_ID: ${DRIVER_RP_ID:-localhost}
+      DRIVER_RP_ORIGIN: ${DRIVER_RP_ORIGIN:-http://localhost:3000}
+      OLLIE_PUBLIC_BASE_URL: ${OLLIE_PUBLIC_BASE_URL:-}
       OLLAMA_BASE_URL: http://ollama:11434
       BLOB_STORE_PATH: /data/blobs
+      EXTRACT_STORE_PATH: /data/extracts
       LANCEDB_PATH: /data/lancedb
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
       OLLAMA_SUMMARY_MODEL: ${OLLAMA_SUMMARY_MODEL:-llama3.2}
