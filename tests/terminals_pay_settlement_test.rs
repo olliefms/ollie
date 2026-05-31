@@ -521,3 +521,210 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     assert!(!exc_items.iter().any(|t| t["id"].as_str() == Some(&trip_id.to_string())),
         "trip should be excluded from a non-overlapping pay-period range");
 }
+
+// ---------------------------------------------------------------------------
+// Existing-DB migration guard (#185). Mirrors the `seed_pre_*` pattern in
+// tests/migration_test.rs: seed a PRE-SPRINT drivers+trips DB (old Arrow
+// schemas WITHOUT this sprint's columns), then open via DbClient::new and
+// assert the migration runs without crash-looping (the CAST-null trap), the
+// terminals table is created + Default seeded, drivers backfill to the default
+// terminal, and the new trip columns round-trip as None/null.
+mod migration_guard {
+    use arrow_array::{
+        FixedSizeListArray, Float64Array, Int64Array, RecordBatch, RecordBatchIterator,
+        RecordBatchReader, StringArray,
+    };
+    use arrow_schema::{DataType, Field, Schema};
+    use chrono::Utc;
+    use ollie::db::DbClient;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+    use uuid::Uuid;
+
+    const EMBED_DIM: usize = 4;
+
+    /// Pre-sprint drivers schema: current `driver_schema` MINUS the columns this
+    /// sprint added (`terminal_id` + rate overrides + `free_dwell_minutes`).
+    fn driver_schema_pre_sprint(embed_dim: usize) -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("name", DataType::Utf8, false),
+            Field::new("phone", DataType::Utf8, true),
+            Field::new("email", DataType::Utf8, true),
+            Field::new("license_number", DataType::Utf8, true),
+            Field::new("license_state", DataType::Utf8, true),
+            Field::new("license_expiry", DataType::Utf8, true),
+            Field::new("status", DataType::Utf8, false),
+            Field::new("notes", DataType::Utf8, true),
+            Field::new("embedding", DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                embed_dim as i32,
+            ), true),
+            Field::new("owner_id", DataType::Int64, false),
+            Field::new("created_at", DataType::Utf8, false),
+            Field::new("updated_at", DataType::Utf8, false),
+            Field::new("current_truck_id", DataType::Utf8, true),
+            Field::new("current_trailer_ids", DataType::Utf8, false),
+            Field::new("blob_ids", DataType::Utf8, false),
+        ]))
+    }
+
+    fn driver_pre_sprint_row(schema: Arc<Schema>, embed_dim: usize) -> RecordBatch {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let nulls: Vec<Option<Vec<Option<f32>>>> = vec![None];
+        RecordBatch::try_new(schema, vec![
+            Arc::new(StringArray::from(vec![Some(id.as_str())])),
+            Arc::new(StringArray::from(vec![Some("Legacy Driver")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![Some("available")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(FixedSizeListArray::from_iter_primitive::<
+                arrow_array::types::Float32Type, _, _
+            >(nulls, embed_dim as i32)),
+            Arc::new(Int64Array::from(vec![1_i64])),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+            Arc::new(StringArray::from(vec![None::<&str>])),  // current_truck_id
+            Arc::new(StringArray::from(vec![Some("[]")])),    // current_trailer_ids
+            Arc::new(StringArray::from(vec![Some("[]")])),    // blob_ids
+        ]).unwrap()
+    }
+
+    /// Pre-sprint trips schema: current `trip_schema` MINUS the columns this
+    /// sprint added (rate overrides + settlement fields + pay snapshot).
+    fn trip_schema_pre_sprint(embed_dim: usize) -> Arc<Schema> {
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Utf8, false),
+            Field::new("trip_number", DataType::Utf8, false),
+            Field::new("load_id", DataType::Utf8, true),
+            Field::new("sequence", DataType::Int64, false),
+            Field::new("driver_id", DataType::Utf8, true),
+            Field::new("truck_id", DataType::Utf8, true),
+            Field::new("trailer_ids", DataType::Utf8, false),
+            Field::new("status", DataType::Utf8, false),
+            Field::new("stops", DataType::Utf8, false),
+            Field::new("notes", DataType::Utf8, true),
+            Field::new("embedding", DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                embed_dim as i32,
+            ), true),
+            Field::new("owner_id", DataType::Int64, false),
+            Field::new("created_at", DataType::Utf8, false),
+            Field::new("updated_at", DataType::Utf8, false),
+            Field::new("load_number", DataType::Utf8, true),
+            Field::new("previous_trip_id", DataType::Utf8, true),
+            Field::new("deadhead_miles", DataType::Float64, true),
+            Field::new("loaded_miles", DataType::Float64, true),
+            Field::new("total_miles", DataType::Float64, true),
+            Field::new("segment_miles", DataType::Utf8, true),
+            Field::new("blob_ids", DataType::Utf8, false),
+        ]))
+    }
+
+    fn trip_pre_sprint_row(schema: Arc<Schema>, embed_dim: usize) -> RecordBatch {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let nulls: Vec<Option<Vec<Option<f32>>>> = vec![None];
+        // Two stops so the row resembles a real loaded trip.
+        let stops = r#"[
+            {"sequence":1,"stop_type":"pickup","facility_id":null},
+            {"sequence":2,"stop_type":"delivery","facility_id":null}
+        ]"#;
+        RecordBatch::try_new(schema, vec![
+            Arc::new(StringArray::from(vec![Some(id.as_str())])),
+            Arc::new(StringArray::from(vec![Some("T-2026-9001")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(Int64Array::from(vec![1_i64])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(StringArray::from(vec![Some("planned")])),
+            Arc::new(StringArray::from(vec![Some(stops)])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(FixedSizeListArray::from_iter_primitive::<
+                arrow_array::types::Float32Type, _, _
+            >(nulls, embed_dim as i32)),
+            Arc::new(Int64Array::from(vec![1_i64])),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+            Arc::new(StringArray::from(vec![None::<&str>])),  // load_number
+            Arc::new(StringArray::from(vec![None::<&str>])),  // previous_trip_id
+            Arc::new(Float64Array::from(vec![None::<f64>])),  // deadhead_miles
+            Arc::new(Float64Array::from(vec![Some(412.5_f64)])), // loaded_miles
+            Arc::new(Float64Array::from(vec![None::<f64>])),  // total_miles
+            Arc::new(StringArray::from(vec![None::<&str>])),  // segment_miles
+            Arc::new(StringArray::from(vec![Some("[]")])),    // blob_ids
+        ]).unwrap()
+    }
+
+    async fn seed_pre_sprint_db(path: &str) {
+        let conn = lancedb::connect(path).execute().await.unwrap();
+
+        let dschema = driver_schema_pre_sprint(EMBED_DIM);
+        let dbatch = driver_pre_sprint_row(dschema.clone(), EMBED_DIM);
+        let diter = RecordBatchIterator::new(vec![Ok(dbatch)], dschema.clone());
+        let dreader: Box<dyn RecordBatchReader + Send> = Box::new(diter);
+        conn.create_table("drivers", dreader).execute().await.unwrap();
+
+        let tschema = trip_schema_pre_sprint(EMBED_DIM);
+        let tbatch = trip_pre_sprint_row(tschema.clone(), EMBED_DIM);
+        let titer = RecordBatchIterator::new(vec![Ok(tbatch)], tschema.clone());
+        let treader: Box<dyn RecordBatchReader + Send> = Box::new(titer);
+        conn.create_table("trips", treader).execute().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn migrates_pre_sprint_db_and_backfills() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().to_str().unwrap();
+        seed_pre_sprint_db(path).await;
+
+        // Opening MUST migrate without erroring. If a migration CAST used an
+        // Arrow type name instead of a SQL keyword, this crash-loops — this
+        // test is the guard for that trap (see AGENTS.md / Critical Constraint #1).
+        let client = DbClient::new(path, EMBED_DIM).await.expect(
+            "DbClient::new must migrate a pre-sprint drivers+trips DB without erroring. \
+             A DataFusion CAST parser error here means a migration used an Arrow type \
+             name (e.g. `Int64`) where a SQL keyword (`bigint`) is required.",
+        );
+
+        // 1) terminals table created + Default seeded.
+        let def = client.default_terminal().await
+            .expect("Default terminal must exist after migration");
+        assert_eq!(def.name, "Default");
+
+        // 2) pre-existing driver backfilled to the default terminal; overrides None.
+        let (_total, drivers) = client.list_drivers(None, 10, 0).await.unwrap();
+        assert_eq!(drivers.len(), 1, "the one seeded driver should survive migration");
+        let d = client.get_driver_by_id(drivers[0].id).await.unwrap();
+        assert_eq!(d.terminal_id, Some(def.id), "driver should backfill to default terminal");
+        assert_eq!(d.loaded_rate_per_mile, None);
+        assert_eq!(d.deadhead_rate_per_mile, None);
+        assert_eq!(d.extra_stop_fee, None);
+        assert_eq!(d.detention_rate_per_hour, None);
+        assert_eq!(d.free_dwell_minutes, None);
+
+        // 3) pre-existing trip's new columns round-trip as None/null.
+        let trips = client.list_trips(None, None, None, None, None).await.unwrap();
+        assert_eq!(trips.len(), 1, "the one seeded trip should survive migration");
+        let t = &trips[0];
+        assert!(t.settlement_ref.is_none());
+        assert!(t.driver_pay_snapshot.is_none());
+        assert!(t.loaded_rate_per_mile.is_none());
+        assert!(t.deadhead_rate_per_mile.is_none());
+        assert!(t.extra_stop_fee.is_none());
+        assert!(t.detention_rate_per_hour.is_none());
+        assert!(t.free_dwell_minutes.is_none());
+
+        // Round-trip via get_trip too (exercises the record-level read path).
+        let rec = client.get_trip(t.id).await.unwrap();
+        assert!(rec.settlement_ref.is_none());
+        assert!(rec.driver_pay_snapshot.is_none());
+        assert_eq!(rec.loaded_miles, Some(412.5));
+    }
+}
