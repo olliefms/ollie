@@ -10,6 +10,7 @@ pub mod jwt;
 pub mod mcp;
 pub mod middleware;
 pub mod trailer_writes;
+pub mod terminal_writes;
 pub mod trip_writes;
 pub mod truck_writes;
 
@@ -107,6 +108,17 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route(
             "/dispatch/api/v1/facilities/{id}",
             get(data::get_facility).patch(facility_writes::update_facility_handler),
+        )
+        // Terminals
+        .route(
+            "/dispatch/api/v1/terminals",
+            get(terminal_writes::list_terminals).post(terminal_writes::create_terminal),
+        )
+        .route(
+            "/dispatch/api/v1/terminals/{id}", // axum 0.8 path syntax — NOT :id
+            get(terminal_writes::get_terminal)
+                .put(terminal_writes::update_terminal)
+                .delete(terminal_writes::delete_terminal),
         )
         // KPI count endpoints
         .route("/dispatch/api/v1/loads/count", get(data::count_open_loads))
