@@ -606,6 +606,14 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     // And the original ref is untouched.
     assert_eq!(db.get_trip(trip_id).await.unwrap().settlement_ref.as_deref(), Some("S-2026-009"));
 
+    // 5e) An empty settlement_ref is rejected (422), not silently used to freeze.
+    let empty_ref = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "settlement_ref": "" }))
+        .await;
+    assert_eq!(empty_ref.status_code(), 422,
+        "expected 422 on empty settlement_ref: {:?}", empty_ref.text());
+
     // 6) Pay-period range filter includes/excludes the trip.
     let inc = server.get("/dispatch/api/v1/trips?pay_period_start=2026-05-01&pay_period_end=2026-06-30")
         .add_header(header::AUTHORIZATION, &auth)

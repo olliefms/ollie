@@ -238,6 +238,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::terminal::TerminalListItem,
             models::terminal::CreateTerminalRequest,
             models::terminal::UpdateTerminalRequest,
+            models::pay::DriverPay,
             loads::LoadStopArriveRequest,
             loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,

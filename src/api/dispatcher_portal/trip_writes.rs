@@ -168,6 +168,14 @@ pub async fn apply_trip_patch(
     let parsed: PatchTripBody = serde_json::from_value(body)
         .map_err(|e| AppError::BadRequest(format!("invalid request body: {e}")))?;
 
+    // A settlement_ref, if present, must be a non-empty reference: an empty string
+    // would otherwise irreversibly freeze the trip with no meaningful reference
+    // (and the re-settle guard below would then make it unrecoverable).
+    if parsed.settlement_ref.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        return Err(AppError::UnprocessableEntity(
+            "settlement_ref cannot be empty".into()));
+    }
+
     // Settlement freeze + edit-lock.
     let existing = state.db.get_trip(id).await?;
     let was_settled = existing.settlement_ref.is_some();
