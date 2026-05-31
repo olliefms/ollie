@@ -66,6 +66,14 @@ pub async fn apply_terminal_patch(
         t.address = req.address;
     }
     if let Some(v) = req.is_default {
+        // Preserve the single-default invariant: you can't directly clear the
+        // default flag (that would leave zero defaults). Promote another terminal
+        // to default instead (set_terminal clears the previous one).
+        if !v && t.is_default {
+            return Err(AppError::Conflict(
+                "cannot unset the default terminal; set another terminal as default instead".into(),
+            ));
+        }
         t.is_default = v;
     }
     if let Some(v) = req.loaded_rate_per_mile {

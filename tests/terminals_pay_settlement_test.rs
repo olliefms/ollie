@@ -205,6 +205,35 @@ async fn test_delete_default_terminal_returns_409() {
     assert_eq!(del_resp.status_code(), 409, "expected 409 Conflict when deleting default terminal");
 }
 
+// (e2) PUT {is_default:false} on the sole default → 409 (preserves single-default invariant)
+#[tokio::test]
+async fn test_unset_default_terminal_returns_409() {
+    let (server, _b, _d) = test_server().await;
+    let token = dispatcher_login(&server, "term5b@example.com", "pw-term5b").await;
+    let auth = format!("Bearer {token}");
+
+    let list_resp = server.get("/dispatch/api/v1/terminals")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    let list: Vec<serde_json::Value> = list_resp.json();
+    let default_id = list.iter().find(|t| t["is_default"].as_bool() == Some(true))
+        .expect("a default terminal should be seeded")["id"].as_str().unwrap().to_string();
+
+    let put_resp = server.put(&format!("/dispatch/api/v1/terminals/{default_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "is_default": false }))
+        .await;
+    assert_eq!(put_resp.status_code(), 409,
+        "expected 409 when clearing the default flag on the sole default terminal: {:?}",
+        put_resp.text());
+
+    // And the terminal is still the default afterward.
+    let still = server.get(&format!("/dispatch/api/v1/terminals/{default_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(still.json::<serde_json::Value>()["is_default"].as_bool(), Some(true));
+}
+
 // (f) POST with invalid timezone → 422
 #[tokio::test]
 async fn test_create_terminal_invalid_timezone_returns_422() {
