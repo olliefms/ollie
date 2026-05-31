@@ -63,6 +63,8 @@ pub struct DispatcherTripListItem {
     pub origin_facility_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mileage_summary: Option<crate::models::trip::MileageSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_pay: Option<crate::models::pay::DriverPay>,
 }
 
 #[derive(serde::Serialize)]
@@ -156,6 +158,8 @@ fn enrich_trip(
         total_miles: trip.total_miles,
         origin_facility_name: None,
         mileage_summary: None,
+        // list shows frozen pay only; live pay on detail
+        driver_pay: None,
     }
 }
 
@@ -548,7 +552,61 @@ pub async fn build_trip_detail(
     enriched.origin_facility_name = summary.origin.as_ref()
         .and_then(|o| o.facility_name.clone());
     enriched.mileage_summary = Some(summary);
+    enriched.driver_pay = driver_pay_for_record(state, &record).await;
     Ok(enriched)
+}
+
+/// Computes driver pay for a trip on read. Resolves rates (trip ?? driver ?? terminal
+/// floor) and computes live. None when there are no loaded miles to pay on.
+pub async fn driver_pay_for_record(
+    state: &AppState,
+    record: &crate::models::TripRecord,
+) -> Option<crate::models::pay::DriverPay> {
+    use crate::models::pay::*;
+    // snapshot handled in Phase D (driver_pay_snapshot field added in Task 12)
+    record.loaded_miles?; // no loaded miles -> no pay
+    // Driver overrides + terminal floor.
+    let driver = match record.driver_id {
+        Some(did) => state.db.get_driver_by_id(did).await.ok(),
+        None => None,
+    };
+    let terminal = {
+        let tid = driver.as_ref().and_then(|d| d.terminal_id);
+        let by_id = match tid { Some(t) => state.db.get_terminal_by_id(t).await.ok(), None => None };
+        match by_id { Some(t) => t, None => state.db.default_terminal().await.ok()? }
+    };
+    let driver_ov = driver.as_ref().map(|d| RateOverrides {
+        loaded_rate_per_mile: d.loaded_rate_per_mile,
+        deadhead_rate_per_mile: d.deadhead_rate_per_mile,
+        extra_stop_fee: d.extra_stop_fee,
+        detention_rate_per_hour: d.detention_rate_per_hour,
+        free_dwell_minutes: d.free_dwell_minutes,
+    }).unwrap_or_default();
+    let trip_ov = RateOverrides {
+        loaded_rate_per_mile: record.loaded_rate_per_mile,
+        deadhead_rate_per_mile: record.deadhead_rate_per_mile,
+        extra_stop_fee: record.extra_stop_fee,
+        detention_rate_per_hour: record.detention_rate_per_hour,
+        free_dwell_minutes: record.free_dwell_minutes,
+    };
+    let floor = TerminalRates {
+        loaded_rate_per_mile: terminal.loaded_rate_per_mile,
+        deadhead_rate_per_mile: terminal.deadhead_rate_per_mile,
+        extra_stop_fee: terminal.extra_stop_fee,
+        detention_rate_per_hour: terminal.detention_rate_per_hour,
+        free_dwell_minutes: terminal.free_dwell_minutes,
+    };
+    let rates = resolve_rates(&trip_ov, &driver_ov, &floor);
+    let stops: Vec<PayStopInput> = record.stops.iter().map(|s| {
+        let mut s2 = s.clone();
+        s2.fill_utc_fields();
+        PayStopInput {
+            detention_free_minutes: s2.detention_free_minutes,
+            actual_arrive_utc: s2.actual_arrive_utc,
+            actual_depart_utc: s2.actual_depart_utc,
+        }
+    }).collect();
+    Some(compute_driver_pay(record.loaded_miles, record.deadhead_miles, &stops, &rates))
 }
 
 #[utoipa::path(
