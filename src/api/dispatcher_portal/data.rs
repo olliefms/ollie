@@ -383,6 +383,8 @@ pub struct ListTripsQuery {
     pub status: Option<String>,
     pub trip_number: Option<String>,
     pub load_number: Option<String>,
+    pub pay_period_start: Option<String>,
+    pub pay_period_end: Option<String>,
 }
 
 #[utoipa::path(
@@ -392,6 +394,8 @@ pub struct ListTripsQuery {
         ("load_id" = Option<Uuid>, Query, description = "Filter by load ID"),
         ("driver_id" = Option<Uuid>, Query, description = "Filter by driver ID"),
         ("status" = Option<String>, Query, description = "Filter by status"),
+        ("pay_period_start" = Option<String>, Query, description = "Only trips with pay_period_start >= this ISO date"),
+        ("pay_period_end" = Option<String>, Query, description = "Only trips with pay_period_end <= this ISO date"),
     ),
     responses(
         (status = 200, description = "List of trips (enriched with driver/truck names)"),
@@ -427,7 +431,10 @@ pub async fn build_trip_list_items(
         q.load_id
     };
 
-    let trips = state.db.list_trips(load_id_filter, q.driver_id, q.status.as_deref()).await?;
+    let trips = state.db.list_trips(
+        load_id_filter, q.driver_id, q.status.as_deref(),
+        q.pay_period_start.as_deref(), q.pay_period_end.as_deref(),
+    ).await?;
 
     // Apply `trip_number` filter post-fetch (case-sensitive exact match).
     let trips: Vec<_> = if let Some(tn) = &q.trip_number {
@@ -563,7 +570,10 @@ pub async fn driver_pay_for_record(
     record: &crate::models::TripRecord,
 ) -> Option<crate::models::pay::DriverPay> {
     use crate::models::pay::*;
-    // snapshot handled in Phase D (driver_pay_snapshot field added in Task 12)
+    // Frozen snapshot wins: a settled trip returns the pay captured at settlement.
+    if let Some(snap) = &record.driver_pay_snapshot {
+        return Some(snap.clone());
+    }
     record.loaded_miles?; // no loaded miles -> no pay
     // Driver overrides + terminal floor.
     let driver = match record.driver_id {
@@ -846,6 +856,11 @@ pub async fn stop_arrive(
     path: Path<(Uuid, u32)>,
     body: Json<StopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Edit-lock: a settled trip's stop times are frozen.
+    let trip = state.db.get_trip(path.0.0).await?;
+    if trip.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
+    }
     trip_actions::stop_arrive(state, path, body).await
 }
 
@@ -871,6 +886,11 @@ pub async fn stop_depart(
     path: Path<(Uuid, u32)>,
     body: Json<StopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    // Edit-lock: a settled trip's stop times are frozen.
+    let trip = state.db.get_trip(path.0.0).await?;
+    if trip.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
+    }
     trip_actions::stop_depart(state, path, body).await
 }
 

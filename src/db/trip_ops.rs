@@ -53,8 +53,11 @@ impl DbClient {
         load_id: Option<Uuid>,
         driver_id: Option<Uuid>,
         status: Option<&str>,
+        pay_period_start: Option<&str>,
+        pay_period_end: Option<&str>,
     ) -> Result<Vec<TripListItem>, AppError> {
-        let filter = build_trip_filter(load_id, driver_id, status);
+        let filter = build_trip_filter(
+            load_id, driver_id, status, pay_period_start, pay_period_end);
         let mut q = self.trip_table.query();
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
@@ -216,6 +219,48 @@ impl DbClient {
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         batches_to_trips(collect_stream(stream).await?)
+    }
+
+    /// Apply optional trip-level rate overrides (read-modify-upsert). Only the
+    /// fields that are `Some` are changed.
+    pub async fn update_trip_rate_overrides(
+        &self,
+        id: Uuid,
+        loaded: Option<f64>,
+        deadhead: Option<f64>,
+        extra_stop: Option<f64>,
+        detention: Option<f64>,
+        free_dwell: Option<u32>,
+    ) -> Result<TripRecord, AppError> {
+        let mut t = self.get_trip(id).await?;
+        if loaded.is_some() { t.loaded_rate_per_mile = loaded; }
+        if deadhead.is_some() { t.deadhead_rate_per_mile = deadhead; }
+        if extra_stop.is_some() { t.extra_stop_fee = extra_stop; }
+        if detention.is_some() { t.detention_rate_per_hour = detention; }
+        if free_dwell.is_some() { t.free_dwell_minutes = free_dwell; }
+        t.updated_at = Utc::now();
+        self.upsert_trip(&t).await?;
+        Ok(t)
+    }
+
+    /// Apply settlement metadata + an optional frozen pay snapshot
+    /// (read-modify-upsert). Only the fields that are `Some` are changed.
+    pub async fn update_trip_settlement(
+        &self,
+        id: Uuid,
+        settlement_ref: Option<String>,
+        pay_period_start: Option<String>,
+        pay_period_end: Option<String>,
+        snapshot: Option<crate::models::pay::DriverPay>,
+    ) -> Result<TripRecord, AppError> {
+        let mut t = self.get_trip(id).await?;
+        if settlement_ref.is_some() { t.settlement_ref = settlement_ref; }
+        if pay_period_start.is_some() { t.pay_period_start = pay_period_start; }
+        if pay_period_end.is_some() { t.pay_period_end = pay_period_end; }
+        if snapshot.is_some() { t.driver_pay_snapshot = snapshot; }
+        t.updated_at = Utc::now();
+        self.upsert_trip(&t).await?;
+        Ok(t)
     }
 
     pub async fn count_active_trips_for_load(&self, load_id: Uuid) -> Result<usize, AppError> {
@@ -435,11 +480,20 @@ fn build_trip_filter(
     load_id: Option<Uuid>,
     driver_id: Option<Uuid>,
     status: Option<&str>,
+    pay_period_start: Option<&str>,
+    pay_period_end: Option<&str>,
 ) -> Option<String> {
     let mut parts: Vec<String> = Vec::new();
     if let Some(id) = load_id { parts.push(format!("load_id = '{id}'")); }
     if let Some(id) = driver_id { parts.push(format!("driver_id = '{id}'")); }
     if let Some(s) = status { parts.push(format!("status = '{}'", s.replace('\'', "''"))); }
+    // ISO date strings compare lexicographically.
+    if let Some(x) = pay_period_start {
+        parts.push(format!("pay_period_start >= '{}'", x.replace('\'', "''")));
+    }
+    if let Some(y) = pay_period_end {
+        parts.push(format!("pay_period_end <= '{}'", y.replace('\'', "''")));
+    }
     if parts.is_empty() { None } else { Some(parts.join(" AND ")) }
 }
 

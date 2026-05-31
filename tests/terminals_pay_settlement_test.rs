@@ -339,3 +339,171 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
     assert!((loaded_pay2 - loaded_miles * 0.75).abs() < 1e-9,
         "driver override not applied: loaded_pay {loaded_pay2}");
 }
+
+// Phase D: settlement freezes driver_pay, locks pay edits + stop times, and
+// the pay-period range filter selects the trip.
+#[tokio::test]
+async fn test_settlement_freezes_pay_and_locks_edits() {
+    use ollie::models::{TripRecord, TripStatus, TripStop};
+    use ollie::models::trip::TripStopType;
+
+    let (server, db, _b, _d) = test_server_with_db().await;
+    let token = dispatcher_login(&server, "settle1@example.com", "pw-settle1").await;
+    let auth = format!("Bearer {token}");
+
+    // 1) Set Default terminal rates.
+    let term_id = default_terminal_id(&server, &auth).await;
+    let put = server.put(&format!("/dispatch/api/v1/terminals/{term_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "loaded_rate_per_mile": 0.50,
+            "deadhead_rate_per_mile": 0.40,
+            "extra_stop_fee": 30.0,
+            "detention_rate_per_hour": 20.0,
+        }))
+        .await;
+    assert_eq!(put.status_code(), 200);
+
+    // Driver on default terminal.
+    let drv = server.post("/dispatch/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Sam Settle" }))
+        .await;
+    assert_eq!(drv.status_code(), 201, "driver create failed: {:?}", drv.text());
+    let driver_id = uuid::Uuid::parse_str(
+        drv.json::<serde_json::Value>()["id"].as_str().unwrap()).unwrap();
+
+    // Insert a trip with miles + a stop (so stop_arrive has a target).
+    let now = chrono::Utc::now();
+    let trip_id = uuid::Uuid::new_v4();
+    let stop = TripStop {
+        sequence: 0,
+        stop_type: TripStopType::Pickup,
+        facility_id: None,
+        name: Some("Origin Yard".into()),
+        address: None,
+        load_stop_index: None,
+        scheduled_arrive: None,
+        scheduled_arrive_end: None,
+        actual_arrive: None,
+        actual_depart: None,
+        expected_dwell_minutes: None,
+        detention_free_minutes: None,
+        detention_grace_minutes: None,
+        notes: None,
+        timezone: Some("America/New_York".into()),
+        actual_arrive_utc: None,
+        actual_depart_utc: None,
+    };
+    let trip = TripRecord {
+        id: trip_id,
+        trip_number: "T-SETTLE-0001".into(),
+        load_id: None,
+        load_number: None,
+        previous_trip_id: None,
+        deadhead_miles: Some(20.0),
+        loaded_miles: Some(100.0),
+        total_miles: Some(120.0),
+        segment_miles: vec![],
+        sequence: 0,
+        driver_id: Some(driver_id),
+        truck_id: None,
+        trailer_ids: vec![],
+        status: TripStatus::InTransit,
+        stops: vec![stop],
+        notes: None,
+        blob_ids: vec![],
+        loaded_rate_per_mile: None,
+        deadhead_rate_per_mile: None,
+        extra_stop_fee: None,
+        detention_rate_per_hour: None,
+        free_dwell_minutes: None,
+        settlement_ref: None,
+        pay_period_start: None,
+        pay_period_end: None,
+        driver_pay_snapshot: None,
+        embedding: None,
+        owner_id: 0,
+        created_at: now,
+        updated_at: now,
+    };
+    db.insert_trip(&trip).await.unwrap();
+
+    // GET detail -> total_pay = T (live).
+    let detail = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(detail.status_code(), 200, "detail GET failed: {:?}", detail.text());
+    let t_total = detail.json::<serde_json::Value>()["driver_pay"]["total_pay"]
+        .as_f64().expect("driver_pay present pre-settlement");
+    assert!((t_total - (100.0 * 0.50 + 20.0 * 0.40)).abs() < 1e-9, "unexpected T: {t_total}");
+
+    // 2) PATCH settlement_ref + pay periods -> snapshot captured, frozen pay == T.
+    let patch = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "settlement_ref": "S-2026-009",
+            "pay_period_start": "2026-05-25",
+            "pay_period_end": "2026-05-31",
+        }))
+        .await;
+    assert_eq!(patch.status_code(), 200, "settlement patch failed: {:?}", patch.text());
+
+    // Snapshot is persisted on the record; assert via the DB handle.
+    let persisted = db.get_trip(trip_id).await.unwrap();
+    let snap = persisted.driver_pay_snapshot.expect("snapshot persisted after settlement");
+    assert!((snap.total_pay - t_total).abs() < 1e-9, "snapshot total {} != T {t_total}", snap.total_pay);
+
+    let after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    let after_body = after.json::<serde_json::Value>();
+    let dp_total = after_body["driver_pay"]["total_pay"].as_f64().unwrap();
+    // driver_pay on read must equal the frozen snapshot.
+    assert!((dp_total - snap.total_pay).abs() < 1e-9, "driver_pay {dp_total} != snapshot {}", snap.total_pay);
+
+    // 3) Raise the Default terminal loaded rate; settled trip pay stays frozen at T.
+    let put2 = server.put(&format!("/dispatch/api/v1/terminals/{term_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 0.90 }))
+        .await;
+    assert_eq!(put2.status_code(), 200);
+    let after2 = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    let frozen_total = after2.json::<serde_json::Value>()["driver_pay"]["total_pay"]
+        .as_f64().unwrap();
+    assert!((frozen_total - t_total).abs() < 1e-9,
+        "settled trip pay must stay frozen: {frozen_total} != {t_total}");
+
+    // 4) PATCH a settled trip's rate override -> 409.
+    let locked = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 0.99 }))
+        .await;
+    assert_eq!(locked.status_code(), 409, "expected 409 on settled rate edit: {:?}", locked.text());
+
+    // 5) stop_arrive on a settled trip -> 409.
+    let arrive = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/arrive"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "actual_arrive": "2026-05-28T10:00:00" }))
+        .await;
+    assert_eq!(arrive.status_code(), 409, "expected 409 on settled stop_arrive: {:?}", arrive.text());
+
+    // 6) Pay-period range filter includes/excludes the trip.
+    let inc = server.get("/dispatch/api/v1/trips?pay_period_start=2026-05-01&pay_period_end=2026-06-30")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(inc.status_code(), 200);
+    let inc_items = inc.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(inc_items.iter().any(|t| t["id"].as_str() == Some(&trip_id.to_string())),
+        "trip should be in the overlapping pay-period range");
+
+    let exc = server.get("/dispatch/api/v1/trips?pay_period_start=2026-07-01&pay_period_end=2026-07-31")
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(exc.status_code(), 200);
+    let exc_items = exc.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(!exc_items.iter().any(|t| t["id"].as_str() == Some(&trip_id.to_string())),
+        "trip should be excluded from a non-overlapping pay-period range");
+}
