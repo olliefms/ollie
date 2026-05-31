@@ -98,7 +98,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::get_load,
         dispatcher_portal::data::create_load,
         dispatcher_portal::data::update_load,
+        dispatcher_portal::data::delete_load_handler,
+        dispatcher_portal::data::invoice_load_handler,
+        dispatcher_portal::data::cancel_load_handler,
+        dispatcher_portal::data::settle_load_handler,
         dispatcher_portal::data::list_trips,
+        dispatcher_portal::data::create_trip_handler,
         dispatcher_portal::data::get_trip,
         dispatcher_portal::data::assign_trip,
         dispatcher_portal::data::unassign_trip,
@@ -112,6 +117,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::check_call,
         dispatcher_portal::trip_writes::recalculate_miles_handler,
         dispatcher_portal::trip_writes::patch_trip_handler,
+        dispatcher_portal::trip_writes::delete_trip_handler,
         dispatcher_portal::data::list_facilities,
         dispatcher_portal::data::get_facility,
         dispatcher_portal::facility_writes::create_facility_handler,
@@ -120,6 +126,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::get_driver,
         dispatcher_portal::driver_writes::create_driver_handler,
         dispatcher_portal::driver_writes::patch_driver_handler,
+        dispatcher_portal::driver_writes::delete_driver_handler,
+        dispatcher_portal::driver_writes::set_driver_pin_handler,
         dispatcher_portal::driver_writes::attach_equipment_handler,
         dispatcher_portal::driver_writes::detach_equipment_handler,
         dispatcher_portal::terminal_writes::create_terminal,
@@ -131,10 +139,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::data::get_truck,
         dispatcher_portal::truck_writes::create_truck_handler,
         dispatcher_portal::truck_writes::update_truck_handler,
+        dispatcher_portal::truck_writes::delete_truck_handler,
         dispatcher_portal::data::list_trailers,
         dispatcher_portal::data::get_trailer,
         dispatcher_portal::trailer_writes::create_trailer_handler,
         dispatcher_portal::trailer_writes::update_trailer_handler,
+        dispatcher_portal::trailer_writes::delete_trailer_handler,
         dispatcher_portal::data::list_events,
         dispatcher_portal::blobs::list_blobs,
         dispatcher_portal::blobs::upload_blob,
@@ -399,14 +409,15 @@ JWT auth; same response shapes as the resources above. Use when a needed operati
 has no MCP tool. Auth lives at /dispatch/auth/ (POST /login, POST /refresh — refresh
 within the 7-day window).
 
-  Loads      GET /loads, GET /loads/:id, POST /loads, PUT /loads/:id
-  Trips      GET /trips, GET /trips/:id,
+  Loads      GET /loads, GET /loads/:id, POST /loads, PUT /loads/:id, DELETE /loads/:id,
+             POST /loads/:id/{invoice,cancel,settle}
+  Trips      GET /trips, GET /trips/:id, POST /trips, DELETE /trips/:id,
              POST /trips/:id/{assign,unassign,dispatch,undispatch,cancel,complete},
              POST /trips/:id/stops/:seq/{arrive,depart,late}, POST /trips/:id/check-call
-  Drivers    GET /drivers, GET /drivers/:id,
-             POST /drivers/:id/attach-equipment, POST /drivers/:id/detach-equipment
-  Trucks     GET /trucks, GET /trucks/:id, POST /trucks, PATCH /trucks/:id
-  Trailers   GET /trailers, GET /trailers/:id, POST /trailers, PATCH /trailers/:id
+  Drivers    GET /drivers, GET /drivers/:id, POST /drivers, PATCH /drivers/:id, DELETE /drivers/:id,
+             POST /drivers/:id/pin, POST /drivers/:id/attach-equipment, POST /drivers/:id/detach-equipment
+  Trucks     GET /trucks, GET /trucks/:id, POST /trucks, PATCH /trucks/:id, DELETE /trucks/:id
+  Trailers   GET /trailers, GET /trailers/:id, POST /trailers, PATCH /trailers/:id, DELETE /trailers/:id
   Facilities GET /facilities (?q, ?limit, ?offset), GET /facilities/:id, POST /facilities, PATCH /facilities/:id
   Blobs      GET /blobs, GET /blob/:id, POST /blobs, PUT /blob/:id, DELETE /blob/:id, POST /blobs/:id/query
              (multipart POST /blobs accepts an optional visibility=driver field to expose the

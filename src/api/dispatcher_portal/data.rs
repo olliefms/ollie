@@ -372,6 +372,111 @@ pub async fn update_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/dispatch/api/v1/loads/{id}",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Load has active trips — cancel or complete them first"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn delete_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.get_load_by_id(id).await?;
+    let active = state.db.count_active_trips_for_load(id).await?;
+    if active > 0 {
+        return Err(AppError::Conflict(format!(
+            "load has {active} active trip(s); cancel or complete them first"
+        )));
+    }
+    state.db.delete_load_by_id(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/loads/{id}/invoice",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    request_body(content = InvoiceActionRequest, description = "Optional invoice number and date"),
+    responses(
+        (status = 200, description = "Load transitioned to invoiced", body = LoadDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn invoice_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<crate::models::InvoiceActionRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Invoiced,
+        body.invoice_number, body.invoice_date, None,
+    ).await?;
+    let response = build_load_detail(&state, record).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/loads/{id}/cancel",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    request_body(content = CancelActionRequest, description = "Optional cancellation reason"),
+    responses(
+        (status = 200, description = "Load transitioned to cancelled", body = LoadDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn cancel_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<crate::models::CancelActionRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Cancelled, None, None, body.reason,
+    ).await?;
+    let response = build_load_detail(&state, record).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/loads/{id}/settle",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load transitioned to settled", body = LoadDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn settle_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Settled, None, None, None,
+    ).await?;
+    let response = build_load_detail(&state, record).await?;
+    Ok(Json(response))
+}
+
 // ---------------------------------------------------------------------------
 // Trips
 // ---------------------------------------------------------------------------
@@ -410,6 +515,36 @@ pub async fn list_trips(
 ) -> Result<impl IntoResponse, AppError> {
     let items = build_trip_list_items(&state, q).await?;
     Ok(Json(DispatcherTripListResponse { items }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips",
+    request_body(content = CreateTripRequest, description = "Trip to create"),
+    responses(
+        (status = 201, description = "Created trip (enriched with driver/truck names and mileage_summary)"),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Referenced load/driver/truck/trailer not found"),
+        (status = 409, description = "Conflict — invalid assignment"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn create_trip_handler(
+    State(state): State<AppState>,
+    Json(body): Json<crate::models::trip::CreateTripRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // Reuse the admin create_trip handler — pure DB work, no HTTP roundtrip.
+    crate::api::trips::create_trip(State(state.clone()), Json(body)).await?;
+
+    // Re-fetch the most recently created trip and return the dispatcher-enriched
+    // detail so the response carries a full mileage_summary (matches MCP).
+    let all = state.db.list_trips(None, None, None, None, None).await?;
+    let newest = all.iter().max_by_key(|t| t.created_at)
+        .ok_or_else(|| AppError::Internal("trip create succeeded but trip not found on re-fetch".into()))?;
+    let detail = build_trip_detail(&state, newest.id).await?;
+    Ok((StatusCode::CREATED, Json(detail)))
 }
 
 /// Shared list-trips builder used by the HTTP handler and the MCP `list_trips` tool.

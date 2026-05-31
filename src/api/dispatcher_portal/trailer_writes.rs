@@ -135,6 +135,26 @@ pub async fn update_trailer_handler(
     Ok(Json(record))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/dispatch/api/v1/trailers/{id}",
+    params(("id" = Uuid, Path, description = "Trailer UUID")),
+    responses(
+        (status = 204, description = "Soft-deleted (status set to inactive)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Trailer not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn delete_trailer_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.soft_delete_trailer(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Shared create writer — used by the HTTP handler and the MCP `create_trailer`
 /// tool. Validates input, generates the embedding (best-effort), persists the
 /// record. New trailers start in `Available` status (matches admin behaviour).

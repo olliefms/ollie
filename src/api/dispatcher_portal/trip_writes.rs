@@ -11,6 +11,7 @@
 
 use axum::{
     extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
     Json,
 };
@@ -259,4 +260,25 @@ pub async fn apply_trip_patch(
 
     let detail = build_trip_detail(state, id).await?;
     Ok(PatchTripResult { detail, mileage_recompute_warning })
+}
+
+#[utoipa::path(
+    delete,
+    path = "/dispatch/api/v1/trips/{id}",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    responses(
+        (status = 204, description = "Deleted (soft-cancelled if active; hard-deleted if already cancelled)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Trip not found"),
+        (status = 409, description = "Cannot delete a trip that is in_transit, delivered, or completed"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn delete_trip_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.delete_trip(id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
