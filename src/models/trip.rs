@@ -196,6 +196,16 @@ pub struct TripRecord {
     pub notes: Option<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub loaded_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub deadhead_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub extra_stop_fee: Option<f64>,
+    #[serde(default)]
+    pub detention_rate_per_hour: Option<f64>,
+    #[serde(default)]
+    pub free_dwell_minutes: Option<u32>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -259,6 +269,16 @@ pub struct TripListItem {
     pub stops: Vec<TripStop>,
     pub notes: Option<String>,
     pub blob_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub loaded_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub deadhead_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub extra_stop_fee: Option<f64>,
+    #[serde(default)]
+    pub detention_rate_per_hour: Option<f64>,
+    #[serde(default)]
+    pub free_dwell_minutes: Option<u32>,
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -286,6 +306,11 @@ impl From<TripRecord> for TripListItem {
             stops: r.stops,
             notes: r.notes,
             blob_ids: r.blob_ids,
+            loaded_rate_per_mile: r.loaded_rate_per_mile,
+            deadhead_rate_per_mile: r.deadhead_rate_per_mile,
+            extra_stop_fee: r.extra_stop_fee,
+            detention_rate_per_hour: r.detention_rate_per_hour,
+            free_dwell_minutes: r.free_dwell_minutes,
             owner_id: r.owner_id,
             created_at: r.created_at,
             updated_at: r.updated_at,
@@ -382,6 +407,11 @@ mod tests {
             ],
             notes: Some("urgent".into()),
             blob_ids: vec![],
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
             embedding: None,
             owner_id: 0,
             created_at: now,
@@ -414,6 +444,11 @@ mod tests {
             stops: vec![],
             notes: None,
             blob_ids: vec![],
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
             embedding: Some(vec![0.1, 0.2]),
             owner_id: 0,
             created_at: now,

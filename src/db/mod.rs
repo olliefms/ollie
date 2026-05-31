@@ -214,6 +214,15 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
             if existing.field_with_name("blob_ids").is_err() {
                 transforms.push(("blob_ids".into(), "'[]'".into()));
             }
+            for col in ["loaded_rate_per_mile", "deadhead_rate_per_mile",
+                        "extra_stop_fee", "detention_rate_per_hour"] {
+                if existing.field_with_name(col).is_err() {
+                    transforms.push((col.into(), "CAST(NULL AS double)".into()));
+                }
+            }
+            if existing.field_with_name("free_dwell_minutes").is_err() {
+                transforms.push(("free_dwell_minutes".into(), "CAST(NULL AS bigint)".into()));
+            }
             if !transforms.is_empty() {
                 tracing::info!("migrating trips table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
@@ -913,6 +922,11 @@ pub fn trip_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("total_miles", DataType::Float64, true),
         Field::new("segment_miles", DataType::Utf8, true),  // JSON-encoded Vec<f64>
         Field::new("blob_ids", DataType::Utf8, false),
+        Field::new("loaded_rate_per_mile", DataType::Float64, true),
+        Field::new("deadhead_rate_per_mile", DataType::Float64, true),
+        Field::new("extra_stop_fee", DataType::Float64, true),
+        Field::new("detention_rate_per_hour", DataType::Float64, true),
+        Field::new("free_dwell_minutes", DataType::Int64, true),
     ]))
 }
 
@@ -942,6 +956,11 @@ fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // total_miles
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // segment_miles
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // blob_ids
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // loaded_rate_per_mile
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // deadhead_rate_per_mile
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // extra_stop_fee
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),  // detention_rate_per_hour
+        Arc::new(Int64Array::from(Vec::<Option<i64>>::new())),    // free_dwell_minutes
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

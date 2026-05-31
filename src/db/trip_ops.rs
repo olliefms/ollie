@@ -318,6 +318,11 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
             else { Some(serde_json::to_string(&record.segment_miles).unwrap_or_default()) }
         ])),
         Arc::new(StringArray::from(vec![blob_ids_json.as_str()])),
+        Arc::new(Float64Array::from(vec![record.loaded_rate_per_mile])),
+        Arc::new(Float64Array::from(vec![record.deadhead_rate_per_mile])),
+        Arc::new(Float64Array::from(vec![record.extra_stop_fee])),
+        Arc::new(Float64Array::from(vec![record.detention_rate_per_hour])),
+        Arc::new(Int64Array::from(vec![record.free_dwell_minutes.map(|v| v as i64)])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -348,6 +353,11 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
     let opt_f64 = |name: &str| -> Option<f64> {
         batch.column_by_name(name)
             .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+            .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
+    };
+    let opt_i64 = |name: &str| -> Option<i64> {
+        batch.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
             .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
     };
 
@@ -395,6 +405,11 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
         stops,
         notes: opt_str("notes"),
         blob_ids: serde_json::from_str(&str_col("blob_ids")).unwrap_or_default(),
+        loaded_rate_per_mile: opt_f64("loaded_rate_per_mile"),
+        deadhead_rate_per_mile: opt_f64("deadhead_rate_per_mile"),
+        extra_stop_fee: opt_f64("extra_stop_fee"),
+        detention_rate_per_hour: opt_f64("detention_rate_per_hour"),
+        free_dwell_minutes: opt_i64("free_dwell_minutes").map(|v| v as u32),
         embedding,
         owner_id: i64_col("owner_id"),
         created_at: str_col("created_at").parse()
@@ -474,6 +489,11 @@ mod tests {
             ],
             notes: Some("test trip".into()),
             blob_ids: vec![],
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
             embedding: None,
             owner_id: 0,
             created_at: now,
