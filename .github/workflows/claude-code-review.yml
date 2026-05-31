@@ -162,9 +162,10 @@ jobs:
 
             ## Comment Format
 
-            Maintain exactly one review comment per PR. On re-review (a new
-            commit), edit your existing comment in place rather than posting a
-            new one — see step 4. The comment body:
+            Post a new review comment for every review. On re-review (a new
+            commit), add a fresh comment rather than editing your prior one, so
+            each review iteration is preserved as its own comment in the thread
+            — see step 4. The comment body:
 
             ```
             🤖 [agent:review]
@@ -196,10 +197,10 @@ jobs:
             2. Read AGENTS.md for codebase-specific rules (version constraints,
                DB patterns, test patterns, OpenAPI requirements, etc.).
             3. Review the diff against the shippability bar.
-            4. Post (or update) the comment. Use `--edit-last` so re-reviews
-               replace your prior comment instead of stacking duplicates, and
-               `--create-if-none` so the first review still creates one:
-               `gh pr comment ${{ github.event.pull_request.number }} --edit-last --create-if-none --body "..." --repo ergofobe/ollie`
+            4. Post a new comment. Always create a fresh comment so each
+               re-review is preserved as its own entry in the thread. Do NOT
+               use `--edit-last`:
+               `gh pr comment ${{ github.event.pull_request.number }} --body "..." --repo ergofobe/ollie`
             5. Apply the label:
                `gh pr edit ${{ github.event.pull_request.number }} --add-label "review:DECISION" --repo ergofobe/ollie`
 
