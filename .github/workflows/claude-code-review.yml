@@ -107,7 +107,7 @@ jobs:
           # SDK auto-denies those tool calls in CI, so the agent runs "green" but
           # posts nothing. Scoped per-subcommand rather than blanket Bash(gh:*).
           claude_args: |
-            --allowedTools "Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Read,Grep,Glob"
+            --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh pr edit:*),Bash(git diff:*),Bash(git merge-base:*),Read,Grep,Glob"
           prompt: |
             You are the Ollie review agent. Your identifier is: `🤖 [agent:review]`
 
@@ -129,6 +129,12 @@ jobs:
             - PR author: ${{ github.event.pull_request.user.login }}
             - Author trust tier: ${{ steps.trust.outputs.tier }}
             - PR title: ${{ github.event.pull_request.title }}
+            - PR head SHA: ${{ github.event.pull_request.head.sha }}
+              (the PR's tip commit — use THIS as the review checkpoint, not
+              `git rev-parse HEAD`. On a pull_request event the checkout is the
+              ephemeral `refs/pull/N/merge` commit, which is recreated on every
+              push; the head SHA is stable and is a parent of the merge commit,
+              so it is present in the fetched history.)
 
             ## Shippability Bar (authoritative version is in AGENTS.md — read it first)
 
@@ -138,18 +144,55 @@ jobs:
             - Data-loss risk: non-atomic mutation, missing upsert, delete without guard
             - Broken contract: API shape change without migration, public type removed
 
-            **Significants** — flag but do not block:
-            - Real bugs in non-critical paths
-            - Missing test coverage on non-critical paths
-            - Edge-case correctness issues (DST, off-by-one, etc.)
+            **Significants** — flag but do not block. A finding is significant
+            ONLY if you can name a concrete failure mode: a specific input,
+            state, or call sequence that produces wrong behavior (wrong output,
+            wrong status code, wrong DB state, crash, or data drift). State that
+            failure mode explicitly in the finding.
+            - Real bugs in non-critical paths, with the triggering input/state named
+            - Missing test coverage where you can describe the regression that would slip through
+            - Edge-case correctness issues (DST, off-by-one, etc.) with the triggering case named
+
+            If you cannot name a concrete failure mode, it is NOT significant.
+            Convention-adherence items ("rule X says add Y to list Z", "register
+            this type in `schemas()`") with no demonstrated failure are nits, not
+            significants — especially when the framework or tooling already
+            resolves the concern. When torn between significant and nit, choose nit.
 
             **Nits** — note in comment only, never block, never file as issues:
             - Style, taste, micro-optimisations
             - Refactor opportunities unrelated to the change
+            - Convention-adherence items with no demonstrated failure mode
+
+            Report nits for every trust tier, including `maintainer`. Nits give
+            borderline items a place to land so they stop inflating into
+            significants. Keep each nit to one line.
 
             **Loop termination:** This is the review agent. If you find blockers,
             say so clearly. The human decides whether to fix or override. Do not
             re-review unless a new commit is pushed (the workflow handles that).
+
+            **Convergence across re-reviews:** Each push triggers a fresh review
+            preserved as its own comment. To stop resampling the whole diff every
+            push and make the loop converge:
+            - Let HEAD_SHA be the PR head SHA from Injected Context
+              (`${{ github.event.pull_request.head.sha }}`), NOT `git rev-parse HEAD`.
+            - Before reviewing, read your prior `🤖 [agent:review]` comments on
+              this PR (`gh pr view`) and parse the most recent AGENT_META block
+              for its `reviewed_sha` and `iteration`.
+            - If a prior review exists AND its `reviewed_sha` is an ancestor of
+              HEAD_SHA (verify: `git merge-base --is-ancestor <reviewed_sha> HEAD_SHA`),
+              review ONLY the incremental diff `git diff <reviewed_sha>..HEAD_SHA` —
+              the commits pushed since your last review. Carry every
+              still-applicable prior finding forward into this round's comment,
+              then add any new findings from the incremental diff. Set `iteration`
+              to the prior value plus 1.
+            - If there is no prior review, OR the prior `reviewed_sha` is missing
+              or not an ancestor of HEAD_SHA (force-push / rebase), review the full
+              PR diff and set `iteration` to 1.
+            - Always record HEAD_SHA as `reviewed_sha` in this round's AGENT_META.
+            This makes the loop cumulative and converging: findings accumulate and
+            persist instead of a fresh 1–2 being sampled on every push.
 
             **No robot homework:** Do not create follow-up issues. Do not add TODO
             comments. Note nits inline in the comment only.
@@ -181,27 +224,46 @@ jobs:
             ### Nits
             [List nits briefly. "None." if clean.]
 
-            <!-- AGENT_META {"v":1,"agent":"review","ts":"UTC_NOW","trust_tier":"TIER","decision":"approved|changes-requested","blocker_count":N,"significant_count":N,"iteration":1} -->
+            <!-- AGENT_META {"v":1,"agent":"review","ts":"UTC_NOW","trust_tier":"TIER","decision":"approved|changes-requested","blocker_count":N,"significant_count":N,"nit_count":N,"iteration":N,"reviewed_sha":"HEAD_SHA"} -->
             ```
 
             Rules:
             - No hedging. No em-dashes. Direct.
-            - For `maintainer` tier: skip nits entirely unless they're systematic.
+            - Report nits for every trust tier, including `maintainer`. Do not suppress them.
             - File:line references are required for every blocker and significant.
+            - `iteration` and `reviewed_sha` follow the convergence rules above; do
+              not hardcode `iteration` to 1 on a re-review.
             - Keep the JSON compact in the AGENT_META block.
 
             ## Steps
 
-            1. Run: `gh pr diff ${{ github.event.pull_request.number }} --repo ergofobe/ollie`
-               to get the diff.
-            2. Read AGENTS.md for codebase-specific rules (version constraints,
+            1. HEAD_SHA is the PR head SHA from Injected Context
+               (`${{ github.event.pull_request.head.sha }}`). Use it as the
+               review checkpoint; do NOT use `git rev-parse HEAD` (that resolves
+               to the ephemeral merge commit).
+            2. Read your prior review state:
+               `gh pr view ${{ github.event.pull_request.number }} --repo ergofobe/ollie --json comments`
+               Find the most recent `🤖 [agent:review]` comment and parse its
+               AGENT_META for `reviewed_sha` and `iteration`. If none exists, this
+               is iteration 1.
+            3. Read AGENTS.md for codebase-specific rules (version constraints,
                DB patterns, test patterns, OpenAPI requirements, etc.).
-            3. Review the diff against the shippability bar.
-            4. Post a new comment. Always create a fresh comment so each
+            4. Choose the diff scope per the Convergence rules:
+               - First review, or prior `reviewed_sha` not an ancestor of HEAD_SHA:
+                 full diff via `gh pr diff ${{ github.event.pull_request.number }} --repo ergofobe/ollie`.
+               - Re-review with a valid prior `reviewed_sha` (confirm with
+                 `git merge-base --is-ancestor <reviewed_sha> HEAD_SHA`): incremental
+                 diff via `git diff <reviewed_sha>..HEAD_SHA`. Carry prior findings
+                 forward, then add new ones from this incremental diff.
+            5. Review against the shippability bar. Apply the significant-vs-nit
+               test: significant requires a named failure mode; convention-only
+               items are nits.
+            6. Post a new comment. Always create a fresh comment so each
                re-review is preserved as its own entry in the thread. Do NOT
-               use `--edit-last`:
+               use `--edit-last`. Set `reviewed_sha` to HEAD_SHA and
+               `iteration` per the convergence rules:
                `gh pr comment ${{ github.event.pull_request.number }} --body "..." --repo ergofobe/ollie`
-            5. Apply the label:
+            7. Apply the label:
                `gh pr edit ${{ github.event.pull_request.number }} --add-label "review:DECISION" --repo ergofobe/ollie`
 
             Now perform the review.
