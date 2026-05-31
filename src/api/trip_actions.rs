@@ -389,6 +389,10 @@ pub async fn stop_arrive(
     Json(body): Json<StopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let existing = state.db.get_trip(id).await?;
+    // Settlement freeze: a settled trip's stop times feed detention pay; they are frozen.
+    if existing.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
+    }
     let stop_tz = existing.stops.iter()
         .find(|s| s.sequence == seq)
         .ok_or(AppError::NotFound)?
@@ -427,6 +431,10 @@ pub async fn stop_depart(
     Json(body): Json<StopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let existing = state.db.get_trip(id).await?;
+    // Settlement freeze: a settled trip's stop times feed detention pay; they are frozen.
+    if existing.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
+    }
     let stop_tz = existing.stops.iter()
         .find(|s| s.sequence == seq)
         .ok_or(AppError::NotFound)?

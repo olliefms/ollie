@@ -101,6 +101,11 @@ pub async fn recalculate_miles_handler(
     let force = body.map(|Json(b)| b.force).unwrap_or(false);
 
     let trip = state.db.get_trip(id).await?;
+    // Settlement freeze: mileage feeds driver pay, so a settled trip's miles are frozen.
+    if trip.settlement_ref.is_some() {
+        return Err(AppError::Conflict(
+            "trip is settled; miles are frozen".into()));
+    }
     let already_set = trip.deadhead_miles.is_some() && trip.loaded_miles.is_some();
 
     let summary = if !force && already_set {
@@ -174,6 +179,11 @@ pub async fn apply_trip_patch(
     if was_settled && touches_rate {
         return Err(AppError::Conflict(
             "trip is settled; pay-affecting fields are frozen".into()));
+    }
+    // A previous_trip_id change triggers a mileage recompute, which feeds pay.
+    if was_settled && parsed.previous_trip_id.is_some() {
+        return Err(AppError::Conflict(
+            "trip is settled; previous_trip_id is frozen (it would recompute miles)".into()));
     }
 
     if parsed.notes.is_some() || parsed.blob_ids.is_some() {

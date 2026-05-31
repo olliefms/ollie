@@ -490,6 +490,20 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
         .await;
     assert_eq!(arrive.status_code(), 409, "expected 409 on settled stop_arrive: {:?}", arrive.text());
 
+    // 5b) recalculate-miles on a settled trip -> 409 (mileage feeds pay).
+    let recalc = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/recalculate-miles"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "force": true }))
+        .await;
+    assert_eq!(recalc.status_code(), 409, "expected 409 on settled recalculate-miles: {:?}", recalc.text());
+
+    // 5c) PATCH previous_trip_id on a settled trip -> 409 (would trigger a mileage recompute).
+    let relink = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "previous_trip_id": uuid::Uuid::new_v4().to_string() }))
+        .await;
+    assert_eq!(relink.status_code(), 409, "expected 409 on settled previous_trip_id edit: {:?}", relink.text());
+
     // 6) Pay-period range filter includes/excludes the trip.
     let inc = server.get("/dispatch/api/v1/trips?pay_period_start=2026-05-01&pay_period_end=2026-06-30")
         .add_header(header::AUTHORIZATION, &auth)
