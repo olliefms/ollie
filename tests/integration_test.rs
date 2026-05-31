@@ -1778,6 +1778,44 @@ async fn test_mcp_completions_for_reference_args() {
     );
 }
 
+/// #300: destructive ops (cancel_trip, delete_blob force=true) ask the user to
+/// confirm via elicitation when the client supports it; a client that does NOT
+/// declare elicitation (like this HTTP test harness, which sends capabilities {})
+/// degrades to the prior behavior — the op runs without a confirmation round-trip.
+/// The positive confirm/decline path needs an elicitation-capable client and is
+/// out of scope for the axum-test suite.
+#[tokio::test]
+async fn test_mcp_destructive_ops_proceed_without_elicitation_support() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_eli@example.com", "password-mcp-eli").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let created = upload_blob_via_presigned(&server, b"del me".to_vec(), "text/plain", "del.txt").await;
+    let blob_id = created["id"].as_str().unwrap().to_string();
+
+    let session = mcp_session(&server, &token).await;
+    let not_blocked = |r: &serde_json::Value, what: &str| {
+        let text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            !text.contains("confirmation was declined or unavailable"),
+            "{what} must not be blocked by elicitation when the client lacks support: {r}"
+        );
+    };
+
+    // cancel_trip on a planned trip proceeds (not gated by elicitation here).
+    let c = mcp_rpc(&server, &token, &session, "tools/call",
+        serde_json::json!({ "name": "cancel_trip", "arguments": { "trip_id": trip_id } })).await;
+    not_blocked(&c, "cancel_trip");
+
+    // delete_blob force=true proceeds and deletes.
+    let d = mcp_rpc(&server, &token, &session, "tools/call",
+        serde_json::json!({ "name": "delete_blob", "arguments": { "id": blob_id, "force": true } })).await;
+    not_blocked(&d, "delete_blob force");
+    let payload: serde_json::Value =
+        serde_json::from_str(d["result"]["content"][0]["text"].as_str().expect("delete_blob text"))
+            .expect("delete_blob JSON");
+    assert_eq!(payload["deleted"], true, "delete_blob force should delete: {d}");
+}
+
 /// Minimal JSON-Schema conformance check for the simple object schemas the MCP
 /// tools declare: every `required` property is present with its declared `type`,
 /// and any declared property that *is* present matches its `type`. Enough to prove
