@@ -597,6 +597,15 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
         .await;
     assert_eq!(relink.status_code(), 409, "expected 409 on settled previous_trip_id edit: {:?}", relink.text());
 
+    // 5d) Re-settling (changing settlement_ref) on a settled trip -> 409 (no silent drop).
+    let resettle = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "settlement_ref": "S-2026-099" }))
+        .await;
+    assert_eq!(resettle.status_code(), 409, "expected 409 on re-settle: {:?}", resettle.text());
+    // And the original ref is untouched.
+    assert_eq!(db.get_trip(trip_id).await.unwrap().settlement_ref.as_deref(), Some("S-2026-009"));
+
     // 6) Pay-period range filter includes/excludes the trip.
     let inc = server.get("/dispatch/api/v1/trips?pay_period_start=2026-05-01&pay_period_end=2026-06-30")
         .add_header(header::AUTHORIZATION, &auth)

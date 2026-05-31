@@ -185,6 +185,14 @@ pub async fn apply_trip_patch(
         return Err(AppError::Conflict(
             "trip is settled; previous_trip_id is frozen (it would recompute miles)".into()));
     }
+    // Re-settling is not supported: the freeze branch below requires !was_settled,
+    // so a settlement_ref change on an already-settled trip would be silently
+    // dropped. Reject it explicitly, consistent with the locks above. (Pay-period
+    // metadata updates remain allowed — they don't re-freeze or un-settle.)
+    if was_settled && parsed.settlement_ref.is_some() {
+        return Err(AppError::Conflict(
+            "trip is already settled; settlement_ref cannot be changed".into()));
+    }
 
     if parsed.notes.is_some() || parsed.blob_ids.is_some() {
         state.db.update_trip_metadata(
