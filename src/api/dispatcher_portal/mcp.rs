@@ -216,7 +216,8 @@ rmcp::elicit_safe!(DestructiveConfirmation);
 /// and force-deleting a blob (a non-force delete already errors on attachments).
 fn is_destructive_op(name: &str, args: &Value) -> bool {
     match name {
-        "cancel_trip" => true,
+        "cancel_trip" | "cancel_load" | "delete_load" | "delete_trip" | "delete_driver"
+        | "delete_truck" | "delete_trailer" | "delete_facility" => true,
         "delete_blob" => args["force"].as_bool() == Some(true),
         _ => false,
     }
@@ -238,8 +239,10 @@ async fn confirm_destructive(
     if peer.supported_elicitation_modes().is_empty() {
         return None;
     }
-    let message =
-        format!("Confirm {name}? This permanently changes fleet data and cannot be undone.");
+    let message = format!(
+        "Confirm {name} ({})? This permanently changes fleet data and cannot be undone.",
+        destructive_op_description(name)
+    );
     // rmcp owns the elicit transport/deserialization; map its outcome to a simple
     // "did the user confirm?" and let `destructive_decision` (unit-tested) decide.
     let confirmed = match peer.elicit::<DestructiveConfirmation>(message).await {
@@ -248,6 +251,22 @@ async fn confirm_destructive(
         _ => None,
     };
     destructive_decision(name, confirmed)
+}
+
+/// Short human description of a destructive op, used in the confirmation prompt.
+fn destructive_op_description(name: &str) -> &'static str {
+    match name {
+        "cancel_trip" => "cancel the trip",
+        "cancel_load" => "cancel the load",
+        "delete_load" => "delete the load record",
+        "delete_trip" => "delete the trip record",
+        "delete_driver" => "deactivate the driver and revoke their access",
+        "delete_truck" => "deactivate the truck",
+        "delete_trailer" => "deactivate the trailer",
+        "delete_facility" => "delete the facility record",
+        "delete_blob" => "delete the blob",
+        _ => "perform a destructive action",
+    }
 }
 
 /// Decide whether a destructive op may proceed given the confirmation outcome:
@@ -594,7 +613,17 @@ fn annotations_for(name: &str) -> ToolAnnotations {
     }
     let destructive = matches!(
         name,
-        "delete_blob" | "cancel_trip" | "unassign_driver" | "detach_equipment"
+        "delete_blob"
+            | "cancel_trip"
+            | "unassign_driver"
+            | "detach_equipment"
+            | "cancel_load"
+            | "delete_load"
+            | "delete_trip"
+            | "delete_driver"
+            | "delete_truck"
+            | "delete_trailer"
+            | "delete_facility"
     );
     // update_* set fields to a target value; dispatch/undispatch converge to a
     // status — re-running with the same args is a no-op.
@@ -1223,6 +1252,155 @@ fn tools_list() -> Value {
                     },
                     "required": ["query"]
                 }
+            },
+            {
+                "name": "delete_load",
+                "description": "Delete a load record. Fails if the load has any active trips — cancel or complete them first. Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "delete_trip",
+                "description": "Delete a trip. Active trips are soft-cancelled; already-cancelled trips are hard-deleted. Blocked if the trip is in_transit, delivered, or completed. Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "delete_driver",
+                "description": "Soft-delete a driver (status → inactive) and invalidate any outstanding driver JWTs. Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "delete_truck",
+                "description": "Soft-delete a truck (status → inactive). Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "truck_id": { "type": "string", "format": "uuid" } },
+                    "required": ["truck_id"]
+                }
+            },
+            {
+                "name": "delete_trailer",
+                "description": "Soft-delete a trailer (status → inactive). Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "trailer_id": { "type": "string", "format": "uuid" } },
+                    "required": ["trailer_id"]
+                }
+            },
+            {
+                "name": "delete_facility",
+                "description": "Delete a facility record. Fails if the facility is referenced by one or more loads. Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "facility_id": { "type": "string", "format": "uuid" } },
+                    "required": ["facility_id"]
+                }
+            },
+            {
+                "name": "invoice_load",
+                "description": "Transition a load to `invoiced`, optionally recording an invoice number and date. Returns the dispatcher-enriched load detail.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":             { "type": "string", "format": "uuid" },
+                        "invoice_number": { "type": "string" },
+                        "invoice_date":   { "type": "string" }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "cancel_load",
+                "description": "Transition a load to `cancelled`, optionally recording a reason. Returns the dispatcher-enriched load detail.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":     { "type": "string", "format": "uuid" },
+                        "reason": { "type": "string" }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "settle_load",
+                "description": "Transition a load to `settled`. Returns the dispatcher-enriched load detail.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "set_driver_pin",
+                "description": "Set a driver's portal PIN (4–6 numeric digits). Invalidates any outstanding driver JWTs. Returns { pin_set: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":  { "type": "string", "format": "uuid" },
+                        "pin": { "type": "string", "description": "4–6 numeric digits." }
+                    },
+                    "required": ["id", "pin"]
+                }
+            },
+            {
+                "name": "create_driver",
+                "description": "Create a new driver. Defaults status to `available`; assigns the default terminal when terminal_id is omitted.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name":                   { "type": "string" },
+                        "phone":                  { "type": "string" },
+                        "email":                  { "type": "string" },
+                        "license_number":         { "type": "string" },
+                        "license_state":          { "type": "string" },
+                        "license_expiry":         { "type": "string" },
+                        "notes":                  { "type": "string" },
+                        "blob_ids":               { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "terminal_id":            { "type": "string", "format": "uuid" },
+                        "loaded_rate_per_mile":   { "type": "number" },
+                        "deadhead_rate_per_mile": { "type": "number" },
+                        "extra_stop_fee":         { "type": "number" },
+                        "detention_rate_per_hour":{ "type": "number" },
+                        "free_dwell_minutes":     { "type": "integer" }
+                    },
+                    "required": ["name"]
+                }
+            },
+            {
+                "name": "update_driver",
+                "description": "Update a driver's fields. `status` is not settable here — drivers transition via the trip lifecycle.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":                     { "type": "string", "format": "uuid" },
+                        "name":                   { "type": "string" },
+                        "phone":                  { "type": "string" },
+                        "email":                  { "type": "string" },
+                        "license_number":         { "type": "string" },
+                        "license_state":          { "type": "string" },
+                        "license_expiry":         { "type": "string" },
+                        "notes":                  { "type": "string" },
+                        "blob_ids":               { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "terminal_id":            { "type": "string", "format": "uuid" },
+                        "loaded_rate_per_mile":   { "type": "number" },
+                        "deadhead_rate_per_mile": { "type": "number" },
+                        "extra_stop_fee":         { "type": "number" },
+                        "detention_rate_per_hour":{ "type": "number" },
+                        "free_dwell_minutes":     { "type": "integer" }
+                    },
+                    "required": ["id"]
+                }
             }
         ]
     })
@@ -1302,6 +1480,18 @@ async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<
         "list_blobs" => tool_list_blobs(state, args).await,
         "search_blobs" => tool_search_blobs(state, args).await,
         "delete_blob" => tool_delete_blob(state, args).await,
+        "delete_load" => tool_delete_load(state, args).await,
+        "delete_trip" => tool_delete_trip(state, args).await,
+        "delete_driver" => tool_delete_driver(state, args).await,
+        "delete_truck" => tool_delete_truck(state, args).await,
+        "delete_trailer" => tool_delete_trailer(state, args).await,
+        "delete_facility" => tool_delete_facility(state, args).await,
+        "invoice_load" => tool_invoice_load(state, args).await,
+        "cancel_load" => tool_cancel_load(state, args).await,
+        "settle_load" => tool_settle_load(state, args).await,
+        "set_driver_pin" => tool_set_driver_pin(state, args).await,
+        "create_driver" => tool_create_driver(state, args).await,
+        "update_driver" => tool_update_driver(state, args).await,
         _ => return Err(ToolError::Unknown),
     };
     result.map_err(ToolError::Domain)
@@ -2207,6 +2397,127 @@ async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, Strin
     Ok(mcp_content(serde_json::json!({ "deleted": true, "was_attached": was_attached })))
 }
 
+// ---------------------------------------------------------------------------
+// Dispatch-parity write tools (#330) — delete / lifecycle / driver-admin tools
+// that mirror the dispatcher REST handlers, reusing the same DbClient ops and
+// apply_* helpers so HTTP and MCP stay in lockstep.
+// ---------------------------------------------------------------------------
+
+async fn tool_delete_load(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    state.db.get_load_by_id(id).await.map_err(|e| e.to_string())?;
+    let active = state.db.count_active_trips_for_load(id).await.map_err(|e| e.to_string())?;
+    if active > 0 {
+        return Err(format!("load has {active} active trip(s); cancel or complete them first"));
+    }
+    state.db.delete_load_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+}
+
+async fn tool_delete_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    state.db.delete_trip(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+}
+
+async fn tool_delete_driver(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    state.db.soft_delete_driver(id).await.map_err(|e| e.to_string())?;
+    // Invalidate any outstanding JWTs by bumping the credential token_version.
+    if let Ok(Some(mut creds)) = state.db.get_driver_credentials(id).await {
+        creds.token_version += 1;
+        creds.updated_at = chrono::Utc::now();
+        let _ = state.db.upsert_driver_credentials(&creds).await;
+    }
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+}
+
+async fn tool_delete_truck(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "truck_id")?;
+    state.db.soft_delete_truck(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+}
+
+async fn tool_delete_trailer(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "trailer_id")?;
+    state.db.soft_delete_trailer(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+}
+
+async fn tool_delete_facility(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "facility_id")?;
+    state.db.get_facility_by_id(id).await.map_err(|e| e.to_string())?;
+    if state.db.any_load_references_facility(id).await.map_err(|e| e.to_string())? {
+        return Err("facility is referenced by one or more loads and cannot be deleted".to_string());
+    }
+    state.db.delete_facility_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+}
+
+async fn tool_invoice_load(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let invoice_number = args["invoice_number"].as_str().map(|s| s.to_string());
+    let invoice_date = args["invoice_date"].as_str().map(|s| s.to_string());
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Invoiced, invoice_number, invoice_date, None,
+    ).await.map_err(|e| e.to_string())?;
+    let detail = super::data::build_load_detail(state, record).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(detail))
+}
+
+async fn tool_cancel_load(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let reason = args["reason"].as_str().map(|s| s.to_string());
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Cancelled, None, None, reason,
+    ).await.map_err(|e| e.to_string())?;
+    let detail = super::data::build_load_detail(state, record).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(detail))
+}
+
+async fn tool_settle_load(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Settled, None, None, None,
+    ).await.map_err(|e| e.to_string())?;
+    let detail = super::data::build_load_detail(state, record).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(detail))
+}
+
+async fn tool_set_driver_pin(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let pin = args["pin"].as_str().ok_or("missing or non-string field 'pin'")?.to_string();
+    super::driver_writes::apply_set_driver_pin(state, id, pin)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "pin_set": true })))
+}
+
+async fn tool_create_driver(state: &AppState, args: &Value) -> Result<Value, String> {
+    use crate::models::CreateDriverRequest;
+    let req: CreateDriverRequest = serde_json::from_value(args.clone())
+        .map_err(|e| format!("invalid create_driver arguments: {e}"))?;
+    let record = super::driver_writes::apply_driver_create(state, req)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_driver(state: &AppState, args: &Value) -> Result<Value, String> {
+    use crate::models::UpdateDriverRequest;
+    let id = parse_uuid(args, "id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("id");
+    }
+    let req: UpdateDriverRequest = serde_json::from_value(body)
+        .map_err(|e| format!("invalid update_driver arguments: {e}"))?;
+    let record = super::driver_writes::apply_driver_patch(state, id, req)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2318,6 +2629,22 @@ mod tests {
         assert_eq!(a.destructive_hint, Some(true));
         let a = find("cancel_trip").annotations.as_ref().unwrap();
         assert_eq!(a.destructive_hint, Some(true));
+        // #330 parity deletes + cancel_load carry the destructive hint.
+        for name in [
+            "delete_load", "delete_trip", "delete_driver", "delete_truck",
+            "delete_trailer", "delete_facility", "cancel_load",
+        ] {
+            let a = find(name).annotations.as_ref().unwrap();
+            assert_eq!(a.destructive_hint, Some(true), "{name} must be destructive");
+            assert_eq!(a.read_only_hint, Some(false), "{name} is not read-only");
+        }
+        // update_driver is idempotent (update_ prefix rule).
+        let a = find("update_driver").annotations.as_ref().unwrap();
+        assert_eq!(a.idempotent_hint, Some(true));
+        // create_driver is a plain additive write.
+        let a = find("create_driver").annotations.as_ref().unwrap();
+        assert_eq!(a.destructive_hint, None);
+        assert_eq!(a.idempotent_hint, None);
 
         // idempotent mutations.
         let a = find("update_trip").annotations.as_ref().unwrap();
@@ -2434,6 +2761,13 @@ mod tests {
     fn destructive_ops_require_confirmation() {
         // cancel_trip is always destructive; delete_blob only when force=true.
         assert!(is_destructive_op("cancel_trip", &json!({})));
+        // #330 parity deletes + cancel_load are unconditionally destructive.
+        for name in [
+            "cancel_load", "delete_load", "delete_trip", "delete_driver",
+            "delete_truck", "delete_trailer", "delete_facility",
+        ] {
+            assert!(is_destructive_op(name, &json!({})), "{name} must be destructive");
+        }
         assert!(is_destructive_op("delete_blob", &json!({ "force": true })));
         assert!(!is_destructive_op("delete_blob", &json!({ "force": false })));
         assert!(!is_destructive_op("delete_blob", &json!({})));

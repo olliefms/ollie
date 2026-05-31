@@ -6994,3 +6994,185 @@ async fn test_attach_equipment_via_mcp() {
     assert!(change["truck_id"].is_null());
     assert_eq!(change["trailer_ids"].as_array().unwrap().len(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch-surface parity — write tools over MCP (#330)
+//
+// These mirror the dispatcher REST parity handlers (commit 9fc7748) through the
+// MCP `tools/call` path, covering happy paths plus the key guards. The test
+// client declares no elicitation support (capabilities: {}), so destructive
+// tools run without a confirmation round-trip (graceful fallback).
+// ---------------------------------------------------------------------------
+
+/// Invoke an MCP tool and return the full result block (so callers can inspect
+/// `isError` for domain rejections instead of asserting success).
+async fn mcp_call_result(
+    server: &axum_test::TestServer,
+    token: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let session = mcp_session(server, token).await;
+    let body = mcp_rpc(
+        server, token, &session, "tools/call",
+        serde_json::json!({ "name": name, "arguments": args }),
+    )
+    .await;
+    assert!(body["error"].is_null(), "MCP {name} protocol error: {:?}", body["error"]);
+    body["result"].clone()
+}
+
+#[tokio::test]
+async fn test_mcp_delete_load_happy_and_active_trip_guard() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_dl@example.com", "password-mcp-dl").await;
+    let fac_id = create_test_facility(&server, "MCP DelLoad Dock", "Fargo, ND").await;
+
+    // Load with an active trip → delete_load must isError.
+    let load_id = create_2stop_load(&server, &fac_id, "MCP DelLoad Co").await;
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                { "sequence": 1, "stop_type": "origin", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let guarded = mcp_call_result(&server, &token, "delete_load",
+        serde_json::json!({ "id": load_id })).await;
+    assert_eq!(guarded["isError"], serde_json::json!(true), "active-trip delete must isError");
+    let msg = guarded["content"][0]["text"].as_str().unwrap_or("");
+    assert!(msg.contains("active trip"), "guard message: {msg}");
+
+    // Cancel the trip, then delete_load succeeds.
+    mcp_call(&server, &token, "delete_trip", serde_json::json!({ "id": trip_id })).await;
+    let ok = mcp_call(&server, &token, "delete_load", serde_json::json!({ "id": load_id })).await;
+    assert_eq!(ok["deleted"], serde_json::json!(true));
+
+    let after = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(after.status_code(), 404, "deleted load should be gone");
+}
+
+#[tokio::test]
+async fn test_mcp_delete_trip_soft_cancel() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_dt@example.com", "password-mcp-dt").await;
+    let fac_id = create_test_facility(&server, "MCP DelTrip Dock", "Boise, ID").await;
+
+    let trip = mcp_call(&server, &token, "create_trip", serde_json::json!({
+        "stops": [
+            { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+              "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+            { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+              "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+        ]
+    })).await;
+    let trip_id = trip["id"].as_str().unwrap().to_string();
+
+    let del = mcp_call(&server, &token, "delete_trip", serde_json::json!({ "id": trip_id })).await;
+    assert_eq!(del["deleted"], serde_json::json!(true));
+
+    let after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "cancelled", "planned trip soft-cancels");
+}
+
+#[tokio::test]
+async fn test_mcp_invoice_cancel_settle_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_ics@example.com", "password-mcp-ics").await;
+    let fac_id = create_test_facility(&server, "MCP Invoice Dock", "Reno, NV").await;
+
+    // cancel_load on a fresh load.
+    let cancel_load = create_2stop_load(&server, &fac_id, "MCP Cancel Co").await;
+    let cancelled = mcp_call(&server, &token, "cancel_load",
+        serde_json::json!({ "id": cancel_load, "reason": "fell through" })).await;
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["cancellation_reason"], "fell through");
+
+    // invoice → settle lifecycle on a delivered load.
+    let load_id = create_2stop_load(&server, &fac_id, "MCP Invoice Co").await;
+    drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
+
+    let invoiced = mcp_call(&server, &token, "invoice_load",
+        serde_json::json!({ "id": load_id, "invoice_number": "INV-MCP-1" })).await;
+    assert_eq!(invoiced["status"], "invoiced");
+    assert_eq!(invoiced["invoice_number"], "INV-MCP-1");
+
+    let settled = mcp_call(&server, &token, "settle_load",
+        serde_json::json!({ "id": load_id })).await;
+    assert_eq!(settled["status"], "settled");
+}
+
+#[tokio::test]
+async fn test_mcp_create_update_delete_driver_and_set_pin() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_drv@example.com", "password-mcp-drv").await;
+
+    let driver = mcp_call(&server, &token, "create_driver",
+        serde_json::json!({ "name": "MCP Driver" })).await;
+    let driver_id = driver["id"].as_str().unwrap().to_string();
+    assert_eq!(driver["status"], "available");
+
+    let updated = mcp_call(&server, &token, "update_driver",
+        serde_json::json!({ "id": driver_id, "notes": "updated via MCP" })).await;
+    assert_eq!(updated["notes"], "updated via MCP");
+
+    // set_driver_pin happy path.
+    let pin_ok = mcp_call(&server, &token, "set_driver_pin",
+        serde_json::json!({ "id": driver_id, "pin": "1234" })).await;
+    assert_eq!(pin_ok["pin_set"], serde_json::json!(true));
+
+    // set_driver_pin bad format → isError.
+    let pin_bad = mcp_call_result(&server, &token, "set_driver_pin",
+        serde_json::json!({ "id": driver_id, "pin": "12ab" })).await;
+    assert_eq!(pin_bad["isError"], serde_json::json!(true), "non-numeric PIN must isError");
+    let msg = pin_bad["content"][0]["text"].as_str().unwrap_or("");
+    assert!(msg.contains("PIN"), "guard message: {msg}");
+
+    // delete_driver soft-deletes.
+    let del = mcp_call(&server, &token, "delete_driver",
+        serde_json::json!({ "id": driver_id })).await;
+    assert_eq!(del["deleted"], serde_json::json!(true));
+    let after = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "inactive");
+}
+
+#[tokio::test]
+async fn test_mcp_delete_truck_trailer_facility() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_eq@example.com", "password-mcp-eq").await;
+
+    let truck_id = make_truck(&server, "MCP-DEL-TRK").await;
+    let del_truck = mcp_call(&server, &token, "delete_truck",
+        serde_json::json!({ "truck_id": truck_id })).await;
+    assert_eq!(del_truck["deleted"], serde_json::json!(true));
+    assert_eq!(truck_status(&server, &truck_id).await, "inactive");
+
+    let trailer_id = make_trailer(&server, "MCP-DEL-TRL").await;
+    let del_trailer = mcp_call(&server, &token, "delete_trailer",
+        serde_json::json!({ "trailer_id": trailer_id })).await;
+    assert_eq!(del_trailer["deleted"], serde_json::json!(true));
+    assert_eq!(trailer_status(&server, &trailer_id).await, "inactive");
+
+    // delete_facility happy path (no loads reference it).
+    let fac_id = create_test_facility(&server, "MCP Del Facility", "Provo, UT").await;
+    let del_fac = mcp_call(&server, &token, "delete_facility",
+        serde_json::json!({ "facility_id": fac_id })).await;
+    assert_eq!(del_fac["deleted"], serde_json::json!(true));
+    let after = server.get(&format!("/dispatch/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(after.status_code(), 404, "deleted facility should be gone");
+}

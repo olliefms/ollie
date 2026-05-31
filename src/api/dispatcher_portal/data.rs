@@ -1443,7 +1443,7 @@ pub async fn count_events_today(
 // Internal helpers — mirror build_detail_response from src/api/loads.rs
 // ---------------------------------------------------------------------------
 
-async fn build_load_detail(
+pub async fn build_load_detail(
     state: &AppState,
     record: crate::models::LoadRecord,
 ) -> Result<LoadDetailResponse, AppError> {

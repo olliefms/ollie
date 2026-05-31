@@ -611,9 +611,22 @@ pub async fn set_driver_pin_handler(
     Path(id): Path<Uuid>,
     Json(body): Json<SetDriverPinRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    apply_set_driver_pin(&state, id, body.pin).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shared set-PIN writer — used by the HTTP handler and the MCP `set_driver_pin`
+/// tool. Validates the PIN (4–6 numeric digits), bcrypt-hashes at cost 12, and
+/// upserts the driver's credentials while bumping token_version to invalidate any
+/// outstanding JWTs.
+pub async fn apply_set_driver_pin(
+    state: &AppState,
+    id: Uuid,
+    pin: String,
+) -> Result<(), AppError> {
     state.db.get_driver_by_id(id).await?;
 
-    let pin = body.pin.trim().to_string();
+    let pin = pin.trim().to_string();
     let len = pin.len();
     if !(4..=6).contains(&len) || !pin.chars().all(|c| c.is_ascii_digit()) {
         return Err(AppError::UnprocessableEntity("PIN must be 4–6 numeric digits".into()));
@@ -646,7 +659,7 @@ pub async fn set_driver_pin_handler(
 
     state.db.upsert_driver_credentials(&credentials).await?;
     tracing::info!(driver_id = %id, "dispatcher set PIN for driver");
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 /// Sync the driver's active trip's resources to the driver's current
