@@ -299,8 +299,12 @@ pub async fn list_trips(
     // terminal). `Config.terminal_timezone` was retired in favor of the terminals table.
     let driver = state.db.get_driver_by_id(driver_id).await?;
     let terminal = match driver.terminal_id {
-        Some(tid) => state.db.get_terminal_by_id(tid).await
-            .or(state.db.default_terminal().await)?,
+        // Lazy fallback: only scan for the default terminal if the driver's
+        // terminal lookup fails — `.or(..)` would evaluate it eagerly every call.
+        Some(tid) => match state.db.get_terminal_by_id(tid).await {
+            Ok(t) => t,
+            Err(_) => state.db.default_terminal().await?,
+        },
         None => state.db.default_terminal().await?,
     };
     let terminal_tz: chrono_tz::Tz = terminal
@@ -605,8 +609,12 @@ pub async fn stop_detail(
     // and pay resolution; this value is just the response default.
     let driver = state.db.get_driver_by_id(driver_id).await?;
     let terminal_free_dwell = match driver.terminal_id {
-        Some(tid) => state.db.get_terminal_by_id(tid).await
-            .or(state.db.default_terminal().await)?,
+        // Lazy fallback: only scan for the default terminal if the driver's
+        // terminal lookup fails — `.or(..)` would evaluate it eagerly every call.
+        Some(tid) => match state.db.get_terminal_by_id(tid).await {
+            Ok(t) => t,
+            Err(_) => state.db.default_terminal().await?,
+        },
         None => state.db.default_terminal().await?,
     }
     .free_dwell_minutes;
