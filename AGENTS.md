@@ -235,12 +235,23 @@ PDFs use `lopdf::Document::load_mem()`. If lopdf can't extract ≥50 words, the 
 | `OLLAMA_VISION_MODEL` | No | `moondream` | Vision/image description model |
 | `OLLAMA_EMBED_DIM` | No | `768` | Embedding dimension (must match model) |
 | `PIPELINE_WORKERS` | No | `1` | Concurrent pipeline workers |
-| TERMINAL_TIMEZONE | No | America/New_York | IANA timezone for pay-period weeks (driver-portal Past tab). Replaced by per-terminal data in a future release (#185). |
-| `OLLIE_FREE_DWELL_MINUTES` | No | `120` | Minutes of free dwell before detention accrues at a stop. Surfaced on driver stop-detail response so clients don't hardcode (#258). |
+| `TERMINAL_TIMEZONE` | No (deprecated) | America/New_York | **Seed-only.** First-boot timezone for the Default terminal row. No longer read by `Config`; terminals own timezone (#185). |
+| `OLLIE_FREE_DWELL_MINUTES` | No (deprecated) | `120` | **Seed-only.** First-boot free-dwell for the Default terminal row. No longer read by `Config`; terminals own free-dwell (#185, #258). |
 | `OLLIE_PUBLIC_BASE_URL` | No | `` (empty) | Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`. Used to build absolute presigned blob upload/download URLs for the dispatcher MCP blob tools. When empty, the presigned-URL tools error; inline `create_blob` still works (#277). |
 | `OLLIE_MCP_INLINE_BLOB_MAX_BYTES` | No | `262144` | Max decoded size for the inline-base64 `create_blob` MCP tool. Larger files must use a presigned upload URL. Also sizes the `/dispatch/mcp` request body limit (#277). |
 | `OLLIE_BLOB_PRESIGN_TTL_SECS` | No | `300` | Default TTL (seconds) for presigned blob URLs when the caller omits `expires_in_seconds` (#277). |
 | `OLLIE_BLOB_PRESIGN_MAX_TTL_SECS` | No | `3600` | Hard cap (seconds) on presigned blob URL TTL (#277). |
+
+### Terminals & driver pay
+
+The `terminals` table owns each terminal's timezone and the mandatory rate floor
+(loaded/deadhead rates, extra-stop fee, detention rate, free-dwell minutes). Drivers
+attach to a terminal via `terminal_id` and may carry optional per-field rate overrides;
+trips may carry the same overrides. Pay resolves per-field trip → driver → terminal
+(`resolve_rates` in `src/models/pay.rs`). The `TERMINAL_TIMEZONE` and
+`OLLIE_FREE_DWELL_MINUTES` env vars are now ONLY first-boot seed values for the Default
+terminal (read directly in `open_or_create_terminal`); they are otherwise deprecated and
+no longer read by `Config`.
 
 ## Running Tests
 
