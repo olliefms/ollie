@@ -98,9 +98,14 @@ impl ServerHandler for OllieMcp {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         let args = Value::Object(request.arguments.unwrap_or_default());
+        // Destructive ops ask the user to confirm via elicitation when the client
+        // supports it; clients that don't degrade to the prior behavior (#300).
+        if let Some(declined) = confirm_destructive(&request.name, &args, &context.peer).await {
+            return Ok(declined);
+        }
         match handle_tool_call(&self.state, &request.name, &args).await {
             // Emit the payload as structuredContent (typed, schema-checkable) AND a
             // backward-compatible JSON text block, per MCP 2025-06-18 (#293). Blob-
@@ -187,6 +192,74 @@ impl ServerHandler for OllieMcp {
 enum ToolError {
     Unknown,
     Domain(String),
+}
+
+// ---------------------------------------------------------------------------
+// Elicitation (MCP `elicitation`, #300)
+//
+// Before a destructive op (cancel_trip, delete_blob force=true) the server asks
+// the user to confirm — but only when the client declared elicitation support.
+// Clients without it degrade to the prior behavior (the op runs as before), so
+// existing integrations don't break. This is the one wired flow; disambiguating
+// equipment selection etc. are tracked as follow-ups.
+// ---------------------------------------------------------------------------
+
+/// Structured response the client returns for a destructive-action confirmation.
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+struct DestructiveConfirmation {
+    /// Set true to proceed with the destructive action.
+    confirm: bool,
+}
+rmcp::elicit_safe!(DestructiveConfirmation);
+
+/// Which tool calls warrant a destructive-action confirmation: cancelling a trip,
+/// and force-deleting a blob (a non-force delete already errors on attachments).
+fn is_destructive_op(name: &str, args: &Value) -> bool {
+    match name {
+        "cancel_trip" => true,
+        "delete_blob" => args["force"].as_bool() == Some(true),
+        _ => false,
+    }
+}
+
+/// Returns `Some(isError result)` if a destructive op must NOT proceed (the user
+/// declined, cancelled, or confirmation was unavailable from a supporting client);
+/// `None` to proceed (confirmed, or the client doesn't support elicitation).
+async fn confirm_destructive(
+    name: &str,
+    args: &Value,
+    peer: &rmcp::service::Peer<RoleServer>,
+) -> Option<CallToolResult> {
+    if !is_destructive_op(name, args) {
+        return None;
+    }
+    // Graceful fallback: a client that didn't declare elicitation gets the prior
+    // behavior (proceed without a round-trip).
+    if peer.supported_elicitation_modes().is_empty() {
+        return None;
+    }
+    let message =
+        format!("Confirm {name}? This permanently changes fleet data and cannot be undone.");
+    // rmcp owns the elicit transport/deserialization; map its outcome to a simple
+    // "did the user confirm?" and let `destructive_decision` (unit-tested) decide.
+    let confirmed = match peer.elicit::<DestructiveConfirmation>(message).await {
+        Ok(Some(c)) => Some(c.confirm),
+        // No content / declined / cancelled / transport error.
+        _ => None,
+    };
+    destructive_decision(name, confirmed)
+}
+
+/// Decide whether a destructive op may proceed given the confirmation outcome:
+/// `Some(true)` = explicitly confirmed → proceed (`None`); anything else (declined,
+/// no content, error) → abort with an isError result.
+fn destructive_decision(name: &str, confirmed: Option<bool>) -> Option<CallToolResult> {
+    if confirmed == Some(true) {
+        return None;
+    }
+    Some(CallToolResult::error(vec![Content::text(format!(
+        "{name} was not performed: destructive-action confirmation was declined or unavailable."
+    ))]))
 }
 
 // ---------------------------------------------------------------------------
@@ -2353,5 +2426,32 @@ mod tests {
         // non-blob tools and upload_blob produce no links.
         assert!(blob_resource_links("list_loads", &json!({ "items": [] }), &json!({})).is_empty());
         assert!(blob_resource_links("upload_blob", &json!({ "url": "https://x" }), &json!({})).is_empty());
+    }
+
+    #[test]
+    fn destructive_ops_require_confirmation() {
+        // cancel_trip is always destructive; delete_blob only when force=true.
+        assert!(is_destructive_op("cancel_trip", &json!({})));
+        assert!(is_destructive_op("delete_blob", &json!({ "force": true })));
+        assert!(!is_destructive_op("delete_blob", &json!({ "force": false })));
+        assert!(!is_destructive_op("delete_blob", &json!({})));
+        // non-destructive tools are never gated.
+        assert!(!is_destructive_op("list_loads", &json!({})));
+        assert!(!is_destructive_op("update_trip", &json!({ "force": true })));
+    }
+
+    #[test]
+    fn destructive_decision_only_proceeds_on_explicit_confirm() {
+        // Explicit confirmation proceeds (no rejection result).
+        assert!(destructive_decision("cancel_trip", Some(true)).is_none());
+
+        // Decline, no-content, and error outcomes all abort with an isError result.
+        for outcome in [Some(false), None] {
+            let reject = destructive_decision("delete_blob", outcome)
+                .unwrap_or_else(|| panic!("outcome {outcome:?} must abort"));
+            assert_eq!(reject.is_error, Some(true));
+            let text = reject.content[0].as_text().map(|t| t.text.clone()).unwrap_or_default();
+            assert!(text.contains("not performed"), "abort message: {text}");
+        }
     }
 }
