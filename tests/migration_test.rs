@@ -243,7 +243,7 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
 
     // The pre-existing (pre-blob_ids) row must read back with an empty blob_ids,
     // proving the `'[]'` migration default deserializes cleanly (#279).
-    let seed = client.list_trips(None, None, None).await.unwrap();
+    let seed = client.list_trips(None, None, None, None, None).await.unwrap();
     let seed_id = seed[0].id;
     let seed_trip = client.get_trip(seed_id).await.unwrap();
     assert_eq!(seed_trip.blob_ids, Vec::<Uuid>::new());

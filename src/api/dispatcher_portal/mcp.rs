@@ -971,6 +971,8 @@ async fn tool_list_trips(state: &AppState, args: &Value) -> Result<Value, String
         status: args["status"].as_str().map(|s| s.to_string()),
         trip_number: args["trip_number"].as_str().map(|s| s.to_string()),
         load_number: args["load_number"].as_str().map(|s| s.to_string()),
+        pay_period_start: args["pay_period_start"].as_str().map(|s| s.to_string()),
+        pay_period_end: args["pay_period_end"].as_str().map(|s| s.to_string()),
     };
     let items = super::data::build_trip_list_items(state, q).await
         .map_err(|e| e.to_string())?;
@@ -1003,7 +1005,7 @@ async fn tool_create_trip(state: &AppState, args: &Value) -> Result<Value, Strin
     // id — the admin handler returns it via the IntoResponse, but rather than
     // dig into axum Response internals, look up by sorting trips by created_at.
     // Simpler: scan once; production scale is fine for MCP audits.
-    let all = state.db.list_trips(None, None, None).await
+    let all = state.db.list_trips(None, None, None, None, None).await
         .map_err(|e| e.to_string())?;
     let newest = all.iter().max_by_key(|t| t.created_at)
         .ok_or("trip create succeeded but trip not found on re-fetch")?;

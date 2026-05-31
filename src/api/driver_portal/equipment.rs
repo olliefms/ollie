@@ -178,7 +178,7 @@ pub async fn update_trailer(
 
     // Reject trailers already on a different driver's active trip.
     if !resolved_ids.is_empty() {
-        let trips = state.db.list_trips(None, None, None).await?;
+        let trips = state.db.list_trips(None, None, None, None, None).await?;
         for t in &trips {
             if !matches!(t.status, TripStatus::Dispatched | TripStatus::InTransit) { continue; }
             if t.driver_id == Some(driver_id) { continue; }
@@ -197,7 +197,7 @@ pub async fn update_trailer(
 
     // Determine cascade target: a Dispatched/InTransit trip for this driver
     // where the driver is NOT at the final delivery stop.
-    let driver_trips = state.db.list_trips(None, Some(driver_id), None).await?;
+    let driver_trips = state.db.list_trips(None, Some(driver_id), None, None, None).await?;
     let active_trip = driver_trips.into_iter()
         .find(|t| matches!(t.status, TripStatus::Dispatched | TripStatus::InTransit));
 
@@ -329,7 +329,7 @@ async fn active_trip_for_driver(
     state: &AppState,
     driver_id: Uuid,
 ) -> Result<Option<crate::models::TripListItem>, AppError> {
-    let mut trips: Vec<_> = state.db.list_trips(None, Some(driver_id), None).await?
+    let mut trips: Vec<_> = state.db.list_trips(None, Some(driver_id), None, None, None).await?
         .into_iter()
         .filter(|t| matches!(
             t.status,

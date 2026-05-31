@@ -129,7 +129,7 @@ async fn active_trip_for_driver(
 ) -> Result<Option<crate::models::TripListItem>, AppError> {
     let mut trips: Vec<_> = state
         .db
-        .list_trips(None, Some(driver_id), None)
+        .list_trips(None, Some(driver_id), None, None, None)
         .await?
         .into_iter()
         .filter(|t| matches!(t.status, TripStatus::Dispatched | TripStatus::InTransit))
@@ -149,7 +149,7 @@ async fn reject_equipment_on_other_active_trip(
     if truck_id.is_none() && trailer_ids.is_empty() {
         return Ok(());
     }
-    let trips = state.db.list_trips(None, None, None).await?;
+    let trips = state.db.list_trips(None, None, None, None, None).await?;
     for t in &trips {
         if !matches!(t.status, TripStatus::Dispatched | TripStatus::InTransit) {
             continue;

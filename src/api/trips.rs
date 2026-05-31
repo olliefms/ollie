@@ -192,7 +192,7 @@ pub async fn list_trips(
     let _offset = q.offset.unwrap_or(0);
 
     let mut items = state.db.list_trips(
-        q.load_id, q.driver_id, q.status.as_deref(),
+        q.load_id, q.driver_id, q.status.as_deref(), None, None,
     ).await?;
     for it in &mut items {
         for s in &mut it.stops { s.fill_utc_fields(); }

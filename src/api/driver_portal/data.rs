@@ -301,7 +301,7 @@ pub async fn list_trips(
         .parse()
         .map_err(|_| AppError::Internal("invalid terminal timezone in config".into()))?;
 
-    let all_trips = state.db.list_trips(None, Some(driver_id), None).await?;
+    let all_trips = state.db.list_trips(None, Some(driver_id), None, None, None).await?;
 
     let (filtered, week_info): (Vec<TripListItem>, Option<PastWeekInfo>) = match tab {
         TripTab::Past => {
