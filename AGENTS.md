@@ -4,39 +4,41 @@ This file is for AI coding agents working on this codebase. Read it before makin
 
 ## Project Overview
 
-ollie is a RAG-enabled blob store written in Rust. It accepts file uploads, stores them content-addressed on disk, and uses Ollama to generate summaries and embeddings. Blobs are indexed in LanceDB for semantic search.
+ollie is a self-hosted freight **Transportation Management System (TMS)** written in Rust. It manages the operational core of a trucking dispatch operation — loads, trips, drivers, trucks, trailers, and facilities — alongside an AI-enabled document store (the original "blob store": files content-addressed on disk, summarized and embedded by Ollama, indexed in LanceDB for semantic search).
 
-**Stack:** Axum 0.8, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, lopdf 0.32
+The domain is exposed through four API surfaces: a dispatcher **MCP** server (`POST /dispatch/mcp`, preferred for AI agents), a dispatcher **REST** API (`/dispatch/api/v1`), a **driver portal** (`/driver/api/v1`, JWT via passkey/PIN), and a **deprecated admin REST** API (`/api/v1`, `ADMIN_API_KEY`). Two static web apps ship with it: a dispatcher SPA at `/dispatch` and a driver PWA at `/driver`. `GET /llms.txt` is the hand-written, agent-oriented tour of every surface and is the best high-level map of the running system.
+
+**Stack:** Axum 0.8, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, pdf-extract 0.7, jsonwebtoken 10, webauthn-rs 0.5, utoipa 4. Facility geocoding uses the US Census geocoder; trip/load mileage uses OpenRouteService (HGV).
 
 ## Codebase Layout
 
+The codebase follows a per-entity convention: each domain resource has a model in `models/`, DB operations in `db/<entity>_ops.rs`, and HTTP handlers in `api/`. When adding a resource, follow the existing trio.
+
 ```
 src/
-  lib.rs          — module declarations + AppState
-  main.rs         — startup: config, db, store, ai, pipeline, HTTP server
+  lib.rs          — module declarations + AppState (db, store, ai, geocoding, ors, pipelines, webauthn, …)
+  main.rs         — startup: config, db, store, ai, geocoding/routing clients, pipelines, indices, HTTP server
   config.rs       — Config::from_env()
-  models.rs       — BlobRecord, BlobStatus, BlobListItem, BlobListResponse, UpdateBlobRequest
   error.rs        — AppError enum + IntoResponse impl
-  storage/
-    mod.rs        — BlobStore: write/read/delete/exists, compute_checksum
-    shard.rs      — shard_path(base, checksum) → 2-level shard: ab/cd/fullhash
-  db/
-    mod.rs        — DbClient { table, embed_dim }, blob_schema(), creates/opens "blobs" table
-    ops.rs        — all DB operations: insert, get, list, update, delete, search, mark_*
-  ai/
-    mod.rs        — OllamaClient: embed(), generate()
-    extract.rs    — Extractable enum, extract_content(), bytes_to_base64()
-    embed.rs      — embed_text()
-    summarize.rs  — summarize_text(), describe_image()
-  pipeline/
-    mod.rs        — spawn_pipeline() → (Sender<Uuid>, JoinHandles)
-    worker.rs     — process_blob(): mark_processing → extract → summarize/embed → mark_ready/failed
-    recovery.rs   — requeue_stale(): re-queues pending/processing blobs at startup
+  models/         — one module per resource: blob, facility, load, trip, driver, truck, trailer,
+                    dispatcher(+credentials/api_key), event, oauth_client, authorization_code, refresh_token
+  storage/        — BlobStore (content-addressed sharding), extract_store
+  db/             — DbClient + one *_ops.rs per resource; merge_insert upsert pattern (see below)
+  ai/             — OllamaClient: embed(), generate(); extract.rs, embed.rs, summarize.rs
+  geocoding/      — US Census geocoder client
+  routing/        — OpenRouteService HGV routing client (deadhead/loaded miles)
+  pipeline/       — spawn_pipeline (doc AI), spawn_geocoding_pipeline, spawn_routing_pipeline, recovery
+  events/         — append-only event journal helpers
+  services/       — trip_stops, doctors/ (trip, load, facility data-integrity repair)
   api/
-    mod.rs        — router() with all routes + bearer auth middleware
-    auth.rs       — require_bearer() middleware
-    blobs.rs      — POST /blobs (upload), GET /blobs (list/search)
-    blob.rs       — GET /blobs/:id, PUT /blobs/:id, DELETE /blobs/:id
+    mod.rs              — router() wiring all surfaces; ApiDoc (utoipa) + LLMS_TXT
+    auth.rs             — require_bearer() (admin API_KEY) middleware
+    blobs.rs / blob.rs  — admin blob upload/list and per-blob get/update/delete/query
+    facilities.rs, loads.rs, trips.rs, trip_actions.rs, drivers.rs, trucks.rs,
+      trailers.rs, dispatchers.rs, events.rs, mileage_summary.rs, version.rs — admin REST handlers
+    oauth/              — OAuth 2.1 (authorize, token, register, metadata) for MCP
+    dispatcher_portal/  — JWT auth, data (read) + *_writes handlers, mcp.rs (MCP server), blobs + presigned, api_keys
+    driver_portal/      — passkey/PIN auth (jwt.rs, middleware.rs), data, equipment, documents
 ```
 
 ## Critical Version Notes
@@ -194,9 +196,14 @@ The API is documented via `utoipa` (v4). Two unauthenticated endpoints serve the
 
 ## API Auth
 
-All endpoints require `Authorization: Bearer <ADMIN_API_KEY>`. The key is set via the `ADMIN_API_KEY` environment variable (required — no default). Missing or wrong key → 401.
+Auth depends on the surface (see `/llms.txt` for the authoritative description):
 
-`ADMIN_API_KEY` is arbitrary — any non-empty string works. For local dev or testing, `ADMIN_API_KEY=test-key` is fine. There is no provisioning or secret management required.
+- **Dispatcher MCP/REST** (`/dispatch/*`) — `Authorization: Bearer <JWT>` from `POST /dispatch/auth/login` (email+password), or a dispatcher API key. JWTs are signed with `DISPATCHER_JWT_SECRET`.
+- **Driver portal** (`/driver/api/v1/*`) — `Authorization: Bearer <JWT>` from passkey/PIN auth. JWTs are signed with `DRIVER_JWT_SECRET`.
+- **Admin REST** (`/api/v1/*`, deprecated) — `Authorization: Bearer <ADMIN_API_KEY>`. The key is arbitrary — any non-empty string works (`ADMIN_API_KEY=test-key` is fine for local dev/tests).
+- **Public, no auth:** `GET /version`, `GET /openapi.json`, `GET /llms.txt`.
+
+Missing or wrong credentials → 401. All three secrets (`ADMIN_API_KEY`, `DRIVER_JWT_SECRET`, `DISPATCHER_JWT_SECRET`) are required at startup — the server refuses to boot without them.
 
 ## Deduplication Logic
 
@@ -220,15 +227,21 @@ Facility addresses are geocoded asynchronously after create or address-change up
 - `ImageBytes(Vec<u8>)` — for `image/*` and PDFs with <50 extractable words
 - `Unsupported` — everything else
 
-PDFs use `lopdf::Document::load_mem()`. If lopdf can't extract ≥50 words, the PDF is treated as an image and sent to the vision model.
+PDFs use `pdf_extract::extract_text_from_mem()`. If it can't extract ≥50 words, the PDF is treated as an image and sent to the vision model.
 
 ## Environment Variables
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `ADMIN_API_KEY` | Yes | — | Bearer token for all API requests |
+| `ADMIN_API_KEY` | Yes | — | Bearer token for the deprecated admin REST API (`/api/v1`) |
+| `DRIVER_JWT_SECRET` | Yes | — | Signing secret for driver-portal JWTs. Min 32 bytes |
+| `DISPATCHER_JWT_SECRET` | Yes | — | Signing secret for dispatcher JWTs and API keys. Min 32 bytes |
+| `DRIVER_RP_ID` | Yes | — | WebAuthn relying-party ID for driver passkeys (e.g. `localhost`) |
+| `DRIVER_RP_ORIGIN` | Yes | — | WebAuthn relying-party origin (e.g. `http://localhost:3000`) |
+| `ORS_API_KEY` | No | `` (empty) | OpenRouteService key for trip/load mileage. Empty disables mileage calc |
 | `PORT` | No | `3000` | HTTP listen port |
 | `DATA_DIR` | No | `./data` | Root for blob storage and LanceDB |
+| `GEOCODING_WORKERS` | No | `1` | Concurrent facility-geocoding workers |
 | `OLLAMA_BASE_URL` | No | `http://localhost:11434` | Ollama API base URL |
 | `OLLAMA_EMBED_MODEL` | No | `nomic-embed-text` | Embedding model |
 | `OLLAMA_SUMMARY_MODEL` | No | `llama3.2` | Text summarization model |
