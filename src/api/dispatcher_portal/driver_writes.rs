@@ -582,14 +582,23 @@ pub async fn delete_driver_handler(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    apply_driver_delete(&state, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shared driver-delete writer — used by the HTTP handler and the MCP
+/// `delete_driver` tool. Soft-deletes the driver, then invalidates any
+/// outstanding JWTs by bumping the credential `token_version` (propagating the
+/// upsert error rather than swallowing it).
+pub async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<(), AppError> {
     state.db.soft_delete_driver(id).await?;
     // Invalidate any outstanding JWTs by bumping the credential token_version.
-    if let Ok(Some(mut creds)) = state.db.get_driver_credentials(id).await {
+    if let Some(mut creds) = state.db.get_driver_credentials(id).await? {
         creds.token_version += 1;
         creds.updated_at = Utc::now();
-        let _ = state.db.upsert_driver_credentials(&creds).await;
+        state.db.upsert_driver_credentials(&creds).await?;
     }
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 #[utoipa::path(

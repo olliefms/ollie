@@ -33,7 +33,7 @@ use crate::api::trip_actions::{
     StopLateRequest,
 };
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct DispatcherTripListItem {
     pub id: uuid::Uuid,
     pub trip_number: String,
@@ -522,7 +522,7 @@ pub async fn list_trips(
     path = "/dispatch/api/v1/trips",
     request_body(content = CreateTripRequest, description = "Trip to create"),
     responses(
-        (status = 201, description = "Created trip (enriched with driver/truck names and mileage_summary)"),
+        (status = 201, description = "Created trip (enriched with driver/truck names and mileage_summary)", body = DispatcherTripListItem),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Referenced load/driver/truck/trailer not found"),
@@ -535,15 +535,10 @@ pub async fn create_trip_handler(
     State(state): State<AppState>,
     Json(body): Json<crate::models::trip::CreateTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // Reuse the admin create_trip handler — pure DB work, no HTTP roundtrip.
-    crate::api::trips::create_trip(State(state.clone()), Json(body)).await?;
-
-    // Re-fetch the most recently created trip and return the dispatcher-enriched
-    // detail so the response carries a full mileage_summary (matches MCP).
-    let all = state.db.list_trips(None, None, None, None, None).await?;
-    let newest = all.iter().max_by_key(|t| t.created_at)
-        .ok_or_else(|| AppError::Internal("trip create succeeded but trip not found on re-fetch".into()))?;
-    let detail = build_trip_detail(&state, newest.id).await?;
+    // Create via the shared writer, which returns the created record — no
+    // re-fetch (that races under concurrent creates).
+    let record = crate::api::trips::apply_trip_create(&state, body).await?;
+    let detail = build_trip_detail(&state, record.id).await?;
     Ok((StatusCode::CREATED, Json(detail)))
 }
 

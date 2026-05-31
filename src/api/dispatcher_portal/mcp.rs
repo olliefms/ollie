@@ -1736,24 +1736,11 @@ async fn tool_create_trip(state: &AppState, args: &Value) -> Result<Value, Strin
     let req: CreateTripRequest = serde_json::from_value(args.clone())
         .map_err(|e| format!("invalid create_trip arguments: {e}"))?;
 
-    // Reuse the admin create_trip handler — pure DB work, no HTTP roundtrip.
-    let _resp = crate::api::trips::create_trip(
-        axum::extract::State(state.clone()),
-        Json(req),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // Re-fetch most recently created trip via the dispatcher-enriched detail
-    // builder so the MCP response carries a full mileage_summary. We need the
-    // id — the admin handler returns it via the IntoResponse, but rather than
-    // dig into axum Response internals, look up by sorting trips by created_at.
-    // Simpler: scan once; production scale is fine for MCP audits.
-    let all = state.db.list_trips(None, None, None, None, None).await
+    // Create via the shared writer, which returns the created record — no
+    // re-fetch (that races under concurrent creates).
+    let record = crate::api::trips::apply_trip_create(state, req).await
         .map_err(|e| e.to_string())?;
-    let newest = all.iter().max_by_key(|t| t.created_at)
-        .ok_or("trip create succeeded but trip not found on re-fetch")?;
-    let detail = super::data::build_trip_detail(state, newest.id).await
+    let detail = super::data::build_trip_detail(state, record.id).await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(detail))
 }
@@ -2422,13 +2409,8 @@ async fn tool_delete_trip(state: &AppState, args: &Value) -> Result<Value, Strin
 
 async fn tool_delete_driver(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
-    state.db.soft_delete_driver(id).await.map_err(|e| e.to_string())?;
-    // Invalidate any outstanding JWTs by bumping the credential token_version.
-    if let Ok(Some(mut creds)) = state.db.get_driver_credentials(id).await {
-        creds.token_version += 1;
-        creds.updated_at = chrono::Utc::now();
-        let _ = state.db.upsert_driver_credentials(&creds).await;
-    }
+    super::driver_writes::apply_driver_delete(state, id).await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "deleted": true })))
 }
 

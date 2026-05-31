@@ -244,6 +244,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             dispatcher_portal::driver_writes::AttachEquipmentBody,
             dispatcher_portal::driver_writes::DetachEquipmentBody,
             dispatcher_portal::driver_writes::DriverEquipmentChange,
+            dispatcher_portal::data::DispatcherTripListItem,
             models::terminal::TerminalRecord,
             models::terminal::TerminalListItem,
             models::terminal::CreateTerminalRequest,
