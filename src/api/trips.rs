@@ -151,6 +151,15 @@ pub async fn create_trip(
         stops,
         notes: body.notes,
         blob_ids: body.blob_ids,
+        loaded_rate_per_mile: None,
+        deadhead_rate_per_mile: None,
+        extra_stop_fee: None,
+        detention_rate_per_hour: None,
+        free_dwell_minutes: None,
+        settlement_ref: None,
+        pay_period_start: None,
+        pay_period_end: None,
+        driver_pay_snapshot: None,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -183,7 +192,7 @@ pub async fn list_trips(
     let _offset = q.offset.unwrap_or(0);
 
     let mut items = state.db.list_trips(
-        q.load_id, q.driver_id, q.status.as_deref(),
+        q.load_id, q.driver_id, q.status.as_deref(), None, None,
     ).await?;
     for it in &mut items {
         for s in &mut it.stops { s.fill_utc_fields(); }

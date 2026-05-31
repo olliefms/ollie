@@ -243,7 +243,7 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
 
     // The pre-existing (pre-blob_ids) row must read back with an empty blob_ids,
     // proving the `'[]'` migration default deserializes cleanly (#279).
-    let seed = client.list_trips(None, None, None).await.unwrap();
+    let seed = client.list_trips(None, None, None, None, None).await.unwrap();
     let seed_id = seed[0].id;
     let seed_trip = client.get_trip(seed_id).await.unwrap();
     assert_eq!(seed_trip.blob_ids, Vec::<Uuid>::new());
@@ -271,6 +271,15 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
         stops: vec![],
         notes: None,
         blob_ids: vec![blob_id],
+        loaded_rate_per_mile: None,
+        deadhead_rate_per_mile: None,
+        extra_stop_fee: None,
+        detention_rate_per_hour: None,
+        free_dwell_minutes: None,
+        settlement_ref: None,
+        pay_period_start: None,
+        pay_period_end: None,
+        driver_pay_snapshot: None,
         embedding: None,
         owner_id: 1,
         created_at: now,

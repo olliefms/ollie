@@ -389,6 +389,10 @@ pub async fn stop_arrive(
     Json(body): Json<StopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let existing = state.db.get_trip(id).await?;
+    // Settlement freeze: a settled trip's stop times feed detention pay; they are frozen.
+    if existing.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
+    }
     let stop_tz = existing.stops.iter()
         .find(|s| s.sequence == seq)
         .ok_or(AppError::NotFound)?
@@ -427,6 +431,10 @@ pub async fn stop_depart(
     Json(body): Json<StopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     let existing = state.db.get_trip(id).await?;
+    // Settlement freeze: a settled trip's stop times feed detention pay; they are frozen.
+    if existing.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
+    }
     let stop_tz = existing.stops.iter()
         .find(|s| s.sequence == seq)
         .ok_or(AppError::NotFound)?
@@ -541,8 +549,8 @@ pub async fn complete_trip(
 
 /// Fetches all trips currently in Dispatched or InTransit status.
 async fn list_active_trips(state: &AppState) -> Result<Vec<crate::models::trip::TripListItem>, AppError> {
-    let mut out = state.db.list_trips(None, None, Some("dispatched")).await?;
-    out.extend(state.db.list_trips(None, None, Some("in_transit")).await?);
+    let mut out = state.db.list_trips(None, None, Some("dispatched"), None, None).await?;
+    out.extend(state.db.list_trips(None, None, Some("in_transit"), None, None).await?);
     Ok(out)
 }
 
@@ -578,7 +586,7 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
     driver_id: Uuid,
     just_delivered_trip_id: Uuid,
 ) {
-    let Ok(trips) = state.db.list_trips(None, Some(driver_id), Some("assigned")).await else {
+    let Ok(trips) = state.db.list_trips(None, Some(driver_id), Some("assigned"), None, None).await else {
         tracing::warn!(%driver_id, "auto-dispatch: failed to list assigned trips");
         return;
     };

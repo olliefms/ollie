@@ -295,13 +295,24 @@ pub async fn list_trips(
         _ => TripTab::Current,
     };
 
-    let terminal_tz: chrono_tz::Tz = state
-        .config
-        .terminal_timezone
+    // Timezone now comes from the driver's terminal (falling back to the Default
+    // terminal). `Config.terminal_timezone` was retired in favor of the terminals table.
+    let driver = state.db.get_driver_by_id(driver_id).await?;
+    let terminal = match driver.terminal_id {
+        // Lazy fallback: only scan for the default terminal if the driver's
+        // terminal lookup fails — `.or(..)` would evaluate it eagerly every call.
+        Some(tid) => match state.db.get_terminal_by_id(tid).await {
+            Ok(t) => t,
+            Err(_) => state.db.default_terminal().await?,
+        },
+        None => state.db.default_terminal().await?,
+    };
+    let terminal_tz: chrono_tz::Tz = terminal
+        .timezone
         .parse()
-        .map_err(|_| AppError::Internal("invalid terminal timezone in config".into()))?;
+        .map_err(|_| AppError::Internal("invalid terminal timezone".into()))?;
 
-    let all_trips = state.db.list_trips(None, Some(driver_id), None).await?;
+    let all_trips = state.db.list_trips(None, Some(driver_id), None, None, None).await?;
 
     let (filtered, week_info): (Vec<TripListItem>, Option<PastWeekInfo>) = match tab {
         TripTab::Past => {
@@ -592,6 +603,22 @@ pub async fn stop_detail(
 
     let stop = trip.stops.iter().find(|s| s.sequence == seq).ok_or(AppError::NotFound)?;
 
+    // Display default for the stop's free-dwell now comes from the driver's terminal
+    // (falling back to the Default terminal) rather than the retired Config field.
+    // The authoritative per-stop free-dwell still lives in `detention_free_minutes`
+    // and pay resolution; this value is just the response default.
+    let driver = state.db.get_driver_by_id(driver_id).await?;
+    let terminal_free_dwell = match driver.terminal_id {
+        // Lazy fallback: only scan for the default terminal if the driver's
+        // terminal lookup fails — `.or(..)` would evaluate it eagerly every call.
+        Some(tid) => match state.db.get_terminal_by_id(tid).await {
+            Ok(t) => t,
+            Err(_) => state.db.default_terminal().await?,
+        },
+        None => state.db.default_terminal().await?,
+    }
+    .free_dwell_minutes;
+
     let (facility_opt, load_opt) = tokio::try_join!(
         async {
             if let Some(fid) = stop.facility_id {
@@ -654,7 +681,7 @@ pub async fn stop_detail(
         actual_arrive_utc,
         actual_depart_utc,
         expected_dwell_minutes: stop.expected_dwell_minutes,
-        free_dwell_minutes: state.config.free_dwell_minutes,
+        free_dwell_minutes: terminal_free_dwell,
         commodity: load_opt.as_ref().and_then(|l| l.commodity.clone()),
         weight_lbs: load_opt.as_ref().and_then(|l| l.weight_lbs),
         notes: stop.notes.clone(),
@@ -797,6 +824,15 @@ mod tests {
             stops,
             notes: None,
             blob_ids: vec![],
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
+            settlement_ref: None,
+            pay_period_start: None,
+            pay_period_end: None,
+            driver_pay_snapshot: None,
             owner_id: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),

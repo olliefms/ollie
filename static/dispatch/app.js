@@ -140,6 +140,7 @@ const VIEW_TITLES = {
   events: 'Events',
   documents: 'Documents',
   document: 'Document',
+  terminals: 'Terminals',
   account: 'Account',
 };
 
@@ -238,6 +239,9 @@ function _renderView(view, params) {
       break;
     case 'document':
       renderDocumentDetailView(params.id);
+      break;
+    case 'terminals':
+      renderTerminalsView();
       break;
     case 'account':
       renderAccountView();
@@ -1269,6 +1273,224 @@ async function renderDocumentsView(params = {}) {
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load documents: ${err.message}</div>`);
+    }
+  }
+}
+
+// ─── Terminals view ──────────────────────────────────────────
+
+async function renderTerminalsView() {
+  setContent('<div class="state-loading"><div class="spinner"></div></div>');
+
+  try {
+    const res = await apiFetch(`${API_BASE}/terminals`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const terminals = await res.json();
+
+    let rows = '';
+    if (!terminals || terminals.length === 0) {
+      rows = `<tr><td colspan="7" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No terminals found</td></tr>`;
+    } else {
+      rows = terminals.map(t => `
+        <tr data-terminal-id="${escHtml(t.id)}" style="cursor:pointer;">
+          <td>${escHtml(t.name)}</td>
+          <td>${escHtml(t.timezone)}</td>
+          <td>${t.is_default ? 'Yes' : 'No'}</td>
+          <td style="font-variant-numeric: tabular-nums;">${t.loaded_rate_per_mile != null ? t.loaded_rate_per_mile.toFixed(2) : '—'}</td>
+          <td style="font-variant-numeric: tabular-nums;">${t.deadhead_rate_per_mile != null ? t.deadhead_rate_per_mile.toFixed(2) : '—'}</td>
+          <td style="font-variant-numeric: tabular-nums;">${t.free_dwell_minutes != null ? t.free_dwell_minutes : '—'}</td>
+          <td>
+            <button class="btn btn--secondary terminal-edit-btn" data-terminal-id="${escHtml(t.id)}" style="font-size:var(--text-sm);padding:2px 8px;">Edit</button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    const html = `
+      <div class="page-header">
+        <h1 class="page-title">Terminals</h1>
+        <div class="page-controls">
+          <button class="btn btn--primary" id="terminal-create-btn">+ Create Terminal</button>
+        </div>
+      </div>
+
+      <div id="terminal-form-panel" hidden style="margin-bottom:var(--space-4);padding:var(--space-4);background:var(--color-surface-2);border-radius:var(--radius);border:1px solid var(--color-border);">
+        <h3 id="terminal-form-title" style="margin-top:0;margin-bottom:var(--space-3);">New Terminal</h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:var(--space-3);">
+          <div class="form-group" style="margin:0;">
+            <label class="form-label" for="tf-name">Name <span style="color:var(--color-danger);">*</span></label>
+            <input class="form-input" id="tf-name" type="text" required placeholder="e.g. East Terminal">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label" for="tf-timezone">Timezone <span style="color:var(--color-danger);">*</span></label>
+            <input class="form-input" id="tf-timezone" type="text" required placeholder="America/New_York" value="America/New_York">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label" for="tf-loaded-rate">Loaded Rate / Mile ($)</label>
+            <input class="form-input" id="tf-loaded-rate" type="number" step="0.01" min="0" placeholder="0.00">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label" for="tf-deadhead-rate">Deadhead Rate / Mile ($)</label>
+            <input class="form-input" id="tf-deadhead-rate" type="number" step="0.01" min="0" placeholder="0.00">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label" for="tf-extra-stop">Extra Stop Fee ($)</label>
+            <input class="form-input" id="tf-extra-stop" type="number" step="0.01" min="0" placeholder="0.00">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label" for="tf-detention-rate">Detention Rate / Hour ($)</label>
+            <input class="form-input" id="tf-detention-rate" type="number" step="0.01" min="0" placeholder="0.00">
+          </div>
+          <div class="form-group" style="margin:0;">
+            <label class="form-label" for="tf-free-dwell">Free Dwell (minutes)</label>
+            <input class="form-input" id="tf-free-dwell" type="number" min="0" placeholder="120" value="120">
+          </div>
+          <div class="form-group" style="margin:0;display:flex;align-items:center;gap:var(--space-2);padding-top:var(--space-4);">
+            <input type="checkbox" id="tf-is-default" style="width:16px;height:16px;">
+            <label class="form-label" for="tf-is-default" style="margin:0;cursor:pointer;">Set as default</label>
+          </div>
+        </div>
+        <div style="margin-top:var(--space-3);display:flex;gap:var(--space-2);">
+          <button class="btn btn--primary" id="terminal-save-btn">Save</button>
+          <button class="btn btn--secondary" id="terminal-cancel-btn">Cancel</button>
+        </div>
+        <div id="terminal-form-status" class="alert" hidden style="margin-top:var(--space-3);"></div>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Timezone</th>
+              <th>Default</th>
+              <th>Loaded Rate/Mi</th>
+              <th>Deadhead Rate/Mi</th>
+              <th>Free Dwell (min)</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="terminals-tbody">
+            ${rows}
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    setContent(html);
+
+    // Track which terminal is being edited (null = create)
+    let editingId = null;
+
+    function openForm(terminal) {
+      editingId = terminal ? terminal.id : null;
+      document.getElementById('terminal-form-title').textContent = terminal ? `Edit Terminal — ${escHtml(terminal.name)}` : 'New Terminal';
+      document.getElementById('tf-name').value = terminal ? (terminal.name || '') : '';
+      document.getElementById('tf-timezone').value = terminal ? (terminal.timezone || 'America/New_York') : 'America/New_York';
+      document.getElementById('tf-loaded-rate').value = terminal ? (terminal.loaded_rate_per_mile ?? '') : '';
+      document.getElementById('tf-deadhead-rate').value = terminal ? (terminal.deadhead_rate_per_mile ?? '') : '';
+      document.getElementById('tf-extra-stop').value = terminal ? (terminal.extra_stop_fee ?? '') : '';
+      document.getElementById('tf-detention-rate').value = terminal ? (terminal.detention_rate_per_hour ?? '') : '';
+      document.getElementById('tf-free-dwell').value = terminal ? (terminal.free_dwell_minutes ?? 120) : 120;
+      document.getElementById('tf-is-default').checked = terminal ? !!terminal.is_default : false;
+      const statusEl = document.getElementById('terminal-form-status');
+      statusEl.hidden = true;
+      statusEl.textContent = '';
+      document.getElementById('terminal-form-panel').hidden = false;
+      document.getElementById('tf-name').focus();
+    }
+
+    function closeForm() {
+      editingId = null;
+      document.getElementById('terminal-form-panel').hidden = true;
+    }
+
+    document.getElementById('terminal-create-btn').addEventListener('click', () => openForm(null));
+    document.getElementById('terminal-cancel-btn').addEventListener('click', closeForm);
+
+    document.getElementById('terminal-save-btn').addEventListener('click', async () => {
+      const name = document.getElementById('tf-name').value.trim();
+      const timezone = document.getElementById('tf-timezone').value.trim();
+      const statusEl = document.getElementById('terminal-form-status');
+
+      if (!name) {
+        statusEl.hidden = false;
+        statusEl.className = 'alert alert--error';
+        statusEl.textContent = 'Name is required.';
+        return;
+      }
+      if (!timezone) {
+        statusEl.hidden = false;
+        statusEl.className = 'alert alert--error';
+        statusEl.textContent = 'Timezone is required.';
+        return;
+      }
+
+      const parseRate = (id) => {
+        const v = document.getElementById(id).value;
+        return v === '' ? undefined : parseFloat(v);
+      };
+      const parseFreeWell = () => {
+        const v = document.getElementById('tf-free-dwell').value;
+        return v === '' ? undefined : parseInt(v, 10);
+      };
+
+      const body = {
+        name,
+        timezone,
+        is_default: document.getElementById('tf-is-default').checked,
+        loaded_rate_per_mile: parseRate('tf-loaded-rate'),
+        deadhead_rate_per_mile: parseRate('tf-deadhead-rate'),
+        extra_stop_fee: parseRate('tf-extra-stop'),
+        detention_rate_per_hour: parseRate('tf-detention-rate'),
+        free_dwell_minutes: parseFreeWell(),
+      };
+
+      // Remove undefined keys so the server doesn't see them in create payloads;
+      // for PUT they are optional fields, undefined means "leave unchanged".
+      const payload = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== undefined));
+
+      const saveBtn = document.getElementById('terminal-save-btn');
+      saveBtn.disabled = true;
+
+      try {
+        const url = editingId
+          ? `${API_BASE}/terminals/${encodeURIComponent(editingId)}`
+          : `${API_BASE}/terminals`;
+        const method = editingId ? 'PUT' : 'POST';
+        const res = await apiFetch(url, { method, body: JSON.stringify(payload) });
+
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || `HTTP ${res.status}`);
+        }
+
+        // Success: close form and re-render
+        renderTerminalsView();
+      } catch (err) {
+        if (err.message !== 'Unauthorized — please sign in again.') {
+          statusEl.hidden = false;
+          statusEl.className = 'alert alert--error';
+          statusEl.textContent = `Save failed: ${escHtml(err.message)}`;
+        }
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+
+    // Edit buttons — collect terminal data from the already-fetched list
+    document.querySelectorAll('.terminal-edit-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.terminalId;
+        const terminal = terminals.find(t => t.id === id);
+        if (terminal) openForm(terminal);
+      });
+    });
+
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      setContent(`<div class="state-error">Failed to load terminals: ${escHtml(err.message)}</div>`);
     }
   }
 }

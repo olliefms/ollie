@@ -22,8 +22,6 @@ pub struct Config {
     pub driver_rp_id: String,
     pub driver_rp_origin: String,
     pub dispatcher_jwt_secret: String,
-    pub terminal_timezone: String,
-    pub free_dwell_minutes: u32,
     /// Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`.
     /// Used to build absolute presigned blob upload/download URLs handed to MCP agents.
     /// Empty when unset — the presigned MCP tools error clearly in that case rather than
@@ -55,10 +53,9 @@ impl Config {
             .map_err(|_| "DRIVER_RP_ID is required")?;
         let driver_rp_origin = env::var("DRIVER_RP_ORIGIN")
             .map_err(|_| "DRIVER_RP_ORIGIN is required")?;
-        let terminal_timezone = env::var("TERMINAL_TIMEZONE")
-            .unwrap_or_else(|_| "America/New_York".into());
-        terminal_timezone.parse::<chrono_tz::Tz>()
-            .map_err(|_| format!("TERMINAL_TIMEZONE '{terminal_timezone}' is not a valid IANA timezone"))?;
+        // NOTE: TERMINAL_TIMEZONE / OLLIE_FREE_DWELL_MINUTES are no longer read here.
+        // Terminals own timezone + free-dwell; those env vars are now only first-boot
+        // seed values for the Default terminal (see `open_or_create_terminal`).
         let public_base_url = env::var("OLLIE_PUBLIC_BASE_URL")
             .unwrap_or_default()
             .trim_end_matches('/')
@@ -100,9 +97,6 @@ impl Config {
             driver_rp_id,
             driver_rp_origin,
             dispatcher_jwt_secret,
-            terminal_timezone,
-            free_dwell_minutes: env::var("OLLIE_FREE_DWELL_MINUTES")
-                .ok().and_then(|v| v.parse().ok()).unwrap_or(120),
             public_base_url,
             cookie_secure,
             blob_presign_ttl_secs: env::var("OLLIE_BLOB_PRESIGN_TTL_SECS")
@@ -218,77 +212,5 @@ mod tests {
         assert!(cfg.driver_jwt_secret.len() >= 32);
         env::remove_var("ADMIN_API_KEY");
         remove_driver_vars();
-    }
-
-    #[test]
-    fn test_terminal_timezone_default() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prior = std::env::var("TERMINAL_TIMEZONE").ok();
-        std::env::remove_var("TERMINAL_TIMEZONE");
-        std::env::set_var("ADMIN_API_KEY", "k");
-        std::env::set_var("DRIVER_JWT_SECRET", "x".repeat(32));
-        std::env::set_var("DISPATCHER_JWT_SECRET", "x".repeat(32));
-        std::env::set_var("DRIVER_RP_ID", "localhost");
-        std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost");
-        let cfg = Config::from_env().expect("default config should load");
-        assert_eq!(cfg.terminal_timezone, "America/New_York");
-        if let Some(v) = prior { std::env::set_var("TERMINAL_TIMEZONE", v); }
-    }
-
-    #[test]
-    fn test_free_dwell_minutes_default() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prior = env::var("OLLIE_FREE_DWELL_MINUTES").ok();
-        env::remove_var("OLLIE_FREE_DWELL_MINUTES");
-        env::set_var("ADMIN_API_KEY", "test-key");
-        set_driver_vars();
-        let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.free_dwell_minutes, 120);
-        env::remove_var("ADMIN_API_KEY");
-        remove_driver_vars();
-        if let Some(v) = prior { env::set_var("OLLIE_FREE_DWELL_MINUTES", v); }
-    }
-
-    #[test]
-    fn test_free_dwell_minutes_override() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prior = env::var("OLLIE_FREE_DWELL_MINUTES").ok();
-        env::set_var("OLLIE_FREE_DWELL_MINUTES", "90");
-        env::set_var("ADMIN_API_KEY", "test-key");
-        set_driver_vars();
-        let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.free_dwell_minutes, 90);
-        env::remove_var("ADMIN_API_KEY");
-        remove_driver_vars();
-        if let Some(v) = prior { env::set_var("OLLIE_FREE_DWELL_MINUTES", v); } else { env::remove_var("OLLIE_FREE_DWELL_MINUTES"); }
-    }
-
-    #[test]
-    fn test_free_dwell_minutes_invalid_falls_back_to_default() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prior = env::var("OLLIE_FREE_DWELL_MINUTES").ok();
-        env::set_var("OLLIE_FREE_DWELL_MINUTES", "abc");
-        env::set_var("ADMIN_API_KEY", "test-key");
-        set_driver_vars();
-        let cfg = Config::from_env().unwrap();
-        assert_eq!(cfg.free_dwell_minutes, 120);
-        env::remove_var("ADMIN_API_KEY");
-        remove_driver_vars();
-        if let Some(v) = prior { env::set_var("OLLIE_FREE_DWELL_MINUTES", v); } else { env::remove_var("OLLIE_FREE_DWELL_MINUTES"); }
-    }
-
-    #[test]
-    fn test_terminal_timezone_invalid_rejects() {
-        let _g = ENV_LOCK.lock().unwrap();
-        let prior = std::env::var("TERMINAL_TIMEZONE").ok();
-        std::env::set_var("TERMINAL_TIMEZONE", "Not/A/Zone");
-        std::env::set_var("ADMIN_API_KEY", "k");
-        std::env::set_var("DRIVER_JWT_SECRET", "x".repeat(32));
-        std::env::set_var("DISPATCHER_JWT_SECRET", "x".repeat(32));
-        std::env::set_var("DRIVER_RP_ID", "localhost");
-        std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost");
-        let result = Config::from_env();
-        assert!(result.is_err(), "invalid tz should error");
-        if let Some(v) = prior { std::env::set_var("TERMINAL_TIMEZONE", v); } else { std::env::remove_var("TERMINAL_TIMEZONE"); }
     }
 }

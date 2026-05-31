@@ -58,6 +58,25 @@ pub struct PatchTripBody {
     /// tickets). Replaces the trip's `blob_ids` when present; omitted = no change.
     #[serde(default)]
     pub blob_ids: Option<Vec<Uuid>>,
+    /// Settlement reference. Setting this `None -> Some` freezes the trip's
+    /// driver pay (captures a `driver_pay_snapshot`) and locks pay-affecting edits.
+    #[serde(default)]
+    pub settlement_ref: Option<String>,
+    #[serde(default)]
+    pub pay_period_start: Option<String>,
+    #[serde(default)]
+    pub pay_period_end: Option<String>,
+    // Trip-level rate overrides (frozen once settled).
+    #[serde(default)]
+    pub loaded_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub deadhead_rate_per_mile: Option<f64>,
+    #[serde(default)]
+    pub extra_stop_fee: Option<f64>,
+    #[serde(default)]
+    pub detention_rate_per_hour: Option<f64>,
+    #[serde(default)]
+    pub free_dwell_minutes: Option<u32>,
 }
 
 #[utoipa::path(
@@ -82,6 +101,11 @@ pub async fn recalculate_miles_handler(
     let force = body.map(|Json(b)| b.force).unwrap_or(false);
 
     let trip = state.db.get_trip(id).await?;
+    // Settlement freeze: mileage feeds driver pay, so a settled trip's miles are frozen.
+    if trip.settlement_ref.is_some() {
+        return Err(AppError::Conflict(
+            "trip is settled; miles are frozen".into()));
+    }
     let already_set = trip.deadhead_miles.is_some() && trip.loaded_miles.is_some();
 
     let summary = if !force && already_set {
@@ -144,6 +168,40 @@ pub async fn apply_trip_patch(
     let parsed: PatchTripBody = serde_json::from_value(body)
         .map_err(|e| AppError::BadRequest(format!("invalid request body: {e}")))?;
 
+    // A settlement_ref, if present, must be a non-empty reference: an empty string
+    // would otherwise irreversibly freeze the trip with no meaningful reference
+    // (and the re-settle guard below would then make it unrecoverable).
+    if parsed.settlement_ref.as_deref().is_some_and(|s| s.trim().is_empty()) {
+        return Err(AppError::UnprocessableEntity(
+            "settlement_ref cannot be empty".into()));
+    }
+
+    // Settlement freeze + edit-lock.
+    let existing = state.db.get_trip(id).await?;
+    let was_settled = existing.settlement_ref.is_some();
+    let touches_rate = parsed.loaded_rate_per_mile.is_some()
+        || parsed.deadhead_rate_per_mile.is_some()
+        || parsed.extra_stop_fee.is_some()
+        || parsed.detention_rate_per_hour.is_some()
+        || parsed.free_dwell_minutes.is_some();
+    if was_settled && touches_rate {
+        return Err(AppError::Conflict(
+            "trip is settled; pay-affecting fields are frozen".into()));
+    }
+    // A previous_trip_id change triggers a mileage recompute, which feeds pay.
+    if was_settled && parsed.previous_trip_id.is_some() {
+        return Err(AppError::Conflict(
+            "trip is settled; previous_trip_id is frozen (it would recompute miles)".into()));
+    }
+    // Re-settling is not supported: the freeze branch below requires !was_settled,
+    // so a settlement_ref change on an already-settled trip would be silently
+    // dropped. Reject it explicitly, consistent with the locks above. (Pay-period
+    // metadata updates remain allowed — they don't re-freeze or un-settle.)
+    if was_settled && parsed.settlement_ref.is_some() {
+        return Err(AppError::Conflict(
+            "trip is already settled; settlement_ref cannot be changed".into()));
+    }
+
     if parsed.notes.is_some() || parsed.blob_ids.is_some() {
         state.db.update_trip_metadata(
             id, None, None, None, parsed.notes.clone(), None, parsed.blob_ids.clone(),
@@ -161,6 +219,42 @@ pub async fn apply_trip_patch(
             tracing::warn!("mileage recompute after previous_trip_id update failed: {e}");
             mileage_recompute_warning = Some(e.to_string());
         }
+    }
+
+    // Apply trip rate overrides (allowed only when not settled; guarded above).
+    if touches_rate {
+        state.db.update_trip_rate_overrides(
+            id,
+            parsed.loaded_rate_per_mile,
+            parsed.deadhead_rate_per_mile,
+            parsed.extra_stop_fee,
+            parsed.detention_rate_per_hour,
+            parsed.free_dwell_minutes,
+        ).await?;
+    }
+
+    // Settlement transition None -> Some: compute the snapshot from the LIVE record
+    // (which now includes any rate overrides written just above), then persist it.
+    if !was_settled && parsed.settlement_ref.is_some() {
+        let live = state.db.get_trip(id).await?;
+        let snapshot =
+            crate::api::dispatcher_portal::data::driver_pay_for_record(state, &live).await;
+        state.db.update_trip_settlement(
+            id,
+            parsed.settlement_ref.clone(),
+            parsed.pay_period_start.clone(),
+            parsed.pay_period_end.clone(),
+            snapshot,
+        ).await?;
+    } else if parsed.pay_period_start.is_some() || parsed.pay_period_end.is_some() {
+        // Updating pay-period metadata is allowed; it does not re-freeze or un-settle.
+        state.db.update_trip_settlement(
+            id,
+            None,
+            parsed.pay_period_start.clone(),
+            parsed.pay_period_end.clone(),
+            None,
+        ).await?;
     }
 
     let detail = build_trip_detail(state, id).await?;
