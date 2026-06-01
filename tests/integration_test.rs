@@ -16,7 +16,6 @@ use webauthn_rs::prelude::{Url, WebauthnBuilder};
 async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
-    std::env::set_var("ADMIN_API_KEY", "test-secret");
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
@@ -57,7 +56,6 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
 async fn test_server_with_state() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>, AppState) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
-    std::env::set_var("ADMIN_API_KEY", "test-secret");
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");

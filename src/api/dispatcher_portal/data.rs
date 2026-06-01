@@ -905,7 +905,7 @@ pub async fn unassign_trip(
 }
 
 // ---------------------------------------------------------------------------
-// Trip lifecycle actions — thin wrappers around admin trip_actions handlers.
+// Trip lifecycle actions — thin wrappers around `services::trip_lifecycle`.
 // Same business logic; separate utoipa annotations to surface under the
 // dispatcher path/tag.
 // ---------------------------------------------------------------------------

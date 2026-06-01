@@ -6,7 +6,7 @@ This file is for AI coding agents working on this codebase. Read it before makin
 
 ollie is a self-hosted freight **Transportation Management System (TMS)** written in Rust. It manages the operational core of a trucking dispatch operation — loads, trips, drivers, trucks, trailers, and facilities — alongside an AI-enabled document store (the original "blob store": files content-addressed on disk, summarized and embedded by Ollama, indexed in LanceDB for semantic search).
 
-The domain is exposed through four API surfaces: a dispatcher **MCP** server (`POST /dispatch/mcp`, preferred for AI agents), a dispatcher **REST** API (`/dispatch/api/v1`), a **driver portal** (`/driver/api/v1`, JWT via passkey/PIN), and a **deprecated admin REST** API (`/api/v1`, `ADMIN_API_KEY`). Two static web apps ship with it: a dispatcher SPA at `/dispatch` and a driver PWA at `/driver`. `GET /llms.txt` is the hand-written, agent-oriented tour of every surface and is the best high-level map of the running system.
+The domain is exposed through three API surfaces: a dispatcher **MCP** server (`POST /dispatch/mcp`, preferred for AI agents), a dispatcher **REST** API (`/dispatch/api/v1`), and a **driver portal** (`/driver/api/v1`, JWT via passkey/PIN). Two static web apps ship with it: a dispatcher SPA at `/dispatch` and a driver PWA at `/driver`. `GET /llms.txt` is the hand-written, agent-oriented tour of every surface and is the best high-level map of the running system.
 
 **Stack:** Axum 0.8, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, pdf-extract 0.7, jsonwebtoken 10, webauthn-rs 0.5, utoipa 4. Facility geocoding uses the US Census geocoder; trip/load mileage uses OpenRouteService (HGV).
 
@@ -32,10 +32,11 @@ src/
   services/       — trip_stops, doctors/ (trip, load, facility data-integrity repair)
   api/
     mod.rs              — router() wiring all surfaces; ApiDoc (utoipa) + LLMS_TXT
-    auth.rs             — require_bearer() (admin API_KEY) middleware
-    blobs.rs / blob.rs  — admin blob upload/list and per-blob get/update/delete/query
-    facilities.rs, loads.rs, trips.rs, trip_actions.rs, drivers.rs, trucks.rs,
-      trailers.rs, dispatchers.rs, events.rs, mileage_summary.rs, version.rs — admin REST handlers
+    blobs.rs / blob.rs  — shared blob DTOs + ingest_blob() helper (used by dispatcher blob handlers)
+    facilities.rs, loads.rs, trips.rs, drivers.rs, trucks.rs, trailers.rs,
+      mileage_summary.rs, version.rs — shared list-query DTOs + cross-surface helpers
+      (resolve_stops_pub, apply_trip_create, compute_and_persist_mileage,
+      build_mileage_summary, resolve_or_create_facility) used by the dispatcher/driver surfaces
     oauth/              — OAuth 2.1 (authorize, token, register, metadata) for MCP
     dispatcher_portal/  — JWT auth, data (read) + *_writes handlers, mcp.rs (MCP server), blobs + presigned, api_keys
     driver_portal/      — passkey/PIN auth (jwt.rs, middleware.rs), data, equipment, documents
@@ -200,10 +201,9 @@ Auth depends on the surface (see `/llms.txt` for the authoritative description):
 
 - **Dispatcher MCP/REST** (`/dispatch/*`) — `Authorization: Bearer <JWT>` from `POST /dispatch/auth/login` (email+password), or a dispatcher API key. JWTs are signed with `DISPATCHER_JWT_SECRET`.
 - **Driver portal** (`/driver/api/v1/*`) — `Authorization: Bearer <JWT>` from passkey/PIN auth. JWTs are signed with `DRIVER_JWT_SECRET`.
-- **Admin REST** (`/api/v1/*`, deprecated) — `Authorization: Bearer <ADMIN_API_KEY>`. The key is arbitrary — any non-empty string works (`ADMIN_API_KEY=test-key` is fine for local dev/tests).
 - **Public, no auth:** `GET /version`, `GET /openapi.json`, `GET /llms.txt`.
 
-Missing or wrong credentials → 401. All three secrets (`ADMIN_API_KEY`, `DRIVER_JWT_SECRET`, `DISPATCHER_JWT_SECRET`) are required at startup — the server refuses to boot without them.
+Missing or wrong credentials → 401. Both secrets (`DRIVER_JWT_SECRET`, `DISPATCHER_JWT_SECRET`) are required at startup — the server refuses to boot without them.
 
 ## Deduplication Logic
 
@@ -217,7 +217,7 @@ Both paths write to the DB. The filesystem file is only written once per unique 
 
 Facility addresses are geocoded asynchronously after create or address-change update — the API returns immediately with `geocode_status: pending` and a background worker fills `lat`/`lng`/`normalized_address`. On failure, `geocode_status` transitions to `failed` (and after 3 attempts, `permanently_failed`).
 
-**Manual override:** `POST /api/v1/facilities` and `PATCH /api/v1/facilities/{id}` both accept optional `lat` + `lng`. When both are supplied, the geocoder is skipped, coords are persisted as-is, `geocode_status` is set to `ready`, and `geocode_failure_count` resets to `0`. On UPDATE, explicit coords win even when `address` is also being changed. Partial coords or out-of-range values (lat ∉ [-90, 90], lng ∉ [-180, 180]) → 422. This is the supported repair path for facilities the geocoder can't resolve (e.g. industrial warehouses with BOL-derived addresses).
+**Manual override:** `POST /dispatch/api/v1/facilities` and `PATCH /dispatch/api/v1/facilities/{id}` both accept optional `lat` + `lng`. When both are supplied, the geocoder is skipped, coords are persisted as-is, `geocode_status` is set to `ready`, and `geocode_failure_count` resets to `0`. On UPDATE, explicit coords win even when `address` is also being changed. Partial coords or out-of-range values (lat ∉ [-90, 90], lng ∉ [-180, 180]) → 422. This is the supported repair path for facilities the geocoder can't resolve (e.g. industrial warehouses with BOL-derived addresses).
 
 ## Content Extraction
 
@@ -233,7 +233,6 @@ PDFs use `pdf_extract::extract_text_from_mem()`. If it can't extract ≥50 words
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `ADMIN_API_KEY` | Yes | — | Bearer token for the deprecated admin REST API (`/api/v1`) |
 | `DRIVER_JWT_SECRET` | Yes | — | Signing secret for driver-portal JWTs. Min 32 bytes |
 | `DISPATCHER_JWT_SECRET` | Yes | — | Signing secret for dispatcher JWTs and API keys. Min 32 bytes |
 | `DRIVER_RP_ID` | Yes | — | WebAuthn relying-party ID for driver passkeys (e.g. `localhost`) |

@@ -4,20 +4,11 @@ use crate::{
     error::AppError,
     models::{
         load::StopType,
-        trip::{CreateTripRequest, TripListResponse, TripRecord, TripStatus, TripStop, TripStopType, UpdateTripRequest},
+        trip::{CreateTripRequest, TripRecord, TripStatus, TripStop, TripStopType},
     },
     routing::RoutingClient,
     AppState,
 };
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-    Router,
-    routing::{delete, get, patch, post},
-};
-use axum_extra::extract::Query;
 use chrono::Utc;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -32,26 +23,6 @@ pub struct ListTripsQuery {
     pub status: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips",
-    request_body(content = CreateTripRequest, description = "Trip to create"),
-    responses(
-        (status = 201, description = "Created trip record", body = TripRecord),
-        (status = 400, description = "Bad request"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn create_trip(
-    State(state): State<AppState>,
-    Json(body): Json<CreateTripRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let record = apply_trip_create(&state, body).await?;
-    Ok((StatusCode::CREATED, Json(record)))
 }
 
 /// Shared trip-creation writer — used by the admin handler, the dispatcher HTTP
@@ -183,129 +154,6 @@ pub(crate) async fn apply_trip_create(
     state.db.insert_trip(&record).await?;
     for s in &mut record.stops { s.fill_utc_fields(); }
     Ok(record)
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/trips",
-    params(ListTripsQuery),
-    responses(
-        (status = 200, description = "List of trips", body = TripListResponse),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn list_trips(
-    State(state): State<AppState>,
-    Query(q): Query<ListTripsQuery>,
-) -> Result<impl IntoResponse, AppError> {
-    let _limit = q.limit.unwrap_or(20).min(100);
-    let _offset = q.offset.unwrap_or(0);
-
-    let mut items = state.db.list_trips(
-        q.load_id, q.driver_id, q.status.as_deref(), None, None,
-    ).await?;
-    for it in &mut items {
-        for s in &mut it.stops { s.fill_utc_fields(); }
-    }
-    let returned = items.len();
-    Ok(Json(TripListResponse { returned, items }))
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/trips/{id}",
-    params(
-        ("id" = Uuid, Path, description = "Trip UUID")
-    ),
-    responses(
-        (status = 200, description = "Trip record", body = TripRecord),
-        (status = 404, description = "Not found"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn get_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let mut record = state.db.get_trip(id).await?;
-    for s in &mut record.stops { s.fill_utc_fields(); }
-    Ok(Json(record))
-}
-
-#[utoipa::path(
-    patch,
-    path = "/api/v1/trips/{id}",
-    params(
-        ("id" = Uuid, Path, description = "Trip UUID")
-    ),
-    request_body(content = UpdateTripRequest, description = "Fields to update — all optional"),
-    responses(
-        (status = 200, description = "Updated trip record", body = TripRecord),
-        (status = 404, description = "Not found"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn update_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<UpdateTripRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
-
-    let embed_stops = body.stops.as_ref().unwrap_or(&existing.stops);
-    let stop_names = embed_stops.iter()
-        .filter_map(|s| s.name.as_deref())
-        .collect::<Vec<_>>().join(" ");
-    let trip_number = &existing.trip_number;
-    let notes_str = body.notes.as_deref()
-        .or(existing.notes.as_deref())
-        .unwrap_or("");
-    let embed_text_str = format!("{trip_number} {stop_names} {notes_str}");
-    let embedding = embed_text(&state.ai, &embed_text_str).await.ok();
-
-    let mut record = state.db.update_trip_metadata(
-        id, body.load_id, body.sequence, body.stops, body.notes, embedding, body.blob_ids,
-    ).await?;
-    for s in &mut record.stops { s.fill_utc_fields(); }
-    Ok(Json(record))
-}
-
-#[utoipa::path(
-    delete,
-    path = "/api/v1/trips/{id}",
-    params(
-        ("id" = Uuid, Path, description = "Trip UUID")
-    ),
-    responses(
-        (status = 204, description = "Trip was active → soft-cancelled (status set to Cancelled); or trip was already Cancelled → hard-deleted (row removed)"),
-        (status = 409, description = "Cannot cancel in_transit, delivered, or completed trip"),
-        (status = 404, description = "Trip not found"),
-        (status = 401, description = "Unauthorized"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn delete_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    state.db.delete_trip(id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/trips", post(create_trip))
-        .route("/api/v1/trips", get(list_trips))
-        .route("/api/v1/trips/{id}", get(get_trip))
-        .route("/api/v1/trips/{id}", patch(update_trip))
-        .route("/api/v1/trips/{id}", delete(delete_trip))
 }
 
 struct ComputedMileage {

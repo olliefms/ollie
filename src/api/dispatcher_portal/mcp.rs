@@ -2078,8 +2078,8 @@ async fn tool_unassign_driver(state: &AppState, args: &Value) -> Result<Value, S
 }
 
 // ---------------------------------------------------------------------------
-// Trip lifecycle MCP tools — thin shims that invoke the admin trip_actions
-// handler and return the resulting trip record (or status acknowledgement
+// Trip lifecycle MCP tools — thin shims that invoke `services::trip_lifecycle`
+// and return the resulting trip record (or status acknowledgement
 // for 204 actions).
 // ---------------------------------------------------------------------------
 
@@ -2814,7 +2814,6 @@ mod tests {
     async fn test_state() -> (AppState, TempDir, TempDir) {
         let blob_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
-        std::env::set_var("ADMIN_API_KEY", "test-secret");
         std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
         std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-jwt-secret-that-is-long-enough");
         std::env::set_var("DRIVER_RP_ID", "localhost");

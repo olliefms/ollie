@@ -1,30 +1,24 @@
 // src/api/mod.rs
-pub mod auth;
 pub mod blob;
 pub mod oauth;
 pub mod refresh_tokens;
 pub mod utils;
 pub mod version;
 pub mod blobs;
-pub mod dispatchers;
 pub mod dispatcher_portal;
 pub mod driver_portal;
 pub mod drivers;
-pub mod events;
 pub mod facilities;
 pub mod loads;
 pub mod mileage_summary;
 pub mod trailers;
-pub mod trip_actions;
 pub mod trips;
 pub mod trucks;
 
-use crate::{api::auth::require_bearer, models, AppState};
+use crate::{models, AppState};
 use axum::{
-    extract::DefaultBodyLimit,
-    middleware::from_fn,
     response::IntoResponse,
-    routing::{delete, get, patch, post, put},
+    routing::get,
     Router,
 };
 use utoipa::OpenApi;
@@ -33,65 +27,6 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        blobs::upload_blob,
-        blobs::list_blobs,
-        blob::get_blob,
-        blob::update_blob,
-        blob::delete_blob,
-        blob::query_blob,
-        facilities::create_facility,
-        facilities::list_facilities,
-        facilities::get_facility,
-        facilities::update_facility,
-        facilities::delete_facility,
-        loads::create_load,
-        loads::list_loads,
-        loads::get_load,
-        loads::update_load,
-        loads::delete_load,
-        loads::invoice_load,
-        loads::cancel_load,
-        loads::settle_load,
-        trips::create_trip,
-        trips::list_trips,
-        trips::get_trip,
-        trips::update_trip,
-        trips::delete_trip,
-        trip_actions::assign_trip,
-        trip_actions::unassign_trip,
-        trip_actions::dispatch_trip,
-        trip_actions::undispatch_trip,
-        trip_actions::cancel_trip,
-        trip_actions::stop_arrive,
-        trip_actions::stop_depart,
-        trip_actions::stop_late,
-        trip_actions::check_call,
-        trip_actions::complete_trip,
-        loads::load_stop_arrive,
-        loads::load_stop_depart,
-        events::list_events,
-        events::get_event_handler,
-        drivers::create_driver,
-        drivers::list_drivers,
-        drivers::get_driver,
-        drivers::update_driver,
-        drivers::delete_driver,
-        drivers::set_driver_pin,
-        trucks::create_truck,
-        trucks::list_trucks,
-        trucks::get_truck,
-        trucks::update_truck,
-        trucks::delete_truck,
-        trailers::create_trailer,
-        trailers::list_trailers,
-        trailers::get_trailer,
-        trailers::update_trailer,
-        trailers::delete_trailer,
-        dispatchers::create_dispatcher,
-        dispatchers::list_dispatchers,
-        dispatchers::get_dispatcher,
-        dispatchers::update_dispatcher,
-        dispatchers::reset_dispatcher_password,
         dispatcher_portal::auth::login,
         dispatcher_portal::auth::refresh,
         dispatcher_portal::auth::setup_status,
@@ -236,11 +171,11 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::UpdateTripRequest,
             models::TripListItem,
             models::TripListResponse,
-            trip_actions::AssignTripRequest,
-            trip_actions::StopArriveRequest,
-            trip_actions::StopDepartRequest,
-            trip_actions::StopLateRequest,
-            trip_actions::CheckCallRequest,
+            crate::services::trip_lifecycle::AssignTripRequest,
+            crate::services::trip_lifecycle::StopArriveRequest,
+            crate::services::trip_lifecycle::StopDepartRequest,
+            crate::services::trip_lifecycle::StopLateRequest,
+            crate::services::trip_lifecycle::CheckCallRequest,
             dispatcher_portal::trip_writes::RecalculateMilesBody,
             dispatcher_portal::trip_writes::PatchTripBody,
             dispatcher_portal::facility_writes::CreateFacilityBody,
@@ -258,8 +193,6 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::terminal::CreateTerminalRequest,
             models::terminal::UpdateTerminalRequest,
             models::pay::DriverPay,
-            loads::LoadStopArriveRequest,
-            loads::LoadStopDepartRequest,
             driver_portal::data::DriverFacilityContact,
             driver_portal::data::UpdateStopTimesRequest,
             driver_portal::equipment::EquipmentTruckSummary,
@@ -272,10 +205,6 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::DispatcherStatus,
             models::DispatcherRecord,
             models::Role,
-            dispatchers::CreateDispatcherRequest,
-            dispatchers::UpdateDispatcherRequest,
-            dispatchers::ResetDispatcherPasswordRequest,
-            dispatchers::DispatcherListResponse,
             dispatcher_portal::users::CreateUserRequest,
             dispatcher_portal::users::UpdateUserRequest,
             dispatcher_portal::users::ResetUserPasswordRequest,
@@ -338,22 +267,19 @@ semantic search.
 
 ## Which surface should I use?
 
-ollie exposes four surfaces. Choose by caller, not by habit:
+ollie exposes three surfaces. Choose by caller, not by habit:
 
   Dispatcher MCP    POST /dispatch/mcp     AI agents and tool-using assistants. PREFERRED.
   Dispatcher REST   /dispatch/api/v1/*     Dispatcher web app and programmatic integrations.
   Driver portal     /driver/api/v1/*       The driver mobile PWA only.
-  Admin REST        /api/v1/*              DEPRECATED — see "Admin REST (deprecated)" below.
 
 New automation should target the dispatcher MCP server, falling back to the
-dispatcher REST API where no tool exists for an operation. The admin REST surface
-is retained for backward compatibility only and will be removed in a future release.
+dispatcher REST API where no tool exists for an operation.
 
 ## Authentication
 
   Dispatcher MCP / REST   Authorization: Bearer <JWT>          (POST /dispatch/auth/login with email+password, or a dispatcher API key)
   Driver portal           Authorization: Bearer <JWT>          (driver passkey or PIN auth)
-  Admin REST              Authorization: Bearer <ADMIN_API_KEY>  (deprecated)
 
 Public, no auth: GET /version, GET /openapi.json, GET /llms.txt.
 Missing or incorrect credentials return 401. Dispatcher login locks out after 5
@@ -525,19 +451,6 @@ surface and not described in /openapi.json.
   trailer_ids OR trailer_unit_numbers) and cascades onto their active
   Dispatched/InTransit trip unless they have arrived at the final delivery stop.
 
-## Admin REST — /api/v1 (DEPRECATED)
-
-Retained for backward compatibility and slated for removal — new integrations must use
-the dispatcher surface instead. The admin API mirrors the resources above under
-/api/v1/* with Authorization: Bearer <ADMIN_API_KEY>, plus a few admin-only endpoints:
-
-  Dispatchers  POST/GET/PUT /api/v1/dispatchers[…], PUT /api/v1/dispatchers/:id/password
-  Drivers      POST/PUT/DELETE /api/v1/drivers[…], POST /api/v1/drivers/:id/pin
-  Loads, trips, trucks, trailers, facilities, blobs, events — full CRUD and lifecycle,
-    same shapes as the dispatcher surface.
-
-See /openapi.json for the complete admin endpoint reference.
-
 ## Full spec
 
 Machine-readable OpenAPI 3.0 spec: GET /openapi.json
@@ -551,48 +464,6 @@ async fn llms_txt() -> impl IntoResponse {
 }
 
 pub fn router(state: AppState) -> Router {
-    let key = state.config.admin_api_key.clone();
-
-    let protected = Router::new()
-        // Blobs
-        .route("/api/v1/blobs", post(blobs::upload_blob).layer(DefaultBodyLimit::max(50 * 1024 * 1024)))
-        .route("/api/v1/blobs", get(blobs::list_blobs))
-        .route("/api/v1/blob/{id}", get(blob::get_blob))
-        .route("/api/v1/blob/{id}", put(blob::update_blob))
-        .route("/api/v1/blob/{id}", delete(blob::delete_blob))
-        .route("/api/v1/blobs/{id}/query", post(blob::query_blob))
-        // Facilities
-        .route("/api/v1/facilities", post(facilities::create_facility))
-        .route("/api/v1/facilities", get(facilities::list_facilities))
-        .route("/api/v1/facilities/{id}", get(facilities::get_facility))
-        .route("/api/v1/facilities/{id}", patch(facilities::update_facility))
-        .route("/api/v1/facilities/{id}", delete(facilities::delete_facility))
-        // Loads — CRUD
-        .route("/api/v1/loads", post(loads::create_load))
-        .route("/api/v1/loads", get(loads::list_loads))
-        .route("/api/v1/loads/{id}", get(loads::get_load))
-        .route("/api/v1/loads/{id}", patch(loads::update_load))
-        .route("/api/v1/loads/{id}", delete(loads::delete_load))
-        // Loads — actions
-        .route("/api/v1/loads/{id}/invoice", post(loads::invoice_load))
-        .route("/api/v1/loads/{id}/cancel", post(loads::cancel_load))
-        .route("/api/v1/loads/{id}/settle", post(loads::settle_load))
-        .route("/api/v1/loads/{id}/stops/{seq}/arrive", post(loads::load_stop_arrive))
-        .route("/api/v1/loads/{id}/stops/{seq}/depart", post(loads::load_stop_depart))
-        // Dispatchers
-        .merge(dispatchers::router())
-        // Drivers, trucks, trailers, trips, trip actions, events (stubs — filled in by Wave 2/3/4)
-        .merge(drivers::router())
-        .merge(trucks::router())
-        .merge(trailers::router())
-        .merge(trips::router())
-        .merge(trip_actions::router())
-        .merge(events::router())
-        .route_layer(from_fn(move |req, next| {
-            let k = key.clone();
-            async move { require_bearer(k, req, next).await }
-        }));
-
     // Dispatcher portal: auth + JWT-protected data endpoints
     let dispatcher_auth = dispatcher_portal::dispatcher_portal_router(&state);
 
@@ -618,7 +489,6 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .route("/version", get(version::get_version))
-        .merge(protected)
         .merge(dispatcher_auth)
         .merge(dispatcher_public)
         .merge(driver_portal)
