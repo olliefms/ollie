@@ -7380,6 +7380,20 @@ async fn test_mcp_delete_truck_trailer_facility() {
     assert_eq!(del_trailer["deleted"], serde_json::json!(true));
     assert_eq!(trailer_status(&server, &trailer_id).await, "inactive");
 
+    // delete_facility blocked path: a facility referenced by a load must not be
+    // deletable — the guard lives in tool_delete_facility and returns an isError
+    // result. (MCP is the only surface that exposes facility delete.)
+    let ref_fac_id = create_test_facility(&server, "MCP Ref Facility", "Ogden, UT").await;
+    let _load_id = create_2stop_load(&server, &ref_fac_id, "MCP RefFac Co").await;
+    let blocked = mcp_call_result(&server, &token, "delete_facility",
+        serde_json::json!({ "facility_id": ref_fac_id })).await;
+    assert_eq!(blocked["isError"], serde_json::json!(true),
+        "delete_facility on a load-referenced facility must isError");
+    let still_there = server.get(&format!("/dispatch/api/v1/facilities/{ref_fac_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(still_there.status_code(), 200, "referenced facility must survive the blocked delete");
+
     // delete_facility happy path (no loads reference it).
     let fac_id = create_test_facility(&server, "MCP Del Facility", "Provo, UT").await;
     let del_fac = mcp_call(&server, &token, "delete_facility",
