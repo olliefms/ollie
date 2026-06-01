@@ -11,38 +11,88 @@
   <!-- Login view (shown when not authenticated) -->
   <div id="login-view" class="login-view">
     <div class="login-card">
-      <div class="login-card__header">
-        <div class="login-card__title">Ollie Dispatch</div>
-        <div class="login-card__subtitle">Sign in to your dispatcher account</div>
+      <!-- Sign-in form (shown once at least one user exists) -->
+      <div id="login-pane" hidden>
+        <div class="login-card__header">
+          <div class="login-card__title">Ollie Dispatch</div>
+          <div class="login-card__subtitle">Sign in to your dispatcher account</div>
+        </div>
+        <form id="login-form" class="login-card__form" novalidate>
+          <div id="login-alert" hidden></div>
+          <div class="form-group">
+            <label class="form-label" for="login-email">Email</label>
+            <input
+              class="form-input"
+              id="login-email"
+              type="email"
+              autocomplete="email"
+              required
+              placeholder="dispatcher@example.com"
+            >
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="login-password">Password</label>
+            <input
+              class="form-input"
+              id="login-password"
+              type="password"
+              autocomplete="current-password"
+              required
+              placeholder="••••••••"
+            >
+          </div>
+          <button class="btn btn--primary btn--full" type="submit" id="login-submit">
+            Sign in
+          </button>
+        </form>
       </div>
-      <form id="login-form" class="login-card__form" novalidate>
-        <div id="login-alert" hidden></div>
-        <div class="form-group">
-          <label class="form-label" for="login-email">Email</label>
-          <input
-            class="form-input"
-            id="login-email"
-            type="email"
-            autocomplete="email"
-            required
-            placeholder="dispatcher@example.com"
-          >
+
+      <!-- First-run owner setup (shown when no users exist yet) -->
+      <div id="setup-pane" hidden>
+        <div class="login-card__header">
+          <div class="login-card__title">Welcome to Ollie</div>
+          <div class="login-card__subtitle">Create the owner account to get started</div>
         </div>
-        <div class="form-group">
-          <label class="form-label" for="login-password">Password</label>
-          <input
-            class="form-input"
-            id="login-password"
-            type="password"
-            autocomplete="current-password"
-            required
-            placeholder="••••••••"
-          >
-        </div>
-        <button class="btn btn--primary btn--full" type="submit" id="login-submit">
-          Sign in
-        </button>
-      </form>
+        <form id="setup-form" class="login-card__form" novalidate>
+          <div id="setup-alert" hidden></div>
+          <div class="form-group">
+            <label class="form-label" for="setup-name">Name</label>
+            <input
+              class="form-input"
+              id="setup-name"
+              type="text"
+              autocomplete="name"
+              required
+              placeholder="Jane Owner"
+            >
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="setup-email">Email</label>
+            <input
+              class="form-input"
+              id="setup-email"
+              type="email"
+              autocomplete="email"
+              required
+              placeholder="owner@example.com"
+            >
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="setup-password">Password</label>
+            <input
+              class="form-input"
+              id="setup-password"
+              type="password"
+              autocomplete="new-password"
+              required
+              placeholder="••••••••"
+            >
+          </div>
+          <button class="btn btn--primary btn--full" type="submit" id="setup-submit">
+            Create owner account
+          </button>
+        </form>
+      </div>
     </div>
   </div>
 

@@ -7,9 +7,11 @@
 //   PUT    /dispatch/api/v1/terminals/{id}
 //   DELETE /dispatch/api/v1/terminals/{id}
 
-use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Json};
+use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Extension, Json};
 use chrono::Utc;
 use uuid::Uuid;
+
+use super::jwt::DispatcherClaims;
 
 use crate::error::AppError;
 use crate::models::terminal::{CreateTerminalRequest, UpdateTerminalRequest};
@@ -111,8 +113,10 @@ pub async fn apply_terminal_patch(
 )]
 pub async fn create_terminal(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Json(req): Json<CreateTerminalRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("terminals:write")?;
     let r = apply_terminal_create(&state, req).await?;
     Ok((StatusCode::CREATED, Json(r)))
 }
@@ -129,7 +133,9 @@ pub async fn create_terminal(
 )]
 pub async fn list_terminals(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("terminals:read")?;
     Ok(Json(state.db.list_terminals().await?))
 }
 
@@ -147,8 +153,10 @@ pub async fn list_terminals(
 )]
 pub async fn get_terminal(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("terminals:read")?;
     Ok(Json(state.db.get_terminal_by_id(id).await?))
 }
 
@@ -168,9 +176,11 @@ pub async fn get_terminal(
 )]
 pub async fn update_terminal(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateTerminalRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("terminals:write")?;
     Ok(Json(apply_terminal_patch(&state, id, req).await?))
 }
 
@@ -189,8 +199,10 @@ pub async fn update_terminal(
 )]
 pub async fn delete_terminal(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("terminals:delete")?;
     let t = state.db.get_terminal_by_id(id).await?;
     if t.is_default {
         return Err(AppError::Conflict(

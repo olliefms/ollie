@@ -14,8 +14,9 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use super::jwt::DispatcherClaims;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
@@ -88,8 +89,10 @@ pub struct PatchTruckBody {
 )]
 pub async fn create_truck_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trucks:write")?;
     let record = apply_truck_create(&state, body).await?;
     Ok((StatusCode::CREATED, Json(record)))
 }
@@ -110,9 +113,11 @@ pub async fn create_truck_handler(
 )]
 pub async fn update_truck_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trucks:write")?;
     let record = apply_truck_patch(&state, id, body).await?;
     Ok(Json(record))
 }
@@ -131,8 +136,10 @@ pub async fn update_truck_handler(
 )]
 pub async fn delete_truck_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trucks:delete")?;
     state.db.soft_delete_truck(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

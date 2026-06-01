@@ -63,7 +63,9 @@ async fn test_server_with_db() -> (TestServer, Arc<DbClient>, TempDir, TempDir) 
     (server, db_handle, blob_dir, db_dir)
 }
 
-/// Create a dispatcher account and log in, returning a JWT.
+/// Create a dispatcher account and log in, returning a JWT. Provisioned as
+/// `owner` so these terminal/pay/settlement tests (which write terminals and
+/// settle trips) pass scope enforcement (#331).
 async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> String {
     // Create dispatcher via admin API (ignore 409 if already exists)
     server.post("/api/v1/dispatchers")
@@ -72,6 +74,7 @@ async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> S
             "email": email,
             "name": "Test Dispatcher",
             "password": password,
+            "role": "owner",
         }))
         .await;
 

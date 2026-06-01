@@ -75,6 +75,8 @@ async fn seed_dispatcher(db: &DbClient, email: &str, password: &str) -> Uuid {
         email:      email.into(),
         name:       "Test Dispatcher".into(),
         status:     DispatcherStatus::Active,
+        role:       Default::default(),
+        extra_scopes: Vec::new(),
         created_at: now,
         updated_at: now,
     }).await.unwrap();

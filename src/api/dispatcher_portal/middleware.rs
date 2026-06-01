@@ -39,7 +39,7 @@ pub async fn require_dispatcher_auth(
 }
 
 async fn validate_jwt_token(state: &AppState, token: &str) -> Result<DispatcherClaims, AppError> {
-    let claims = decode_dispatcher_jwt(token, &state.config.dispatcher_jwt_secret)?;
+    let mut claims = decode_dispatcher_jwt(token, &state.config.dispatcher_jwt_secret)?;
 
     let dispatcher_id: Uuid = claims.dispatcher_id.parse()
         .map_err(|_| AppError::Unauthorized)?;
@@ -63,6 +63,9 @@ async fn validate_jwt_token(state: &AppState, token: &str) -> Result<DispatcherC
             return Err(AppError::Unauthorized);
         }
     }
+
+    claims.effective_scopes =
+        crate::models::permission::effective_scopes(dispatcher.role, &dispatcher.extra_scopes);
 
     Ok(claims)
 }
@@ -109,6 +112,11 @@ async fn validate_api_key(state: &AppState, token: &str) -> Result<DispatcherCla
         }
     });
 
+    // An API key grants its dispatcher's full effective scopes; per-key scope
+    // narrowing is #243 (out of scope here).
+    let effective_scopes =
+        crate::models::permission::effective_scopes(dispatcher.role, &dispatcher.extra_scopes);
+
     Ok(DispatcherClaims {
         dispatcher_id: key.dispatcher_id.to_string(),
         token_version: creds.token_version,
@@ -119,6 +127,7 @@ async fn validate_api_key(state: &AppState, token: &str) -> Result<DispatcherCla
         kid: "api-key".into(),
         api_key_id: Some(key.id),
         api_key_label: Some(key.label),
+        effective_scopes,
     })
 }
 

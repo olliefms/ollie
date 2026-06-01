@@ -100,13 +100,30 @@ impl ServerHandler for OllieMcp {
         request: CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        // Scope enforcement (#331): the auth middleware inserted the authenticated
+        // dispatcher's DispatcherClaims into the HTTP request extensions; rmcp
+        // forwards the request Parts into the RequestContext extensions. Resolve the
+        // effective scopes from there and gate the tool before any side effect.
+        let scopes = dispatcher_scopes(&context);
+        if let Some(required) = tool_required_scope(&request.name) {
+            if !crate::models::permission::scope_granted(&scopes, required) {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "{} denied: missing required scope '{required}'.",
+                    request.name
+                ))]));
+            }
+        }
+        // The authenticated caller's dispatcher id (for owner-protection/transfer
+        // checks in the Users tools). Absent for an API-key principal with no
+        // parseable id — those tools then treat the caller as least-privileged.
+        let caller_id = dispatcher_caller_id(&context);
         let args = Value::Object(request.arguments.unwrap_or_default());
         // Destructive ops ask the user to confirm via elicitation when the client
         // supports it; clients that don't degrade to the prior behavior (#300).
         if let Some(declined) = confirm_destructive(&request.name, &args, &context.peer).await {
             return Ok(declined);
         }
-        match handle_tool_call(&self.state, &request.name, &args).await {
+        match handle_tool_call(&self.state, &request.name, &args, &scopes, caller_id).await {
             // Emit the payload as structuredContent (typed, schema-checkable) AND a
             // backward-compatible JSON text block, per MCP 2025-06-18 (#293). Blob-
             // returning tools also attach resource_link items pointing at the
@@ -195,6 +212,115 @@ enum ToolError {
 }
 
 // ---------------------------------------------------------------------------
+// Scope enforcement (#331)
+//
+// HTTP auth (require_dispatcher_auth) runs before rmcp and inserts the
+// authenticated DispatcherClaims (carrying server-computed effective_scopes)
+// into the axum request extensions. rmcp forwards the remaining
+// `http::request::Parts` into RequestContext.extensions, so the tool layer
+// recovers the caller's scopes from there and gates each tool by the same
+// resource:action rules the HTTP routes use.
+// ---------------------------------------------------------------------------
+
+/// Recover the caller's effective scopes from the forwarded HTTP request parts.
+/// Empty when the claims are absent — which denies every gated tool (fail-closed).
+fn dispatcher_scopes(context: &RequestContext<RoleServer>) -> Vec<String> {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<super::jwt::DispatcherClaims>())
+        .map(|claims| claims.effective_scopes.clone())
+        .unwrap_or_default()
+}
+
+/// Recover the authenticated caller's dispatcher id from the forwarded HTTP
+/// request parts, for owner-protection/transfer checks in the Users tools.
+/// `None` when claims are absent or the id is not a UUID (e.g. an API-key
+/// principal); the Users tools then treat the caller as least-privileged.
+fn dispatcher_caller_id(context: &RequestContext<RoleServer>) -> Option<Uuid> {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<super::jwt::DispatcherClaims>())
+        .and_then(|claims| claims.dispatcher_id.parse::<Uuid>().ok())
+}
+
+/// Build a minimal DispatcherClaims carrying only the given effective scopes, for
+/// passing the caller's authority into an HTTP handler reused as an MCP shim (e.g.
+/// `recalculate_miles_handler`). Identity fields are placeholders — the handler
+/// only consults `effective_scopes` via `require_scope`.
+fn claims_with_scopes(scopes: &[String]) -> super::jwt::DispatcherClaims {
+    super::jwt::DispatcherClaims {
+        dispatcher_id: String::new(),
+        token_version: 0,
+        iss: String::new(),
+        aud: String::new(),
+        exp: 0,
+        iat: 0,
+        kid: String::new(),
+        api_key_id: None,
+        api_key_label: None,
+        effective_scopes: scopes.to_vec(),
+    }
+}
+
+/// The `resource:action` scope each tool requires. Mirrors the HTTP route map:
+/// list_*/get_*/*_doctor/search_blobs → read, create_*/update_* → write,
+/// delete_* → delete, with the elevated load verbs and equipment/pin/miles
+/// special cases called out. Returns None only for tools that need no scope
+/// (there are none today; every tool maps to one).
+fn tool_required_scope(name: &str) -> Option<&'static str> {
+    let scope = match name {
+        // Loads
+        "list_loads" | "get_load" => "loads:read",
+        "create_load" | "update_load" => "loads:write",
+        "delete_load" => "loads:delete",
+        "settle_load" => "loads:settle",
+        "invoice_load" => "loads:invoice",
+        "cancel_load" => "loads:write",
+        // Trips
+        "list_trips" | "get_trip" => "trips:read",
+        "create_trip" | "update_trip" | "assign_driver" | "unassign_driver"
+        | "dispatch_trip" | "undispatch_trip" | "cancel_trip" | "complete_trip"
+        | "stop_arrive" | "stop_depart" | "stop_late" | "check_call"
+        | "recalculate_trip_miles" => "trips:write",
+        "delete_trip" => "trips:delete",
+        "trip_doctor" => "trips:read",
+        // Drivers
+        "list_drivers" | "get_driver" => "drivers:read",
+        "create_driver" | "update_driver" | "attach_equipment" | "detach_equipment"
+        | "set_driver_pin" => "drivers:write",
+        "delete_driver" => "drivers:delete",
+        // Trucks
+        "list_trucks" | "get_truck" => "trucks:read",
+        "create_truck" | "update_truck" => "trucks:write",
+        "delete_truck" => "trucks:delete",
+        // Trailers
+        "list_trailers" | "get_trailer" => "trailers:read",
+        "create_trailer" | "update_trailer" => "trailers:write",
+        "delete_trailer" => "trailers:delete",
+        // Facilities
+        "list_facilities" | "get_facility" | "facility_doctor" => "facilities:read",
+        "create_facility" | "update_facility" => "facilities:write",
+        "delete_facility" => "facilities:delete",
+        // Events
+        "list_events" => "events:read",
+        // Blobs
+        "list_blobs" | "search_blobs" | "get_blob_url" | "get_blob_metadata" => "blobs:read",
+        "upload_blob" => "blobs:write",
+        "delete_blob" => "blobs:delete",
+        // load_doctor reads a load's integrity.
+        "load_doctor" => "loads:read",
+        // Users (#331)
+        "list_users" | "get_user" => "users:read",
+        "create_user" | "update_user" | "reset_user_password" => "users:write",
+        "delete_user" => "users:delete",
+        _ => return None,
+    };
+    Some(scope)
+}
+
+// ---------------------------------------------------------------------------
 // Elicitation (MCP `elicitation`, #300)
 //
 // Before a destructive op (cancel_trip, delete_blob force=true) the server asks
@@ -217,7 +343,7 @@ rmcp::elicit_safe!(DestructiveConfirmation);
 fn is_destructive_op(name: &str, args: &Value) -> bool {
     match name {
         "cancel_trip" | "cancel_load" | "delete_load" | "delete_trip" | "delete_driver"
-        | "delete_truck" | "delete_trailer" | "delete_facility" => true,
+        | "delete_truck" | "delete_trailer" | "delete_facility" | "delete_user" => true,
         "delete_blob" => args["force"].as_bool() == Some(true),
         _ => false,
     }
@@ -264,6 +390,7 @@ fn destructive_op_description(name: &str) -> &'static str {
         "delete_truck" => "deactivate the truck",
         "delete_trailer" => "deactivate the trailer",
         "delete_facility" => "delete the facility record",
+        "delete_user" => "deactivate the user and revoke their access",
         "delete_blob" => "delete the blob",
         _ => "perform a destructive action",
     }
@@ -1401,6 +1528,71 @@ fn tools_list() -> Value {
                     },
                     "required": ["id"]
                 }
+            },
+            {
+                "name": "list_users",
+                "description": "List fleet users (the dispatchers-with-roles population). Requires users:read (owner/fleet_manager). Never returns password hashes.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "get_user",
+                "description": "Get a single fleet user by UUID. Requires users:read. Never returns the password hash.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "create_user",
+                "description": "Create a fleet user with a role (fleet_manager or dispatcher) and optional extra_scopes. Requires users:write. role=owner is rejected — ownership is established by bootstrap or transfer.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "email":        { "type": "string" },
+                        "name":         { "type": "string" },
+                        "password":     { "type": "string" },
+                        "role":         { "type": "string", "enum": ["fleet_manager","dispatcher"] },
+                        "extra_scopes": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["email", "name", "password", "role"]
+                }
+            },
+            {
+                "name": "update_user",
+                "description": "Update a user's name, status, role, and/or extra_scopes. Requires users:write. Owner-protection applies: the owner cannot be demoted/deactivated except via ownership transfer; setting a different user's role to owner is an ownership transfer permitted only when the caller is the current owner.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":           { "type": "string", "format": "uuid" },
+                        "name":         { "type": "string" },
+                        "status":       { "type": "string", "enum": ["active","inactive"] },
+                        "role":         { "type": "string", "enum": ["owner","fleet_manager","dispatcher"] },
+                        "extra_scopes": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "reset_user_password",
+                "description": "Reset a user's password, invalidating their outstanding JWTs (token_version bump). Requires users:write. Returns { password_reset: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":       { "type": "string", "format": "uuid" },
+                        "password": { "type": "string" }
+                    },
+                    "required": ["id", "password"]
+                }
+            },
+            {
+                "name": "delete_user",
+                "description": "Deactivate a user (status → inactive) and revoke their access. Requires users:delete. The only owner cannot be deactivated — transfer ownership first. Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
             }
         ]
     })
@@ -1433,7 +1625,13 @@ fn parse_uuid_opt(args: &Value, key: &str) -> Result<Option<Uuid>, String> {
 /// JSON payload (the ServerHandler wraps it into an MCP content block). An unknown
 /// tool is a protocol fault (`ToolError::Unknown`); any shim error is a domain
 /// failure (`ToolError::Domain`) surfaced to the model as an isError result.
-async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<Value, ToolError> {
+async fn handle_tool_call(
+    state: &AppState,
+    name: &str,
+    args: &Value,
+    scopes: &[String],
+    caller_id: Option<Uuid>,
+) -> Result<Value, ToolError> {
     let result: Result<Value, String> = match name {
         "list_loads" => tool_list_loads(state, args).await,
         "get_load" => tool_get_load(state, args).await,
@@ -1443,7 +1641,7 @@ async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<
         "get_trip" => tool_get_trip(state, args).await,
         "create_trip" => tool_create_trip(state, args).await,
         "update_trip" => tool_update_trip(state, args).await,
-        "recalculate_trip_miles" => tool_recalculate_trip_miles(state, args).await,
+        "recalculate_trip_miles" => tool_recalculate_trip_miles(state, args, scopes).await,
         "assign_driver" => tool_assign_driver(state, args).await,
         "unassign_driver" => tool_unassign_driver(state, args).await,
         "dispatch_trip" => tool_dispatch_trip(state, args).await,
@@ -1492,6 +1690,12 @@ async fn handle_tool_call(state: &AppState, name: &str, args: &Value) -> Result<
         "set_driver_pin" => tool_set_driver_pin(state, args).await,
         "create_driver" => tool_create_driver(state, args).await,
         "update_driver" => tool_update_driver(state, args).await,
+        "list_users" => tool_list_users(state).await,
+        "get_user" => tool_get_user(state, args).await,
+        "create_user" => tool_create_user(state, args, scopes, caller_id).await,
+        "update_user" => tool_update_user(state, args, scopes, caller_id).await,
+        "reset_user_password" => tool_reset_user_password(state, args, caller_id).await,
+        "delete_user" => tool_delete_user(state, args).await,
         _ => return Err(ToolError::Unknown),
     };
     result.map_err(ToolError::Domain)
@@ -1763,14 +1967,21 @@ async fn tool_update_trip(state: &AppState, args: &Value) -> Result<Value, Strin
     Ok(mcp_content(result))
 }
 
-async fn tool_recalculate_trip_miles(state: &AppState, args: &Value) -> Result<Value, String> {
+async fn tool_recalculate_trip_miles(
+    state: &AppState,
+    args: &Value,
+    scopes: &[String],
+) -> Result<Value, String> {
     use super::trip_writes::{recalculate_miles_handler, RecalculateMilesBody};
     let trip_id = parse_uuid(args, "trip_id")?;
     let force = args["force"].as_bool().unwrap_or(false);
 
     let body = Some(Json(RecalculateMilesBody { force }));
+    // call_tool already verified trips:write for this caller; the handler re-checks
+    // its scope internally, so pass the caller's effective scopes through.
     let _resp = recalculate_miles_handler(
         axum::extract::State(state.clone()),
+        axum::Extension(claims_with_scopes(scopes)),
         Path(trip_id),
         body,
     )
@@ -2498,6 +2709,92 @@ async fn tool_update_driver(state: &AppState, args: &Value) -> Result<Value, Str
         .await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(record))
+}
+
+// --- Users management (#331) ---
+
+/// Recover the caller's current role from the DB by their dispatcher id, so the
+/// Users tools enforce owner-only rules identically to the HTTP surface. Falls
+/// back to the least-privileged `Dispatcher` when the caller is unidentified.
+async fn caller_role_from_id(
+    state: &AppState,
+    caller_id: Option<Uuid>,
+) -> crate::models::permission::Role {
+    match caller_id {
+        Some(cid) => match state.db.get_dispatcher_by_id(cid).await {
+            Ok(r) => r.role,
+            Err(_) => crate::models::permission::Role::Dispatcher,
+        },
+        None => crate::models::permission::Role::Dispatcher,
+    }
+}
+
+async fn tool_list_users(state: &AppState) -> Result<Value, String> {
+    let users = super::users::apply_list_users(state).await.map_err(|e| e.to_string())?;
+    let returned = users.len();
+    Ok(mcp_content(serde_json::json!({ "users": users, "returned": returned })))
+}
+
+async fn tool_get_user(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = super::users::apply_get_user(state, id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_create_user(
+    state: &AppState,
+    args: &Value,
+    scopes: &[String],
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let req: super::users::CreateUserRequest = serde_json::from_value(args.clone())
+        .map_err(|e| format!("invalid create_user arguments: {e}"))?;
+    let caller_role = caller_role_from_id(state, caller_id).await;
+    let record = super::users::apply_create_user(state, scopes, caller_role, req)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_user(
+    state: &AppState,
+    args: &Value,
+    scopes: &[String],
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("id");
+    }
+    let req: super::users::UpdateUserRequest = serde_json::from_value(body)
+        .map_err(|e| format!("invalid update_user arguments: {e}"))?;
+    let caller_role = caller_role_from_id(state, caller_id).await;
+    let record =
+        super::users::apply_update_user(state, scopes, caller_id, caller_role, id, req)
+            .await
+            .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_reset_user_password(
+    state: &AppState,
+    args: &Value,
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let password = args["password"].as_str().ok_or("missing or non-string field 'password'")?.to_string();
+    let caller_role = caller_role_from_id(state, caller_id).await;
+    super::users::apply_reset_password(state, caller_role, id, password)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "password_reset": true })))
+}
+
+async fn tool_delete_user(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    super::users::apply_delete_user(state, id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
 }
 
 #[cfg(test)]

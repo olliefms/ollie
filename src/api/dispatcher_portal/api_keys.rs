@@ -82,6 +82,7 @@ pub async fn create_api_key(
     Extension(claims): Extension<DispatcherClaims>,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("api_keys:write")?;
     if claims.api_key_id.is_some() {
         return Err(AppError::Unauthorized);
     }
@@ -143,6 +144,7 @@ pub async fn list_api_keys(
     State(state): State<AppState>,
     Extension(claims): Extension<DispatcherClaims>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("api_keys:read")?;
     let dispatcher_id: Uuid = claims.dispatcher_id.parse().map_err(|_| AppError::Unauthorized)?;
     let keys = state.db.list_active_dispatcher_api_keys(dispatcher_id).await?;
     let items = keys.into_iter().map(|k| ApiKeyListItem {
@@ -172,6 +174,7 @@ pub async fn revoke_api_key(
     Extension(claims): Extension<DispatcherClaims>,
     Path(key_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("api_keys:delete")?;
     if claims.api_key_id.is_some() {
         return Err(AppError::Unauthorized);
     }
