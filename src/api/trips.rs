@@ -58,7 +58,7 @@ pub async fn create_trip(
 /// handler, and the MCP `create_trip` tool. Performs all derivation (stops,
 /// mileage, embedding), inserts the trip, and RETURNS the created `TripRecord`
 /// so callers don't have to re-fetch (which races under concurrent creates).
-pub async fn apply_trip_create(
+pub(crate) async fn apply_trip_create(
     state: &AppState,
     body: CreateTripRequest,
 ) -> Result<TripRecord, AppError> {

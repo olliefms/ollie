@@ -590,7 +590,7 @@ pub async fn delete_driver_handler(
 /// `delete_driver` tool. Soft-deletes the driver, then invalidates any
 /// outstanding JWTs by bumping the credential `token_version` (propagating the
 /// upsert error rather than swallowing it).
-pub async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<(), AppError> {
+pub(crate) async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<(), AppError> {
     state.db.soft_delete_driver(id).await?;
     // Invalidate any outstanding JWTs by bumping the credential token_version.
     if let Some(mut creds) = state.db.get_driver_credentials(id).await? {
