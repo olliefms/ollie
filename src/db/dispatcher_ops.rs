@@ -90,6 +90,9 @@ impl DbClient {
 fn dispatcher_to_batch(record: &DispatcherRecord) -> Result<RecordBatch, AppError> {
     let schema = dispatcher_schema();
     let id_str = record.id.to_string();
+    let role_str = record.role.as_str();
+    let extra_scopes_str = serde_json::to_string(&record.extra_scopes)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     let created_str = record.created_at.to_rfc3339();
     let updated_str = record.updated_at.to_rfc3339();
 
@@ -98,6 +101,8 @@ fn dispatcher_to_batch(record: &DispatcherRecord) -> Result<RecordBatch, AppErro
         Arc::new(StringArray::from(vec![record.email.as_str()])),
         Arc::new(StringArray::from(vec![record.name.as_str()])),
         Arc::new(StringArray::from(vec![record.status.as_str()])),
+        Arc::new(StringArray::from(vec![role_str])),
+        Arc::new(StringArray::from(vec![extra_scopes_str.as_str()])),
         Arc::new(StringArray::from(vec![created_str.as_str()])),
         Arc::new(StringArray::from(vec![updated_str.as_str()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
@@ -137,11 +142,23 @@ fn row_to_dispatcher(batch: &RecordBatch, i: usize) -> Result<DispatcherRecord, 
             .unwrap_or_default()
     };
 
+    let role = str_col("role")
+        .parse()
+        .unwrap_or(crate::models::Role::Dispatcher);
+    let extra_scopes_raw = str_col("extra_scopes");
+    let extra_scopes = if extra_scopes_raw.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&extra_scopes_raw).unwrap_or_default()
+    };
+
     Ok(DispatcherRecord {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         email: str_col("email"),
         name: str_col("name"),
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
+        role,
+        extra_scopes,
         created_at: str_col("created_at").parse()
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
         updated_at: str_col("updated_at").parse()
@@ -226,6 +243,8 @@ mod tests {
             email: "dispatch@example.com".into(),
             name: "Jane Dispatcher".into(),
             status: DispatcherStatus::Active,
+            role: crate::models::Role::Dispatcher,
+            extra_scopes: Vec::new(),
             created_at: now,
             updated_at: now,
         }
@@ -270,6 +289,8 @@ mod tests {
             email: "other@example.com".into(),
             name: "Other Dispatcher".into(),
             status: DispatcherStatus::Inactive,
+            role: crate::models::Role::FleetManager,
+            extra_scopes: vec!["loads:settle".into()],
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

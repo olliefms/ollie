@@ -263,6 +263,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             driver_portal::equipment::AvailableTrailersResponse,
             models::DispatcherStatus,
             models::DispatcherRecord,
+            models::Role,
             dispatchers::CreateDispatcherRequest,
             dispatchers::UpdateDispatcherRequest,
             dispatchers::ResetDispatcherPasswordRequest,

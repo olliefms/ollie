@@ -299,6 +299,93 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
     assert_eq!(client.trips_referencing_blob(blob_id).await.unwrap(), vec![new_id]);
 }
 
+/// Pre-#331 dispatchers schema: current `dispatcher_schema` minus the
+/// appended `role` and `extra_scopes` columns.
+fn dispatcher_schema_pre_roles() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("email", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+async fn seed_pre_roles_dispatchers(path: &str) -> Uuid {
+    let conn = lancedb::connect(path).execute().await.unwrap();
+    let schema = dispatcher_schema_pre_roles();
+    let id = Uuid::new_v4();
+    let id_str = id.to_string();
+    let now = Utc::now().to_rfc3339();
+    let batch = RecordBatch::try_new(schema.clone(), vec![
+        Arc::new(StringArray::from(vec![Some(id_str.as_str())])),
+        Arc::new(StringArray::from(vec![Some("legacy@example.com")])),
+        Arc::new(StringArray::from(vec![Some("Legacy Dispatcher")])),
+        Arc::new(StringArray::from(vec![Some("active")])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+    ]).unwrap();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    conn.create_table("dispatchers", reader).execute().await.unwrap();
+    id
+}
+
+/// #331 added `role` + `extra_scopes` columns to the dispatchers table (the
+/// permission model's per-user storage). Seed a pre-#331 dispatchers table,
+/// then assert the migration adds the columns with the documented defaults
+/// (`role='dispatcher'`, `extra_scopes='[]'`) and that the pre-existing row
+/// round-trips through the ops layer.
+#[tokio::test]
+async fn migration_opens_pre_roles_dispatchers_and_adds_role_and_extra_scopes() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    let seeded_id = seed_pre_roles_dispatchers(path).await;
+
+    let client = DbClient::new(path, EMBED_DIM).await.expect(
+        "DbClient::new must migrate a pre-#331 dispatchers table without erroring. \
+         If this fails with a DataFusion CAST parser error, the role/extra_scopes \
+         migration is using an Arrow type name (e.g. `Utf8`) where a SQL keyword \
+         (`string`) is required — see AGENTS.md.",
+    );
+
+    let schema = client.dispatcher_table.schema().await.unwrap();
+    assert!(schema.field_with_name("role").is_ok(),
+        "post-migration dispatchers schema missing role (#331)");
+    assert!(schema.field_with_name("extra_scopes").is_ok(),
+        "post-migration dispatchers schema missing extra_scopes (#331)");
+
+    assert_eq!(client.dispatcher_table.count_rows(None).await.unwrap(), 1);
+
+    // Pre-existing row reads back with migration defaults.
+    use ollie::models::Role;
+    let fetched = client.get_dispatcher_by_id(seeded_id).await.unwrap();
+    assert_eq!(fetched.email, "legacy@example.com");
+    assert_eq!(fetched.role, Role::Dispatcher);
+    assert_eq!(fetched.extra_scopes, Vec::<String>::new());
+
+    // A fresh write carrying role + extra_scopes round-trips.
+    use ollie::models::{DispatcherRecord, DispatcherStatus};
+    let new_id = Uuid::new_v4();
+    let now = Utc::now();
+    let record = DispatcherRecord {
+        id: new_id,
+        email: "owner@example.com".into(),
+        name: "New Owner".into(),
+        status: DispatcherStatus::Active,
+        role: Role::FleetManager,
+        extra_scopes: vec!["loads:settle".into(), "loads:invoice".into()],
+        created_at: now,
+        updated_at: now,
+    };
+    client.upsert_dispatcher(&record).await.unwrap();
+    let refetched = client.get_dispatcher_by_id(new_id).await.unwrap();
+    assert_eq!(refetched.role, Role::FleetManager);
+    assert_eq!(refetched.extra_scopes, vec!["loads:settle".to_string(), "loads:invoice".to_string()]);
+}
+
 /// Pre-#279 trucks schema: current `truck_schema` minus the appended `blob_ids`.
 fn truck_schema_pre_blob_ids(embed_dim: usize) -> Arc<Schema> {
     Arc::new(Schema::new(vec![

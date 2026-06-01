@@ -76,6 +76,8 @@ pub async fn create_dispatcher(
         email,
         name: body.name,
         status: DispatcherStatus::Active,
+        role: Default::default(),
+        extra_scopes: Vec::new(),
         created_at: now,
         updated_at: now,
     };

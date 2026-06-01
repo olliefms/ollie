@@ -1,4 +1,5 @@
 // src/models/dispatcher.rs
+use crate::models::permission::Role;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -37,6 +38,10 @@ pub struct DispatcherRecord {
     pub email: String,
     pub name: String,
     pub status: DispatcherStatus,
+    #[serde(default)]
+    pub role: Role,
+    #[serde(default)]
+    pub extra_scopes: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
