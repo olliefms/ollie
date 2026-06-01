@@ -67,7 +67,7 @@ pub struct ApiKeyListResponse {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api-keys",
+    path = "/fleet/api-keys",
     request_body(content = CreateApiKeyRequest, description = "API key creation request"),
     responses(
         (status = 201, description = "API key created (plaintext returned once)", body = CreateApiKeyResponse),
@@ -75,7 +75,7 @@ pub struct ApiKeyListResponse {
         (status = 401, description = "Unauthorized (JWT required, API-key auth not allowed)"),
         (status = 429, description = "Dispatcher already has 20 active keys"),
     ),
-    tag = "dispatch-api-keys"
+    tag = "fleet-api-keys"
 )]
 pub async fn create_api_key(
     State(state): State<AppState>,
@@ -133,12 +133,12 @@ pub async fn create_api_key(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api-keys",
+    path = "/fleet/api-keys",
     responses(
         (status = 200, description = "List active API keys for the calling dispatcher", body = ApiKeyListResponse),
         (status = 401, description = "Unauthorized"),
     ),
-    tag = "dispatch-api-keys"
+    tag = "fleet-api-keys"
 )]
 pub async fn list_api_keys(
     State(state): State<AppState>,
@@ -160,14 +160,14 @@ pub async fn list_api_keys(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api-keys/{id}",
+    path = "/fleet/api-keys/{id}",
     params(("id" = Uuid, Path, description = "API key id")),
     responses(
         (status = 204, description = "Revoked"),
         (status = 401, description = "Unauthorized (JWT required)"),
         (status = 404, description = "Not found or owned by another dispatcher"),
     ),
-    tag = "dispatch-api-keys"
+    tag = "fleet-api-keys"
 )]
 pub async fn revoke_api_key(
     State(state): State<AppState>,

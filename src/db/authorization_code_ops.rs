@@ -118,7 +118,7 @@ mod tests {
             code_challenge: "chal".into(),
             subject_type: "dispatcher".into(),
             subject_id: Uuid::new_v4(),
-            resource: "https://x/dispatch/mcp".into(),
+            resource: "https://x/fleet/mcp".into(),
             scope: None,
             created_at: Utc::now(),
             expires_at: expires,

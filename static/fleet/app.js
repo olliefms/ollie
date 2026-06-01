@@ -1,13 +1,13 @@
 /* ============================================================
-   Ollie Dispatch — SPA
+   Ollie Fleet — SPA
    Single-file vanilla JS, no framework, no build step.
    ============================================================ */
 
 // ─── Constants ──────────────────────────────────────────────
 const TOKEN_KEY = 'dispatch_token';
-const API_BASE = '/dispatch/api/v1';
-const AUTH_BASE = '/dispatch/auth';
-const API_KEYS_BASE = '/dispatch/api-keys';
+const API_BASE = '/fleet/api/v1';
+const AUTH_BASE = '/fleet/auth';
+const API_KEYS_BASE = '/fleet/api-keys';
 
 // ─── State ──────────────────────────────────────────────────
 let currentView = 'loads';
@@ -1561,7 +1561,7 @@ async function renderAccountView() {
           <pre style="text-align:left;overflow:auto;margin-top:var(--space-3);padding:var(--space-2);background:var(--color-surface-2);border-radius:var(--radius-sm);">{
   "mcpServers": {
     "ollie": {
-      "url": "https://YOUR_HOST/dispatch/mcp",
+      "url": "https://YOUR_HOST/fleet/mcp",
       "headers": { "Authorization": "Bearer YOUR_API_KEY" }
     }
   }
@@ -1867,7 +1867,7 @@ function initSetupForm() {
     submitBtn.textContent = 'Creating…';
 
     try {
-      const res = await fetch('/dispatch/setup', {
+      const res = await fetch('/fleet/setup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',

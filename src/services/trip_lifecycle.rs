@@ -1,6 +1,6 @@
 //! Surface-agnostic trip-lifecycle business logic.
 //!
-//! The admin REST API (`/api/v1`), the dispatcher REST API (`/dispatch/api/v1`),
+//! The admin REST API (`/api/v1`), the dispatcher REST API (`/fleet/api/v1`),
 //! and the dispatcher MCP server all drive the same trip state machine: assign,
 //! unassign, dispatch, undispatch, cancel, complete, plus the late/check-call
 //! event emitters. Each surface owns its auth and request-shape concerns; the

@@ -169,7 +169,7 @@ fn enrich_trip(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/loads",
+    path = "/fleet/api/v1/loads",
     params(
         ("status" = Option<String>, Query, description = "Filter by status"),
         ("facility_id" = Option<Uuid>, Query, description = "Filter by facility ID"),
@@ -181,7 +181,7 @@ fn enrich_trip(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_loads(
     State(state): State<AppState>,
@@ -207,7 +207,7 @@ pub async fn list_loads(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/loads/{id}",
+    path = "/fleet/api/v1/loads/{id}",
     params(("id" = Uuid, Path, description = "Load UUID")),
     responses(
         (status = 200, description = "Load detail", body = LoadDetailResponse),
@@ -215,7 +215,7 @@ pub async fn list_loads(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_load(
     State(state): State<AppState>,
@@ -230,7 +230,7 @@ pub async fn get_load(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/loads",
+    path = "/fleet/api/v1/loads",
     request_body(content = CreateLoadRequest, description = "Load to create"),
     responses(
         (status = 201, description = "Created load", body = LoadDetailResponse),
@@ -238,7 +238,7 @@ pub async fn get_load(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_load(
     State(state): State<AppState>,
@@ -312,7 +312,7 @@ pub async fn create_load(
 
 #[utoipa::path(
     put,
-    path = "/dispatch/api/v1/loads/{id}",
+    path = "/fleet/api/v1/loads/{id}",
     params(("id" = Uuid, Path, description = "Load UUID")),
     request_body(content = UpdateLoadRequest, description = "Fields to update"),
     responses(
@@ -321,7 +321,7 @@ pub async fn create_load(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn update_load(
     State(state): State<AppState>,
@@ -382,7 +382,7 @@ pub async fn update_load(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/loads/{id}",
+    path = "/fleet/api/v1/loads/{id}",
     params(("id" = Uuid, Path, description = "Load UUID")),
     responses(
         (status = 204, description = "Deleted"),
@@ -391,7 +391,7 @@ pub async fn update_load(
         (status = 409, description = "Load has active trips — cancel or complete them first"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_load_handler(
     State(state): State<AppState>,
@@ -412,7 +412,7 @@ pub async fn delete_load_handler(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/loads/{id}/invoice",
+    path = "/fleet/api/v1/loads/{id}/invoice",
     params(("id" = Uuid, Path, description = "Load UUID")),
     request_body(content = InvoiceActionRequest, description = "Optional invoice number and date"),
     responses(
@@ -422,7 +422,7 @@ pub async fn delete_load_handler(
         (status = 409, description = "Invalid status transition"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn invoice_load_handler(
     State(state): State<AppState>,
@@ -441,7 +441,7 @@ pub async fn invoice_load_handler(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/loads/{id}/cancel",
+    path = "/fleet/api/v1/loads/{id}/cancel",
     params(("id" = Uuid, Path, description = "Load UUID")),
     request_body(content = CancelActionRequest, description = "Optional cancellation reason"),
     responses(
@@ -451,7 +451,7 @@ pub async fn invoice_load_handler(
         (status = 409, description = "Invalid status transition"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn cancel_load_handler(
     State(state): State<AppState>,
@@ -469,7 +469,7 @@ pub async fn cancel_load_handler(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/loads/{id}/settle",
+    path = "/fleet/api/v1/loads/{id}/settle",
     params(("id" = Uuid, Path, description = "Load UUID")),
     responses(
         (status = 200, description = "Load transitioned to settled", body = LoadDetailResponse),
@@ -478,7 +478,7 @@ pub async fn cancel_load_handler(
         (status = 409, description = "Invalid status transition"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn settle_load_handler(
     State(state): State<AppState>,
@@ -510,7 +510,7 @@ pub struct ListTripsQuery {
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/trips",
+    path = "/fleet/api/v1/trips",
     params(
         ("load_id" = Option<Uuid>, Query, description = "Filter by load ID"),
         ("driver_id" = Option<Uuid>, Query, description = "Filter by driver ID"),
@@ -523,7 +523,7 @@ pub struct ListTripsQuery {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_trips(
     State(state): State<AppState>,
@@ -537,7 +537,7 @@ pub async fn list_trips(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips",
+    path = "/fleet/api/v1/trips",
     request_body(content = CreateTripRequest, description = "Trip to create"),
     responses(
         (status = 201, description = "Created trip (enriched with driver/truck names and mileage_summary)", body = DispatcherTripListItem),
@@ -547,7 +547,7 @@ pub async fn list_trips(
         (status = 409, description = "Conflict — invalid assignment"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_trip_handler(
     State(state): State<AppState>,
@@ -662,7 +662,7 @@ pub async fn build_trip_list_items(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/trips/{id}",
+    path = "/fleet/api/v1/trips/{id}",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 200, description = "Trip record (enriched with driver/truck names)"),
@@ -670,7 +670,7 @@ pub async fn build_trip_list_items(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_trip(
     State(state): State<AppState>,
@@ -773,7 +773,7 @@ pub async fn driver_pay_for_record(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/assign",
+    path = "/fleet/api/v1/trips/{id}/assign",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = AssignTripRequest, description = "Driver, truck, and optional trailers"),
     responses(
@@ -784,7 +784,7 @@ pub async fn driver_pay_for_record(
         (status = 409, description = "Conflict — driver/truck/trailer not eligible for assignment (inactive/out-of-service) or invalid status transition"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn assign_trip(
     State(state): State<AppState>,
@@ -856,7 +856,7 @@ pub async fn assign_trip(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/unassign",
+    path = "/fleet/api/v1/trips/{id}/unassign",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 200, description = "Trip unassigned", body = TripRecord),
@@ -865,7 +865,7 @@ pub async fn assign_trip(
         (status = 409, description = "Conflict — invalid status transition"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn unassign_trip(
     State(state): State<AppState>,
@@ -912,7 +912,7 @@ pub async fn unassign_trip(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/dispatch",
+    path = "/fleet/api/v1/trips/{id}/dispatch",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 200, description = "Trip dispatched", body = TripRecord),
@@ -921,7 +921,7 @@ pub async fn unassign_trip(
         (status = 409, description = "Conflict — trip must be in assigned status"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn dispatch_trip(
     state: State<AppState>,
@@ -935,7 +935,7 @@ pub async fn dispatch_trip(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/undispatch",
+    path = "/fleet/api/v1/trips/{id}/undispatch",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 200, description = "Trip undispatched back to assigned", body = TripRecord),
@@ -944,7 +944,7 @@ pub async fn dispatch_trip(
         (status = 409, description = "Conflict — trip must be in dispatched status (not in_transit or beyond)"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn undispatch_trip(
     state: State<AppState>,
@@ -958,7 +958,7 @@ pub async fn undispatch_trip(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/cancel",
+    path = "/fleet/api/v1/trips/{id}/cancel",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 200, description = "Trip cancelled", body = TripRecord),
@@ -967,7 +967,7 @@ pub async fn undispatch_trip(
         (status = 409, description = "Conflict — cannot cancel a trip that is in_transit or delivered"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn cancel_trip(
     state: State<AppState>,
@@ -981,7 +981,7 @@ pub async fn cancel_trip(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/complete",
+    path = "/fleet/api/v1/trips/{id}/complete",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 204, description = "Trip completed and resources released"),
@@ -990,7 +990,7 @@ pub async fn cancel_trip(
         (status = 409, description = "Conflict — trip must be in delivered status"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn complete_trip(
     state: State<AppState>,
@@ -1004,7 +1004,7 @@ pub async fn complete_trip(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/stops/{seq}/arrive",
+    path = "/fleet/api/v1/trips/{id}/stops/{seq}/arrive",
     params(
         ("id" = Uuid, Path, description = "Trip UUID"),
         ("seq" = u32, Path, description = "Stop sequence number"),
@@ -1017,7 +1017,7 @@ pub async fn complete_trip(
         (status = 404, description = "Not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn stop_arrive(
     state: State<AppState>,
@@ -1047,7 +1047,7 @@ pub async fn stop_arrive(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/stops/{seq}/depart",
+    path = "/fleet/api/v1/trips/{id}/stops/{seq}/depart",
     params(
         ("id" = Uuid, Path, description = "Trip UUID"),
         ("seq" = u32, Path, description = "Stop sequence number"),
@@ -1060,7 +1060,7 @@ pub async fn stop_arrive(
         (status = 404, description = "Not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn stop_depart(
     state: State<AppState>,
@@ -1090,7 +1090,7 @@ pub async fn stop_depart(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/stops/{seq}/late",
+    path = "/fleet/api/v1/trips/{id}/stops/{seq}/late",
     params(
         ("id" = Uuid, Path, description = "Trip UUID"),
         ("seq" = u32, Path, description = "Stop sequence number"),
@@ -1102,7 +1102,7 @@ pub async fn stop_depart(
         (status = 404, description = "Not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn stop_late(
     state: State<AppState>,
@@ -1118,7 +1118,7 @@ pub async fn stop_late(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/check-call",
+    path = "/fleet/api/v1/trips/{id}/check-call",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = CheckCallRequest, description = "Location, notes, and optional next-stop ETA"),
     responses(
@@ -1127,7 +1127,7 @@ pub async fn stop_late(
         (status = 404, description = "Not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn check_call(
     state: State<AppState>,
@@ -1151,7 +1151,7 @@ pub struct ListDriversQuery {
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/drivers",
+    path = "/fleet/api/v1/drivers",
     params(
         ("status" = Option<String>, Query, description = "Filter by status"),
     ),
@@ -1160,7 +1160,7 @@ pub struct ListDriversQuery {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_drivers(
     State(state): State<AppState>,
@@ -1174,7 +1174,7 @@ pub async fn list_drivers(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/drivers/{id}",
+    path = "/fleet/api/v1/drivers/{id}",
     params(("id" = Uuid, Path, description = "Driver UUID")),
     responses(
         (status = 200, description = "Driver record", body = DriverRecord),
@@ -1182,7 +1182,7 @@ pub async fn list_drivers(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_driver(
     State(state): State<AppState>,
@@ -1205,7 +1205,7 @@ pub struct ListTrucksQuery {
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/trucks",
+    path = "/fleet/api/v1/trucks",
     params(
         ("status" = Option<String>, Query, description = "Filter by status"),
     ),
@@ -1214,7 +1214,7 @@ pub struct ListTrucksQuery {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_trucks(
     State(state): State<AppState>,
@@ -1228,7 +1228,7 @@ pub async fn list_trucks(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/trucks/{id}",
+    path = "/fleet/api/v1/trucks/{id}",
     params(("id" = Uuid, Path, description = "Truck UUID")),
     responses(
         (status = 200, description = "Truck record", body = TruckRecord),
@@ -1236,7 +1236,7 @@ pub async fn list_trucks(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_truck(
     State(state): State<AppState>,
@@ -1259,7 +1259,7 @@ pub struct ListTrailersQuery {
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/trailers",
+    path = "/fleet/api/v1/trailers",
     params(
         ("status" = Option<String>, Query, description = "Filter by status"),
     ),
@@ -1268,7 +1268,7 @@ pub struct ListTrailersQuery {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_trailers(
     State(state): State<AppState>,
@@ -1282,7 +1282,7 @@ pub async fn list_trailers(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/trailers/{id}",
+    path = "/fleet/api/v1/trailers/{id}",
     params(("id" = Uuid, Path, description = "Trailer UUID")),
     responses(
         (status = 200, description = "Trailer record", body = TrailerRecord),
@@ -1290,7 +1290,7 @@ pub async fn list_trailers(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_trailer(
     State(state): State<AppState>,
@@ -1316,7 +1316,7 @@ pub struct ListFacilitiesDispatchQuery {
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/facilities",
+    path = "/fleet/api/v1/facilities",
     params(
         ("q" = Option<String>, Query, description = "Substring search across name and address (case-insensitive)"),
         ("limit" = Option<usize>, Query, description = "Max results (default 20, max 100)"),
@@ -1327,7 +1327,7 @@ pub struct ListFacilitiesDispatchQuery {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_facilities(
     State(state): State<AppState>,
@@ -1364,7 +1364,7 @@ pub async fn list_facilities(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/facilities/{id}",
+    path = "/fleet/api/v1/facilities/{id}",
     params(("id" = Uuid, Path, description = "Facility UUID")),
     responses(
         (status = 200, description = "Facility record", body = crate::models::FacilityRecord),
@@ -1372,7 +1372,7 @@ pub async fn list_facilities(
         (status = 404, description = "Facility not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_facility(
     State(state): State<AppState>,
@@ -1398,7 +1398,7 @@ pub struct ListEventsDispatchQuery {
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/events",
+    path = "/fleet/api/v1/events",
     params(
         ("trip_id" = Option<Uuid>, Query, description = "Filter by trip ID"),
         ("driver_id" = Option<Uuid>, Query, description = "Filter by driver ID"),
@@ -1410,7 +1410,7 @@ pub struct ListEventsDispatchQuery {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_events(
     State(state): State<AppState>,
@@ -1448,13 +1448,13 @@ pub struct CountResponse {
 
 /// Count loads that are not yet in a terminal state (delivered / invoiced / settled / cancelled).
 #[utoipa::path(
-    get, path = "/dispatch/api/v1/loads/count",
+    get, path = "/fleet/api/v1/loads/count",
     responses(
         (status = 200, description = "Open load count"),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn count_open_loads(
     State(state): State<AppState>,
@@ -1469,13 +1469,13 @@ pub async fn count_open_loads(
 
 /// Count drivers with active status.
 #[utoipa::path(
-    get, path = "/dispatch/api/v1/drivers/count",
+    get, path = "/fleet/api/v1/drivers/count",
     responses(
         (status = 200, description = "Active driver count"),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn count_active_drivers(
     State(state): State<AppState>,
@@ -1490,13 +1490,13 @@ pub async fn count_active_drivers(
 
 /// Count blobs with pending status.
 #[utoipa::path(
-    get, path = "/dispatch/api/v1/blobs/count",
+    get, path = "/fleet/api/v1/blobs/count",
     responses(
         (status = 200, description = "Pending document count"),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn count_pending_documents(
     State(state): State<AppState>,
@@ -1511,13 +1511,13 @@ pub async fn count_pending_documents(
 
 /// Count events that occurred today (UTC).
 #[utoipa::path(
-    get, path = "/dispatch/api/v1/events/count",
+    get, path = "/fleet/api/v1/events/count",
     responses(
         (status = 200, description = "Events today count"),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn count_events_today(
     State(state): State<AppState>,

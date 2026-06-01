@@ -373,7 +373,7 @@ pub async fn caller_identity(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/users",
+    path = "/fleet/api/v1/users",
     responses(
         (status = 200, description = "List of fleet users", body = UserListResponse),
         (status = 401, description = "Unauthorized"),
@@ -394,7 +394,7 @@ pub async fn list_users(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/users/{id}",
+    path = "/fleet/api/v1/users/{id}",
     params(("id" = Uuid, Path, description = "User UUID")),
     responses(
         (status = 200, description = "User record", body = DispatcherRecord),
@@ -417,7 +417,7 @@ pub async fn get_user(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/users",
+    path = "/fleet/api/v1/users",
     request_body(content = CreateUserRequest, description = "User to create"),
     responses(
         (status = 201, description = "Created user record", body = DispatcherRecord),
@@ -443,7 +443,7 @@ pub async fn create_user(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/users/{id}",
+    path = "/fleet/api/v1/users/{id}",
     params(("id" = Uuid, Path, description = "User UUID")),
     request_body(content = UpdateUserRequest, description = "Fields to update — all optional"),
     responses(
@@ -477,7 +477,7 @@ pub async fn update_user(
 
 #[utoipa::path(
     put,
-    path = "/dispatch/api/v1/users/{id}/password",
+    path = "/fleet/api/v1/users/{id}/password",
     params(("id" = Uuid, Path, description = "User UUID")),
     request_body(content = ResetUserPasswordRequest, description = "New password"),
     responses(
@@ -503,7 +503,7 @@ pub async fn reset_user_password(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/users/{id}",
+    path = "/fleet/api/v1/users/{id}",
     params(("id" = Uuid, Path, description = "User UUID")),
     responses(
         (status = 204, description = "Deactivated (status → inactive); outstanding JWTs invalidated"),
@@ -527,13 +527,13 @@ pub async fn delete_user(
 pub fn router() -> Router<AppState> {
     use axum::routing::{get, put};
     Router::new()
-        .route("/dispatch/api/v1/users", get(list_users).post(create_user))
+        .route("/fleet/api/v1/users", get(list_users).post(create_user))
         .route(
-            "/dispatch/api/v1/users/{id}",
+            "/fleet/api/v1/users/{id}",
             get(get_user).patch(update_user).delete(delete_user),
         )
         .route(
-            "/dispatch/api/v1/users/{id}/password",
+            "/fleet/api/v1/users/{id}/password",
             put(reset_user_password),
         )
 }

@@ -57,7 +57,7 @@ const OWNER_PASSWORD: &str = "owner-password-123";
 
 /// First-run owner bootstrap (idempotent), returning an owner JWT.
 async fn setup_owner(server: &TestServer) -> String {
-    let resp = server.post("/dispatch/setup")
+    let resp = server.post("/fleet/setup")
         .json(&serde_json::json!({
             "email": OWNER_EMAIL, "name": "Owner", "password": OWNER_PASSWORD,
         }))
@@ -65,7 +65,7 @@ async fn setup_owner(server: &TestServer) -> String {
     if resp.status_code() == 200 {
         return resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string();
     }
-    let login = server.post("/dispatch/auth/login")
+    let login = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": OWNER_EMAIL, "password": OWNER_PASSWORD }))
         .await;
     assert_eq!(login.status_code(), 200, "owner login failed");
@@ -85,7 +85,7 @@ async fn admin_post(server: &TestServer, path: &str, body: serde_json::Value) ->
 async fn driver_token(server: &TestServer, state: &AppState, driver_id: &str) -> String {
     // Set a PIN so credentials (and a token_version) exist.
     let owner = setup_owner(server).await;
-    server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+    server.post(&format!("/fleet/api/v1/drivers/{driver_id}/pin"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner}"))
         .json(&serde_json::json!({ "pin": "1234" }))
         .await;
@@ -101,21 +101,21 @@ async fn equipment_tab_shows_assignment_from_active_trip_and_persists_swap() {
     let (server, state, _b, _d) = setup().await;
 
     // Driver, truck, two trailers.
-    let driver_id = admin_post(&server, "/dispatch/api/v1/drivers",
+    let driver_id = admin_post(&server, "/fleet/api/v1/drivers",
         serde_json::json!({ "name": "Repro Driver", "phone": "555-0100" })).await["id"]
         .as_str().unwrap().to_string();
-    let truck_id = admin_post(&server, "/dispatch/api/v1/trucks",
+    let truck_id = admin_post(&server, "/fleet/api/v1/trucks",
         serde_json::json!({ "unit_number": "TRK-1" })).await["id"]
         .as_str().unwrap().to_string();
-    let trailer1 = admin_post(&server, "/dispatch/api/v1/trailers",
+    let trailer1 = admin_post(&server, "/fleet/api/v1/trailers",
         serde_json::json!({ "unit_number": "TRL-1", "owner": "fleet" })).await["id"]
         .as_str().unwrap().to_string();
-    let trailer2 = admin_post(&server, "/dispatch/api/v1/trailers",
+    let trailer2 = admin_post(&server, "/fleet/api/v1/trailers",
         serde_json::json!({ "unit_number": "TRL-2", "owner": "fleet" })).await["id"]
         .as_str().unwrap().to_string();
 
     // Trip with driver, truck, trailer1 assigned.
-    let trip = admin_post(&server, "/dispatch/api/v1/trips", serde_json::json!({
+    let trip = admin_post(&server, "/fleet/api/v1/trips", serde_json::json!({
         "driver_id": driver_id,
         "truck_id": truck_id,
         "trailer_ids": [trailer1],

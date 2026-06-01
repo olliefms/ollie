@@ -95,13 +95,13 @@ const OWNER_EMAIL: &str = "owner@example.com";
 const OWNER_PASSWORD: &str = "owner-password-123";
 
 /// Returns an owner JWT for the dispatch surface, performing first-run setup if
-/// needed. Idempotent: the first call runs `POST /dispatch/setup` (only legal
+/// needed. Idempotent: the first call runs `POST /fleet/setup` (only legal
 /// while the dispatcher table is empty) and returns the auto-login token; later
 /// calls hit the 409 ("already set up") path and log in with the same creds.
 /// An owner is used so every elevated op (settle/invoice/delete/terminal-writes/
 /// user-mgmt) is permitted. Replaces the old admin `Bearer test-secret` setup.
 async fn setup_owner(server: &axum_test::TestServer) -> String {
-    let resp = server.post("/dispatch/setup")
+    let resp = server.post("/fleet/setup")
         .json(&serde_json::json!({
             "email": OWNER_EMAIL, "name": "Owner", "password": OWNER_PASSWORD,
         }))
@@ -109,7 +109,7 @@ async fn setup_owner(server: &axum_test::TestServer) -> String {
     if resp.status_code() == 200 {
         return resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string();
     }
-    let login = server.post("/dispatch/auth/login")
+    let login = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": OWNER_EMAIL, "password": OWNER_PASSWORD }))
         .await;
     assert_eq!(login.status_code(), 200, "owner login failed");
@@ -149,7 +149,7 @@ async fn seed_owner_direct(state: &AppState, email: &str, password: &str) {
 async fn test_upload_returns_202_with_uuid() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let resp = server.post("/dispatch/api/v1/blobs")
+    let resp = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"hello world".to_vec())
@@ -175,7 +175,7 @@ async fn test_upload_with_visibility_field() {
                 .mime_type("text/plain"),
         );
     let resp = server
-        .post("/dispatch/api/v1/blobs")
+        .post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(form)
         .await;
@@ -188,7 +188,7 @@ async fn test_upload_with_visibility_field() {
 #[tokio::test]
 async fn test_upload_without_auth_returns_401() {
     let (server, _b, _d, _rx) = test_server().await;
-    let resp = server.post("/dispatch/api/v1/blobs").await;
+    let resp = server.post("/fleet/api/v1/blobs").await;
     assert_eq!(resp.status_code(), 401);
 }
 
@@ -196,7 +196,7 @@ async fn test_upload_without_auth_returns_401() {
 async fn test_get_metadata_after_upload() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"content".to_vec())
@@ -204,7 +204,7 @@ async fn test_get_metadata_after_upload() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let meta = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+    let meta = server.get(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .add_header(header::ACCEPT, "application/json")
         .await;
@@ -217,7 +217,7 @@ async fn test_get_raw_bytes_regardless_of_status() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let content = b"raw content bytes";
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -225,7 +225,7 @@ async fn test_get_raw_bytes_regardless_of_status() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let raw = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+    let raw = server.get(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(raw.status_code(), 200);
@@ -237,14 +237,14 @@ async fn test_get_raw_bytes_regardless_of_status() {
 async fn test_list_blobs() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    server.post("/dispatch/api/v1/blobs")
+    server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"file1".to_vec())
                 .file_name("a.txt").mime_type("text/plain")))
         .await;
 
-    let list = server.get("/dispatch/api/v1/blobs")
+    let list = server.get("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(list.status_code(), 200);
@@ -257,7 +257,7 @@ async fn test_dedup_second_upload_returns_201() {
     let owner_token = setup_owner(&server).await;
     let content = b"duplicate content";
 
-    let r1 = server.post("/dispatch/api/v1/blobs")
+    let r1 = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -265,7 +265,7 @@ async fn test_dedup_second_upload_returns_201() {
         .await;
     assert_eq!(r1.status_code(), 202);
 
-    let r2 = server.post("/dispatch/api/v1/blobs")
+    let r2 = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -282,7 +282,7 @@ async fn test_dedup_second_upload_returns_201() {
 async fn test_delete_removes_record_returns_404() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"to delete".to_vec())
@@ -290,12 +290,12 @@ async fn test_delete_removes_record_returns_404() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let del = server.delete(&format!("/dispatch/api/v1/blob/{id}"))
+    let del = server.delete(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del.status_code(), 204);
 
-    let get = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+    let get = server.get(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .add_header(header::ACCEPT, "application/json")
         .await;
@@ -306,7 +306,7 @@ async fn test_delete_removes_record_returns_404() {
 async fn test_put_updates_name_and_tags() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"data".to_vec())
@@ -314,7 +314,7 @@ async fn test_put_updates_name_and_tags() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let updated = server.put(&format!("/dispatch/api/v1/blob/{id}"))
+    let updated = server.put(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "renamed.txt", "tags": ["finance"] }))
         .await;
@@ -330,7 +330,7 @@ async fn test_delete_blob_blocked_when_referenced_by_load() {
     let owner_token = setup_owner(&server).await;
 
     // Upload a blob
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"rate con".to_vec())
@@ -339,7 +339,7 @@ async fn test_delete_blob_blocked_when_referenced_by_load() {
     let blob_id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create a facility
-    let fac = server.post("/dispatch/api/v1/facilities")
+    let fac = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Test Dock", "address": "Memphis, TN" }))
         .await;
@@ -356,13 +356,13 @@ async fn test_delete_blob_blocked_when_referenced_by_load() {
         "rate_items": [],
         "blob_ids": [blob_id]
     });
-    server.post("/dispatch/api/v1/loads")
+    server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&load_body)
         .await;
 
     // Attempt to delete the blob — should be blocked
-    let del = server.delete(&format!("/dispatch/api/v1/blob/{blob_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/blob/{blob_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del.status_code(), 409);
@@ -372,7 +372,7 @@ async fn test_delete_blob_blocked_when_referenced_by_load() {
 async fn test_create_facility_returns_201() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let resp = server.post("/dispatch/api/v1/facilities")
+    let resp = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "name": "ABC Warehouse",
@@ -392,13 +392,13 @@ async fn test_create_facility_returns_201() {
 async fn test_get_facility() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let create = server.post("/dispatch/api/v1/facilities")
+    let create = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "XYZ Dock", "address": "Nashville, TN" }))
         .await;
     let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let get = server.get(&format!("/dispatch/api/v1/facilities/{id}"))
+    let get = server.get(&format!("/fleet/api/v1/facilities/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(get.status_code(), 200);
@@ -412,7 +412,7 @@ async fn test_delete_facility_blocked_when_referenced_by_load() {
     // (`any_load_references_facility`) via the DB handle.
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
     let owner_token = setup_owner(&server).await;
-    let fac = server.post("/dispatch/api/v1/facilities")
+    let fac = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Busy Dock", "address": "Atlanta, GA" }))
         .await;
@@ -422,7 +422,7 @@ async fn test_delete_facility_blocked_when_referenced_by_load() {
     assert!(!state.db.any_load_references_facility(fac_uuid).await.unwrap(),
         "no load references the facility yet");
 
-    server.post("/dispatch/api/v1/loads")
+    server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -441,11 +441,11 @@ async fn test_delete_facility_blocked_when_referenced_by_load() {
 async fn test_list_facilities() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    server.post("/dispatch/api/v1/facilities")
+    server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Dock A", "address": "Memphis, TN" }))
         .await;
-    let list = server.get("/dispatch/api/v1/facilities")
+    let list = server.get("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(list.status_code(), 200);
@@ -454,7 +454,7 @@ async fn test_list_facilities() {
 
 async fn create_test_facility(server: &axum_test::TestServer, name: &str, address: &str) -> String {
     let owner_token = setup_owner(server).await;
-    server.post("/dispatch/api/v1/facilities")
+    server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": name, "address": address }))
         .await
@@ -467,7 +467,7 @@ async fn test_create_load_returns_201() {
     let owner_token = setup_owner(&server).await;
     let fac_id = create_test_facility(&server, "ABC Dock", "Memphis, TN").await;
 
-    let resp = server.post("/dispatch/api/v1/loads")
+    let resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "XPO Logistics",
@@ -497,7 +497,7 @@ async fn test_create_load_auto_creates_facility_from_name_address() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
 
-    let resp = server.post("/dispatch/api/v1/loads")
+    let resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -514,7 +514,7 @@ async fn test_create_load_auto_creates_facility_from_name_address() {
         .await;
     assert_eq!(resp.status_code(), 201);
 
-    let facs = server.get("/dispatch/api/v1/facilities")
+    let facs = server.get("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert!(facs.json::<serde_json::Value>()["returned"].as_u64().unwrap() >= 1);
@@ -531,11 +531,11 @@ async fn test_load_number_auto_increments() {
         "timezone": "America/Chicago"
     }]);
 
-    let r1 = server.post("/dispatch/api/v1/loads")
+    let r1 = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({"customer_name": "A", "stops": stop, "rate_items": []}))
         .await;
-    let r2 = server.post("/dispatch/api/v1/loads")
+    let r2 = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({"customer_name": "B", "stops": stop, "rate_items": []}))
         .await;
@@ -550,7 +550,7 @@ async fn test_get_load_detail_includes_facility_info() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let fac_id = create_test_facility(&server, "ABC Dock", "Memphis, TN").await;
-    let create = server.post("/dispatch/api/v1/loads")
+    let create = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "XPO",
@@ -562,7 +562,7 @@ async fn test_get_load_detail_includes_facility_info() {
         .await;
     let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let detail = server.get(&format!("/dispatch/api/v1/loads/{id}"))
+    let detail = server.get(&format!("/fleet/api/v1/loads/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(detail.status_code(), 200);
@@ -578,7 +578,7 @@ async fn test_invalid_service_type_for_stop_returns_400() {
     let owner_token = setup_owner(&server).await;
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
 
-    let resp = server.post("/dispatch/api/v1/loads")
+    let resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -597,7 +597,7 @@ async fn test_delete_load_returns_204() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
-    let create = server.post("/dispatch/api/v1/loads")
+    let create = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -609,12 +609,12 @@ async fn test_delete_load_returns_204() {
         .await;
     let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let del = server.delete(&format!("/dispatch/api/v1/loads/{id}"))
+    let del = server.delete(&format!("/fleet/api/v1/loads/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del.status_code(), 204);
     assert_eq!(
-        server.get(&format!("/dispatch/api/v1/loads/{id}"))
+        server.get(&format!("/fleet/api/v1/loads/{id}"))
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .await.status_code(),
         404
@@ -623,7 +623,7 @@ async fn test_delete_load_returns_204() {
 
 async fn create_test_load(server: &axum_test::TestServer, fac_id: &str) -> String {
     let owner_token = setup_owner(server).await;
-    server.post("/dispatch/api/v1/loads")
+    server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -643,20 +643,20 @@ async fn test_full_load_lifecycle() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let id = create_test_load(&server, &fac_id).await;
 
-    // assign/dispatch/in_transit/deliver are now driven by trip events (issue #31).
+    // assign/fleet/in_transit/deliver are now driven by trip events (issue #31).
     // Test the post-delivered financial lifecycle: delivered → invoiced → settled.
     // We reach delivered by creating a trip linked to this load with driver_id set
     // (which cascades load to assigned), but for now just test invoice+settle
     // starting from planned via the invoice endpoint (which requires delivered status —
     // skip directly to invoice which returns 409 if not delivered, confirming the
     // state machine still enforces ordering).
-    let invoice_premature = server.post(&format!("/dispatch/api/v1/loads/{id}/invoice"))
+    let invoice_premature = server.post(&format!("/fleet/api/v1/loads/{id}/invoice"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({"invoice_number": "INV-001", "invoice_date": "2026-05-15"}))
         .await;
     assert_eq!(invoice_premature.status_code(), 409);
 
-    let invoice = server.post(&format!("/dispatch/api/v1/loads/{id}/cancel"))
+    let invoice = server.post(&format!("/fleet/api/v1/loads/{id}/cancel"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({"reason": "test done"}))
         .await;
@@ -670,7 +670,7 @@ async fn test_cancel_load() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let id = create_test_load(&server, &fac_id).await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/loads/{id}/cancel"))
+    let resp = server.post(&format!("/fleet/api/v1/loads/{id}/cancel"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({"reason": "Customer cancelled"}))
         .await;
@@ -688,7 +688,7 @@ async fn test_trip_creation_cascades_load_to_assigned() {
     let load_id = create_test_load(&server, &fac_id).await;
     let driver_id = uuid::Uuid::new_v4();
 
-    let resp = server.post("/dispatch/api/v1/trips")
+    let resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -697,7 +697,7 @@ async fn test_trip_creation_cascades_load_to_assigned() {
         .await;
     assert_eq!(resp.status_code(), 201);
 
-    let load_resp = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let load_resp = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(load_resp.json::<serde_json::Value>()["status"], "assigned");
@@ -711,7 +711,7 @@ async fn test_trip_two_step_delete() {
     let owner_token = setup_owner(&server).await;
 
     // Create a minimal trip (no load or driver required)
-    let create_resp = server.post("/dispatch/api/v1/trips")
+    let create_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({}))
         .await;
@@ -720,26 +720,26 @@ async fn test_trip_two_step_delete() {
         .as_str().unwrap().to_string();
 
     // First DELETE — soft-cancel: should return 204
-    let del1 = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let del1 = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del1.status_code(), 204);
 
     // GET — trip should still exist with status cancelled
-    let get_resp = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get_resp = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(get_resp.status_code(), 200);
     assert_eq!(get_resp.json::<serde_json::Value>()["status"], "cancelled");
 
     // Second DELETE — hard-delete: should return 204
-    let del2 = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let del2 = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del2.status_code(), 204);
 
     // GET — trip should now return 404
-    let get_after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get_after = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(get_after.status_code(), 404);
@@ -752,7 +752,7 @@ async fn test_query_blob_returns_404_for_missing_blob() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let fake_id = uuid::Uuid::new_v4();
-    let resp = server.post(&format!("/dispatch/api/v1/blobs/{fake_id}/query"))
+    let resp = server.post(&format!("/fleet/api/v1/blobs/{fake_id}/query"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "prompt": "What is this?" }))
         .await;
@@ -764,7 +764,7 @@ async fn test_query_blob_returns_422_when_not_ready() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     // Upload a blob — it stays in pending status (no worker running)
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"some document text".to_vec())
@@ -773,7 +773,7 @@ async fn test_query_blob_returns_422_when_not_ready() {
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
     assert_eq!(upload.json::<serde_json::Value>()["status"], "pending");
 
-    let resp = server.post(&format!("/dispatch/api/v1/blobs/{id}/query"))
+    let resp = server.post(&format!("/fleet/api/v1/blobs/{id}/query"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "prompt": "What is this?" }))
         .await;
@@ -784,7 +784,7 @@ async fn test_query_blob_returns_422_when_not_ready() {
 async fn test_query_blob_returns_400_for_empty_prompt() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"content".to_vec())
@@ -792,7 +792,7 @@ async fn test_query_blob_returns_400_for_empty_prompt() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.post(&format!("/dispatch/api/v1/blobs/{id}/query"))
+    let resp = server.post(&format!("/fleet/api/v1/blobs/{id}/query"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "prompt": "" }))
         .await;
@@ -803,7 +803,7 @@ async fn test_query_blob_returns_400_for_empty_prompt() {
 async fn test_query_blob_returns_400_for_overlong_prompt() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"content".to_vec())
@@ -812,7 +812,7 @@ async fn test_query_blob_returns_400_for_overlong_prompt() {
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     let long_prompt = "a".repeat(4097);
-    let resp = server.post(&format!("/dispatch/api/v1/blobs/{id}/query"))
+    let resp = server.post(&format!("/fleet/api/v1/blobs/{id}/query"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "prompt": long_prompt }))
         .await;
@@ -823,7 +823,7 @@ async fn test_query_blob_returns_400_for_overlong_prompt() {
 async fn test_query_blob_returns_401_without_auth() {
     let (server, _b, _d, _rx) = test_server().await;
     let fake_id = uuid::Uuid::new_v4();
-    let resp = server.post(&format!("/dispatch/api/v1/blobs/{fake_id}/query"))
+    let resp = server.post(&format!("/fleet/api/v1/blobs/{fake_id}/query"))
         .json(&serde_json::json!({ "prompt": "What is this?" }))
         .await;
     assert_eq!(resp.status_code(), 401);
@@ -833,7 +833,7 @@ async fn test_query_blob_returns_401_without_auth() {
 
 async fn create_test_driver(server: &axum_test::TestServer) -> String {
     let owner_token = setup_owner(server).await;
-    server.post("/dispatch/api/v1/drivers")
+    server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Test Driver" }))
         .await
@@ -846,7 +846,7 @@ async fn test_set_driver_pin_returns_204() {
     let owner_token = setup_owner(&server).await;
     let driver_id = create_test_driver(&server).await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver_id}/pin"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "pin": "1234" }))
         .await;
@@ -860,7 +860,7 @@ async fn test_set_driver_pin_invalid_format_returns_422() {
     let driver_id = create_test_driver(&server).await;
 
     for invalid_pin in ["abc", "12", "1234567"] {
-        let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+        let resp = server.post(&format!("/fleet/api/v1/drivers/{driver_id}/pin"))
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .json(&serde_json::json!({ "pin": invalid_pin }))
             .await;
@@ -874,7 +874,7 @@ async fn test_set_driver_pin_not_found_returns_404() {
     let owner_token = setup_owner(&server).await;
     let fake_id = uuid::Uuid::new_v4();
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{fake_id}/pin"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{fake_id}/pin"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "pin": "1234" }))
         .await;
@@ -888,14 +888,14 @@ async fn test_set_driver_pin_increments_token_version() {
     let driver_id = create_test_driver(&server).await;
 
     // First PIN set — token_version should be 0
-    let r1 = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+    let r1 = server.post(&format!("/fleet/api/v1/drivers/{driver_id}/pin"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "pin": "1234" }))
         .await;
     assert_eq!(r1.status_code(), 204);
 
     // Second PIN set — token_version should be incremented to 1
-    let r2 = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+    let r2 = server.post(&format!("/fleet/api/v1/drivers/{driver_id}/pin"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "pin": "5678" }))
         .await;
@@ -906,7 +906,7 @@ async fn test_set_driver_pin_increments_token_version() {
     // The token_version increment is verified at the DB layer by the handler logic.
 }
 
-// ── DELETE /dispatch/api/v1/loads/:id FK guard ─────────────────────────────────────────────────────────────────────────────
+// ── DELETE /fleet/api/v1/loads/:id FK guard ─────────────────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn test_delete_load_blocked_by_active_trip() {
@@ -916,7 +916,7 @@ async fn test_delete_load_blocked_by_active_trip() {
     let load_id = create_test_load(&server, &fac_id).await;
 
     // Create a trip referencing the load (status defaults to planned = active)
-    let trip_resp = server.post("/dispatch/api/v1/trips")
+    let trip_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await;
@@ -925,19 +925,19 @@ async fn test_delete_load_blocked_by_active_trip() {
         .as_str().unwrap().to_string();
 
     // DELETE load → 409 because the trip is active
-    let del1 = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let del1 = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del1.status_code(), 409);
 
     // Cancel the trip (first DELETE soft-cancels it)
-    let cancel = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let cancel = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(cancel.status_code(), 204);
 
     // DELETE load → 204 now that no active trips remain
-    let del2 = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let del2 = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del2.status_code(), 204);
@@ -949,20 +949,20 @@ async fn test_assign_sets_trip_resources_and_complete_releases_them() {
     let owner_token = setup_owner(&server).await;
 
     // Create driver and truck (both start Available)
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Test Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create trip with no driver/truck (simulates hermes flow)
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -974,21 +974,21 @@ async fn test_assign_sets_trip_resources_and_complete_releases_them() {
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Confirm trip has no driver before assign
-    let trip_before = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_before = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
     assert!(trip_before["driver_id"].is_null(), "driver_id should be null before assign");
 
     // POST /assign
-    let assign_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
         .await;
     assert_eq!(assign_resp.status_code(), 200);
 
     // Confirm trip now has driver_id
-    let trip_after_assign = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_after_assign = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
@@ -998,37 +998,37 @@ async fn test_assign_sets_trip_resources_and_complete_releases_them() {
         "truck_id must be set on trip after assign");
 
     // Confirm driver status = assigned
-    let driver_after_assign = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let driver_after_assign = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
     assert_eq!(driver_after_assign["status"], "assigned");
 
     // Walk through lifecycle: dispatch → depart pickup (→ in_transit) → depart delivery (→ delivered) → complete
-    let dispatch = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let dispatch = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch.status_code(), 200);
 
-    let depart_pickup = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/depart"))
+    let depart_pickup = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-07T10:00:00Z" }))
         .await;
     assert_eq!(depart_pickup.status_code(), 200);
 
-    let depart_delivery = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+    let depart_delivery = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-07T14:00:00Z" }))
         .await;
     assert_eq!(depart_delivery.status_code(), 200);
 
-    let complete = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/complete"))
+    let complete = server.post(&format!("/fleet/api/v1/trips/{trip_id}/complete"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(complete.status_code(), 204);
 
     // Confirm trip is completed and driver_id is still set (historical record)
-    let trip_after_complete = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_after_complete = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
@@ -1037,7 +1037,7 @@ async fn test_assign_sets_trip_resources_and_complete_releases_them() {
         "driver_id must still be set after complete (historical record)");
 
     // Confirm driver is available again
-    let driver_after_complete = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let driver_after_complete = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
@@ -1051,7 +1051,7 @@ async fn test_trip_inherits_stops_from_load_when_stops_omitted() {
     let fac_id = create_test_facility(&server, "Origin Dock", "Chicago, IL").await;
 
     // Create a load with one stop
-    let load_id = server.post("/dispatch/api/v1/loads")
+    let load_id = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -1064,7 +1064,7 @@ async fn test_trip_inherits_stops_from_load_when_stops_omitted() {
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create a trip with load_id but no stops
-    let trip_resp = server.post("/dispatch/api/v1/trips")
+    let trip_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await;
@@ -1082,7 +1082,7 @@ async fn test_trip_with_missing_load_id_returns_404() {
     let owner_token = setup_owner(&server).await;
     let fake_load_id = uuid::Uuid::new_v4();
 
-    let resp = server.post("/dispatch/api/v1/trips")
+    let resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": fake_load_id }))
         .await;
@@ -1095,7 +1095,7 @@ async fn test_invalid_timezone_returns_422() {
     let owner_token = setup_owner(&server).await;
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
 
-    let resp = server.post("/dispatch/api/v1/loads")
+    let resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -1115,7 +1115,7 @@ async fn test_timezone_too_long_returns_422() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let long_tz = "A".repeat(65);
 
-    let resp = server.post("/dispatch/api/v1/loads")
+    let resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -1133,46 +1133,46 @@ async fn test_unassign_clears_trip_resources() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
 
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Unassign Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-002" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({}))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Assign
-    let assign = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
         .await;
     assert_eq!(assign.status_code(), 200);
 
     // Confirm driver_id is set
-    let trip_assigned = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_assigned = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
     assert_eq!(trip_assigned["driver_id"].as_str(), Some(driver_id.as_str()));
 
     // Unassign
-    let unassign = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/unassign"))
+    let unassign = server.post(&format!("/fleet/api/v1/trips/{trip_id}/unassign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(unassign.status_code(), 200);
 
     // Confirm driver_id is cleared
-    let trip_unassigned = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_unassigned = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
@@ -1190,7 +1190,7 @@ async fn test_trip_stop_arrive_returns_404_for_missing_trip() {
     let owner_token = setup_owner(&server).await;
     let fake_id = uuid::Uuid::new_v4();
 
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{fake_id}/stops/0/arrive"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{fake_id}/stops/0/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00Z" }))
         .await;
@@ -1202,7 +1202,7 @@ async fn test_trip_stop_arrive_returns_404_for_missing_sequence() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [{ "sequence": 0, "stop_type": "pickup", "name": "Origin" }]
@@ -1210,7 +1210,7 @@ async fn test_trip_stop_arrive_returns_404_for_missing_sequence() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/999/arrive"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/999/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-05-10T10:00:00Z" }))
         .await;
@@ -1223,7 +1223,7 @@ async fn test_trip_stop_depart_returns_404_for_missing_trip() {
     let owner_token = setup_owner(&server).await;
     let fake_id = uuid::Uuid::new_v4();
 
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{fake_id}/stops/0/depart"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{fake_id}/stops/0/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00Z" }))
         .await;
@@ -1235,7 +1235,7 @@ async fn test_trip_stop_depart_returns_404_for_missing_sequence() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [{ "sequence": 0, "stop_type": "pickup", "name": "Origin" }]
@@ -1243,7 +1243,7 @@ async fn test_trip_stop_depart_returns_404_for_missing_sequence() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/999/depart"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/999/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-10T10:00:00Z" }))
         .await;
@@ -1256,7 +1256,7 @@ async fn test_trip_stop_depart_returns_404_for_missing_sequence() {
 async fn test_create_dispatcher_returns_201() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let resp = server.post("/dispatch/api/v1/users")
+    let resp = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "email": "dispatcher@example.com",
@@ -1284,13 +1284,13 @@ async fn test_create_dispatcher_duplicate_email_returns_409() {
         "password": "password123",
         "role": "dispatcher"
     });
-    let r1 = server.post("/dispatch/api/v1/users")
+    let r1 = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&body)
         .await;
     assert_eq!(r1.status_code(), 201);
 
-    let r2 = server.post("/dispatch/api/v1/users")
+    let r2 = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "email": "dup@example.com",
@@ -1308,7 +1308,7 @@ async fn test_list_dispatchers_returns_empty_initially() {
     // The dispatch users surface always has at least the first-run owner; assert
     // the list shape (`users`/`returned`) and that the owner is the sole member.
     let owner_token = setup_owner(&server).await;
-    let resp = server.get("/dispatch/api/v1/users")
+    let resp = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -1322,7 +1322,7 @@ async fn test_list_dispatchers_returns_empty_initially() {
 async fn test_get_dispatcher_by_id() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let create = server.post("/dispatch/api/v1/users")
+    let create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "email": "get@example.com",
@@ -1334,7 +1334,7 @@ async fn test_get_dispatcher_by_id() {
     assert_eq!(create.status_code(), 201);
     let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let get = server.get(&format!("/dispatch/api/v1/users/{id}"))
+    let get = server.get(&format!("/fleet/api/v1/users/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(get.status_code(), 200);
@@ -1352,7 +1352,7 @@ async fn test_dispatcher_login_success() {
 
     // Create a dispatcher via the users surface
     let owner_token = setup_owner(&server).await;
-    let create = server.post("/dispatch/api/v1/users")
+    let create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "email": "login@example.com",
@@ -1364,7 +1364,7 @@ async fn test_dispatcher_login_success() {
     assert_eq!(create.status_code(), 201);
 
     // Login via dispatcher portal
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({
             "email": "login@example.com",
             "password": "correct-password-123"
@@ -1380,7 +1380,7 @@ async fn test_dispatcher_login_bad_password() {
     let (server, _b, _d, _rx) = test_server().await;
 
     let owner_token = setup_owner(&server).await;
-    let create = server.post("/dispatch/api/v1/users")
+    let create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "email": "badpass@example.com",
@@ -1391,7 +1391,7 @@ async fn test_dispatcher_login_bad_password() {
         .await;
     assert_eq!(create.status_code(), 201);
 
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({
             "email": "badpass@example.com",
             "password": "wrong-password"
@@ -1404,7 +1404,7 @@ async fn test_dispatcher_login_bad_password() {
 async fn test_dispatcher_login_unknown_email() {
     let (server, _b, _d, _rx) = test_server().await;
 
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({
             "email": "nobody@example.com",
             "password": "any-password"
@@ -1419,7 +1419,7 @@ async fn test_dispatcher_refresh() {
 
     // Create dispatcher
     let owner_token = setup_owner(&server).await;
-    let create = server.post("/dispatch/api/v1/users")
+    let create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "email": "refresh@example.com",
@@ -1431,7 +1431,7 @@ async fn test_dispatcher_refresh() {
     assert_eq!(create.status_code(), 201);
 
     // Login to get initial token
-    let login = server.post("/dispatch/auth/login")
+    let login = server.post("/fleet/auth/login")
         .json(&serde_json::json!({
             "email": "refresh@example.com",
             "password": "refresh-password-123"
@@ -1448,7 +1448,7 @@ async fn test_dispatcher_refresh() {
     let cookie_kv = set_cookie.split(';').next().unwrap().trim().to_string();
 
     // Refresh using the HttpOnly cookie (no Authorization header needed).
-    let refresh = server.post("/dispatch/auth/refresh")
+    let refresh = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_kv)
         .await;
     assert_eq!(refresh.status_code(), 200);
@@ -1469,7 +1469,7 @@ async fn dispatcher_login(server: &axum_test::TestServer, email: &str, password:
     // owner — is creatable (the surface forbids creating role=owner). This keeps
     // the full elevated-op range these data tests exercise.
     let owner = setup_owner(server).await;
-    server.post("/dispatch/api/v1/users")
+    server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner}"))
         .json(&serde_json::json!({
             "email": email,
@@ -1480,7 +1480,7 @@ async fn dispatcher_login(server: &axum_test::TestServer, email: &str, password:
         .await;
 
     // Login and return JWT
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": email, "password": password }))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -1497,7 +1497,7 @@ async fn test_dispatcher_list_loads() {
 
     // Create a facility and load via admin API first
     let fac_id = create_test_facility(&server, "Dispatch Dock", "Chicago, IL").await;
-    server.post("/dispatch/api/v1/loads")
+    server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "Dispatch Test Customer",
@@ -1510,8 +1510,8 @@ async fn test_dispatcher_list_loads() {
         }))
         .await;
 
-    // GET /dispatch/api/v1/loads as dispatcher — should return 200
-    let resp = server.get("/dispatch/api/v1/loads")
+    // GET /fleet/api/v1/loads as dispatcher — should return 200
+    let resp = server.get("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -1530,7 +1530,7 @@ async fn test_dispatcher_get_trip() {
 
     // Create a facility, load, and trip via admin API
     let fac_id = create_test_facility(&server, "Trip Dock", "Dallas, TX").await;
-    server.post("/dispatch/api/v1/loads")
+    server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "Trip Test Co",
@@ -1543,7 +1543,7 @@ async fn test_dispatcher_get_trip() {
         }))
         .await;
 
-    let trip_resp = server.post("/dispatch/api/v1/trips")
+    let trip_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "trip_number": "T-DISP-001",
@@ -1559,8 +1559,8 @@ async fn test_dispatcher_get_trip() {
     assert_eq!(trip_resp.status_code(), 201);
     let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    // GET /dispatch/api/v1/trips/:id as dispatcher — should return 200
-    let resp = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    // GET /fleet/api/v1/trips/:id as dispatcher — should return 200
+    let resp = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -1579,21 +1579,21 @@ async fn test_dispatcher_assign_and_unassign() {
     // Create resources via admin API
     let fac_id = create_test_facility(&server, "Assign Dock", "Houston, TX").await;
 
-    let driver_resp = server.post("/dispatch/api/v1/drivers")
+    let driver_resp = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Test Driver Dispatch" }))
         .await;
     assert_eq!(driver_resp.status_code(), 201);
     let driver_id = driver_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_resp = server.post("/dispatch/api/v1/trucks")
+    let truck_resp = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "TR-DISP-001" }))
         .await;
     assert_eq!(truck_resp.status_code(), 201);
     let truck_id = truck_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_resp = server.post("/dispatch/api/v1/trips")
+    let trip_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "trip_number": "T-ASSIGN-DISP-001",
@@ -1610,7 +1610,7 @@ async fn test_dispatcher_assign_and_unassign() {
     let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Assign via dispatcher API
-    let assign_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id,
@@ -1627,7 +1627,7 @@ async fn test_dispatcher_assign_and_unassign() {
     assert_eq!(assign_body["status"], "assigned");
 
     // Follow-up GET to confirm persistence
-    let get_resp = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get_resp = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(get_resp.status_code(), 200);
@@ -1635,7 +1635,7 @@ async fn test_dispatcher_assign_and_unassign() {
     assert_eq!(get_body["driver_id"], driver_id);
 
     // Unassign via dispatcher API
-    let unassign_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/unassign"))
+    let unassign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/unassign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(unassign_resp.status_code(), 200);
@@ -1658,7 +1658,7 @@ async fn test_dispatcher_assign_and_unassign() {
 /// id. Both stops use the same facility for simplicity.
 async fn create_2stop_load(server: &axum_test::TestServer, fac_id: &str, customer: &str) -> String {
     let owner_token = setup_owner(server).await;
-    let resp = server.post("/dispatch/api/v1/loads")
+    let resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": customer,
@@ -1683,18 +1683,18 @@ async fn drive_load_to_delivered(
     server: &axum_test::TestServer, token: &str, fac_id: &str, load_id: &str,
 ) -> String {
     let owner_token = setup_owner(server).await;
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Deliver Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": format!("TRK-{}", &load_id[..8]) }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -1708,26 +1708,26 @@ async fn drive_load_to_delivered(
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-08-01T08:05:00" }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-08-01T09:00:00" }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/arrive"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/2/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-08-01T16:05:00" }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/depart"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/2/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-08-01T17:00:00" }))
         .await;
@@ -1740,7 +1740,7 @@ async fn test_dispatcher_create_trip() {
     let token = dispatcher_login(&server, "ct1@example.com", "password-ct1").await;
     let fac_id = create_test_facility(&server, "Create Trip Dock", "Memphis, TN").await;
 
-    let resp = server.post("/dispatch/api/v1/trips")
+    let resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -1759,7 +1759,7 @@ async fn test_dispatcher_create_trip() {
 
     // Confirm it is retrievable.
     let trip_id = body["id"].as_str().unwrap();
-    let get = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(get.status_code(), 200);
@@ -1772,7 +1772,7 @@ async fn test_dispatcher_delete_trip() {
     let fac_id = create_test_facility(&server, "Delete Trip Dock", "Mobile, AL").await;
 
     // planned trip → soft-cancel (204), then GET shows cancelled.
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -1785,11 +1785,11 @@ async fn test_dispatcher_delete_trip() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let del = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del.status_code(), 204);
-    let after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let after = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
@@ -1803,18 +1803,18 @@ async fn test_dispatcher_delete_trip_in_transit_conflict() {
     let token = dispatcher_login(&server, "dt2@example.com", "password-dt2").await;
     let fac_id = create_test_facility(&server, "InTransit Dock", "Macon, GA").await;
 
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "InTransit Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "TRK-IT-1" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -1827,24 +1827,24 @@ async fn test_dispatcher_delete_trip_in_transit_conflict() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-08-01T08:05:00" }))
         .await;
-    let dep = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+    let dep = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-08-01T09:00:00" }))
         .await;
     assert_eq!(dep.json::<serde_json::Value>()["status"], "in_transit");
 
-    let del = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del.status_code(), 409, "deleting an in_transit trip must 409");
@@ -1857,7 +1857,7 @@ async fn test_dispatcher_cancel_load() {
     let fac_id = create_test_facility(&server, "Cancel Load Dock", "Tulsa, OK").await;
     let load_id = create_2stop_load(&server, &fac_id, "Cancel Co").await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/loads/{load_id}/cancel"))
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/cancel"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "reason": "customer fell through" }))
         .await;
@@ -1877,13 +1877,13 @@ async fn test_dispatcher_invoice_and_settle_load() {
     drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
 
     // Confirm the load reached delivered before invoicing.
-    let load = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let load = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
     assert_eq!(load["status"], "delivered", "load must be delivered to invoice");
 
-    let inv = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+    let inv = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "invoice_number": "INV-9001" }))
         .await;
@@ -1892,7 +1892,7 @@ async fn test_dispatcher_invoice_and_settle_load() {
     assert_eq!(inv_body["status"], "invoiced");
     assert_eq!(inv_body["invoice_number"], "INV-9001");
 
-    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+    let settle = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(settle.status_code(), 200);
@@ -1908,7 +1908,7 @@ async fn test_dispatcher_delete_load_and_active_trip_conflict() {
 
     // Load with an active trip → delete must 409.
     let load_id = create_2stop_load(&server, &fac_id, "DelLoad Co").await;
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -1920,20 +1920,20 @@ async fn test_dispatcher_delete_load_and_active_trip_conflict() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let conflict = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let conflict = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(conflict.status_code(), 409, "load with an active trip must 409");
 
     // Cancel the trip, then delete should succeed (204).
-    server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
-    let del = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del.status_code(), 204);
-    let after = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let after = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(after.status_code(), 404, "deleted load should be gone");
@@ -1944,18 +1944,18 @@ async fn test_dispatcher_delete_driver() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "dd1@example.com", "password-dd1").await;
 
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "name": "Delete Me Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let del = server.delete(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del.status_code(), 204);
 
-    let after = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let after = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
@@ -1967,21 +1967,21 @@ async fn test_dispatcher_set_driver_pin() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "pin1@example.com", "password-pin1").await;
 
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "name": "PIN Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Happy path.
-    let ok = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+    let ok = server.post(&format!("/fleet/api/v1/drivers/{driver_id}/pin"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "pin": "1234" }))
         .await;
     assert_eq!(ok.status_code(), 204);
 
     // Bad format → 422.
-    let bad = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+    let bad = server.post(&format!("/fleet/api/v1/drivers/{driver_id}/pin"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "pin": "12ab" }))
         .await;
@@ -1993,31 +1993,31 @@ async fn test_dispatcher_delete_truck_and_trailer() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "eq1@example.com", "password-eq1").await;
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "unit_number": "TRK-DEL-1" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let del_truck = server.delete(&format!("/dispatch/api/v1/trucks/{truck_id}"))
+    let del_truck = server.delete(&format!("/fleet/api/v1/trucks/{truck_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del_truck.status_code(), 204);
-    let truck_after = server.get(&format!("/dispatch/api/v1/trucks/{truck_id}"))
+    let truck_after = server.get(&format!("/fleet/api/v1/trucks/{truck_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
     assert_eq!(truck_after["status"], "inactive");
 
-    let trailer_id = server.post("/dispatch/api/v1/trailers")
+    let trailer_id = server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "unit_number": "TRL-DEL-1", "owner": "fleet" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let del_trailer = server.delete(&format!("/dispatch/api/v1/trailers/{trailer_id}"))
+    let del_trailer = server.delete(&format!("/fleet/api/v1/trailers/{trailer_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del_trailer.status_code(), 204);
-    let trailer_after = server.get(&format!("/dispatch/api/v1/trailers/{trailer_id}"))
+    let trailer_after = server.get(&format!("/fleet/api/v1/trailers/{trailer_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
@@ -2032,8 +2032,8 @@ async fn test_dispatcher_delete_truck_and_trailer() {
 async fn test_dispatcher_mcp_requires_auth() {
     let (server, _b, _d, _rx) = test_server().await;
 
-    // POST /dispatch/mcp without auth header → 401
-    let resp = server.post("/dispatch/mcp")
+    // POST /fleet/mcp without auth header → 401
+    let resp = server.post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -2117,7 +2117,7 @@ async fn test_mcp_resources_list_and_read_roundtrip() {
 
     // initialize advertises the resources capability.
     let init_resp = server
-        .post("/dispatch/mcp")
+        .post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
@@ -2246,14 +2246,14 @@ async fn test_mcp_completions_for_reference_args() {
     create_test_load(&server, &fac).await;
     let up_token = mint_upload_token();
     server
-        .post(&format!("/dispatch/blobs/presigned?token={up_token}&name=hz.txt&tags=hazmat"))
+        .post(&format!("/fleet/blobs/presigned?token={up_token}&name=hz.txt&tags=hazmat"))
         .add_header(header::CONTENT_TYPE, "text/plain")
         .bytes(b"hz".to_vec().into())
         .await;
 
     // initialize advertises the completions capability.
     let init_resp = server
-        .post("/dispatch/mcp")
+        .post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
@@ -2495,20 +2495,20 @@ async fn test_assign_trip_when_driver_is_dispatched_succeeds() {
     let owner_token = setup_owner(&server).await;
 
     // Create driver and truck (both start Available)
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Busy Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-BUSY-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create trip A with stops
-    let trip_a_id = server.post("/dispatch/api/v1/trips")
+    let trip_a_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -2520,27 +2520,27 @@ async fn test_assign_trip_when_driver_is_dispatched_succeeds() {
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Assign trip A to driver+truck
-    let assign_a = server.post(&format!("/dispatch/api/v1/trips/{trip_a_id}/assign"))
+    let assign_a = server.post(&format!("/fleet/api/v1/trips/{trip_a_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
         .await;
     assert_eq!(assign_a.status_code(), 200, "assign trip A should succeed");
 
     // Dispatch trip A → driver becomes Dispatched
-    let dispatch_a = server.post(&format!("/dispatch/api/v1/trips/{trip_a_id}/dispatch"))
+    let dispatch_a = server.post(&format!("/fleet/api/v1/trips/{trip_a_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch_a.status_code(), 200, "dispatch trip A should succeed");
 
     // Confirm driver is now Dispatched
-    let driver_after_dispatch = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let driver_after_dispatch = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
     assert_eq!(driver_after_dispatch["status"], "dispatched");
 
     // Create trip B
-    let trip_b_id = server.post("/dispatch/api/v1/trips")
+    let trip_b_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -2552,21 +2552,21 @@ async fn test_assign_trip_when_driver_is_dispatched_succeeds() {
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create a second truck for trip B (since truck_id is dispatched)
-    let truck_b_id = server.post("/dispatch/api/v1/trucks")
+    let truck_b_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-BUSY-002" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Assign trip B to the same dispatched driver → should succeed (200)
-    let assign_b = server.post(&format!("/dispatch/api/v1/trips/{trip_b_id}/assign"))
+    let assign_b = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_b_id }))
         .await;
     assert_eq!(assign_b.status_code(), 200, "assigning trip B to a dispatched driver should succeed");
 
     // Confirm trip B has driver_id set
-    let trip_b = server.get(&format!("/dispatch/api/v1/trips/{trip_b_id}"))
+    let trip_b = server.get(&format!("/fleet/api/v1/trips/{trip_b_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
@@ -2574,7 +2574,7 @@ async fn test_assign_trip_when_driver_is_dispatched_succeeds() {
         "trip B must have driver_id set after assign");
 
     // Driver status should remain dispatched (not downgraded to assigned)
-    let driver_after_assign_b = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let driver_after_assign_b = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
@@ -2588,26 +2588,26 @@ async fn test_dispatch_trip_when_driver_already_dispatched_fails() {
     let owner_token = setup_owner(&server).await;
 
     // Create driver and two trucks
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Double Dispatch Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_a_id = server.post("/dispatch/api/v1/trucks")
+    let truck_a_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-DD-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_b_id = server.post("/dispatch/api/v1/trucks")
+    let truck_b_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-DD-002" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create trips A and B
-    let trip_a_id = server.post("/dispatch/api/v1/trips")
+    let trip_a_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -2618,7 +2618,7 @@ async fn test_dispatch_trip_when_driver_already_dispatched_fails() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_b_id = server.post("/dispatch/api/v1/trips")
+    let trip_b_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -2630,26 +2630,26 @@ async fn test_dispatch_trip_when_driver_already_dispatched_fails() {
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Assign + dispatch trip A → driver becomes Dispatched
-    let assign_a = server.post(&format!("/dispatch/api/v1/trips/{trip_a_id}/assign"))
+    let assign_a = server.post(&format!("/fleet/api/v1/trips/{trip_a_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_a_id }))
         .await;
     assert_eq!(assign_a.status_code(), 200, "assign trip A should succeed");
 
-    let dispatch_a = server.post(&format!("/dispatch/api/v1/trips/{trip_a_id}/dispatch"))
+    let dispatch_a = server.post(&format!("/fleet/api/v1/trips/{trip_a_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch_a.status_code(), 200, "dispatch trip A should succeed");
 
     // Assign trip B to same driver (allowed since driver is dispatched, not inactive)
-    let assign_b = server.post(&format!("/dispatch/api/v1/trips/{trip_b_id}/assign"))
+    let assign_b = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_b_id }))
         .await;
     assert_eq!(assign_b.status_code(), 200, "assign trip B to dispatched driver should succeed");
 
     // Attempt to dispatch trip B → should fail with 409
-    let dispatch_b = server.post(&format!("/dispatch/api/v1/trips/{trip_b_id}/dispatch"))
+    let dispatch_b = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch_b.status_code(), 409,
@@ -2668,19 +2668,19 @@ async fn test_dispatcher_trip_lifecycle_actions() {
 
     let fac_id = create_test_facility(&server, "Lifecycle Dock", "Houston, TX").await;
 
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Lifecycle Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "TR-LC-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -2694,54 +2694,54 @@ async fn test_dispatcher_trip_lifecycle_actions() {
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Assign via dispatcher API (covered by existing test) — needed to drive transitions
-    let assign_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
         .await;
     assert_eq!(assign_resp.status_code(), 200);
 
     // Dispatch via dispatcher API
-    let dispatch_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let dispatch_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(dispatch_resp.status_code(), 200);
     assert_eq!(dispatch_resp.json::<serde_json::Value>()["status"], "dispatched");
 
     // Undispatch
-    let undispatch_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/undispatch"))
+    let undispatch_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/undispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(undispatch_resp.status_code(), 200);
     assert_eq!(undispatch_resp.json::<serde_json::Value>()["status"], "assigned");
 
     // Re-dispatch then drive stops
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
 
     // Check-call
-    let cc_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/check-call"))
+    let cc_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/check-call"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "location": "I-10 mile 320" }))
         .await;
     assert_eq!(cc_resp.status_code(), 204);
 
     // Arrive at pickup
-    let arr1 = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+    let arr1 = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-07-01T08:05:00" }))
         .await;
     assert_eq!(arr1.status_code(), 200);
 
     // Late flag
-    let late_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/late"))
+    let late_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/2/late"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "eta": "2026-07-01T17:00:00", "notes": "traffic" }))
         .await;
     assert_eq!(late_resp.status_code(), 204);
 
     // Depart pickup → trip becomes in_transit
-    let dep1 = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+    let dep1 = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-07-01T09:00:00" }))
         .await;
@@ -2749,31 +2749,31 @@ async fn test_dispatcher_trip_lifecycle_actions() {
     assert_eq!(dep1.json::<serde_json::Value>()["status"], "in_transit");
 
     // Arrive + depart delivery → trip becomes delivered
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/arrive"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/2/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-07-01T16:05:00" }))
         .await;
-    let dep2 = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/depart"))
+    let dep2 = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/2/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-07-01T17:00:00" }))
         .await;
     assert_eq!(dep2.status_code(), 200);
     // Confirm delivered status via follow-up GET (admin stop_depart returns a
     // pre-final-cascade snapshot — see #221 / admin trip_actions::stop_depart).
-    let trip_after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_after = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
     assert_eq!(trip_after["status"], "delivered");
 
     // Complete
-    let complete_resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/complete"))
+    let complete_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/complete"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(complete_resp.status_code(), 204);
 
     // Verify driver/truck released
-    let driver_after = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let driver_after = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>();
@@ -2786,7 +2786,7 @@ async fn test_dispatcher_cancel_trip() {
     let owner_token = setup_owner(&server).await;
     let token = dispatcher_login(&server, "cancel1@example.com", "password-cancel1").await;
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [{ "sequence": 1, "stop_type": "pickup", "name": "Origin" }]
@@ -2794,7 +2794,7 @@ async fn test_dispatcher_cancel_trip() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/cancel"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/cancel"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -2830,18 +2830,18 @@ async fn test_dispatcher_mcp_dispatch_and_complete() {
 
     let fac_id = create_test_facility(&server, "MCP Dock", "Dallas, TX").await;
 
-    let driver_id = server.post("/dispatch/api/v1/drivers")
+    let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "MCP Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "TR-MCP-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -2855,7 +2855,7 @@ async fn test_dispatcher_mcp_dispatch_and_complete() {
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // assign via dispatcher API (already covered)
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
         .await;
@@ -2895,7 +2895,7 @@ async fn test_dispatcher_mcp_dispatch_and_complete() {
 #[tokio::test]
 async fn test_dispatcher_blob_requires_auth() {
     let (server, _b, _d, _rx) = test_server().await;
-    let resp = server.get("/dispatch/api/v1/blobs").await;
+    let resp = server.get("/fleet/api/v1/blobs").await;
     assert_eq!(resp.status_code(), 401);
 }
 
@@ -2904,7 +2904,7 @@ async fn test_dispatcher_upload_blob_returns_202() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "blobs-up@example.com", "password-blobs-up").await;
 
-    let resp = server.post("/dispatch/api/v1/blobs")
+    let resp = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"pod content".to_vec())
@@ -2921,14 +2921,14 @@ async fn test_dispatcher_list_blobs() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "blobs-list@example.com", "password-blobs-list").await;
 
-    server.post("/dispatch/api/v1/blobs")
+    server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"freight bill".to_vec())
                 .file_name("bill.txt").mime_type("text/plain")))
         .await;
 
-    let resp = server.get("/dispatch/api/v1/blobs")
+    let resp = server.get("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -2942,7 +2942,7 @@ async fn test_dispatcher_get_blob_json() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "blobs-get@example.com", "password-blobs-get").await;
 
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"get me".to_vec())
@@ -2950,7 +2950,7 @@ async fn test_dispatcher_get_blob_json() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+    let resp = server.get(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .add_header(header::ACCEPT, "application/json")
         .await;
@@ -2964,7 +2964,7 @@ async fn test_dispatcher_get_blob_raw_bytes() {
     let token = dispatcher_login(&server, "blobs-raw@example.com", "password-blobs-raw").await;
 
     let content = b"raw document for download test";
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -2973,7 +2973,7 @@ async fn test_dispatcher_get_blob_raw_bytes() {
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // No Accept: application/json → raw bytes
-    let resp = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+    let resp = server.get(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -2985,7 +2985,7 @@ async fn test_dispatcher_update_blob() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "blobs-upd@example.com", "password-blobs-upd").await;
 
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"update me".to_vec())
@@ -2993,7 +2993,7 @@ async fn test_dispatcher_update_blob() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.put(&format!("/dispatch/api/v1/blob/{id}"))
+    let resp = server.put(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "name": "renamed.txt", "tags": ["invoice"] }))
         .await;
@@ -3008,7 +3008,7 @@ async fn test_dispatcher_delete_blob() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "blobs-del@example.com", "password-blobs-del").await;
 
-    let upload = server.post("/dispatch/api/v1/blobs")
+    let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(b"delete me".to_vec())
@@ -3016,12 +3016,12 @@ async fn test_dispatcher_delete_blob() {
         .await;
     let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let del_resp = server.delete(&format!("/dispatch/api/v1/blob/{id}"))
+    let del_resp = server.delete(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del_resp.status_code(), 204);
 
-    let get_resp = server.get(&format!("/dispatch/api/v1/blob/{id}"))
+    let get_resp = server.get(&format!("/fleet/api/v1/blob/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .add_header(header::ACCEPT, "application/json")
         .await;
@@ -3036,14 +3036,14 @@ async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
 
     let fac_id = create_test_facility(&server, "OOS Dock", "Phoenix, AZ").await;
 
-    let driver_resp = server.post("/dispatch/api/v1/drivers")
+    let driver_resp = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "OOS Test Driver" }))
         .await;
     assert_eq!(driver_resp.status_code(), 201);
     let driver_id = driver_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let truck_resp = server.post("/dispatch/api/v1/trucks")
+    let truck_resp = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "TR-OOS-001" }))
         .await;
@@ -3051,7 +3051,7 @@ async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
     let truck_id = truck_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Create a trailer then mark it out_of_service
-    let trailer_resp = server.post("/dispatch/api/v1/trailers")
+    let trailer_resp = server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "TRL-OOS-001", "owner": "fleet" }))
         .await;
@@ -3064,7 +3064,7 @@ async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
         ollie::models::trailer::TrailerStatus::OutOfService,
     ).await.unwrap();
 
-    let trip_resp = server.post("/dispatch/api/v1/trips")
+    let trip_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "trip_number": "T-OOS-001",
@@ -3079,7 +3079,7 @@ async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
     let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Attempt assign with the OOS trailer — must be 409
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id,
@@ -3090,7 +3090,7 @@ async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
     assert_eq!(resp.status_code(), 409);
 
     // Trip must remain planned — no partial mutation
-    let trip_check = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_check = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(
@@ -3099,7 +3099,7 @@ async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
     );
 
     // Driver must remain available
-    let driver_check = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let driver_check = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(
@@ -3114,7 +3114,7 @@ async fn test_upload_large_file_succeeds_under_50mb() {
     let owner_token = setup_owner(&server).await;
     // 3MB synthetic file — larger than the old 2MB default
     let large_data = vec![0u8; 3 * 1024 * 1024];
-    let resp = server.post("/dispatch/api/v1/blobs")
+    let resp = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(large_data)
@@ -3129,7 +3129,7 @@ async fn test_trip_stop_name_and_address_populated_from_facility() {
     let owner_token = setup_owner(&server).await;
     let fac_id = create_test_facility(&server, "Origin Dock", "Chicago, IL").await;
 
-    let load_id = server.post("/dispatch/api/v1/loads")
+    let load_id = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -3140,7 +3140,7 @@ async fn test_trip_stop_name_and_address_populated_from_facility() {
         }))
         .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await.json::<serde_json::Value>();
@@ -3156,7 +3156,7 @@ async fn test_trip_load_number_denormalized() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let load_id = create_test_load(&server, &fac_id).await;
 
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await.json::<serde_json::Value>();
@@ -3174,7 +3174,7 @@ async fn test_previous_trip_id_auto_populated_from_driver_last_trip() {
     let driver_id = create_test_driver(&server).await;
 
     // First trip for this driver — no previous trip
-    let trip1 = server.post("/dispatch/api/v1/trips")
+    let trip1 = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id }))
         .await.json::<serde_json::Value>();
@@ -3184,7 +3184,7 @@ async fn test_previous_trip_id_auto_populated_from_driver_last_trip() {
     assert!(rec1.previous_trip_id.is_none(), "first trip should have no previous_trip_id");
 
     // Second trip for same driver — should auto-populate previous_trip_id
-    let trip2 = server.post("/dispatch/api/v1/trips")
+    let trip2 = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id }))
         .await.json::<serde_json::Value>();
@@ -3202,19 +3202,19 @@ async fn test_previous_trip_id_dispatcher_override() {
     let driver_id = create_test_driver(&server).await;
 
     // Create two trips first
-    let trip1 = server.post("/dispatch/api/v1/trips")
+    let trip1 = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id }))
         .await.json::<serde_json::Value>();
     let trip1_id = trip1["id"].as_str().unwrap();
 
-    server.post("/dispatch/api/v1/trips")
+    server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id }))
         .await;
 
     // Third trip with explicit previous_trip_id pointing to trip1 (not trip2)
-    let trip3 = server.post("/dispatch/api/v1/trips")
+    let trip3 = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "previous_trip_id": trip1_id }))
         .await.json::<serde_json::Value>();
@@ -3230,7 +3230,7 @@ async fn test_deadhead_and_loaded_miles_null_without_ors() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let load_id = create_test_load(&server, &fac_id).await;
 
-    let resp = server.post("/dispatch/api/v1/trips")
+    let resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await;
@@ -3249,7 +3249,7 @@ async fn test_dispatcher_loads_list_route_column_has_facility_names() {
     let origin_id = create_test_facility(&server, "Origin Hub", "Chicago, IL").await;
     let dest_id   = create_test_facility(&server, "Dest Hub",   "Dallas, TX").await;
 
-    server.post("/dispatch/api/v1/loads")
+    server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "Route Test Co",
@@ -3269,7 +3269,7 @@ async fn test_dispatcher_loads_list_route_column_has_facility_names() {
         }))
         .await;
 
-    let resp = server.get("/dispatch/api/v1/loads")
+    let resp = server.get("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -3288,10 +3288,10 @@ async fn test_dispatcher_count_endpoints_return_200() {
     let token = dispatcher_login(&server, "kpi-test@example.com", "pw-kpi-test").await;
 
     for path in &[
-        "/dispatch/api/v1/loads/count",
-        "/dispatch/api/v1/drivers/count",
-        "/dispatch/api/v1/blobs/count",
-        "/dispatch/api/v1/events/count",
+        "/fleet/api/v1/loads/count",
+        "/fleet/api/v1/drivers/count",
+        "/fleet/api/v1/blobs/count",
+        "/fleet/api/v1/events/count",
     ] {
         let resp = server.get(path)
             .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -3304,7 +3304,7 @@ async fn test_dispatcher_count_endpoints_return_200() {
 
 async fn setup_driver_with_delivered_trip(server: &TestServer, state: &AppState) -> String {
     let owner_token = setup_owner(server).await;
-    let driver_id_str = server.post("/dispatch/api/v1/drivers")
+    let driver_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Past Trip Driver" }))
         .await
@@ -3322,13 +3322,13 @@ async fn setup_driver_with_delivered_trip(server: &TestServer, state: &AppState)
     };
     state.db.upsert_driver_credentials(&creds).await.unwrap();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-PAST-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3339,25 +3339,25 @@ async fn setup_driver_with_delivered_trip(server: &TestServer, state: &AppState)
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let assign = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
         .await;
     assert_eq!(assign.status_code(), 200);
 
-    let dispatch = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let dispatch = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch.status_code(), 200);
 
-    let depart_pickup = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/depart"))
+    let depart_pickup = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
         .await;
     assert_eq!(depart_pickup.status_code(), 200);
 
     // Last-stop depart sets trip → delivered and populates delivered_at via stop.actual_depart.
-    let depart_delivery = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+    let depart_delivery = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-12T14:00:00Z" }))
         .await;
@@ -3385,7 +3385,7 @@ async fn setup_driver_with_intransit_trip_two_stops(
     state: &AppState,
 ) -> (String, String) {
     let owner_token = setup_owner(server).await;
-    let driver_id_str = server.post("/dispatch/api/v1/drivers")
+    let driver_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "InTransit Driver" }))
         .await
@@ -3402,14 +3402,14 @@ async fn setup_driver_with_intransit_trip_two_stops(
     };
     state.db.upsert_driver_credentials(&creds).await.unwrap();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-IT-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Use sequences 1 and 2 (per AGENTS.md line 332) so off-by-one bugs surface.
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3430,13 +3430,13 @@ async fn setup_driver_with_intransit_trip_two_stops(
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let assign = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
         .await;
     assert_eq!(assign.status_code(), 200);
 
-    let dispatch = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let dispatch = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch.status_code(), 200);
@@ -3539,7 +3539,7 @@ async fn test_driver_stop_detail_includes_scheduled_arrive_utc() {
     let (server, _db, _blob, _rx, state) = test_server_with_state().await;
     let owner_token = setup_owner(&server).await;
 
-    let driver_id_str = server.post("/dispatch/api/v1/drivers")
+    let driver_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Sched UTC Driver" }))
         .await
@@ -3553,14 +3553,14 @@ async fn test_driver_stop_detail_includes_scheduled_arrive_utc() {
     };
     state.db.upsert_driver_credentials(&creds).await.unwrap();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-SCHED-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Naive 08:00 local on 2026-05-09 in America/Chicago (CDT, UTC-5) → 13:00 UTC.
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3575,12 +3575,12 @@ async fn test_driver_stop_detail_includes_scheduled_arrive_utc() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let assign = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
         .await;
     assert_eq!(assign.status_code(), 200);
-    let dispatch = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let dispatch = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch.status_code(), 200);
@@ -3638,7 +3638,7 @@ async fn test_admin_get_trip_legacy_z_row_reads_utc_field() {
     let owner_token = setup_owner(&server).await;
 
     // Build a trip directly via DB with a legacy Z-suffixed actual_arrive and timezone=None.
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3672,7 +3672,7 @@ async fn test_admin_get_trip_legacy_z_row_reads_utc_field() {
     }];
     state.db.update_trip_metadata(trip_uuid, None, None, Some(legacy_stops), None, None, None).await.unwrap();
 
-    let resp = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let resp = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -3766,7 +3766,7 @@ async fn test_final_stop_depart_auto_dispatches_next_assigned_trip() {
     let truck_id_str = in_transit.truck_id.unwrap().to_string();
 
     // Create trip B with a later scheduled origin arrive and assign same driver/truck.
-    let trip_b_id = server.post("/dispatch/api/v1/trips")
+    let trip_b_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3778,7 +3778,7 @@ async fn test_final_stop_depart_auto_dispatches_next_assigned_trip() {
         }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let assign_b = server.post(&format!("/dispatch/api/v1/trips/{trip_b_id}/assign"))
+    let assign_b = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id_str }))
         .await;
@@ -3849,18 +3849,18 @@ async fn test_final_stop_depart_skips_auto_dispatch_when_truck_busy_elsewhere() 
     // Build a SECOND independent driver + a busy truck that's InTransit on
     // that driver's trip. Then create Trip B for driver A but referencing
     // the busy truck — auto-dispatch should refuse.
-    let driver_b_id_str = server.post("/dispatch/api/v1/drivers")
+    let driver_b_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Other Driver" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let busy_truck_id_str = server.post("/dispatch/api/v1/trucks")
+    let busy_truck_id_str = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-BUSY" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
     // Trip C: driver B on the busy truck, drive to InTransit.
-    let trip_c_id_str = server.post("/dispatch/api/v1/trips")
+    let trip_c_id_str = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3870,18 +3870,18 @@ async fn test_final_stop_depart_skips_auto_dispatch_when_truck_busy_elsewhere() 
         }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_c_id_str}/assign"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_c_id_str}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_b_id_str, "truck_id": busy_truck_id_str }))
         .await;
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_c_id_str}/dispatch"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_c_id_str}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     let trip_c_uuid: uuid::Uuid = trip_c_id_str.parse().unwrap();
     state.db.transition_trip_status(trip_c_uuid, ollie::models::TripStatus::InTransit).await.unwrap();
 
     // Trip B: driver A on the SAME busy truck — assigned only.
-    let trip_b_id_str = server.post("/dispatch/api/v1/trips")
+    let trip_b_id_str = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3893,7 +3893,7 @@ async fn test_final_stop_depart_skips_auto_dispatch_when_truck_busy_elsewhere() 
         }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_b_id_str}/assign"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_b_id_str}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_a.to_string(), "truck_id": busy_truck_id_str }))
         .await;
@@ -3932,7 +3932,7 @@ async fn test_complete_trip_does_not_release_driver_already_on_next_trip() {
     let driver_id = in_transit.driver_id.unwrap();
     let truck_id = in_transit.truck_id.unwrap();
 
-    let trip_b_id = server.post("/dispatch/api/v1/trips")
+    let trip_b_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -3944,7 +3944,7 @@ async fn test_complete_trip_does_not_release_driver_already_on_next_trip() {
         }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_b_id}/assign"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id.to_string(),
@@ -3969,7 +3969,7 @@ async fn test_complete_trip_does_not_release_driver_already_on_next_trip() {
         .await;
 
     // Now complete trip A — driver/truck must stay Dispatched (they're on trip B).
-    let complete = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/complete"))
+    let complete = server.post(&format!("/fleet/api/v1/trips/{trip_id}/complete"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(complete.status_code(), 204);
@@ -4019,7 +4019,7 @@ async fn test_driver_upload_attaches_blob_to_load() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let load_id = create_test_load(&server, &fac_id).await;
 
-    let driver_id_str = server.post("/dispatch/api/v1/drivers")
+    let driver_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Doc Driver" }))
         .await
@@ -4035,23 +4035,23 @@ async fn test_driver_upload_attaches_blob_to_load() {
     };
     state.db.upsert_driver_credentials(&creds).await.unwrap();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-DOC-001" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
         .await;
-    let _ = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let _ = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     let trip_uuid: uuid::Uuid = trip_id.parse().unwrap();
@@ -4077,7 +4077,7 @@ async fn test_driver_upload_attaches_blob_to_load() {
     assert!(sc == 201 || sc == 202, "got {sc}");
     let blob_id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let load_resp = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let load_resp = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     let blob_ids = load_resp.json::<serde_json::Value>()["blob_ids"].clone();
@@ -4102,7 +4102,7 @@ async fn test_driver_cannot_see_private_doc() {
                 .mime_type("application/pdf"),
         );
     let _ = server
-        .post("/dispatch/api/v1/blobs")
+        .post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(form)
         .await;
@@ -4129,7 +4129,7 @@ async fn test_driver_sees_dispatch_uploaded_driver_visible_doc() {
                 .mime_type("application/pdf"),
         );
     let _ = server
-        .post("/dispatch/api/v1/blobs")
+        .post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(form)
         .await;
@@ -4156,7 +4156,7 @@ async fn test_driver_cannot_delete_others_doc() {
                 .mime_type("text/plain"),
         );
     let upload = server
-        .post("/dispatch/api/v1/blobs")
+        .post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(form)
         .await;
@@ -4196,7 +4196,7 @@ async fn setup_driver_with_three_historical_trips(
 ) -> String {
     let owner_token = setup_owner(server).await;
     let driver_id_str = server
-        .post("/dispatch/api/v1/drivers")
+        .post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Multi-Week Driver" }))
         .await
@@ -4229,7 +4229,7 @@ async fn setup_driver_with_three_historical_trips(
     for (i, (pickup_depart, delivery_depart)) in depart_times.iter().enumerate() {
         // Each trip uses its own truck so truck status doesn't block subsequent dispatches.
         let truck_id = server
-            .post("/dispatch/api/v1/trucks")
+            .post("/fleet/api/v1/trucks")
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .json(&serde_json::json!({ "unit_number": format!("T-MULTI-{i:03}") }))
             .await
@@ -4239,7 +4239,7 @@ async fn setup_driver_with_three_historical_trips(
             .to_string();
 
         let trip_id = server
-            .post("/dispatch/api/v1/trips")
+            .post("/fleet/api/v1/trips")
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .json(&serde_json::json!({
                 "stops": [
@@ -4254,27 +4254,27 @@ async fn setup_driver_with_three_historical_trips(
             .to_string();
 
         let assign = server
-            .post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+            .post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
             .await;
         assert_eq!(assign.status_code(), 200, "assign trip {i}");
 
         let dispatch = server
-            .post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+            .post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .await;
         assert_eq!(dispatch.status_code(), 200, "dispatch trip {i}");
 
         let r = server
-            .post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/depart"))
+            .post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/depart"))
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .json(&serde_json::json!({ "actual_depart": pickup_depart }))
             .await;
         assert_eq!(r.status_code(), 200, "depart pickup trip {i}");
 
         let r = server
-            .post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+            .post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .json(&serde_json::json!({ "actual_depart": delivery_depart }))
             .await;
@@ -4366,7 +4366,7 @@ async fn setup_driver_with_dispatched_load_trip(
     state: &AppState,
 ) -> (String, String, String) {
     let owner_token = setup_owner(server).await;
-    let driver_id_str = server.post("/dispatch/api/v1/drivers")
+    let driver_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Cascade Driver" }))
         .await
@@ -4383,7 +4383,7 @@ async fn setup_driver_with_dispatched_load_trip(
     };
     state.db.upsert_driver_credentials(&creds).await.unwrap();
 
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-CSC-001" }))
         .await
@@ -4392,7 +4392,7 @@ async fn setup_driver_with_dispatched_load_trip(
     let origin_fac = create_test_facility(server, "Origin", "Chicago, IL").await;
     let dest_fac = create_test_facility(server, "Dest", "Memphis, TN").await;
 
-    let load_id = server.post("/dispatch/api/v1/loads")
+    let load_id = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -4409,19 +4409,19 @@ async fn setup_driver_with_dispatched_load_trip(
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let assign = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    let assign = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id_str, "truck_id": truck_id }))
         .await;
     assert_eq!(assign.status_code(), 200);
 
-    let dispatch = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let dispatch = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(dispatch.status_code(), 200);
@@ -4506,7 +4506,7 @@ async fn create_dispatcher_api_key(
     token: &str,
     label: &str,
 ) -> serde_json::Value {
-    let resp = server.post("/dispatch/api-keys")
+    let resp = server.post("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "label": label }))
         .await;
@@ -4535,7 +4535,7 @@ async fn test_api_key_custom_expiry() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "apikey2@example.com", "pass-apikey2").await;
 
-    let resp = server.post("/dispatch/api-keys")
+    let resp = server.post("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "label": "short-lived", "expires_in_days": 7 }))
         .await;
@@ -4552,7 +4552,7 @@ async fn test_api_key_expiry_over_365_rejected() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "apikey3@example.com", "pass-apikey3").await;
 
-    let resp = server.post("/dispatch/api-keys")
+    let resp = server.post("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "label": "too-long", "expires_in_days": 366 }))
         .await;
@@ -4568,7 +4568,7 @@ async fn test_api_key_list_returns_own_keys_only() {
     create_dispatcher_api_key(&server, &t1, "d1-key").await;
     create_dispatcher_api_key(&server, &t2, "d2-key").await;
 
-    let resp = server.get("/dispatch/api-keys")
+    let resp = server.get("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {t1}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -4587,12 +4587,12 @@ async fn test_api_key_list_excludes_revoked() {
     let body = create_dispatcher_api_key(&server, &token, "to-revoke").await;
     let key_id = body["id"].as_str().unwrap();
 
-    let del = server.delete(&format!("/dispatch/api-keys/{key_id}"))
+    let del = server.delete(&format!("/fleet/api-keys/{key_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del.status_code(), 204);
 
-    let list = server.get("/dispatch/api-keys")
+    let list = server.get("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     let list_body = list.json::<serde_json::Value>();
@@ -4608,7 +4608,7 @@ async fn test_api_key_revoke_not_found_for_other_dispatcher() {
     let body = create_dispatcher_api_key(&server, &t1, "t1-key").await;
     let key_id = body["id"].as_str().unwrap();
 
-    let resp = server.delete(&format!("/dispatch/api-keys/{key_id}"))
+    let resp = server.delete(&format!("/fleet/api-keys/{key_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {t2}"))
         .await;
     assert_eq!(resp.status_code(), 404);
@@ -4622,7 +4622,7 @@ async fn test_api_key_auth_grants_access_to_protected_endpoint() {
     let body = create_dispatcher_api_key(&server, &token, "Claude desktop").await;
     let api_key = body["key"].as_str().unwrap();
 
-    let resp = server.get("/dispatch/api/v1/loads")
+    let resp = server.get("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -4636,7 +4636,7 @@ async fn test_api_key_auth_works_on_mcp_endpoint() {
     let body = create_dispatcher_api_key(&server, &token, "Claude MCP").await;
     let api_key = body["key"].as_str().unwrap();
 
-    let resp = server.post("/dispatch/mcp")
+    let resp = server.post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
         .json(&serde_json::json!({
@@ -4664,11 +4664,11 @@ async fn test_revoked_api_key_rejected() {
     let api_key = body["key"].as_str().unwrap().to_string();
     let key_id = body["id"].as_str().unwrap();
 
-    server.delete(&format!("/dispatch/api-keys/{key_id}"))
+    server.delete(&format!("/fleet/api-keys/{key_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
 
-    let resp = server.get("/dispatch/api/v1/loads")
+    let resp = server.get("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
         .await;
     assert_eq!(resp.status_code(), 401);
@@ -4679,7 +4679,7 @@ async fn test_jwt_auth_still_works_after_api_key_feature() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "apikeycompat1@example.com", "pass-compat1").await;
 
-    let resp = server.get("/dispatch/api/v1/loads")
+    let resp = server.get("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -4693,7 +4693,7 @@ async fn test_api_key_create_requires_jwt_not_api_key() {
     let body = create_dispatcher_api_key(&server, &token, "first-key").await;
     let api_key = body["key"].as_str().unwrap();
 
-    let resp = server.post("/dispatch/api-keys")
+    let resp = server.post("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
         .json(&serde_json::json!({ "label": "self-created" }))
         .await;
@@ -4709,7 +4709,7 @@ async fn test_api_key_revoke_requires_jwt_not_api_key() {
     let api_key = body["key"].as_str().unwrap().to_string();
     let key_id = body["id"].as_str().unwrap();
 
-    let resp = server.delete(&format!("/dispatch/api-keys/{key_id}"))
+    let resp = server.delete(&format!("/fleet/api-keys/{key_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {api_key}"))
         .await;
     assert_eq!(resp.status_code(), 401);
@@ -4721,14 +4721,14 @@ async fn test_api_key_20_key_cap() {
     let token = dispatcher_login(&server, "apikeycap1@example.com", "pass-cap1").await;
 
     for i in 0..20 {
-        let resp = server.post("/dispatch/api-keys")
+        let resp = server.post("/fleet/api-keys")
             .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
             .json(&serde_json::json!({ "label": format!("key-{i}") }))
             .await;
         assert_eq!(resp.status_code(), 201, "key {i} creation should succeed");
     }
 
-    let resp = server.post("/dispatch/api-keys")
+    let resp = server.post("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "label": "key-21" }))
         .await;
@@ -4744,7 +4744,7 @@ async fn test_compute_and_persist_mileage_returns_ors_unavailable_when_coords_mi
     let owner_token = setup_owner(&server).await;
     let fac_id = create_test_facility(&server, "Dock A", "Somewhere, US").await;
     let fac2_id = create_test_facility(&server, "Dock B", "Elsewhere, US").await;
-    let load_id = server.post("/dispatch/api/v1/loads")
+    let load_id = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -4761,7 +4761,7 @@ async fn test_compute_and_persist_mileage_returns_ors_unavailable_when_coords_mi
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_resp = server.post("/dispatch/api/v1/trips")
+    let trip_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await;
@@ -4793,7 +4793,7 @@ async fn make_trip_with_two_stops(server: &axum_test::TestServer) -> String {
     let owner_token = setup_owner(server).await;
     let fac1 = create_test_facility(server, "Recalc Dock A", "Dallas, TX").await;
     let fac2 = create_test_facility(server, "Recalc Dock B", "Houston, TX").await;
-    server.post("/dispatch/api/v1/loads")
+    server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "Recalc Co",
@@ -4808,7 +4808,7 @@ async fn make_trip_with_two_stops(server: &axum_test::TestServer) -> String {
             "rate_items": [{"description": "LH", "amount_usd": 100.0}]
         }))
         .await;
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -4829,7 +4829,7 @@ async fn test_recalculate_miles_returns_409_when_ors_unavailable() {
     let token = dispatcher_login(&server, "recalc1@example.com", "password-recalc1").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/recalculate-miles"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/recalculate-miles"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 409);
@@ -4839,7 +4839,7 @@ async fn test_recalculate_miles_returns_409_when_ors_unavailable() {
 async fn test_recalculate_miles_requires_auth() {
     let (server, _b, _d, _rx) = test_server().await;
     let trip_id = make_trip_with_two_stops(&server).await;
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/recalculate-miles"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/recalculate-miles"))
         .await;
     assert_eq!(resp.status_code(), 401);
 }
@@ -4858,7 +4858,7 @@ async fn test_recalculate_miles_returns_existing_summary_when_already_set() {
     let before = state.db.get_trip(trip_id).await.unwrap();
     let updated_at_before = before.updated_at;
 
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id_str}/recalculate-miles"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id_str}/recalculate-miles"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -4885,7 +4885,7 @@ async fn test_recalculate_miles_force_triggers_recompute() {
 
     // ORS is unavailable in tests → force=true must call helper and surface 409
     // (proves the force flag bypassed the early-return branch).
-    let resp = server.post(&format!("/dispatch/api/v1/trips/{trip_id_str}/recalculate-miles"))
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id_str}/recalculate-miles"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "force": true }))
         .await;
@@ -4899,7 +4899,7 @@ async fn test_patch_trip_updates_notes() {
     let token = dispatcher_login(&server, "patch1@example.com", "password-patch1").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
-    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "notes": "dispatcher note" }))
         .await;
@@ -4910,7 +4910,7 @@ async fn test_patch_trip_updates_notes() {
         "dispatcher PATCH response should echo updated notes");
 
     // Also confirm persistence via admin GET.
-    let get = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     let get_body = get.json::<serde_json::Value>();
@@ -4929,7 +4929,7 @@ async fn test_patch_trip_rejects_raw_mileage() {
         } else {
             serde_json::json!({ field: 100.0 })
         };
-        let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
             .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
             .json(&body)
             .await;
@@ -4943,7 +4943,7 @@ async fn test_patch_trip_rejects_unknown_field() {
     let token = dispatcher_login(&server, "patch3@example.com", "password-patch3").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
-    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "load_id": uuid::Uuid::new_v4() }))
         .await;
@@ -4954,7 +4954,7 @@ async fn test_patch_trip_rejects_unknown_field() {
 async fn test_patch_trip_requires_auth() {
     let (server, _b, _d, _rx) = test_server().await;
     let trip_id = make_trip_with_two_stops(&server).await;
-    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .json(&serde_json::json!({ "notes": "x" }))
         .await;
     assert_eq!(resp.status_code(), 401);
@@ -4972,7 +4972,7 @@ async fn test_patch_trip_previous_trip_id_commits_even_when_recompute_fails() {
     // write itself must still commit. v1.17.0 returned 409 here, which hid the
     // partial commit from callers; v1.17.1 returns 200 with a non-null
     // `mileage_recompute_warning` so the caller knows exactly what happened.
-    let resp = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "previous_trip_id": other_trip_id }))
         .await;
@@ -5003,7 +5003,7 @@ async fn test_trip_doctor_dry_run_reports_missing_stop_metadata_without_writes()
     let fac2 = create_test_facility(&server, "Doc Dock B", "Atlanta, GA").await;
 
     // Load has rich stop metadata (notes, end window, dwell).
-    let load_resp = server.post("/dispatch/api/v1/loads")
+    let load_resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "Doc Co",
@@ -5023,7 +5023,7 @@ async fn test_trip_doctor_dry_run_reports_missing_stop_metadata_without_writes()
     let load_id = load_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // Trip has bare facility_id stops — the exact T-0015 corruption pattern.
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -5050,7 +5050,7 @@ async fn test_trip_doctor_dry_run_reports_missing_stop_metadata_without_writes()
     assert_eq!(metadata_finding["fix"]["safe_to_auto_apply"], serde_json::json!(true));
 
     // DB unchanged.
-    let get_before = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get_before = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     let before: serde_json::Value = get_before.json();
@@ -5066,7 +5066,7 @@ async fn test_trip_doctor_apply_resyncs_stops_from_load_without_overwriting() {
     let fac1 = create_test_facility(&server, "Apply Dock A", "Memphis, TN").await;
     let fac2 = create_test_facility(&server, "Apply Dock B", "Atlanta, GA").await;
 
-    let load_resp = server.post("/dispatch/api/v1/loads")
+    let load_resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "Apply Co",
@@ -5087,7 +5087,7 @@ async fn test_trip_doctor_apply_resyncs_stops_from_load_without_overwriting() {
 
     // Trip stops with one pre-existing non-null field (notes on stop 1) that
     // disagrees with the load — verifies diff-and-confirm does NOT clobber it.
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -5120,7 +5120,7 @@ async fn test_trip_doctor_apply_resyncs_stops_from_load_without_overwriting() {
     assert!(skipped.iter().any(|c| c == "trip.stops.metadata_complete"));
 
     // Stop 1's non-null `notes` survived; the load's value did not clobber it.
-    let trip_after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let trip_after = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
@@ -5137,7 +5137,7 @@ async fn test_load_doctor_flags_ungeocoded_facility() {
     // should flag.
     let fac1 = create_test_facility(&server, "Ungeo Dock", "Memphis, TN").await;
     let fac2 = create_test_facility(&server, "Ungeo Dock 2", "Atlanta, GA").await;
-    let load_resp = server.post("/dispatch/api/v1/loads")
+    let load_resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "LD Co",
@@ -5190,7 +5190,7 @@ fn sse_json(body: &str) -> serde_json::Value {
 /// Returns the `Mcp-Session-Id` the server assigned (used on subsequent calls).
 async fn mcp_session(server: &axum_test::TestServer, token: &str) -> String {
     let resp = server
-        .post("/dispatch/mcp")
+        .post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
@@ -5211,7 +5211,7 @@ async fn mcp_session(server: &axum_test::TestServer, token: &str) -> String {
         .unwrap()
         .to_string();
     server
-        .post("/dispatch/mcp")
+        .post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .add_header("mcp-session-id", session.clone())
@@ -5230,7 +5230,7 @@ async fn mcp_rpc(
     params: serde_json::Value,
 ) -> serde_json::Value {
     let resp = server
-        .post("/dispatch/mcp")
+        .post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .add_header("mcp-session-id", session.to_string())
@@ -5304,7 +5304,7 @@ async fn test_mcp_update_trip_updates_notes() {
     assert_eq!(trip["id"], trip_id);
 
     // Verify persistence
-    let get = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(get.json::<serde_json::Value>()["notes"], "via MCP");
@@ -5418,7 +5418,7 @@ async fn test_list_trips_filter_by_trip_number_rest() {
     let token = dispatcher_login(&server, "ltn@example.com", "password-ltn").await;
 
     let trip_id = make_trip_with_two_stops(&server).await;
-    let get = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let get = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     let trip_number = get.json::<serde_json::Value>()["trip_number"].as_str().unwrap().to_string();
@@ -5426,7 +5426,7 @@ async fn test_list_trips_filter_by_trip_number_rest() {
     // Make a second unrelated trip
     let _ = make_trip_with_two_stops(&server).await;
 
-    let resp = server.get(&format!("/dispatch/api/v1/trips?trip_number={trip_number}"))
+    let resp = server.get(&format!("/fleet/api/v1/trips?trip_number={trip_number}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -5443,7 +5443,7 @@ async fn test_list_trips_filter_by_load_number_rest() {
 
     let fac1 = create_test_facility(&server, "LLN Dock A", "Dallas, TX").await;
     let fac2 = create_test_facility(&server, "LLN Dock B", "Houston, TX").await;
-    let load_resp = server.post("/dispatch/api/v1/loads")
+    let load_resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "LLN Co",
@@ -5462,7 +5462,7 @@ async fn test_list_trips_filter_by_load_number_rest() {
     let load_id = load_body["id"].as_str().unwrap().to_string();
     let load_number = load_body["load_number"].as_str().unwrap().to_string();
 
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -5479,7 +5479,7 @@ async fn test_list_trips_filter_by_load_number_rest() {
     // make an unrelated trip
     let _ = make_trip_with_two_stops(&server).await;
 
-    let resp = server.get(&format!("/dispatch/api/v1/trips?load_number={load_number}"))
+    let resp = server.get(&format!("/fleet/api/v1/trips?load_number={load_number}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -5496,7 +5496,7 @@ async fn test_mcp_list_trips_filter_by_load_number() {
 
     let fac1 = create_test_facility(&server, "MCP LLN Dock A", "Dallas, TX").await;
     let fac2 = create_test_facility(&server, "MCP LLN Dock B", "Houston, TX").await;
-    let load_resp = server.post("/dispatch/api/v1/loads")
+    let load_resp = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "MCP LLN Co",
@@ -5515,7 +5515,7 @@ async fn test_mcp_list_trips_filter_by_load_number() {
     let load_id = load_body["id"].as_str().unwrap().to_string();
     let load_number = load_body["load_number"].as_str().unwrap().to_string();
 
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -5546,7 +5546,7 @@ async fn test_load_detail_mileage_summary_loaded_only() {
     let fac2 = create_test_facility(&server, "Stop2", "St Louis, MO").await;
     let fac3 = create_test_facility(&server, "Delivery", "Memphis, TN").await;
 
-    let load_id = server.post("/dispatch/api/v1/loads")
+    let load_id = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "customer_name": "ACME",
@@ -5566,7 +5566,7 @@ async fn test_load_detail_mileage_summary_loaded_only() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await
@@ -5592,7 +5592,7 @@ async fn test_load_detail_mileage_summary_loaded_only() {
         vec![100.0, 200.0],
     ).await.unwrap();
 
-    let detail = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let detail = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(detail.status_code(), 200);
@@ -5617,7 +5617,7 @@ async fn test_load_detail_mileage_summary_none_without_trip() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let load_id = create_test_load(&server, &fac_id).await;
 
-    let detail = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let detail = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(detail.status_code(), 200);
@@ -5632,7 +5632,7 @@ async fn test_load_detail_mileage_summary_none_when_only_cancelled_trip() {
     let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
     let load_id = create_test_load(&server, &fac_id).await;
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "load_id": load_id }))
         .await
@@ -5642,7 +5642,7 @@ async fn test_load_detail_mileage_summary_none_when_only_cancelled_trip() {
     // Cancel the trip
     state.db.transition_trip_status(trip_uuid, ollie::models::TripStatus::Cancelled).await.unwrap();
 
-    let detail = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let detail = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(detail.status_code(), 200);
@@ -5670,7 +5670,7 @@ async fn test_dispatcher_facility_crud_http() {
     let auth = format!("Bearer {token}");
 
     // POST create
-    let created = server.post("/dispatch/api/v1/facilities")
+    let created = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "name": "Plant City RSC",
@@ -5684,14 +5684,14 @@ async fn test_dispatcher_facility_crud_http() {
     assert!(body["lat"].is_null());
 
     // GET one
-    let one = server.get(&format!("/dispatch/api/v1/facilities/{id}"))
+    let one = server.get(&format!("/fleet/api/v1/facilities/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(one.status_code(), 200);
     assert_eq!(one.json::<serde_json::Value>()["name"], "Plant City RSC");
 
     // GET list (with q substring matching name)
-    let list = server.get("/dispatch/api/v1/facilities?q=plant")
+    let list = server.get("/fleet/api/v1/facilities?q=plant")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(list.status_code(), 200);
@@ -5701,7 +5701,7 @@ async fn test_dispatcher_facility_crud_http() {
     assert!(items.iter().any(|f| f["id"] == id));
 
     // PATCH update name
-    let patched = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+    let patched = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Plant City RSC (renamed)" }))
         .await;
@@ -5714,7 +5714,7 @@ async fn test_dispatcher_facility_create_with_explicit_coords_marks_ready() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "fac-coords@example.com", "password-fac2").await;
 
-    let resp = server.post("/dispatch/api/v1/facilities")
+    let resp = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "name": "Pre-Geocoded Dock",
@@ -5751,7 +5751,7 @@ async fn test_dispatcher_facility_patch_address_requeues_geocode() {
         embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
-    let resp = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "address": "New Address" }))
         .await;
@@ -5783,7 +5783,7 @@ async fn test_dispatcher_facility_patch_explicit_coords_repair_failed_geocode() 
         embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
-    let resp = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "lat": 28.0125, "lng": -82.1199 }))
         .await;
@@ -5798,7 +5798,7 @@ async fn test_dispatcher_facility_create_rejects_unknown_field() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "fac-unk1@example.com", "password-fac5").await;
 
-    let resp = server.post("/dispatch/api/v1/facilities")
+    let resp = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "name": "X", "address": "Y",
@@ -5814,13 +5814,13 @@ async fn test_dispatcher_facility_patch_rejects_unknown_field() {
     let token = dispatcher_login(&server, "fac-unk2@example.com", "password-fac6").await;
     let auth = format!("Bearer {token}");
 
-    let created = server.post("/dispatch/api/v1/facilities")
+    let created = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "X", "address": "Y" }))
         .await;
     let id = created.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.patch(&format!("/dispatch/api/v1/facilities/{id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "owner_id": 99 }))
         .await;
@@ -5885,7 +5885,7 @@ async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
 
 async fn create_driver_with_jwt(server: &TestServer, state: &AppState) -> (uuid::Uuid, String) {
     let owner_token = setup_owner(server).await;
-    let driver_id_str = server.post("/dispatch/api/v1/drivers")
+    let driver_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Equip Driver" }))
         .await
@@ -5904,7 +5904,7 @@ async fn create_driver_with_jwt(server: &TestServer, state: &AppState) -> (uuid:
 
 async fn create_trailer(server: &TestServer, unit: &str) -> uuid::Uuid {
     let owner_token = setup_owner(server).await;
-    server.post("/dispatch/api/v1/trailers")
+    server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": unit, "owner": "fleet" }))
         .await
@@ -6006,13 +6006,13 @@ async fn test_driver_equipment_cascades_into_active_in_transit_trip() {
 
     let old_trailer = create_trailer(&server, "TR-OLD").await;
     let new_trailer = create_trailer(&server, "TR-NEW").await;
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-EQ-CASCADE" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -6023,7 +6023,7 @@ async fn test_driver_equipment_cascades_into_active_in_transit_trip() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id.to_string(),
@@ -6031,11 +6031,11 @@ async fn test_driver_equipment_cascades_into_active_in_transit_trip() {
             "trailer_ids": [old_trailer.to_string()],
         }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     // depart origin → in_transit
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/depart"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
         .await;
@@ -6062,13 +6062,13 @@ async fn test_driver_equipment_no_cascade_when_at_final_delivery() {
 
     let old_trailer = create_trailer(&server, "TR-FD-OLD").await;
     let new_trailer = create_trailer(&server, "TR-FD-NEW").await;
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-EQ-FD" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -6079,7 +6079,7 @@ async fn test_driver_equipment_no_cascade_when_at_final_delivery() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id.to_string(),
@@ -6087,14 +6087,14 @@ async fn test_driver_equipment_no_cascade_when_at_final_delivery() {
             "trailer_ids": [old_trailer.to_string()],
         }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/depart"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/arrive"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_arrive": "2026-05-12T14:00:00Z" }))
         .await;
@@ -6123,13 +6123,13 @@ async fn test_dispatch_trip_reconciles_to_driver_current_trailer() {
 
     let initial_trailer = create_trailer(&server, "TR-DISP-INIT").await;
     let attached_trailer = create_trailer(&server, "TR-DISP-ATTACHED").await;
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-DISP-RECON" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -6140,7 +6140,7 @@ async fn test_dispatch_trip_reconciles_to_driver_current_trailer() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id.to_string(),
@@ -6160,7 +6160,7 @@ async fn test_dispatch_trip_reconciles_to_driver_current_trailer() {
     let pre = state.db.get_trip(trip_uuid).await.unwrap();
     assert_eq!(pre.trailer_ids, vec![initial_trailer], "trip should still hold the initial trailer pre-dispatch");
 
-    let disp = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    let disp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(disp.status_code(), 200);
@@ -6185,13 +6185,13 @@ async fn test_driver_equipment_cascade_syncs_trailer_statuses() {
 
     let old_trailer = create_trailer(&server, "TR-SYNC-OLD").await;
     let new_trailer = create_trailer(&server, "TR-SYNC-NEW").await;
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-EQ-SYNC" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -6202,7 +6202,7 @@ async fn test_driver_equipment_cascade_syncs_trailer_statuses() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id.to_string(),
@@ -6210,10 +6210,10 @@ async fn test_driver_equipment_cascade_syncs_trailer_statuses() {
             "trailer_ids": [old_trailer.to_string()],
         }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/depart"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/depart"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "actual_depart": "2026-05-12T10:00:00Z" }))
         .await;
@@ -6249,13 +6249,13 @@ async fn test_driver_equipment_reflects_assigned_trip_truck_and_trailer() {
     let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
 
     let trailer_id = create_trailer(&server, "TR-REFLECT").await;
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-REFLECT", "plate": "RFL-123" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -6266,7 +6266,7 @@ async fn test_driver_equipment_reflects_assigned_trip_truck_and_trailer() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "driver_id": driver_id.to_string(),
@@ -6303,19 +6303,19 @@ async fn test_driver_equipment_prefers_running_trip_over_newer_queued_trip() {
     let owner_token = setup_owner(&server).await;
     let (driver_id, token) = create_driver_with_jwt(&server, &state).await;
 
-    let running_truck = server.post("/dispatch/api/v1/trucks")
+    let running_truck = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-RUNNING" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let queued_truck = server.post("/dispatch/api/v1/trucks")
+    let queued_truck = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "T-QUEUED" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     let make_trip = || async {
-        server.post("/dispatch/api/v1/trips")
+        server.post("/fleet/api/v1/trips")
             .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
             .json(&serde_json::json!({
                 "stops": [
@@ -6329,17 +6329,17 @@ async fn test_driver_equipment_prefers_running_trip_over_newer_queued_trip() {
 
     // Trip A: assigned then dispatched (the running trip).
     let trip_a = make_trip().await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_a}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_a}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id.to_string(), "truck_id": running_truck }))
         .await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_a}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_a}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
 
     // Trip B: a newer trip merely assigned to the same driver (queued).
     let trip_b = make_trip().await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip_b}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip_b}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_id.to_string(), "truck_id": queued_truck }))
         .await;
@@ -6364,7 +6364,7 @@ async fn test_dispatcher_trailer_crud_http() {
     let auth = format!("Bearer {token}");
 
     // POST create — fleet trailer
-    let created = server.post("/dispatch/api/v1/trailers")
+    let created = server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "unit_number": "DTRL-001",
@@ -6380,14 +6380,14 @@ async fn test_dispatcher_trailer_crud_http() {
     assert_eq!(body["unit_number"], "DTRL-001");
 
     // GET one
-    let one = server.get(&format!("/dispatch/api/v1/trailers/{id}"))
+    let one = server.get(&format!("/fleet/api/v1/trailers/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(one.status_code(), 200);
     assert_eq!(one.json::<serde_json::Value>()["unit_number"], "DTRL-001");
 
     // GET list
-    let list = server.get("/dispatch/api/v1/trailers")
+    let list = server.get("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(list.status_code(), 200);
@@ -6395,7 +6395,7 @@ async fn test_dispatcher_trailer_crud_http() {
     assert!(items.iter().any(|t| t["id"] == id));
 
     // PATCH update notes + make
-    let patched = server.patch(&format!("/dispatch/api/v1/trailers/{id}"))
+    let patched = server.patch(&format!("/fleet/api/v1/trailers/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "notes": "ICE box, mid-2026 refurb", "make": "Wabash" }))
         .await;
@@ -6411,7 +6411,7 @@ async fn test_dispatcher_trailer_create_requires_owner_name_when_not_fleet() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = dispatcher_login(&server, "trl-owner@example.com", "password-trl2").await;
 
-    let resp = server.post("/dispatch/api/v1/trailers")
+    let resp = server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "unit_number": "DTRL-CAR-001",
@@ -6427,7 +6427,7 @@ async fn test_dispatcher_trailer_create_rejects_unknown_field() {
     let token = dispatcher_login(&server, "trl-unk1@example.com", "password-trl3").await;
 
     // status is admin-only — must be rejected
-    let resp = server.post("/dispatch/api/v1/trailers")
+    let resp = server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "unit_number": "DTRL-X",
@@ -6444,21 +6444,21 @@ async fn test_dispatcher_trailer_patch_rejects_status_and_unknown_fields() {
     let token = dispatcher_login(&server, "trl-unk2@example.com", "password-trl4").await;
     let auth = format!("Bearer {token}");
 
-    let created = server.post("/dispatch/api/v1/trailers")
+    let created = server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "unit_number": "DTRL-PATCH", "owner": "fleet" }))
         .await;
     let id = created.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // status is intentionally not in PatchTrailerBody
-    let resp = server.patch(&format!("/dispatch/api/v1/trailers/{id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trailers/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "status": "out_of_service" }))
         .await;
     assert_eq!(resp.status_code(), 400);
 
     // owner_id is admin-only
-    let resp = server.patch(&format!("/dispatch/api/v1/trailers/{id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trailers/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "owner_id": 99 }))
         .await;
@@ -6471,7 +6471,7 @@ async fn test_dispatcher_truck_crud_http() {
     let token = dispatcher_login(&server, "trk-crud@example.com", "password-trk1").await;
     let auth = format!("Bearer {token}");
 
-    let created = server.post("/dispatch/api/v1/trucks")
+    let created = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "unit_number": "DTRK-001",
@@ -6485,13 +6485,13 @@ async fn test_dispatcher_truck_crud_http() {
     let id = body["id"].as_str().unwrap().to_string();
     assert_eq!(body["status"], "available");
 
-    let one = server.get(&format!("/dispatch/api/v1/trucks/{id}"))
+    let one = server.get(&format!("/fleet/api/v1/trucks/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(one.status_code(), 200);
     assert_eq!(one.json::<serde_json::Value>()["unit_number"], "DTRK-001");
 
-    let patched = server.patch(&format!("/dispatch/api/v1/trucks/{id}"))
+    let patched = server.patch(&format!("/fleet/api/v1/trucks/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "notes": "DEF top-off at terminal" }))
         .await;
@@ -6505,19 +6505,19 @@ async fn test_dispatcher_truck_patch_rejects_status_and_unknown_fields() {
     let token = dispatcher_login(&server, "trk-unk@example.com", "password-trk2").await;
     let auth = format!("Bearer {token}");
 
-    let created = server.post("/dispatch/api/v1/trucks")
+    let created = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "unit_number": "DTRK-PATCH" }))
         .await;
     let id = created.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let resp = server.patch(&format!("/dispatch/api/v1/trucks/{id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trucks/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "status": "out_of_service" }))
         .await;
     assert_eq!(resp.status_code(), 400);
 
-    let resp = server.patch(&format!("/dispatch/api/v1/trucks/{id}"))
+    let resp = server.patch(&format!("/fleet/api/v1/trucks/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "owner_id": 99 }))
         .await;
@@ -6584,7 +6584,7 @@ async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
     let token = dispatcher_login(&server, "asg-mcp@example.com", "password-asg-mcp").await;
 
     // Driver (admin API — there's no dispatcher driver-create)
-    let driver_resp = server.post("/dispatch/api/v1/drivers")
+    let driver_resp = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "MCP Assign Driver" }))
         .await;
@@ -6603,7 +6603,7 @@ async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
 
     // Trip
     let fac_id = create_test_facility(&server, "MCP Origin", "Dallas, TX").await;
-    let trip_resp = server.post("/dispatch/api/v1/trips")
+    let trip_resp = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "trip_number": "T-ASG-MCP-001",
@@ -6667,7 +6667,7 @@ async fn upload_blob_via_presigned(
 ) -> serde_json::Value {
     let token = mint_upload_token();
     server
-        .post(&format!("/dispatch/blobs/presigned?token={token}&name={name}"))
+        .post(&format!("/fleet/blobs/presigned?token={token}&name={name}"))
         .add_header(header::CONTENT_TYPE, content_type)
         .bytes(data.into())
         .await
@@ -6683,7 +6683,7 @@ async fn test_presigned_blob_round_trip() {
     // Upload via presigned POST
     let up_token = mint_upload_token();
     let up = server
-        .post(&format!("/dispatch/blobs/presigned?token={up_token}&name=rt.pdf&tags=invoice,rt"))
+        .post(&format!("/fleet/blobs/presigned?token={up_token}&name=rt.pdf&tags=invoice,rt"))
         .add_header(header::CONTENT_TYPE, "application/pdf")
         .bytes(data.clone().into())
         .await;
@@ -6703,7 +6703,7 @@ async fn test_presigned_blob_round_trip() {
     let blob_uuid = id.parse::<uuid::Uuid>().unwrap();
     let dl_token = mint_download_token(blob_uuid);
     let dl = server
-        .get(&format!("/dispatch/blobs/presigned/{id}?token={dl_token}"))
+        .get(&format!("/fleet/blobs/presigned/{id}?token={dl_token}"))
         .await;
     assert_eq!(dl.status_code(), 200);
     assert_eq!(dl.as_bytes().to_vec(), data, "downloaded bytes must match uploaded bytes");
@@ -6717,7 +6717,7 @@ async fn test_presigned_download_rejects_id_mismatch() {
     let token = mint_download_token(bound);
     let other = uuid::Uuid::new_v4();
     let resp = server
-        .get(&format!("/dispatch/blobs/presigned/{other}?token={token}"))
+        .get(&format!("/fleet/blobs/presigned/{other}?token={token}"))
         .await;
     assert_eq!(resp.status_code(), 401);
 }
@@ -6726,7 +6726,7 @@ async fn test_presigned_download_rejects_id_mismatch() {
 async fn test_presigned_upload_rejects_bad_token() {
     let (server, _b, _d, _rx) = test_server().await;
     let resp = server
-        .post("/dispatch/blobs/presigned?token=not-a-valid-jwt")
+        .post("/fleet/blobs/presigned?token=not-a-valid-jwt")
         .add_header(header::CONTENT_TYPE, "text/plain")
         .bytes(b"hello".to_vec().into())
         .await;
@@ -6739,7 +6739,7 @@ async fn test_presigned_upload_rejects_download_token() {
     // A GET-scoped token must not authorize an upload.
     let token = mint_download_token(uuid::Uuid::new_v4());
     let resp = server
-        .post(&format!("/dispatch/blobs/presigned?token={token}"))
+        .post(&format!("/fleet/blobs/presigned?token={token}"))
         .add_header(header::CONTENT_TYPE, "text/plain")
         .bytes(b"hello".to_vec().into())
         .await;
@@ -6792,7 +6792,7 @@ async fn test_mcp_delete_blob_keeps_bytes_when_checksum_shared() {
     assert_eq!(del["deleted"], true);
 
     let dl_token = mint_download_token(id_b);
-    let resp = server.get(&format!("/dispatch/blobs/presigned/{id_b}?token={dl_token}")).await;
+    let resp = server.get(&format!("/fleet/blobs/presigned/{id_b}?token={dl_token}")).await;
     assert_eq!(resp.status_code(), 200, "B must remain downloadable after A is deleted");
     assert_eq!(resp.as_bytes().to_vec(), raw);
 }
@@ -6804,8 +6804,8 @@ async fn test_openapi_includes_presigned_blob_paths() {
     assert_eq!(resp.status_code(), 200);
     let spec: serde_json::Value = resp.json();
     let paths = &spec["paths"];
-    assert!(!paths["/dispatch/blobs/presigned"].is_null(), "upload path missing from spec");
-    assert!(!paths["/dispatch/blobs/presigned/{id}"].is_null(), "download path missing from spec");
+    assert!(!paths["/fleet/blobs/presigned"].is_null(), "upload path missing from spec");
+    assert!(!paths["/fleet/blobs/presigned/{id}"].is_null(), "download path missing from spec");
 }
 
 // --- TOCTOU race fix tests ---
@@ -6817,7 +6817,7 @@ async fn test_admin_delete_blob_keeps_bytes_when_checksum_shared() {
 
     // Upload the same bytes twice — dedup gives two records with the same checksum.
     let content = b"shared-checksum-admin-test-bytes";
-    let r1 = server.post("/dispatch/api/v1/blobs")
+    let r1 = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -6825,7 +6825,7 @@ async fn test_admin_delete_blob_keeps_bytes_when_checksum_shared() {
         .await;
     assert!(r1.status_code() == 202 || r1.status_code() == 201);
 
-    let r2 = server.post("/dispatch/api/v1/blobs")
+    let r2 = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -6838,13 +6838,13 @@ async fn test_admin_delete_blob_keeps_bytes_when_checksum_shared() {
     assert_ne!(id1, id2, "dedup must produce two distinct record ids");
 
     // Delete the first record — the storage bytes must NOT be deleted because id2 still exists.
-    let del = server.delete(&format!("/dispatch/api/v1/blob/{id1}"))
+    let del = server.delete(&format!("/fleet/api/v1/blob/{id1}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(del.status_code(), 204);
 
     // The sibling record's bytes must still be downloadable.
-    let get = server.get(&format!("/dispatch/api/v1/blob/{id2}"))
+    let get = server.get(&format!("/fleet/api/v1/blob/{id2}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     assert_eq!(get.status_code(), 200, "sibling blob must still be readable after first record deleted");
@@ -6858,7 +6858,7 @@ async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
 
     // Upload the same bytes twice — dedup gives two records with the same checksum.
     let content = b"shared-checksum-dispatcher-test-bytes";
-    let r1 = server.post("/dispatch/api/v1/blobs")
+    let r1 = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -6866,7 +6866,7 @@ async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
         .await;
     assert!(r1.status_code() == 202 || r1.status_code() == 201);
 
-    let r2 = server.post("/dispatch/api/v1/blobs")
+    let r2 = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
             .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
@@ -6879,13 +6879,13 @@ async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
     assert_ne!(id1, id2, "dedup must produce two distinct record ids");
 
     // Delete the first record — the storage bytes must NOT be deleted because id2 still exists.
-    let del = server.delete(&format!("/dispatch/api/v1/blob/{id1}"))
+    let del = server.delete(&format!("/fleet/api/v1/blob/{id1}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(del.status_code(), 204);
 
     // The sibling record's bytes must still be downloadable.
-    let get = server.get(&format!("/dispatch/api/v1/blob/{id2}"))
+    let get = server.get(&format!("/fleet/api/v1/blob/{id2}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(get.status_code(), 200, "sibling blob must still be readable after first record deleted");
@@ -6898,7 +6898,7 @@ async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
 
 async fn make_driver(server: &axum_test::TestServer, name: &str) -> String {
     let owner_token = setup_owner(server).await;
-    server.post("/dispatch/api/v1/drivers")
+    server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": name }))
         .await
@@ -6907,7 +6907,7 @@ async fn make_driver(server: &axum_test::TestServer, name: &str) -> String {
 
 async fn make_truck(server: &axum_test::TestServer, unit: &str) -> String {
     let owner_token = setup_owner(server).await;
-    server.post("/dispatch/api/v1/trucks")
+    server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": unit }))
         .await
@@ -6916,7 +6916,7 @@ async fn make_truck(server: &axum_test::TestServer, unit: &str) -> String {
 
 async fn make_trailer(server: &axum_test::TestServer, unit: &str) -> String {
     let owner_token = setup_owner(server).await;
-    server.post("/dispatch/api/v1/trailers")
+    server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": unit, "owner": "fleet" }))
         .await
@@ -6925,7 +6925,7 @@ async fn make_trailer(server: &axum_test::TestServer, unit: &str) -> String {
 
 async fn truck_status(server: &axum_test::TestServer, id: &str) -> String {
     let owner_token = setup_owner(server).await;
-    server.get(&format!("/dispatch/api/v1/trucks/{id}"))
+    server.get(&format!("/fleet/api/v1/trucks/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>()["status"].as_str().unwrap().to_string()
@@ -6933,7 +6933,7 @@ async fn truck_status(server: &axum_test::TestServer, id: &str) -> String {
 
 async fn trailer_status(server: &axum_test::TestServer, id: &str) -> String {
     let owner_token = setup_owner(server).await;
-    server.get(&format!("/dispatch/api/v1/trailers/{id}"))
+    server.get(&format!("/fleet/api/v1/trailers/{id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await
         .json::<serde_json::Value>()["status"].as_str().unwrap().to_string()
@@ -6950,7 +6950,7 @@ async fn test_attach_equipment_truck_and_trailers() {
     let trl_a = make_trailer(&server, "AE-TRL-A").await;
     let trl_b = make_trailer(&server, "AE-TRL-B").await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "truck": truck, "trailer_ids": [trl_a, trl_b] }))
         .await;
@@ -6961,7 +6961,7 @@ async fn test_attach_equipment_truck_and_trailers() {
     assert_eq!(body["trip_cascade"], false);
 
     // Driver record reflects equipment.
-    let d = server.get(&format!("/dispatch/api/v1/drivers/{driver}"))
+    let d = server.get(&format!("/fleet/api/v1/drivers/{driver}"))
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     assert_eq!(d["current_truck_id"], truck);
     assert_eq!(d["current_trailer_ids"].as_array().unwrap().len(), 2);
@@ -6977,11 +6977,11 @@ async fn test_attach_equipment_trailers_are_additive() {
     let trl_a = make_trailer(&server, "ADD-TRL-A").await;
     let trl_b = make_trailer(&server, "ADD-TRL-B").await;
 
-    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "trailer_ids": [trl_a] })).await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "trailer_ids": [trl_b] })).await;
     assert_eq!(resp.status_code(), 200);
@@ -6993,7 +6993,7 @@ async fn test_attach_equipment_trailers_are_additive() {
     assert!(ids.contains(&trl_b));
 
     // Re-attaching the same trailer does not duplicate it.
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "trailer_ids": [trl_a] })).await;
     assert_eq!(resp.json::<serde_json::Value>()["trailer_ids"].as_array().unwrap().len(), 2);
@@ -7009,12 +7009,12 @@ async fn test_attach_truck_releases_previous_truck() {
     let truck1 = make_truck(&server, "SW-TRK-1").await;
     let truck2 = make_truck(&server, "SW-TRK-2").await;
 
-    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "truck": truck1 })).await;
     assert_eq!(truck_status(&server, &truck1).await, "assigned");
 
-    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "truck": truck2 })).await;
     assert_eq!(truck_status(&server, &truck1).await, "available", "previous truck released");
@@ -7027,7 +7027,7 @@ async fn test_attach_equipment_empty_body_400() {
     let token = dispatcher_login(&server, "attach4@example.com", "password-attach4").await;
     let driver = make_driver(&server, "Empty Driver").await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({})).await;
     assert_eq!(resp.status_code(), 400);
@@ -7043,10 +7043,10 @@ async fn test_attach_equipment_inactive_driver_409() {
     let truck = make_truck(&server, "IN-TRK-1").await;
 
     // Soft-delete (inactivate) the driver via admin API.
-    server.delete(&format!("/dispatch/api/v1/drivers/{driver}"))
+    server.delete(&format!("/fleet/api/v1/drivers/{driver}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}")).await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "truck": truck })).await;
     assert_eq!(resp.status_code(), 409);
@@ -7063,7 +7063,7 @@ async fn test_attach_equipment_conflict_on_other_active_trip() {
     let driver_a = make_driver(&server, "Driver A").await;
     let truck = make_truck(&server, "CF-TRK-1").await;
     let trailer = make_trailer(&server, "CF-TRL-1").await;
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -7072,20 +7072,20 @@ async fn test_attach_equipment_conflict_on_other_active_trip() {
             ]
         }))
         .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    server.post(&format!("/dispatch/api/v1/trips/{trip}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver_a, "truck_id": truck, "trailer_ids": [trailer] })).await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}")).await;
 
     // Driver B tries to grab the same truck.
     let driver_b = make_driver(&server, "Driver B").await;
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver_b}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver_b}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "truck": truck })).await;
     assert_eq!(resp.status_code(), 409, "truck on another active trip");
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver_b}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver_b}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "trailer_ids": [trailer] })).await;
     assert_eq!(resp.status_code(), 409, "trailer on another active trip");
@@ -7102,7 +7102,7 @@ async fn test_attach_detach_cascades_active_trip() {
     let truck = make_truck(&server, "CA-TRK-1").await;
     let trailer1 = make_trailer(&server, "CA-TRL-1").await;
     let trailer2 = make_trailer(&server, "CA-TRL-2").await;
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "stops": [
@@ -7111,14 +7111,14 @@ async fn test_attach_detach_cascades_active_trip() {
             ]
         }))
         .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    server.post(&format!("/dispatch/api/v1/trips/{trip}/assign"))
+    server.post(&format!("/fleet/api/v1/trips/{trip}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "driver_id": driver, "truck_id": truck, "trailer_ids": [trailer1] })).await;
-    server.post(&format!("/dispatch/api/v1/trips/{trip}/dispatch"))
+    server.post(&format!("/fleet/api/v1/trips/{trip}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}")).await;
 
     // Attach a second trailer — should cascade into the active trip.
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "trailer_ids": [trailer2] })).await;
     assert_eq!(resp.status_code(), 200);
@@ -7126,19 +7126,19 @@ async fn test_attach_detach_cascades_active_trip() {
     assert_eq!(body["trip_cascade"], true);
     assert_eq!(body["trip_id"], trip);
 
-    let t = server.get(&format!("/dispatch/api/v1/trips/{trip}"))
+    let t = server.get(&format!("/fleet/api/v1/trips/{trip}"))
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     assert_eq!(t["trailer_ids"].as_array().unwrap().len(), 2, "trip synced with both trailers");
 
     // Detach trailer1 — released to available; trip synced down to one.
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/detach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/detach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "trailer_ids": [trailer1] })).await;
     assert_eq!(resp.status_code(), 200);
     assert_eq!(resp.json::<serde_json::Value>()["trip_cascade"], true);
     assert_eq!(trailer_status(&server, &trailer1).await, "available");
 
-    let t = server.get(&format!("/dispatch/api/v1/trips/{trip}"))
+    let t = server.get(&format!("/fleet/api/v1/trips/{trip}"))
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     let ids: Vec<String> = t["trailer_ids"].as_array().unwrap().iter()
         .map(|v| v.as_str().unwrap().to_string()).collect();
@@ -7156,11 +7156,11 @@ async fn test_detach_equipment_truck_and_all_trailers() {
     let trl_a = make_trailer(&server, "DE-TRL-A").await;
     let trl_b = make_trailer(&server, "DE-TRL-B").await;
 
-    server.post(&format!("/dispatch/api/v1/drivers/{driver}/attach-equipment"))
+    server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "truck": truck, "trailer_ids": [trl_a, trl_b] })).await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/detach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/detach-equipment"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "truck": true, "all_trailers": true })).await;
     assert_eq!(resp.status_code(), 200);
@@ -7179,7 +7179,7 @@ async fn test_detach_equipment_empty_body_400() {
     let token = dispatcher_login(&server, "detach2@example.com", "password-detach2").await;
     let driver = make_driver(&server, "Detach Empty").await;
 
-    let resp = server.post(&format!("/dispatch/api/v1/drivers/{driver}/detach-equipment"))
+    let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/detach-equipment"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({})).await;
     assert_eq!(resp.status_code(), 400);
@@ -7244,7 +7244,7 @@ async fn test_mcp_delete_load_happy_and_active_trip_guard() {
 
     // Load with an active trip → delete_load must isError.
     let load_id = create_2stop_load(&server, &fac_id, "MCP DelLoad Co").await;
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -7267,7 +7267,7 @@ async fn test_mcp_delete_load_happy_and_active_trip_guard() {
     let ok = mcp_call(&server, &token, "delete_load", serde_json::json!({ "id": load_id })).await;
     assert_eq!(ok["deleted"], serde_json::json!(true));
 
-    let after = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let after = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(after.status_code(), 404, "deleted load should be gone");
@@ -7292,7 +7292,7 @@ async fn test_mcp_delete_trip_soft_cancel() {
     let del = mcp_call(&server, &token, "delete_trip", serde_json::json!({ "id": trip_id })).await;
     assert_eq!(del["deleted"], serde_json::json!(true));
 
-    let after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let after = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
@@ -7356,7 +7356,7 @@ async fn test_mcp_create_update_delete_driver_and_set_pin() {
     let del = mcp_call(&server, &token, "delete_driver",
         serde_json::json!({ "id": driver_id })).await;
     assert_eq!(del["deleted"], serde_json::json!(true));
-    let after = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let after = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
@@ -7389,7 +7389,7 @@ async fn test_mcp_delete_truck_trailer_facility() {
         serde_json::json!({ "facility_id": ref_fac_id })).await;
     assert_eq!(blocked["isError"], serde_json::json!(true),
         "delete_facility on a load-referenced facility must isError");
-    let still_there = server.get(&format!("/dispatch/api/v1/facilities/{ref_fac_id}"))
+    let still_there = server.get(&format!("/fleet/api/v1/facilities/{ref_fac_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(still_there.status_code(), 200, "referenced facility must survive the blocked delete");
@@ -7399,7 +7399,7 @@ async fn test_mcp_delete_truck_trailer_facility() {
     let del_fac = mcp_call(&server, &token, "delete_facility",
         serde_json::json!({ "facility_id": fac_id })).await;
     assert_eq!(del_fac["deleted"], serde_json::json!(true));
-    let after = server.get(&format!("/dispatch/api/v1/facilities/{fac_id}"))
+    let after = server.get(&format!("/fleet/api/v1/facilities/{fac_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(after.status_code(), 404, "deleted facility should be gone");
@@ -7428,13 +7428,13 @@ async fn login_with_role(
     if role == "owner" {
         return owner;
     }
-    server.post("/dispatch/api/v1/users")
+    server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner}"))
         .json(&serde_json::json!({
             "email": email, "name": "Scoped User", "password": password, "role": role,
         }))
         .await;
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": email, "password": password }))
         .await;
     assert_eq!(resp.status_code(), 200, "login failed for {email}");
@@ -7452,14 +7452,14 @@ async fn test_scope_dispatcher_denied_elevated_http_ops() {
     let driver_id = create_test_driver(&server).await;
 
     // Create a truck via admin so we can attempt a dispatch-surface delete.
-    let truck_id = server.post("/dispatch/api/v1/trucks")
+    let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "unit_number": "SCOPE-1" }))
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // A trip to delete.
-    let trip_id = server.post("/dispatch/api/v1/trips")
+    let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "load_id": load_id,
@@ -7471,16 +7471,16 @@ async fn test_scope_dispatcher_denied_elevated_http_ops() {
 
     // DENIED (403): settle, invoice, load delete, trip delete, driver delete,
     // truck delete, terminal create.
-    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+    let settle = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(settle.status_code(), 403, "dispatcher must be denied settle");
 
-    let invoice = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+    let invoice = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({})).await;
     assert_eq!(invoice.status_code(), 403, "dispatcher must be denied invoice");
 
-    let del_load = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let del_load = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(del_load.status_code(), 403, "dispatcher must be denied load delete");
 
@@ -7489,19 +7489,19 @@ async fn test_scope_dispatcher_denied_elevated_http_ops() {
     // unlike load/driver/truck deletes. We follow the merged model rather than
     // weaken it. (The spec's denial list listed trip delete; the authoritative
     // permission model says otherwise.)
-    let del_trip = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let del_trip = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(del_trip.status_code(), 204, "dispatcher has trips:delete in the model");
 
-    let del_driver = server.delete(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let del_driver = server.delete(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(del_driver.status_code(), 403, "dispatcher must be denied driver delete");
 
-    let del_truck = server.delete(&format!("/dispatch/api/v1/trucks/{truck_id}"))
+    let del_truck = server.delete(&format!("/fleet/api/v1/trucks/{truck_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(del_truck.status_code(), 403, "dispatcher must be denied truck delete");
 
-    let term = server.post("/dispatch/api/v1/terminals")
+    let term = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "West", "timezone": "America/Los_Angeles" })).await;
     assert_eq!(term.status_code(), 403, "dispatcher must be denied terminal create");
@@ -7515,7 +7515,7 @@ async fn test_scope_dispatcher_allowed_operational_http_ops() {
     let fac_id = create_test_facility(&server, "Scope OK Dock", "Omaha, NE").await;
 
     // load create
-    let load = server.post("/dispatch/api/v1/loads")
+    let load = server.post("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "customer_name": "Op Co",
@@ -7531,35 +7531,35 @@ async fn test_scope_dispatcher_allowed_operational_http_ops() {
     let load_id = load.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // load update
-    let upd = server.put(&format!("/dispatch/api/v1/loads/{load_id}"))
+    let upd = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "notes": "touched" })).await;
     assert_eq!(upd.status_code(), 200, "dispatcher allowed load update");
 
     // trip create
-    let trip = server.post("/dispatch/api/v1/trips")
+    let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "load_id": load_id })).await;
     assert_eq!(trip.status_code(), 201, "dispatcher allowed trip create");
 
     // driver create + patch
-    let drv = server.post("/dispatch/api/v1/drivers")
+    let drv = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Op Driver" })).await;
     assert_eq!(drv.status_code(), 201, "dispatcher allowed driver create");
     let drv_id = drv.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let patch = server.patch(&format!("/dispatch/api/v1/drivers/{drv_id}"))
+    let patch = server.patch(&format!("/fleet/api/v1/drivers/{drv_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "phone": "555-0100" })).await;
     assert_eq!(patch.status_code(), 200, "dispatcher allowed driver patch");
 
     // stop arrive/depart on the trip's first stop.
     let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
-    let arrive = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+    let arrive = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/arrive"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "actual_arrive": "2026-08-01T08:05:00" })).await;
     assert_eq!(arrive.status_code(), 200, "dispatcher allowed stop arrive");
-    let depart = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+    let depart = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "actual_depart": "2026-08-01T08:30:00" })).await;
     assert_eq!(depart.status_code(), 200, "dispatcher allowed stop depart");
@@ -7575,17 +7575,17 @@ async fn test_scope_owner_allowed_elevated_http_ops() {
 
     drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
 
-    let invoice = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+    let invoice = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "invoice_number": "OWN-1" })).await;
     assert_eq!(invoice.status_code(), 200, "owner allowed invoice");
 
-    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+    let settle = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(settle.status_code(), 200, "owner allowed settle");
 
     // owner allowed terminal create.
-    let term = server.post("/dispatch/api/v1/terminals")
+    let term = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Mountain", "timezone": "America/Denver" })).await;
     assert_eq!(term.status_code(), 201, "owner allowed terminal create");
@@ -7639,20 +7639,20 @@ async fn test_scope_extra_scope_grant_allows_settle() {
     drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
 
     // invoice is still denied (sibling elevated scope not granted)...
-    let invoice = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+    let invoice = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({})).await;
     assert_eq!(invoice.status_code(), 403, "grant of loads:settle must not leak loads:invoice");
 
     // ...but the load must be invoiced before it can settle; do that via owner.
     let owner = login_with_role(&server, "scope_grant_owner@example.com", "pw-grant-own", "owner").await;
-    let inv = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+    let inv = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner}"))
         .json(&serde_json::json!({ "invoice_number": "GRANT-1" })).await;
     assert_eq!(inv.status_code(), 200);
 
     // Now the granted dispatcher can settle (HTTP).
-    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+    let settle = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(settle.status_code(), 200, "granted dispatcher allowed to settle");
 }
@@ -7676,7 +7676,7 @@ async fn create_user_via_surface(
     password: &str,
     role: &str,
 ) -> String {
-    let resp = server.post("/dispatch/api/v1/users")
+    let resp = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
             "email": email, "name": name, "password": password, "role": role,
@@ -7699,7 +7699,7 @@ async fn test_users_owner_full_crud() {
         "u_fm@example.com", "FM One", "pw-fm-one", "fleet_manager").await;
 
     // List sees the owner + both created users (>=3), and never exposes hashes.
-    let list = server.get("/dispatch/api/v1/users")
+    let list = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(list.status_code(), 200);
     let body = list.json::<serde_json::Value>();
@@ -7709,13 +7709,13 @@ async fn test_users_owner_full_crud() {
     assert!(!raw.contains("password_hash"), "list must not expose password_hash");
 
     // Get one user.
-    let get = server.get(&format!("/dispatch/api/v1/users/{disp_id}"))
+    let get = server.get(&format!("/fleet/api/v1/users/{disp_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(get.status_code(), 200);
     assert_eq!(get.json::<serde_json::Value>()["role"], "dispatcher");
 
     // Update name + extra_scopes on the dispatcher.
-    let upd = server.patch(&format!("/dispatch/api/v1/users/{disp_id}"))
+    let upd = server.patch(&format!("/fleet/api/v1/users/{disp_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Disp Renamed", "extra_scopes": ["loads:settle"] }))
         .await;
@@ -7726,32 +7726,32 @@ async fn test_users_owner_full_crud() {
 
     // Reset the fleet_manager's password — their old JWT must be invalidated.
     let fm_token = {
-        let resp = server.post("/dispatch/auth/login")
+        let resp = server.post("/fleet/auth/login")
             .json(&serde_json::json!({ "email": "u_fm@example.com", "password": "pw-fm-one" }))
             .await;
         assert_eq!(resp.status_code(), 200);
         resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
     };
     // FM can list users before reset.
-    let pre = server.get("/dispatch/api/v1/users")
+    let pre = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {fm_token}")).await;
     assert_eq!(pre.status_code(), 200, "fleet_manager can read users");
 
-    let reset = server.put(&format!("/dispatch/api/v1/users/{fm_id}/password"))
+    let reset = server.put(&format!("/fleet/api/v1/users/{fm_id}/password"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "password": "pw-fm-new" })).await;
     assert_eq!(reset.status_code(), 204);
 
     // Old FM JWT is now invalid (token_version bumped).
-    let post_reset = server.get("/dispatch/api/v1/users")
+    let post_reset = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {fm_token}")).await;
     assert_eq!(post_reset.status_code(), 401, "old JWT invalidated after password reset");
 
     // Deactivate the dispatcher.
-    let del = server.delete(&format!("/dispatch/api/v1/users/{disp_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/users/{disp_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(del.status_code(), 204);
-    let after = server.get(&format!("/dispatch/api/v1/users/{disp_id}"))
+    let after = server.get(&format!("/fleet/api/v1/users/{disp_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(after.json::<serde_json::Value>()["status"], "inactive");
 }
@@ -7766,21 +7766,21 @@ async fn test_users_dispatcher_forbidden_everywhere() {
         "uf_target@example.com", "Target", "pw-target", "dispatcher").await;
 
     // Every endpoint is 403 for a plain dispatcher.
-    assert_eq!(server.get("/dispatch/api/v1/users")
+    assert_eq!(server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &dauth).await.status_code(), 403);
-    assert_eq!(server.get(&format!("/dispatch/api/v1/users/{target_id}"))
+    assert_eq!(server.get(&format!("/fleet/api/v1/users/{target_id}"))
         .add_header(header::AUTHORIZATION, &dauth).await.status_code(), 403);
-    assert_eq!(server.post("/dispatch/api/v1/users")
+    assert_eq!(server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &dauth)
         .json(&serde_json::json!({ "email": "x@example.com", "name": "X", "password": "pwpwpwpw", "role": "dispatcher" }))
         .await.status_code(), 403);
-    assert_eq!(server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+    assert_eq!(server.patch(&format!("/fleet/api/v1/users/{target_id}"))
         .add_header(header::AUTHORIZATION, &dauth)
         .json(&serde_json::json!({ "name": "Nope" })).await.status_code(), 403);
-    assert_eq!(server.put(&format!("/dispatch/api/v1/users/{target_id}/password"))
+    assert_eq!(server.put(&format!("/fleet/api/v1/users/{target_id}/password"))
         .add_header(header::AUTHORIZATION, &dauth)
         .json(&serde_json::json!({ "password": "pwpwpwpw" })).await.status_code(), 403);
-    assert_eq!(server.delete(&format!("/dispatch/api/v1/users/{target_id}"))
+    assert_eq!(server.delete(&format!("/fleet/api/v1/users/{target_id}"))
         .add_header(header::AUTHORIZATION, &dauth).await.status_code(), 403);
 }
 
@@ -7794,7 +7794,7 @@ async fn test_users_fleet_manager_can_manage_but_not_set_owner() {
         "fm_tgt@example.com", "Tgt", "pw-fm-tgt", "dispatcher").await;
 
     let fm = {
-        let resp = server.post("/dispatch/auth/login")
+        let resp = server.post("/fleet/auth/login")
             .json(&serde_json::json!({ "email": "fm_mgr@example.com", "password": "pw-fm-mgr" })).await;
         resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
     };
@@ -7802,14 +7802,14 @@ async fn test_users_fleet_manager_can_manage_but_not_set_owner() {
 
     // FM can create/list/update normal users.
     let new_id = create_user_via_surface(&server, &fm, "fm_new@example.com", "New", "pw-fm-new", "dispatcher").await;
-    assert_eq!(server.get("/dispatch/api/v1/users")
+    assert_eq!(server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &fmauth).await.status_code(), 200);
-    assert_eq!(server.patch(&format!("/dispatch/api/v1/users/{new_id}"))
+    assert_eq!(server.patch(&format!("/fleet/api/v1/users/{new_id}"))
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({ "name": "Renamed" })).await.status_code(), 200);
 
     // FM CANNOT set anyone's role to owner (transfer is owner-only) → 403.
-    let transfer = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+    let transfer = server.patch(&format!("/fleet/api/v1/users/{target_id}"))
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({ "role": "owner" })).await;
     assert_eq!(transfer.status_code(), 403, "fleet_manager cannot transfer ownership");
@@ -7822,14 +7822,14 @@ async fn test_users_owner_protection_rules() {
     let auth = format!("Bearer {owner}");
 
     // The owner's own id.
-    let list = server.get("/dispatch/api/v1/users")
+    let list = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     let owner_id = list["users"].as_array().unwrap().iter()
         .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
 
     // Cannot delete the sole owner → 403 (role-based owner-protection, not a
     // count-based conflict): owners are immutable except via ownership transfer.
-    let del = server.delete(&format!("/dispatch/api/v1/users/{owner_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/users/{owner_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(del.status_code(), 403, "cannot deactivate the owner");
     assert!(
@@ -7839,19 +7839,19 @@ async fn test_users_owner_protection_rules() {
     );
 
     // Cannot demote the sole owner via PATCH → 403.
-    let demote = server.patch(&format!("/dispatch/api/v1/users/{owner_id}"))
+    let demote = server.patch(&format!("/fleet/api/v1/users/{owner_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "role": "fleet_manager" })).await;
     assert_eq!(demote.status_code(), 403, "cannot demote the sole owner");
 
     // Cannot deactivate the sole owner via PATCH status → 403.
-    let deact = server.patch(&format!("/dispatch/api/v1/users/{owner_id}"))
+    let deact = server.patch(&format!("/fleet/api/v1/users/{owner_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "status": "inactive" })).await;
     assert_eq!(deact.status_code(), 403, "cannot deactivate the owner via PATCH");
 
     // create with role=owner is rejected → 403.
-    let bad = server.post("/dispatch/api/v1/users")
+    let bad = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "email": "op_new@example.com", "name": "N", "password": "pwpwpwpw", "role": "owner" }))
         .await;
@@ -7874,7 +7874,7 @@ async fn test_users_delete_owner_forbidden_with_two_owners() {
     let auth = format!("Bearer {owner1}");
 
     // Confirm two active owners present.
-    let list = server.get("/dispatch/api/v1/users")
+    let list = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     let arr = list["users"].as_array().unwrap();
     let owner_ids: Vec<String> = arr.iter()
@@ -7888,7 +7888,7 @@ async fn test_users_delete_owner_forbidden_with_two_owners() {
     let fmauth = format!("Bearer {fm}");
     let target = arr.iter()
         .find(|u| u["email"] == "two_owner2@example.com").unwrap()["id"].as_str().unwrap();
-    let del = server.delete(&format!("/dispatch/api/v1/users/{target}"))
+    let del = server.delete(&format!("/fleet/api/v1/users/{target}"))
         .add_header(header::AUTHORIZATION, &fmauth).await;
     assert_eq!(del.status_code(), 403, "fleet_manager cannot deactivate an owner even with two owners");
     assert!(
@@ -7898,7 +7898,7 @@ async fn test_users_delete_owner_forbidden_with_two_owners() {
     );
 
     // Owner count unchanged: both owners still active.
-    let after = server.get("/dispatch/api/v1/users")
+    let after = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     let still_owners = after["users"].as_array().unwrap().iter()
         .filter(|u| u["role"] == "owner" && u["status"] == "active").count();
@@ -7916,7 +7916,7 @@ async fn test_users_ownership_transfer() {
         "tr_x@example.com", "User X", "pw-tr-x", "fleet_manager").await;
 
     // Owner promotes X to owner → transfer.
-    let transfer = server.patch(&format!("/dispatch/api/v1/users/{x_id}"))
+    let transfer = server.patch(&format!("/fleet/api/v1/users/{x_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "role": "owner" })).await;
     assert_eq!(transfer.status_code(), 200, "owner can transfer: {}", transfer.text());
@@ -7924,12 +7924,12 @@ async fn test_users_ownership_transfer() {
 
     // X is owner via login; prior owner is now fleet_manager.
     let x_token = {
-        let r = server.post("/dispatch/auth/login")
+        let r = server.post("/fleet/auth/login")
             .json(&serde_json::json!({ "email": "tr_x@example.com", "password": "pw-tr-x" })).await;
         r.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
     };
     let xauth = format!("Bearer {x_token}");
-    let users = server.get("/dispatch/api/v1/users")
+    let users = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &xauth).await.json::<serde_json::Value>();
     let arr = users["users"].as_array().unwrap();
     let owners: Vec<_> = arr.iter().filter(|u| u["role"] == "owner").collect();
@@ -7943,7 +7943,7 @@ async fn test_users_ownership_transfer() {
     // Make a fresh target and have the demoted prior owner attempt to promote it.
     let y_id = create_user_via_surface(&server, &x_token,
         "tr_y@example.com", "User Y", "pw-tr-y", "dispatcher").await;
-    let prior_transfer = server.patch(&format!("/dispatch/api/v1/users/{y_id}"))
+    let prior_transfer = server.patch(&format!("/fleet/api/v1/users/{y_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "role": "owner" })).await;
     assert_eq!(prior_transfer.status_code(), 403, "demoted prior owner can no longer transfer");
@@ -7988,7 +7988,7 @@ async fn test_users_mcp_parity() {
 
 /// Log in a fleet_manager that the owner created, returning their JWT.
 async fn login_as(server: &axum_test::TestServer, email: &str, password: &str) -> String {
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": email, "password": password })).await;
     assert_eq!(resp.status_code(), 200, "login failed: {}", resp.text());
     resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
@@ -8003,7 +8003,7 @@ async fn test_users_fleet_manager_cannot_reset_owner_password() {
     let auth = format!("Bearer {owner}");
 
     // Identify the owner.
-    let list = server.get("/dispatch/api/v1/users")
+    let list = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     let owner_id = list["users"].as_array().unwrap().iter()
         .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
@@ -8017,24 +8017,24 @@ async fn test_users_fleet_manager_cannot_reset_owner_password() {
     let fmauth = format!("Bearer {fm}");
 
     // FM resetting the OWNER's password → 403.
-    let blocked = server.put(&format!("/dispatch/api/v1/users/{owner_id}/password"))
+    let blocked = server.put(&format!("/fleet/api/v1/users/{owner_id}/password"))
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({ "password": "pwned-owner-pw" })).await;
     assert_eq!(blocked.status_code(), 403, "fleet_manager cannot reset owner password");
 
     // FM resetting a non-owner's password is still fine.
-    let ok_disp = server.put(&format!("/dispatch/api/v1/users/{disp_id}/password"))
+    let ok_disp = server.put(&format!("/fleet/api/v1/users/{disp_id}/password"))
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({ "password": "new-disp-pw" })).await;
     assert_eq!(ok_disp.status_code(), 204, "fleet_manager may reset a non-owner password");
 
     // The owner may reset another user's password, and their own. Reset another's
     // first — resetting own bumps the owner's token_version and invalidates `auth`.
-    let ok_other = server.put(&format!("/dispatch/api/v1/users/{disp_id}/password"))
+    let ok_other = server.put(&format!("/fleet/api/v1/users/{disp_id}/password"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "password": "another-pw" })).await;
     assert_eq!(ok_other.status_code(), 204, "owner may reset another's password");
-    let ok_self = server.put(&format!("/dispatch/api/v1/users/{owner_id}/password"))
+    let ok_self = server.put(&format!("/fleet/api/v1/users/{owner_id}/password"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "password": "new-owner-pw" })).await;
     assert_eq!(ok_self.status_code(), 204, "owner may reset own password");
@@ -8057,7 +8057,7 @@ async fn test_users_extra_scopes_grant_gating() {
     let fmauth = format!("Bearer {fm}");
 
     // FM creating a user with users:write → 403 (shadow admin).
-    let bad_create = server.post("/dispatch/api/v1/users")
+    let bad_create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({
             "email": "es_shadow@example.com", "name": "S", "password": "pwpwpwpw",
@@ -8066,7 +8066,7 @@ async fn test_users_extra_scopes_grant_gating() {
     assert_eq!(bad_create.status_code(), 403, "fleet_manager cannot grant users:write on create");
 
     // FM creating a user with superuser * → 403.
-    let bad_star = server.post("/dispatch/api/v1/users")
+    let bad_star = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({
             "email": "es_star@example.com", "name": "S", "password": "pwpwpwpw",
@@ -8075,28 +8075,28 @@ async fn test_users_extra_scopes_grant_gating() {
     assert_eq!(bad_star.status_code(), 403, "fleet_manager cannot grant * on create");
 
     // FM updating a user with users:write → 403.
-    let bad_update = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+    let bad_update = server.patch(&format!("/fleet/api/v1/users/{target_id}"))
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({ "extra_scopes": ["users:write"] })).await;
     assert_eq!(bad_update.status_code(), 403, "fleet_manager cannot grant users:write on update");
 
     // FM granting an operational scope they hold (loads:settle) → ok. Sanity that
     // the fix is not over-broad.
-    let ok_update = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+    let ok_update = server.patch(&format!("/fleet/api/v1/users/{target_id}"))
         .add_header(header::AUTHORIZATION, &fmauth)
         .json(&serde_json::json!({ "extra_scopes": ["loads:settle"] })).await;
     assert_eq!(ok_update.status_code(), 200, "fleet_manager may grant a scope it holds: {}", ok_update.text());
     assert_eq!(ok_update.json::<serde_json::Value>()["extra_scopes"][0], "loads:settle");
 
     // The OWNER may grant users:write and *.
-    let owner_create = server.post("/dispatch/api/v1/users")
+    let owner_create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "email": "es_priv@example.com", "name": "P", "password": "pwpwpwpw",
             "role": "dispatcher", "extra_scopes": ["users:write"]
         })).await;
     assert_eq!(owner_create.status_code(), 201, "owner may grant users:write: {}", owner_create.text());
-    let owner_update = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+    let owner_update = server.patch(&format!("/fleet/api/v1/users/{target_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "extra_scopes": ["*"] })).await;
     assert_eq!(owner_update.status_code(), 200, "owner may grant *: {}", owner_update.text());
@@ -8109,7 +8109,7 @@ async fn test_users_mcp_grant_and_reset_gating() {
     let owner = login_with_role(&server, "mg_owner@example.com", "pw-mg-owner", "owner").await;
     let auth = format!("Bearer {owner}");
 
-    let list = server.get("/dispatch/api/v1/users")
+    let list = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
     let owner_id = list["users"].as_array().unwrap().iter()
         .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
@@ -8149,7 +8149,7 @@ async fn test_users_mcp_grant_and_reset_gating() {
 // ---------------------------------------------------------------------------
 // First-run owner setup wizard (#331)
 //
-// Unauthenticated /dispatch/api/v1/setup/status + /dispatch/setup, guarded by
+// Unauthenticated /fleet/api/v1/setup/status + /fleet/setup, guarded by
 // count_dispatchers() == 0. Creates the first owner and logs them straight in.
 // ---------------------------------------------------------------------------
 
@@ -8158,12 +8158,12 @@ async fn test_setup_wizard_full_flow() {
     let (server, _b, _d, _rx) = test_server().await;
 
     // Empty server → needs_setup = true.
-    let status = server.get("/dispatch/api/v1/setup/status").await;
+    let status = server.get("/fleet/api/v1/setup/status").await;
     assert_eq!(status.status_code(), 200);
     assert_eq!(status.json::<serde_json::Value>()["needs_setup"], serde_json::json!(true));
 
-    // POST /dispatch/setup creates an owner and returns a session token.
-    let created = server.post("/dispatch/setup")
+    // POST /fleet/setup creates an owner and returns a session token.
+    let created = server.post("/fleet/setup")
         .json(&serde_json::json!({
             "email": "boss@example.com", "name": "The Boss", "password": "owner-password-1",
         }))
@@ -8176,11 +8176,11 @@ async fn test_setup_wizard_full_flow() {
         "setup must set a refresh cookie (auto-login)");
 
     // Status now reports false.
-    let status2 = server.get("/dispatch/api/v1/setup/status").await;
+    let status2 = server.get("/fleet/api/v1/setup/status").await;
     assert_eq!(status2.json::<serde_json::Value>()["needs_setup"], serde_json::json!(false));
 
     // Second POST is rejected — guard slammed shut.
-    let again = server.post("/dispatch/setup")
+    let again = server.post("/fleet/setup")
         .json(&serde_json::json!({
             "email": "intruder@example.com", "name": "Nope", "password": "another-password",
         }))
@@ -8190,7 +8190,7 @@ async fn test_setup_wizard_full_flow() {
     // The created owner really has role=owner: the returned token can drive the
     // users:* surface (owner-only) and the table holds exactly one owner.
     let auth = format!("Bearer {token}");
-    let list = server.get("/dispatch/api/v1/users")
+    let list = server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(list.status_code(), 200, "owner token must reach users surface: {}", list.text());
     let users = list.json::<serde_json::Value>();
@@ -8199,7 +8199,7 @@ async fn test_setup_wizard_full_flow() {
     assert_eq!(users["users"][0]["email"], serde_json::json!("boss@example.com"));
 
     // And the owner can log in normally afterward.
-    let login = server.post("/dispatch/auth/login")
+    let login = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": "boss@example.com", "password": "owner-password-1" }))
         .await;
     assert_eq!(login.status_code(), 200, "owner must be able to log in normally");
@@ -8210,11 +8210,11 @@ async fn test_setup_status_false_once_user_exists() {
     let (server, _b, _d, _rx) = test_server().await;
     // Provision the first user via first-run setup; status must then report false.
     setup_owner(&server).await;
-    let status = server.get("/dispatch/api/v1/setup/status").await;
+    let status = server.get("/fleet/api/v1/setup/status").await;
     assert_eq!(status.json::<serde_json::Value>()["needs_setup"], serde_json::json!(false));
 
     // And setup is closed.
-    let attempt = server.post("/dispatch/setup")
+    let attempt = server.post("/fleet/setup")
         .json(&serde_json::json!({
             "email": "late@example.com", "name": "Late", "password": "late-password",
         }))

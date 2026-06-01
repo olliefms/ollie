@@ -3,7 +3,7 @@
 // Short-lived, blob-scoped signed URLs ("presigned" URLs) for moving file bytes
 // off the MCP transport and onto plain HTTP.
 //
-// Why this exists: MCP agents authenticate to /dispatch/mcp via the MCP client
+// Why this exists: MCP agents authenticate to /fleet/mcp via the MCP client
 // layer and never see the dispatcher JWT, so they cannot authenticate their own
 // HTTP requests. Handing them a full dispatcher JWT would let them bypass MCP and
 // hit every dispatcher endpoint. Instead, an MCP tool mints a token that is scoped
@@ -100,12 +100,12 @@ pub fn verify_token(secret: &str, token: &str, expected_op: BlobUrlOp) -> Result
 
 /// Build the absolute upload URL an agent POSTs bytes to.
 pub fn upload_url(base: &str, token: &str) -> String {
-    format!("{base}/dispatch/blobs/presigned?token={token}")
+    format!("{base}/fleet/blobs/presigned?token={token}")
 }
 
 /// Build the absolute download URL an agent GETs bytes from.
 pub fn download_url(base: &str, blob_id: Uuid, token: &str) -> String {
-    format!("{base}/dispatch/blobs/presigned/{blob_id}?token={token}")
+    format!("{base}/fleet/blobs/presigned/{blob_id}?token={token}")
 }
 
 #[cfg(test)]
@@ -174,7 +174,7 @@ mod tests {
     #[test]
     fn url_builders() {
         let id = Uuid::new_v4();
-        assert_eq!(upload_url("https://h", "T"), "https://h/dispatch/blobs/presigned?token=T");
-        assert_eq!(download_url("https://h", id, "T"), format!("https://h/dispatch/blobs/presigned/{id}?token=T"));
+        assert_eq!(upload_url("https://h", "T"), "https://h/fleet/blobs/presigned?token=T");
+        assert_eq!(download_url("https://h", id, "T"), format!("https://h/fleet/blobs/presigned/{id}?token=T"));
     }
 }

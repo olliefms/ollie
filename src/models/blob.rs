@@ -93,7 +93,7 @@ pub struct UpdateBlobRequest {
     pub tags: Option<Vec<String>>,
 }
 
-/// Returned by GET /dispatch/api/v1/blobs — no embedding, optional score
+/// Returned by GET /fleet/api/v1/blobs — no embedding, optional score
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BlobListItem {
     pub id: Uuid,

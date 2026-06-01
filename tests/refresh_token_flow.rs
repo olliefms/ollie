@@ -93,10 +93,10 @@ async fn seed_dispatcher(db: &DbClient, email: &str, password: &str) -> Uuid {
     id
 }
 
-/// POST /dispatch/auth/login and return the raw `set-cookie` header value.
+/// POST /fleet/auth/login and return the raw `set-cookie` header value.
 /// Panics if the response is not 200 or the header is absent.
 async fn login_get_cookie(server: &TestServer, email: &str, password: &str) -> String {
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": email, "password": password }))
         .await;
     assert_eq!(resp.status_code(), 200, "login should succeed");
@@ -135,7 +135,7 @@ async fn login_sets_refresh_cookie() {
     let (server, db, _b, _d) = build_app().await;
     seed_dispatcher(&db, "disp@example.com", "correct horse").await;
 
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": "disp@example.com", "password": "correct horse" }))
         .await;
 
@@ -166,8 +166,8 @@ async fn refresh_after_access_expiry() {
     let set_cookie = login_get_cookie(&server, "disp2@example.com", "correct horse").await;
     let secret     = extract_refresh_value(&set_cookie);
 
-    // POST /dispatch/auth/refresh with ONLY the Cookie header (no Authorization).
-    let resp = server.post("/dispatch/auth/refresh")
+    // POST /fleet/auth/refresh with ONLY the Cookie header (no Authorization).
+    let resp = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&secret))
         .await;
 
@@ -198,7 +198,7 @@ async fn refresh_rotates_secret() {
     let tok0 = extract_refresh_value(&sc0);
 
     // First refresh: C0 → C1
-    let r1 = server.post("/dispatch/auth/refresh")
+    let r1 = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&tok0))
         .await;
     assert_eq!(r1.status_code(), 200);
@@ -208,7 +208,7 @@ async fn refresh_rotates_secret() {
     assert_ne!(tok0, tok1, "rotated cookie must differ from original");
 
     // Replay C0 (consumed) → 401
-    let r2 = server.post("/dispatch/auth/refresh")
+    let r2 = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&tok0))
         .await;
     assert_eq!(r2.status_code(), 401, "replaying consumed token should fail");
@@ -225,20 +225,20 @@ async fn reused_refresh_revokes_family() {
     let tok0 = extract_refresh_value(&sc0);
 
     // C0 → C1
-    let r1   = server.post("/dispatch/auth/refresh")
+    let r1   = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&tok0))
         .await;
     assert_eq!(r1.status_code(), 200);
     let tok1 = extract_refresh_value(r1.headers().get("set-cookie").unwrap().to_str().unwrap());
 
     // Replay C0 → 401 (triggers family revocation)
-    let reuse = server.post("/dispatch/auth/refresh")
+    let reuse = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&tok0))
         .await;
     assert_eq!(reuse.status_code(), 401);
 
     // C1 is now also invalid (family was revoked)
-    let r2 = server.post("/dispatch/auth/refresh")
+    let r2 = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&tok1))
         .await;
     assert_eq!(r2.status_code(), 401, "C1 should also be invalid after family revocation");
@@ -254,7 +254,7 @@ async fn logout_revokes_and_clears() {
     let secret = extract_refresh_value(&sc);
 
     // Logout
-    let logout = server.post("/dispatch/auth/logout")
+    let logout = server.post("/fleet/auth/logout")
         .add_header(header::COOKIE, cookie_header(&secret))
         .await;
     assert_eq!(logout.status_code(), 200);
@@ -267,7 +267,7 @@ async fn logout_revokes_and_clears() {
     assert!(clear_cookie.contains("Max-Age=0"), "clearing cookie must have Max-Age=0");
 
     // Refresh with the old cookie must now fail
-    let after = server.post("/dispatch/auth/refresh")
+    let after = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&secret))
         .await;
     assert_eq!(after.status_code(), 401, "refresh after logout should fail");
@@ -289,7 +289,7 @@ async fn token_version_bump_kills_refresh() {
     db.upsert_dispatcher_credentials(&creds).await.unwrap();
 
     // Refresh with the old cookie (token_version mismatch) → 401
-    let resp = server.post("/dispatch/auth/refresh")
+    let resp = server.post("/fleet/auth/refresh")
         .add_header(header::COOKIE, cookie_header(&secret))
         .await;
     assert_eq!(resp.status_code(), 401, "refresh must fail after token_version bump");

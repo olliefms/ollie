@@ -227,8 +227,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
     tags(
         (name = "meta", description = "Server metadata endpoints (unauthenticated)"),
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
-        (name = "dispatch", description = "Dispatcher portal data API — loads, trips, drivers, trucks, trailers, events"),
-        (name = "dispatch-auth", description = "Dispatcher portal authentication — login and JWT refresh"),
+        (name = "fleet", description = "Fleet portal data API — loads, trips, drivers, trucks, trailers, events"),
+        (name = "fleet-auth", description = "Fleet portal authentication — login and JWT refresh"),
         (name = "dispatchers", description = "Dispatcher admin CRUD and password management"),
         (name = "drivers", description = "Driver management with state machine"),
         (name = "events", description = "Append-only event journal (read-only)"),
@@ -269,16 +269,16 @@ semantic search.
 
 ollie exposes three surfaces. Choose by caller, not by habit:
 
-  Dispatcher MCP    POST /dispatch/mcp     AI agents and tool-using assistants. PREFERRED.
-  Dispatcher REST   /dispatch/api/v1/*     Dispatcher web app and programmatic integrations.
+  Fleet MCP    POST /fleet/mcp     AI agents and tool-using assistants. PREFERRED.
+  Fleet REST   /fleet/api/v1/*     Fleet web app and programmatic integrations.
   Driver portal     /driver/api/v1/*       The driver mobile PWA only.
 
-New automation should target the dispatcher MCP server, falling back to the
-dispatcher REST API where no tool exists for an operation.
+New automation should target the fleet MCP server, falling back to the
+fleet REST API where no tool exists for an operation.
 
 ## Authentication
 
-  Dispatcher MCP / REST   Authorization: Bearer <JWT>          (POST /dispatch/auth/login with email+password, or a dispatcher API key)
+  Fleet MCP / REST        Authorization: Bearer <JWT>          (POST /fleet/auth/login with email+password, or a dispatcher API key)
   Driver portal           Authorization: Bearer <JWT>          (driver passkey or PIN auth)
 
 Public, no auth: GET /version, GET /openapi.json, GET /llms.txt.
@@ -286,14 +286,14 @@ Missing or incorrect credentials return 401. Dispatcher login locks out after 5
 failed attempts (15 min × 2^(failures-5), capped at 24h; 423 with locked_until).
 
 Dispatcher API keys (for headless/programmatic callers — used in the Authorization
-header just like a JWT) are managed under /dispatch/api-keys (a password/JWT session
+header just like a JWT) are managed under /fleet/api-keys (a password/JWT session
 is required; an API-key session cannot mint more keys):
-  POST   /dispatch/api-keys      Create a key. Body: { label (1-64 chars), expires_in_days? (1-365, default 365) }.
+  POST   /fleet/api-keys      Create a key. Body: { label (1-64 chars), expires_in_days? (1-365, default 365) }.
                                  Returns the plaintext `key` exactly once — it is never retrievable again. Max 20 active keys per dispatcher.
-  GET    /dispatch/api-keys      List the caller's active keys (label, key_prefix, created/expires/last_used; no plaintext).
-  DELETE /dispatch/api-keys/:id  Revoke a key.
+  GET    /fleet/api-keys      List the caller's active keys (label, key_prefix, created/expires/last_used; no plaintext).
+  DELETE /fleet/api-keys/:id  Revoke a key.
 
-## Dispatcher MCP server — POST /dispatch/mcp
+## Fleet MCP server — POST /fleet/mcp
 
 MCP Streamable HTTP transport (protocol 2025-06-18), JSON-RPC 2.0. Requires a
 dispatcher JWT or API key in the Authorization header. Every POST must send
@@ -335,20 +335,20 @@ Document blobs:
 
 Presigned URLs require OLLIE_PUBLIC_BASE_URL to be configured on the server.
 
-### Presigned blob byte-transfer — /dispatch/blobs/presigned
+### Presigned blob byte-transfer — /fleet/blobs/presigned
 
 The endpoints the blob tools hand out. Token-authenticated via ?token= (no JWT
 header), mounted outside the dispatcher middleware so a credential-less agent can
 use a minted URL directly. Each token is bound to one operation (and, for GET, one
 blob id) and expires (default 300s).
 
-  POST /dispatch/blobs/presigned?token=…       Upload raw body bytes (Content-Type header; optional ?name=&tags=). 50 MB limit. Returns the blob record.
-  GET  /dispatch/blobs/presigned/{id}?token=…  Download raw bytes.
+  POST /fleet/blobs/presigned?token=…       Upload raw body bytes (Content-Type header; optional ?name=&tags=). 50 MB limit. Returns the blob record.
+  GET  /fleet/blobs/presigned/{id}?token=…  Download raw bytes.
 
-## Dispatcher REST — /dispatch/api/v1
+## Fleet REST — /fleet/api/v1
 
 JWT auth; same response shapes as the resources above. Use when a needed operation
-has no MCP tool. Auth lives at /dispatch/auth/ (POST /login, POST /refresh — refresh
+has no MCP tool. Auth lives at /fleet/auth/ (POST /login, POST /refresh — refresh
 within the 7-day window).
 
   Loads      GET /loads, GET /loads/:id, POST /loads, PUT /loads/:id, DELETE /loads/:id,
@@ -374,7 +374,7 @@ lifecycle; unknown body fields are rejected. Facility PATCH: setting `address`
 re-queues the geocoder, while explicit lat+lng set geocode_status=ready and reset
 the failure count.
 
-### Fleet users & roles — /dispatch/api/v1/users (requires users:* scopes)
+### Fleet users & roles — /fleet/api/v1/users (requires users:* scopes)
 The Users surface manages fleet user accounts (roles: owner, fleet_manager,
 dispatcher) and per-user extra_scopes. It is gated by `users:*` scopes, which only
 owner and fleet_manager hold — a plain dispatcher is forbidden (403) from every
@@ -433,7 +433,7 @@ forbidden (403).
   output. Each upload is processed asynchronously: Ollama generates a text summary and
   a vector embedding (status: pending → processing → ready | failed). Semantic search
   via ?s=<query>. Ask a natural-language question about a ready document via
-  POST /dispatch/api/v1/blobs/:id/query (body: { prompt, model? }).
+  POST /fleet/api/v1/blobs/:id/query (body: { prompt, model? }).
 
 ### List vs. search counts
   GET list endpoints return a `returned` field. Without ?s= it is the total matching
@@ -480,9 +480,9 @@ pub fn router(state: AppState) -> Router {
         ));
 
     // Static file serving for the dispatcher SPA; SPA fallback to index.html
-    let dispatch_static = tower_http::services::ServeDir::new("static/dispatch")
+    let dispatch_static = tower_http::services::ServeDir::new("static/fleet")
         .fallback(tower_http::services::ServeFile::new(
-            "static/dispatch/index.html",
+            "static/fleet/index.html",
         ));
 
     Router::new()
@@ -494,6 +494,6 @@ pub fn router(state: AppState) -> Router {
         .merge(driver_portal)
         .merge(oauth::router())
         .nest_service("/driver", driver_static)
-        .nest_service("/dispatch", dispatch_static)
+        .nest_service("/fleet", dispatch_static)
         .with_state(state)
 }

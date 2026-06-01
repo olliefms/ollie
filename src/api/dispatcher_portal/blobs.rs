@@ -32,14 +32,14 @@ use super::blob_links::{self, BlobUrlOp};
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/blobs",
+    path = "/fleet/api/v1/blobs",
     params(ListQuery),
     responses(
         (status = 200, description = "List of blobs (or semantic search results when ?s= provided)", body = BlobListResponse),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_blobs(
     State(state): State<AppState>,
@@ -64,7 +64,7 @@ pub async fn list_blobs(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/blobs",
+    path = "/fleet/api/v1/blobs",
     request_body(
         content = crate::api::blobs::BlobUploadRequest,
         content_type = "multipart/form-data",
@@ -77,7 +77,7 @@ pub async fn list_blobs(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn upload_blob(
     State(state): State<AppState>,
@@ -165,7 +165,7 @@ pub async fn upload_blob(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/blob/{id}",
+    path = "/fleet/api/v1/blob/{id}",
     params(("id" = Uuid, Path, description = "Blob UUID")),
     responses(
         (status = 200, description = "Blob record (Accept: application/json) or raw file bytes", body = BlobRecord),
@@ -173,7 +173,7 @@ pub async fn upload_blob(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_blob(
     State(state): State<AppState>,
@@ -210,7 +210,7 @@ pub async fn get_blob(
 
 #[utoipa::path(
     put,
-    path = "/dispatch/api/v1/blob/{id}",
+    path = "/fleet/api/v1/blob/{id}",
     params(("id" = Uuid, Path, description = "Blob UUID")),
     request_body(content = UpdateBlobRequest, description = "Fields to update — at least one of name or tags required"),
     responses(
@@ -220,7 +220,7 @@ pub async fn get_blob(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn update_blob(
     State(state): State<AppState>,
@@ -240,7 +240,7 @@ pub async fn update_blob(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/blob/{id}",
+    path = "/fleet/api/v1/blob/{id}",
     params(("id" = Uuid, Path, description = "Blob UUID")),
     responses(
         (status = 204, description = "Deleted"),
@@ -249,7 +249,7 @@ pub async fn update_blob(
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_blob(
     State(state): State<AppState>,
@@ -284,7 +284,7 @@ pub async fn delete_blob(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/blobs/{id}/query",
+    path = "/fleet/api/v1/blobs/{id}/query",
     params(("id" = Uuid, Path, description = "Blob UUID")),
     request_body(content = BlobQueryRequest, description = "Prompt to ask about the document"),
     responses(
@@ -295,7 +295,7 @@ pub async fn delete_blob(
         (status = 422, description = "Blob not ready or content type not queryable"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn query_blob(
     State(state): State<AppState>,
@@ -410,7 +410,7 @@ pub struct PresignedUploadQuery {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/blobs/presigned",
+    path = "/fleet/blobs/presigned",
     params(
         ("token" = String, Query, description = "Presigned upload token from upload_blob"),
         ("name" = Option<String>, Query, description = "Display name; MIME inferred from it if Content-Type header absent"),
@@ -423,7 +423,7 @@ pub struct PresignedUploadQuery {
         (status = 400, description = "Empty body"),
         (status = 401, description = "Missing, invalid, expired, or wrong-scope token"),
     ),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn presigned_upload(
     State(state): State<AppState>,
@@ -457,7 +457,7 @@ pub async fn presigned_upload(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/blobs/presigned/{id}",
+    path = "/fleet/blobs/presigned/{id}",
     params(
         ("id" = Uuid, Path, description = "Blob UUID"),
         ("token" = String, Query, description = "Presigned download token from get_blob_url")
@@ -467,7 +467,7 @@ pub async fn presigned_upload(
         (status = 401, description = "Missing, invalid, expired, wrong-scope, or id-mismatched token"),
         (status = 404, description = "Not found"),
     ),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn presigned_download(
     State(state): State<AppState>,

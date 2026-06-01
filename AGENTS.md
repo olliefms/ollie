@@ -6,7 +6,7 @@ This file is for AI coding agents working on this codebase. Read it before makin
 
 ollie is a self-hosted freight **Transportation Management System (TMS)** written in Rust. It manages the operational core of a trucking dispatch operation — loads, trips, drivers, trucks, trailers, and facilities — alongside an AI-enabled document store (the original "blob store": files content-addressed on disk, summarized and embedded by Ollama, indexed in LanceDB for semantic search).
 
-The domain is exposed through three API surfaces: a dispatcher **MCP** server (`POST /dispatch/mcp`, preferred for AI agents), a dispatcher **REST** API (`/dispatch/api/v1`), and a **driver portal** (`/driver/api/v1`, JWT via passkey/PIN). Two static web apps ship with it: a dispatcher SPA at `/dispatch` and a driver PWA at `/driver`. `GET /llms.txt` is the hand-written, agent-oriented tour of every surface and is the best high-level map of the running system.
+The domain is exposed through three API surfaces: a **Fleet MCP** server (`POST /fleet/mcp`, preferred for AI agents), a **Fleet REST** API (`/fleet/api/v1`), and a **driver portal** (`/driver/api/v1`, JWT via passkey/PIN). Two static web apps ship with it: a fleet SPA at `/fleet` and a driver PWA at `/driver`. `GET /llms.txt` is the hand-written, agent-oriented tour of every surface and is the best high-level map of the running system.
 
 **Stack:** Axum 0.8, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, pdf-extract 0.7, jsonwebtoken 10, webauthn-rs 0.5, utoipa 4. Facility geocoding uses the US Census geocoder; trip/load mileage uses OpenRouteService (HGV).
 
@@ -199,7 +199,7 @@ The API is documented via `utoipa` (v4). Two unauthenticated endpoints serve the
 
 Auth depends on the surface (see `/llms.txt` for the authoritative description):
 
-- **Dispatcher MCP/REST** (`/dispatch/*`) — `Authorization: Bearer <JWT>` from `POST /dispatch/auth/login` (email+password), or a dispatcher API key. JWTs are signed with `DISPATCHER_JWT_SECRET`.
+- **Fleet MCP/REST** (`/fleet/*`) — `Authorization: Bearer <JWT>` from `POST /fleet/auth/login` (email+password), or a dispatcher API key. JWTs are signed with `DISPATCHER_JWT_SECRET`.
 - **Driver portal** (`/driver/api/v1/*`) — `Authorization: Bearer <JWT>` from passkey/PIN auth. JWTs are signed with `DRIVER_JWT_SECRET`.
 - **Public, no auth:** `GET /version`, `GET /openapi.json`, `GET /llms.txt`.
 
@@ -217,7 +217,7 @@ Both paths write to the DB. The filesystem file is only written once per unique 
 
 Facility addresses are geocoded asynchronously after create or address-change update — the API returns immediately with `geocode_status: pending` and a background worker fills `lat`/`lng`/`normalized_address`. On failure, `geocode_status` transitions to `failed` (and after 3 attempts, `permanently_failed`).
 
-**Manual override:** `POST /dispatch/api/v1/facilities` and `PATCH /dispatch/api/v1/facilities/{id}` both accept optional `lat` + `lng`. When both are supplied, the geocoder is skipped, coords are persisted as-is, `geocode_status` is set to `ready`, and `geocode_failure_count` resets to `0`. On UPDATE, explicit coords win even when `address` is also being changed. Partial coords or out-of-range values (lat ∉ [-90, 90], lng ∉ [-180, 180]) → 422. This is the supported repair path for facilities the geocoder can't resolve (e.g. industrial warehouses with BOL-derived addresses).
+**Manual override:** `POST /fleet/api/v1/facilities` and `PATCH /fleet/api/v1/facilities/{id}` both accept optional `lat` + `lng`. When both are supplied, the geocoder is skipped, coords are persisted as-is, `geocode_status` is set to `ready`, and `geocode_failure_count` resets to `0`. On UPDATE, explicit coords win even when `address` is also being changed. Partial coords or out-of-range values (lat ∉ [-90, 90], lng ∉ [-180, 180]) → 422. This is the supported repair path for facilities the geocoder can't resolve (e.g. industrial warehouses with BOL-derived addresses).
 
 ## Content Extraction
 
@@ -250,7 +250,7 @@ PDFs use `pdf_extract::extract_text_from_mem()`. If it can't extract ≥50 words
 | `TERMINAL_TIMEZONE` | No (deprecated) | America/New_York | **Seed-only.** First-boot timezone for the Default terminal row. No longer read by `Config`; terminals own timezone (#185). |
 | `OLLIE_FREE_DWELL_MINUTES` | No (deprecated) | `120` | **Seed-only.** First-boot free-dwell for the Default terminal row. No longer read by `Config`; terminals own free-dwell (#185, #258). |
 | `OLLIE_PUBLIC_BASE_URL` | No | `` (empty) | Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`. Used to build absolute presigned blob upload/download URLs for the dispatcher MCP blob tools. When empty, the presigned-URL tools error; inline `create_blob` still works (#277). |
-| `OLLIE_MCP_INLINE_BLOB_MAX_BYTES` | No | `262144` | Max decoded size for the inline-base64 `create_blob` MCP tool. Larger files must use a presigned upload URL. Also sizes the `/dispatch/mcp` request body limit (#277). |
+| `OLLIE_MCP_INLINE_BLOB_MAX_BYTES` | No | `262144` | Max decoded size for the inline-base64 `create_blob` MCP tool. Larger files must use a presigned upload URL. Also sizes the `/fleet/mcp` request body limit (#277). |
 | `OLLIE_BLOB_PRESIGN_TTL_SECS` | No | `300` | Default TTL (seconds) for presigned blob URLs when the caller omits `expires_in_seconds` (#277). |
 | `OLLIE_BLOB_PRESIGN_MAX_TTL_SECS` | No | `3600` | Hard cap (seconds) on presigned blob URL TTL (#277). |
 
@@ -282,7 +282,7 @@ After any change: run `cargo test`, `cargo clippy`, `cargo build` before committ
 
 ## UI / Frontend
 
-UI changes to `static/driver/` or `static/dispatch/` must be consistent with the design system defined in [`docs/DESIGN.md`](docs/DESIGN.md). Reuse the existing CSS tokens in `static/driver/css/base.css`; add a new token there (and document it in `DESIGN.md`) rather than inlining hex values or one-off styles.
+UI changes to `static/driver/` or `static/fleet/` must be consistent with the design system defined in [`docs/DESIGN.md`](docs/DESIGN.md). Reuse the existing CSS tokens in `static/driver/css/base.css`; add a new token there (and document it in `DESIGN.md`) rather than inlining hex values or one-off styles.
 
 ## Shippability Bar
 
@@ -346,7 +346,7 @@ Trunk-based. Three skills cover the workflow:
 - **Mirror-API handlers inherit OpenAPI security schemes from the existing API, not a new name.** When creating dispatcher portal handlers that mirror admin blob handlers, use `security(("BearerAuth" = []))` — the scheme registered in `SecurityAddon`. Using an unregistered name like `"DispatcherJwt"` produces a spec that references an undefined scheme, breaking validators and tooling even though runtime behavior is unaffected. Always verify the registered scheme name in `src/api/mod.rs::SecurityAddon` before writing utoipa annotations.
 - **Escape server-controlled string data before injecting into innerHTML in the SPA.** Blob names, tags, and AI-generated summaries are the most likely fields to carry adversary-influenced content. Use `escHtml(s)` on every field that flows from API responses into template literals. Add the utility once (already present as `escHtml` in `app.js`) and apply it wherever blob data appears — both in list views and in per-record detail panels.
 - **Pre-validate all resources in a multi-step assign handler before any DB mutation.** Fetch and check ALL trailers (or any other multi-item list) in a loop before calling `transition_trip_status` or any other mutation. A validation failure after mutations leave the system in an inconsistent state that requires manual correction. Collect validated records into a `Vec` and reuse them in the mutation loop — this also eliminates redundant DB round-trips.
-- **Use `API_BASE` for all apiFetch calls in the SPA; never hard-code path prefixes.** Hard-coded `/dispatch/api/v1/...` paths diverge silently when `API_BASE` changes. Every `apiFetch` call must use the `API_BASE` constant: `apiFetch(\`\${API_BASE}/blobs?...\`)`. Check for bare `/dispatch/api/v1` strings after every frontend feature addition.
+- **Use `API_BASE` for all apiFetch calls in the SPA; never hard-code path prefixes.** Hard-coded `/fleet/api/v1/...` paths diverge silently when `API_BASE` changes. Every `apiFetch` call must use the `API_BASE` constant: `apiFetch(\`\${API_BASE}/blobs?...\`)`. Check for bare `/fleet/api/v1` strings after every frontend feature addition.
 - **Fetch a shared resource once and reuse across multiple derivations in the same handler.** When a handler needs a record for both stop derivation AND computed fields (e.g. loaded_miles, load_number), fetch it once at the top and pass it by reference to helpers. The v1.8.0 `create_trip` rewrite eliminated a redundant `get_load_by_id` call that previously happened inside the stops block.
 - **Enrich denormalized fields at write time, not read time.** Fields like `stop.address`, `trip.load_number`, and `trip.previous_trip_id` are resolved once at creation and stored. This keeps read paths fast and avoids N+1 lookups in list views — even though it means the denormalized value may drift from source if the source changes. Use this pattern for data that won't change often and is expensive to recompute on every read.
 - **Header injection from user-controlled strings is a real risk in Rust HTTP handlers.** Any field written into a header value (e.g., `Content-Disposition: attachment; filename="..."`) must be sanitized before use. Strip `\r` and `\n` at minimum — a blob name with a newline can inject additional HTTP headers. Do not assume the DB layer validates this.

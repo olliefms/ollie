@@ -101,7 +101,7 @@ async fn refresh_grant(state: &AppState, f: TokenForm) -> Result<Json<TokenRespo
     // This endpoint serves OAuth clients only: the token must be bound to a
     // registered client, and the request's client_id must match it (OAuth 2.1
     // §4.1.3 / RFC 9700 — enforced even for public clients). PWA session tokens
-    // (client_id = None) are rotated via /dispatch/auth/refresh, not here.
+    // (client_id = None) are rotated via /fleet/auth/refresh, not here.
     let row_client_id = row.client_id
         .ok_or_else(|| OauthError::InvalidGrant("refresh_token not issued to an OAuth client".into()))?;
     let req_client_id = f.client_id.as_deref()

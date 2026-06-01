@@ -1,8 +1,8 @@
 // src/api/dispatcher_portal/trip_writes.rs
 //
 // Dispatcher-portal trip write endpoints (#259, #262):
-//   - POST /dispatch/api/v1/trips/{id}/recalculate-miles
-//   - PATCH /dispatch/api/v1/trips/{id}
+//   - POST /fleet/api/v1/trips/{id}/recalculate-miles
+//   - PATCH /fleet/api/v1/trips/{id}
 //
 // Both endpoints share the same auth middleware as the rest of dispatcher_portal.
 // Mileage (deadhead_miles / loaded_miles / total_miles / segment_miles) is NEVER
@@ -83,7 +83,7 @@ pub struct PatchTripBody {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/recalculate-miles",
+    path = "/fleet/api/v1/trips/{id}/recalculate-miles",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = RecalculateMilesBody, description = "Optional { force: bool }"),
     responses(
@@ -93,7 +93,7 @@ pub struct PatchTripBody {
         (status = 409, description = "ORS unavailable or facility coordinates missing"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn recalculate_miles_handler(
     State(state): State<AppState>,
@@ -123,7 +123,7 @@ pub async fn recalculate_miles_handler(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/trips/{id}",
+    path = "/fleet/api/v1/trips/{id}",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = PatchTripBody, description = "Allowed fields: notes, previous_trip_id"),
     responses(
@@ -134,7 +134,7 @@ pub async fn recalculate_miles_handler(
         (status = 404, description = "Trip not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn patch_trip_handler(
     State(state): State<AppState>,
@@ -269,7 +269,7 @@ pub async fn apply_trip_patch(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/trips/{id}",
+    path = "/fleet/api/v1/trips/{id}",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 204, description = "Deleted (soft-cancelled if active; hard-deleted if already cancelled)"),
@@ -278,7 +278,7 @@ pub async fn apply_trip_patch(
         (status = 409, description = "Cannot delete a trip that is in_transit, delivered, or completed"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_trip_handler(
     State(state): State<AppState>,

@@ -1,6 +1,6 @@
 //! Cross-surface stop-time operations.
 //!
-//! Both the dispatcher portal (POST /dispatch/api/v1/trips/{id}/stops/{seq}/arrive|depart)
+//! Both the dispatcher portal (POST /fleet/api/v1/trips/{id}/stops/{seq}/arrive|depart)
 //! and the driver portal (PATCH /driver/api/v1/trips/{id}/stops/{seq}) record actual
 //! arrival and departure times. The cascade to the linked load stop, the trip/load
 //! status transitions, the auto-dispatch of the next assigned trip, and the event

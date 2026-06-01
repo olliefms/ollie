@@ -1,11 +1,11 @@
 // src/api/dispatcher_portal/terminal_writes.rs
 //
 // Dispatcher-portal terminal CRUD endpoints (#185):
-//   POST   /dispatch/api/v1/terminals
-//   GET    /dispatch/api/v1/terminals
-//   GET    /dispatch/api/v1/terminals/{id}
-//   PUT    /dispatch/api/v1/terminals/{id}
-//   DELETE /dispatch/api/v1/terminals/{id}
+//   POST   /fleet/api/v1/terminals
+//   GET    /fleet/api/v1/terminals
+//   GET    /fleet/api/v1/terminals/{id}
+//   PUT    /fleet/api/v1/terminals/{id}
+//   DELETE /fleet/api/v1/terminals/{id}
 
 use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Extension, Json};
 use chrono::Utc;
@@ -101,7 +101,7 @@ pub async fn apply_terminal_patch(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/terminals",
+    path = "/fleet/api/v1/terminals",
     request_body(content = CreateTerminalRequest, description = "Terminal to create"),
     responses(
         (status = 201, description = "Created terminal record", body = TerminalRecord),
@@ -109,7 +109,7 @@ pub async fn apply_terminal_patch(
         (status = 422, description = "Invalid timezone or request"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_terminal(
     State(state): State<AppState>,
@@ -123,13 +123,13 @@ pub async fn create_terminal(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/terminals",
+    path = "/fleet/api/v1/terminals",
     responses(
         (status = 200, description = "List of terminals", body = [TerminalListItem]),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn list_terminals(
     State(state): State<AppState>,
@@ -141,7 +141,7 @@ pub async fn list_terminals(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/terminals/{id}",
+    path = "/fleet/api/v1/terminals/{id}",
     params(("id" = Uuid, Path, description = "Terminal UUID")),
     responses(
         (status = 200, description = "Terminal record", body = TerminalRecord),
@@ -149,7 +149,7 @@ pub async fn list_terminals(
         (status = 404, description = "Terminal not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn get_terminal(
     State(state): State<AppState>,
@@ -162,7 +162,7 @@ pub async fn get_terminal(
 
 #[utoipa::path(
     put,
-    path = "/dispatch/api/v1/terminals/{id}",
+    path = "/fleet/api/v1/terminals/{id}",
     params(("id" = Uuid, Path, description = "Terminal UUID")),
     request_body(content = UpdateTerminalRequest, description = "Fields to update — all optional"),
     responses(
@@ -172,7 +172,7 @@ pub async fn get_terminal(
         (status = 422, description = "Invalid timezone"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn update_terminal(
     State(state): State<AppState>,
@@ -186,7 +186,7 @@ pub async fn update_terminal(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/terminals/{id}",
+    path = "/fleet/api/v1/terminals/{id}",
     params(("id" = Uuid, Path, description = "Terminal UUID")),
     responses(
         (status = 204, description = "Terminal deleted"),
@@ -195,7 +195,7 @@ pub async fn update_terminal(
         (status = 409, description = "Conflict — default terminal or has assigned drivers"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_terminal(
     State(state): State<AppState>,

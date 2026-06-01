@@ -67,7 +67,7 @@ const OWNER_PASSWORD: &str = "owner-password-123";
 
 /// First-run owner bootstrap (idempotent), returning an owner JWT.
 async fn setup_owner(server: &TestServer) -> String {
-    let resp = server.post("/dispatch/setup")
+    let resp = server.post("/fleet/setup")
         .json(&serde_json::json!({
             "email": OWNER_EMAIL, "name": "Owner", "password": OWNER_PASSWORD,
         }))
@@ -75,7 +75,7 @@ async fn setup_owner(server: &TestServer) -> String {
     if resp.status_code() == 200 {
         return resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string();
     }
-    let login = server.post("/dispatch/auth/login")
+    let login = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": OWNER_EMAIL, "password": OWNER_PASSWORD }))
         .await;
     assert_eq!(login.status_code(), 200, "owner login failed");
@@ -90,7 +90,7 @@ async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> S
     // `fleet_manager` is operationally identical to owner (effective scope
     // `["*"]`) but creatable via the users surface (owner is not).
     let owner = setup_owner(server).await;
-    server.post("/dispatch/api/v1/users")
+    server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner}"))
         .json(&serde_json::json!({
             "email": email,
@@ -101,7 +101,7 @@ async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> S
         .await;
 
     // Login and return JWT
-    let resp = server.post("/dispatch/auth/login")
+    let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": email, "password": password }))
         .await;
     assert_eq!(resp.status_code(), 200, "dispatcher login failed");
@@ -114,7 +114,7 @@ async fn test_create_terminal_returns_201() {
     let (server, _b, _d) = test_server().await;
     let token = dispatcher_login(&server, "term1@example.com", "pw-term1").await;
 
-    let resp = server.post("/dispatch/api/v1/terminals")
+    let resp = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "name": "East",
@@ -137,7 +137,7 @@ async fn test_list_terminals_contains_east_and_default() {
     let auth = format!("Bearer {token}");
 
     // Create "East"
-    server.post("/dispatch/api/v1/terminals")
+    server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "name": "East",
@@ -146,7 +146,7 @@ async fn test_list_terminals_contains_east_and_default() {
         }))
         .await;
 
-    let resp = server.get("/dispatch/api/v1/terminals")
+    let resp = server.get("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(resp.status_code(), 200);
@@ -163,7 +163,7 @@ async fn test_update_terminal_rate() {
     let token = dispatcher_login(&server, "term3@example.com", "pw-term3").await;
     let auth = format!("Bearer {token}");
 
-    let create_resp = server.post("/dispatch/api/v1/terminals")
+    let create_resp = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "name": "East",
@@ -174,7 +174,7 @@ async fn test_update_terminal_rate() {
     assert_eq!(create_resp.status_code(), 201);
     let id = create_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let update_resp = server.put(&format!("/dispatch/api/v1/terminals/{id}"))
+    let update_resp = server.put(&format!("/fleet/api/v1/terminals/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "loaded_rate_per_mile": 0.7 }))
         .await;
@@ -191,7 +191,7 @@ async fn test_delete_terminal_returns_204() {
     let token = dispatcher_login(&server, "term4@example.com", "pw-term4").await;
     let auth = format!("Bearer {token}");
 
-    let create_resp = server.post("/dispatch/api/v1/terminals")
+    let create_resp = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "name": "East",
@@ -201,7 +201,7 @@ async fn test_delete_terminal_returns_204() {
     assert_eq!(create_resp.status_code(), 201);
     let id = create_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    let del_resp = server.delete(&format!("/dispatch/api/v1/terminals/{id}"))
+    let del_resp = server.delete(&format!("/fleet/api/v1/terminals/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(del_resp.status_code(), 204, "expected 204 No Content on delete");
@@ -215,7 +215,7 @@ async fn test_delete_default_terminal_returns_409() {
     let auth = format!("Bearer {token}");
 
     // List to find the default terminal
-    let list_resp = server.get("/dispatch/api/v1/terminals")
+    let list_resp = server.get("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(list_resp.status_code(), 200);
@@ -224,7 +224,7 @@ async fn test_delete_default_terminal_returns_409() {
         .expect("a default terminal should be seeded");
     let default_id = default_terminal["id"].as_str().unwrap().to_string();
 
-    let del_resp = server.delete(&format!("/dispatch/api/v1/terminals/{default_id}"))
+    let del_resp = server.delete(&format!("/fleet/api/v1/terminals/{default_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(del_resp.status_code(), 409, "expected 409 Conflict when deleting default terminal");
@@ -237,14 +237,14 @@ async fn test_unset_default_terminal_returns_409() {
     let token = dispatcher_login(&server, "term5b@example.com", "pw-term5b").await;
     let auth = format!("Bearer {token}");
 
-    let list_resp = server.get("/dispatch/api/v1/terminals")
+    let list_resp = server.get("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     let list: Vec<serde_json::Value> = list_resp.json();
     let default_id = list.iter().find(|t| t["is_default"].as_bool() == Some(true))
         .expect("a default terminal should be seeded")["id"].as_str().unwrap().to_string();
 
-    let put_resp = server.put(&format!("/dispatch/api/v1/terminals/{default_id}"))
+    let put_resp = server.put(&format!("/fleet/api/v1/terminals/{default_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "is_default": false }))
         .await;
@@ -253,7 +253,7 @@ async fn test_unset_default_terminal_returns_409() {
         put_resp.text());
 
     // And the terminal is still the default afterward.
-    let still = server.get(&format!("/dispatch/api/v1/terminals/{default_id}"))
+    let still = server.get(&format!("/fleet/api/v1/terminals/{default_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(still.json::<serde_json::Value>()["is_default"].as_bool(), Some(true));
@@ -265,7 +265,7 @@ async fn test_create_terminal_invalid_timezone_returns_422() {
     let (server, _b, _d) = test_server().await;
     let token = dispatcher_login(&server, "term6@example.com", "pw-term6").await;
 
-    let resp = server.post("/dispatch/api/v1/terminals")
+    let resp = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
             "name": "Bad TZ",
@@ -282,7 +282,7 @@ async fn test_patch_terminal_clears_address() {
     let token = dispatcher_login(&server, "term7@example.com", "pw-term7").await;
     let auth = format!("Bearer {token}");
 
-    let created: serde_json::Value = server.post("/dispatch/api/v1/terminals")
+    let created: serde_json::Value = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "name": "Addr Yard", "timezone": "America/New_York", "address": "100 Dock St"
@@ -293,7 +293,7 @@ async fn test_patch_terminal_clears_address() {
     assert_eq!(created["address"].as_str(), Some("100 Dock St"));
 
     // Omitting address must leave it unchanged.
-    let unchanged: serde_json::Value = server.put(&format!("/dispatch/api/v1/terminals/{id}"))
+    let unchanged: serde_json::Value = server.put(&format!("/fleet/api/v1/terminals/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Addr Yard 2" }))
         .await
@@ -301,7 +301,7 @@ async fn test_patch_terminal_clears_address() {
     assert_eq!(unchanged["address"].as_str(), Some("100 Dock St"), "omitted address should persist");
 
     // Explicit null clears it.
-    let cleared: serde_json::Value = server.put(&format!("/dispatch/api/v1/terminals/{id}"))
+    let cleared: serde_json::Value = server.put(&format!("/fleet/api/v1/terminals/{id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "address": null }))
         .await
@@ -317,7 +317,7 @@ async fn test_delete_terminal_with_drivers_returns_409() {
     let auth = format!("Bearer {token}");
 
     // Create a non-default terminal.
-    let term: serde_json::Value = server.post("/dispatch/api/v1/terminals")
+    let term: serde_json::Value = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Staffed Yard", "timezone": "America/New_York" }))
         .await
@@ -325,14 +325,14 @@ async fn test_delete_terminal_with_drivers_returns_409() {
     let term_id = term["id"].as_str().unwrap().to_string();
 
     // Assign a driver to it.
-    let drv = server.post("/dispatch/api/v1/drivers")
+    let drv = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Yard Driver", "terminal_id": term_id }))
         .await;
     assert_eq!(drv.status_code(), 201, "driver create failed: {:?}", drv.text());
 
     // Delete must be refused while a driver is assigned.
-    let del = server.delete(&format!("/dispatch/api/v1/terminals/{term_id}"))
+    let del = server.delete(&format!("/fleet/api/v1/terminals/{term_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(del.status_code(), 409,
@@ -341,7 +341,7 @@ async fn test_delete_terminal_with_drivers_returns_409() {
 
 /// Returns the id of the seeded Default terminal.
 async fn default_terminal_id(server: &TestServer, auth: &str) -> String {
-    let resp = server.get("/dispatch/api/v1/terminals")
+    let resp = server.get("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, auth)
         .await;
     let list: Vec<serde_json::Value> = resp.json();
@@ -363,7 +363,7 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
 
     // Set the Default terminal's rate floor.
     let term_id = default_terminal_id(&server, &auth).await;
-    let put = server.put(&format!("/dispatch/api/v1/terminals/{term_id}"))
+    let put = server.put(&format!("/fleet/api/v1/terminals/{term_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "loaded_rate_per_mile": 0.50,
@@ -375,7 +375,7 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
     assert_eq!(put.status_code(), 200);
 
     // Create a driver on the default terminal (terminal_id defaults to Default).
-    let drv = server.post("/dispatch/api/v1/drivers")
+    let drv = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Pat Driver" }))
         .await;
@@ -422,7 +422,7 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
     db.insert_trip(&trip).await.unwrap();
 
     // GET dispatcher trip detail -> driver_pay computed from terminal floor.
-    let detail = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let detail = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(detail.status_code(), 200, "detail GET failed: {:?}", detail.text());
@@ -443,13 +443,13 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
         "total_pay {total_pay} != sum {expected_total}");
 
     // Driver-level loaded-rate override should win over the terminal floor.
-    let patch = server.patch(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+    let patch = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "loaded_rate_per_mile": 0.75 }))
         .await;
     assert_eq!(patch.status_code(), 200, "driver patch failed: {:?}", patch.text());
 
-    let detail2 = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let detail2 = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     let body2 = detail2.json::<serde_json::Value>();
@@ -471,7 +471,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
 
     // 1) Set Default terminal rates.
     let term_id = default_terminal_id(&server, &auth).await;
-    let put = server.put(&format!("/dispatch/api/v1/terminals/{term_id}"))
+    let put = server.put(&format!("/fleet/api/v1/terminals/{term_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "loaded_rate_per_mile": 0.50,
@@ -483,7 +483,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     assert_eq!(put.status_code(), 200);
 
     // Driver on default terminal.
-    let drv = server.post("/dispatch/api/v1/drivers")
+    let drv = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Sam Settle" }))
         .await;
@@ -548,7 +548,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     db.insert_trip(&trip).await.unwrap();
 
     // GET detail -> total_pay = T (live).
-    let detail = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let detail = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(detail.status_code(), 200, "detail GET failed: {:?}", detail.text());
@@ -557,7 +557,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     assert!((t_total - (100.0 * 0.50 + 20.0 * 0.40)).abs() < 1e-9, "unexpected T: {t_total}");
 
     // 2) PATCH settlement_ref + pay periods -> snapshot captured, frozen pay == T.
-    let patch = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let patch = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({
             "settlement_ref": "S-2026-009",
@@ -572,7 +572,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     let snap = persisted.driver_pay_snapshot.expect("snapshot persisted after settlement");
     assert!((snap.total_pay - t_total).abs() < 1e-9, "snapshot total {} != T {t_total}", snap.total_pay);
 
-    let after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let after = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     let after_body = after.json::<serde_json::Value>();
@@ -581,12 +581,12 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     assert!((dp_total - snap.total_pay).abs() < 1e-9, "driver_pay {dp_total} != snapshot {}", snap.total_pay);
 
     // 3) Raise the Default terminal loaded rate; settled trip pay stays frozen at T.
-    let put2 = server.put(&format!("/dispatch/api/v1/terminals/{term_id}"))
+    let put2 = server.put(&format!("/fleet/api/v1/terminals/{term_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "loaded_rate_per_mile": 0.90 }))
         .await;
     assert_eq!(put2.status_code(), 200);
-    let after2 = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let after2 = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     let frozen_total = after2.json::<serde_json::Value>()["driver_pay"]["total_pay"]
@@ -595,35 +595,35 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
         "settled trip pay must stay frozen: {frozen_total} != {t_total}");
 
     // 4) PATCH a settled trip's rate override -> 409.
-    let locked = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let locked = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "loaded_rate_per_mile": 0.99 }))
         .await;
     assert_eq!(locked.status_code(), 409, "expected 409 on settled rate edit: {:?}", locked.text());
 
     // 5) stop_arrive on a settled trip -> 409.
-    let arrive = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/0/arrive"))
+    let arrive = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/arrive"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "actual_arrive": "2026-05-28T10:00:00" }))
         .await;
     assert_eq!(arrive.status_code(), 409, "expected 409 on settled stop_arrive: {:?}", arrive.text());
 
     // 5b) recalculate-miles on a settled trip -> 409 (mileage feeds pay).
-    let recalc = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/recalculate-miles"))
+    let recalc = server.post(&format!("/fleet/api/v1/trips/{trip_id}/recalculate-miles"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "force": true }))
         .await;
     assert_eq!(recalc.status_code(), 409, "expected 409 on settled recalculate-miles: {:?}", recalc.text());
 
     // 5c) PATCH previous_trip_id on a settled trip -> 409 (would trigger a mileage recompute).
-    let relink = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let relink = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "previous_trip_id": uuid::Uuid::new_v4().to_string() }))
         .await;
     assert_eq!(relink.status_code(), 409, "expected 409 on settled previous_trip_id edit: {:?}", relink.text());
 
     // 5d) Re-settling (changing settlement_ref) on a settled trip -> 409 (no silent drop).
-    let resettle = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let resettle = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "settlement_ref": "S-2026-099" }))
         .await;
@@ -632,7 +632,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     assert_eq!(db.get_trip(trip_id).await.unwrap().settlement_ref.as_deref(), Some("S-2026-009"));
 
     // 5e) An empty settlement_ref is rejected (422), not silently used to freeze.
-    let empty_ref = server.patch(&format!("/dispatch/api/v1/trips/{trip_id}"))
+    let empty_ref = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "settlement_ref": "" }))
         .await;
@@ -640,7 +640,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
         "expected 422 on empty settlement_ref: {:?}", empty_ref.text());
 
     // 6) Pay-period range filter includes/excludes the trip.
-    let inc = server.get("/dispatch/api/v1/trips?pay_period_start=2026-05-01&pay_period_end=2026-06-30")
+    let inc = server.get("/fleet/api/v1/trips?pay_period_start=2026-05-01&pay_period_end=2026-06-30")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(inc.status_code(), 200);
@@ -648,7 +648,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     assert!(inc_items.iter().any(|t| t["id"].as_str() == Some(&trip_id.to_string())),
         "trip should be in the overlapping pay-period range");
 
-    let exc = server.get("/dispatch/api/v1/trips?pay_period_start=2026-07-01&pay_period_end=2026-07-31")
+    let exc = server.get("/fleet/api/v1/trips?pay_period_start=2026-07-01&pay_period_end=2026-07-31")
         .add_header(header::AUTHORIZATION, &auth)
         .await;
     assert_eq!(exc.status_code(), 200);

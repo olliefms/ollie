@@ -63,7 +63,7 @@ fn check_coords_present(fac: &FacilityRecord, report: &mut DoctorReport) {
     if fac.lat.is_some() && fac.lng.is_some() { return; }
     let status = format!("{:?}", fac.geocode_status);
     let hint = match fac.geocode_status {
-        GeocodeStatus::Failed => "geocoder rejected the address; consider setting manual coordinates via PATCH /dispatch/api/v1/facilities/:id with lat+lng",
+        GeocodeStatus::Failed => "geocoder rejected the address; consider setting manual coordinates via PATCH /fleet/api/v1/facilities/:id with lat+lng",
         GeocodeStatus::Pending => "geocode is still pending; check the geocoding worker",
         _ => "facility has no coordinates",
     };

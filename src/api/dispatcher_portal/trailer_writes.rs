@@ -1,8 +1,8 @@
 // src/api/dispatcher_portal/trailer_writes.rs
 //
 // Dispatcher-portal trailer write endpoints (#269):
-//   - POST  /dispatch/api/v1/trailers
-//   - PATCH /dispatch/api/v1/trailers/{id}
+//   - POST  /fleet/api/v1/trailers
+//   - PATCH /fleet/api/v1/trailers/{id}
 //
 // Mirrors the admin behaviour in `src/api/trailers.rs` but exposes it under
 // the dispatcher JWT instead of the admin Bearer key. The `apply_*` helpers
@@ -95,7 +95,7 @@ pub struct PatchTrailerBody {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trailers",
+    path = "/fleet/api/v1/trailers",
     request_body(content = CreateTrailerBody, description = "Trailer to create"),
     responses(
         (status = 201, description = "Created trailer record", body = TrailerRecord),
@@ -103,7 +103,7 @@ pub struct PatchTrailerBody {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_trailer_handler(
     State(state): State<AppState>,
@@ -117,7 +117,7 @@ pub async fn create_trailer_handler(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/trailers/{id}",
+    path = "/fleet/api/v1/trailers/{id}",
     params(("id" = Uuid, Path, description = "Trailer UUID")),
     request_body(content = PatchTrailerBody, description = "Fields to update — all optional"),
     responses(
@@ -127,7 +127,7 @@ pub async fn create_trailer_handler(
         (status = 404, description = "Trailer not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn update_trailer_handler(
     State(state): State<AppState>,
@@ -142,7 +142,7 @@ pub async fn update_trailer_handler(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/trailers/{id}",
+    path = "/fleet/api/v1/trailers/{id}",
     params(("id" = Uuid, Path, description = "Trailer UUID")),
     responses(
         (status = 204, description = "Soft-deleted (status set to inactive)"),
@@ -150,7 +150,7 @@ pub async fn update_trailer_handler(
         (status = 404, description = "Trailer not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_trailer_handler(
     State(state): State<AppState>,

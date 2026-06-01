@@ -33,7 +33,7 @@ async fn mcp_www_authenticate(
         return response;
     }
     let prm_url = format!(
-        "{}/.well-known/oauth-protected-resource/dispatch/mcp",
+        "{}/.well-known/oauth-protected-resource/fleet/mcp",
         state.config.public_base_url.trim_end_matches('/'),
     );
     let header_val = format!("Bearer resource_metadata=\"{prm_url}\"");
@@ -46,123 +46,123 @@ async fn mcp_www_authenticate(
 
 pub fn auth_router() -> Router<AppState> {
     Router::new()
-        .route("/dispatch/auth/login", post(auth::login))
-        .route("/dispatch/auth/refresh", post(auth::refresh))
-        .route("/dispatch/auth/logout", post(auth::logout))
+        .route("/fleet/auth/login", post(auth::login))
+        .route("/fleet/auth/refresh", post(auth::refresh))
+        .route("/fleet/auth/logout", post(auth::logout))
         // First-run owner setup wizard — UNauthenticated (table is empty), guarded
         // by count_dispatchers() == 0. Deliberately outside require_dispatcher_auth.
-        .route("/dispatch/api/v1/setup/status", get(auth::setup_status))
-        .route("/dispatch/setup", post(auth::setup))
+        .route("/fleet/api/v1/setup/status", get(auth::setup_status))
+        .route("/fleet/setup", post(auth::setup))
 }
 
 pub fn data_router(state: &AppState) -> Router<AppState> {
     Router::new()
-        .route("/dispatch/api/v1/loads", get(data::list_loads).post(data::create_load))
+        .route("/fleet/api/v1/loads", get(data::list_loads).post(data::create_load))
         .route(
-            "/dispatch/api/v1/loads/{id}",
+            "/fleet/api/v1/loads/{id}",
             get(data::get_load).put(data::update_load).delete(data::delete_load_handler),
         )
-        .route("/dispatch/api/v1/loads/{id}/invoice", post(data::invoice_load_handler))
-        .route("/dispatch/api/v1/loads/{id}/cancel", post(data::cancel_load_handler))
-        .route("/dispatch/api/v1/loads/{id}/settle", post(data::settle_load_handler))
-        .route("/dispatch/api/v1/trips", get(data::list_trips).post(data::create_trip_handler))
+        .route("/fleet/api/v1/loads/{id}/invoice", post(data::invoice_load_handler))
+        .route("/fleet/api/v1/loads/{id}/cancel", post(data::cancel_load_handler))
+        .route("/fleet/api/v1/loads/{id}/settle", post(data::settle_load_handler))
+        .route("/fleet/api/v1/trips", get(data::list_trips).post(data::create_trip_handler))
         .route(
-            "/dispatch/api/v1/trips/{id}",
+            "/fleet/api/v1/trips/{id}",
             get(data::get_trip)
                 .patch(trip_writes::patch_trip_handler)
                 .delete(trip_writes::delete_trip_handler),
         )
         .route(
-            "/dispatch/api/v1/trips/{id}/recalculate-miles",
+            "/fleet/api/v1/trips/{id}/recalculate-miles",
             post(trip_writes::recalculate_miles_handler),
         )
-        .route("/dispatch/api/v1/trips/{id}/assign", post(data::assign_trip))
-        .route("/dispatch/api/v1/trips/{id}/unassign", post(data::unassign_trip))
-        .route("/dispatch/api/v1/trips/{id}/dispatch", post(data::dispatch_trip))
-        .route("/dispatch/api/v1/trips/{id}/undispatch", post(data::undispatch_trip))
-        .route("/dispatch/api/v1/trips/{id}/cancel", post(data::cancel_trip))
-        .route("/dispatch/api/v1/trips/{id}/complete", post(data::complete_trip))
-        .route("/dispatch/api/v1/trips/{id}/stops/{seq}/arrive", post(data::stop_arrive))
-        .route("/dispatch/api/v1/trips/{id}/stops/{seq}/depart", post(data::stop_depart))
-        .route("/dispatch/api/v1/trips/{id}/stops/{seq}/late", post(data::stop_late))
-        .route("/dispatch/api/v1/trips/{id}/check-call", post(data::check_call))
-        .route("/dispatch/api/v1/drivers", get(data::list_drivers).post(driver_writes::create_driver_handler))
+        .route("/fleet/api/v1/trips/{id}/assign", post(data::assign_trip))
+        .route("/fleet/api/v1/trips/{id}/unassign", post(data::unassign_trip))
+        .route("/fleet/api/v1/trips/{id}/dispatch", post(data::dispatch_trip))
+        .route("/fleet/api/v1/trips/{id}/undispatch", post(data::undispatch_trip))
+        .route("/fleet/api/v1/trips/{id}/cancel", post(data::cancel_trip))
+        .route("/fleet/api/v1/trips/{id}/complete", post(data::complete_trip))
+        .route("/fleet/api/v1/trips/{id}/stops/{seq}/arrive", post(data::stop_arrive))
+        .route("/fleet/api/v1/trips/{id}/stops/{seq}/depart", post(data::stop_depart))
+        .route("/fleet/api/v1/trips/{id}/stops/{seq}/late", post(data::stop_late))
+        .route("/fleet/api/v1/trips/{id}/check-call", post(data::check_call))
+        .route("/fleet/api/v1/drivers", get(data::list_drivers).post(driver_writes::create_driver_handler))
         .route(
-            "/dispatch/api/v1/drivers/{id}",
+            "/fleet/api/v1/drivers/{id}",
             get(data::get_driver)
                 .patch(driver_writes::patch_driver_handler)
                 .delete(driver_writes::delete_driver_handler),
         )
-        .route("/dispatch/api/v1/drivers/{id}/pin", post(driver_writes::set_driver_pin_handler))
+        .route("/fleet/api/v1/drivers/{id}/pin", post(driver_writes::set_driver_pin_handler))
         .route(
-            "/dispatch/api/v1/drivers/{id}/attach-equipment",
+            "/fleet/api/v1/drivers/{id}/attach-equipment",
             post(driver_writes::attach_equipment_handler),
         )
         .route(
-            "/dispatch/api/v1/drivers/{id}/detach-equipment",
+            "/fleet/api/v1/drivers/{id}/detach-equipment",
             post(driver_writes::detach_equipment_handler),
         )
         .route(
-            "/dispatch/api/v1/trucks",
+            "/fleet/api/v1/trucks",
             get(data::list_trucks).post(truck_writes::create_truck_handler),
         )
         .route(
-            "/dispatch/api/v1/trucks/{id}",
+            "/fleet/api/v1/trucks/{id}",
             get(data::get_truck)
                 .patch(truck_writes::update_truck_handler)
                 .delete(truck_writes::delete_truck_handler),
         )
         .route(
-            "/dispatch/api/v1/trailers",
+            "/fleet/api/v1/trailers",
             get(data::list_trailers).post(trailer_writes::create_trailer_handler),
         )
         .route(
-            "/dispatch/api/v1/trailers/{id}",
+            "/fleet/api/v1/trailers/{id}",
             get(data::get_trailer)
                 .patch(trailer_writes::update_trailer_handler)
                 .delete(trailer_writes::delete_trailer_handler),
         )
-        .route("/dispatch/api/v1/events", get(data::list_events))
+        .route("/fleet/api/v1/events", get(data::list_events))
         // Facilities
         .route(
-            "/dispatch/api/v1/facilities",
+            "/fleet/api/v1/facilities",
             get(data::list_facilities).post(facility_writes::create_facility_handler),
         )
         .route(
-            "/dispatch/api/v1/facilities/{id}",
+            "/fleet/api/v1/facilities/{id}",
             get(data::get_facility).patch(facility_writes::update_facility_handler),
         )
         // Terminals
         .route(
-            "/dispatch/api/v1/terminals",
+            "/fleet/api/v1/terminals",
             get(terminal_writes::list_terminals).post(terminal_writes::create_terminal),
         )
         .route(
-            "/dispatch/api/v1/terminals/{id}", // axum 0.8 path syntax — NOT :id
+            "/fleet/api/v1/terminals/{id}", // axum 0.8 path syntax — NOT :id
             get(terminal_writes::get_terminal)
                 .put(terminal_writes::update_terminal)
                 .delete(terminal_writes::delete_terminal),
         )
         // KPI count endpoints
-        .route("/dispatch/api/v1/loads/count", get(data::count_open_loads))
-        .route("/dispatch/api/v1/drivers/count", get(data::count_active_drivers))
-        .route("/dispatch/api/v1/blobs/count", get(data::count_pending_documents))
-        .route("/dispatch/api/v1/events/count", get(data::count_events_today))
+        .route("/fleet/api/v1/loads/count", get(data::count_open_loads))
+        .route("/fleet/api/v1/drivers/count", get(data::count_active_drivers))
+        .route("/fleet/api/v1/blobs/count", get(data::count_pending_documents))
+        .route("/fleet/api/v1/events/count", get(data::count_events_today))
         // Blob endpoints
         .route(
-            "/dispatch/api/v1/blobs",
+            "/fleet/api/v1/blobs",
             get(blobs::list_blobs).post(blobs::upload_blob).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
         .route(
-            "/dispatch/api/v1/blob/{id}",
+            "/fleet/api/v1/blob/{id}",
             get(blobs::get_blob)
                 .put(blobs::update_blob)
                 .delete(blobs::delete_blob),
         )
-        .route("/dispatch/api/v1/blobs/{id}/query", post(blobs::query_blob))
+        .route("/fleet/api/v1/blobs/{id}/query", post(blobs::query_blob))
         // API key management (GET allowed for both JWT and API-key auth; POST/DELETE require JWT)
-        .route("/dispatch/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))
-        .route("/dispatch/api-keys/{id}", delete(api_keys::revoke_api_key))
+        .route("/fleet/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))
+        .route("/fleet/api-keys/{id}", delete(api_keys::revoke_api_key))
         // Fleet users management (#331) — gated by users:* scopes (owner + fleet_manager).
         .merge(users::router())
         .route_layer(axum::middleware::from_fn_with_state(
@@ -191,7 +191,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
 /// with route_layer would NOT see the auth 401.
 fn mcp_router(state: &AppState) -> Router<AppState> {
     Router::new()
-        .nest_service("/dispatch/mcp", mcp::mcp_service(state))
+        .nest_service("/fleet/mcp", mcp::mcp_service(state))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_dispatcher_auth,
@@ -207,12 +207,12 @@ fn mcp_router(state: &AppState) -> Router<AppState> {
 pub(crate) fn public_router() -> Router<AppState> {
     Router::new()
         .route(
-            "/dispatch/blobs/presigned",
+            "/fleet/blobs/presigned",
             post(blobs::presigned_upload)
                 .layer(DefaultBodyLimit::max(crate::api::blobs::PRESIGNED_UPLOAD_MAX_BYTES)),
         )
         .route(
-            "/dispatch/blobs/presigned/{id}",
+            "/fleet/blobs/presigned/{id}",
             get(blobs::presigned_download),
         )
 }

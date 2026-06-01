@@ -32,7 +32,7 @@ pub(crate) fn dummy_hash() -> &'static str {
 /// `Ok(false)` on an invalid one (incrementing `failed_attempts` and applying
 /// the lockout backoff). Persists `creds` either way. Callers MUST reject an
 /// already-locked account (`creds.locked_until`) BEFORE calling. Shared by
-/// `/dispatch/auth/login` and `/oauth/authorize` so the lockout gate cannot be
+/// `/fleet/auth/login` and `/oauth/authorize` so the lockout gate cannot be
 /// bypassed by choosing a different endpoint.
 pub(crate) async fn verify_dispatcher_password(
     state: &AppState,
@@ -101,14 +101,14 @@ fn normalize_email(email: &str) -> String {
 /// Login as a dispatcher using email and password. Returns a JWT on success.
 #[utoipa::path(
     post,
-    path = "/dispatch/auth/login",
+    path = "/fleet/auth/login",
     request_body(content = LoginRequest, description = "Dispatcher credentials"),
     responses(
         (status = 200, description = "JWT token", body = LoginResponse),
         (status = 401, description = "Invalid credentials or account inactive"),
         (status = 423, description = "Account locked due to too many failed attempts", body = LockResponse),
     ),
-    tag = "dispatch-auth"
+    tag = "fleet-auth"
 )]
 pub async fn login(
     State(state): State<AppState>,
@@ -172,12 +172,12 @@ pub async fn login(
 /// Refresh a dispatcher JWT using the httpOnly refresh-token cookie.
 #[utoipa::path(
     post,
-    path = "/dispatch/auth/refresh",
+    path = "/fleet/auth/refresh",
     responses(
         (status = 200, description = "New JWT token", body = LoginResponse),
         (status = 401, description = "Invalid or revoked refresh token"),
     ),
-    tag = "dispatch-auth"
+    tag = "fleet-auth"
 )]
 pub async fn refresh(
     State(state): State<AppState>,
@@ -241,9 +241,9 @@ pub struct SetupRequest {
 /// it is only meaningful, and the setup endpoint only open, while the table is empty.
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/setup/status",
+    path = "/fleet/api/v1/setup/status",
     responses((status = 200, description = "Whether first-run setup is needed", body = SetupStatusResponse)),
-    tag = "dispatch-auth"
+    tag = "fleet-auth"
 )]
 pub async fn setup_status(
     State(state): State<AppState>,
@@ -255,16 +255,16 @@ pub async fn setup_status(
 /// Create the first user with `role=owner`. Unauthenticated, guarded by
 /// `count_dispatchers() == 0` — the guard slams shut the instant any user exists,
 /// returning `409 Conflict`. On success the new owner is logged straight in
-/// (token + refresh cookie), the same shape as `/dispatch/auth/login`.
+/// (token + refresh cookie), the same shape as `/fleet/auth/login`.
 #[utoipa::path(
     post,
-    path = "/dispatch/setup",
+    path = "/fleet/setup",
     request_body(content = SetupRequest, description = "First owner account"),
     responses(
         (status = 200, description = "Owner created; logged in", body = LoginResponse),
         (status = 409, description = "Setup already completed — a user already exists"),
     ),
-    tag = "dispatch-auth"
+    tag = "fleet-auth"
 )]
 pub async fn setup(
     State(state): State<AppState>,
@@ -323,9 +323,9 @@ pub async fn setup(
 /// Revoke the caller's refresh-token family and clear the cookie.
 #[utoipa::path(
     post,
-    path = "/dispatch/auth/logout",
+    path = "/fleet/auth/logout",
     responses((status = 200, description = "Logged out")),
-    tag = "dispatch-auth"
+    tag = "fleet-auth"
 )]
 pub async fn logout(
     State(state): State<AppState>,

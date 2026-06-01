@@ -1,8 +1,8 @@
 // src/api/dispatcher_portal/truck_writes.rs
 //
 // Dispatcher-portal truck write endpoints (#269):
-//   - POST  /dispatch/api/v1/trucks
-//   - PATCH /dispatch/api/v1/trucks/{id}
+//   - POST  /fleet/api/v1/trucks
+//   - PATCH /fleet/api/v1/trucks/{id}
 //
 // Mirrors the admin behaviour in `src/api/trucks.rs` but exposes it under the
 // dispatcher JWT. The `apply_*` helpers are shared with the MCP tools so HTTP
@@ -77,7 +77,7 @@ pub struct PatchTruckBody {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trucks",
+    path = "/fleet/api/v1/trucks",
     request_body(content = CreateTruckBody, description = "Truck to create"),
     responses(
         (status = 201, description = "Created truck record", body = TruckRecord),
@@ -85,7 +85,7 @@ pub struct PatchTruckBody {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_truck_handler(
     State(state): State<AppState>,
@@ -99,7 +99,7 @@ pub async fn create_truck_handler(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/trucks/{id}",
+    path = "/fleet/api/v1/trucks/{id}",
     params(("id" = Uuid, Path, description = "Truck UUID")),
     request_body(content = PatchTruckBody, description = "Fields to update — all optional"),
     responses(
@@ -109,7 +109,7 @@ pub async fn create_truck_handler(
         (status = 404, description = "Truck not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn update_truck_handler(
     State(state): State<AppState>,
@@ -124,7 +124,7 @@ pub async fn update_truck_handler(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/trucks/{id}",
+    path = "/fleet/api/v1/trucks/{id}",
     params(("id" = Uuid, Path, description = "Truck UUID")),
     responses(
         (status = 204, description = "Soft-deleted (status set to inactive)"),
@@ -132,7 +132,7 @@ pub async fn update_truck_handler(
         (status = 404, description = "Truck not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_truck_handler(
     State(state): State<AppState>,

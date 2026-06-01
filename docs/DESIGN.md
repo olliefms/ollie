@@ -1,6 +1,6 @@
 # Ollie Design System
 
-> Working guide for AI coding agents building UI in `static/driver/` (Driver PWA) and `static/dispatch/` (Dispatcher SPA). Adapted from Linear's design language, tuned for a logistics operations tool.
+> Working guide for AI coding agents building UI in `static/driver/` (Driver PWA) and `static/fleet/` (Fleet SPA). Adapted from Linear's design language, tuned for a logistics operations tool.
 
 ## Principles
 
@@ -243,6 +243,6 @@ Never animate layout-shifting properties on the critical path. No bounce, no sca
 
 - Driver tokens & base: `static/driver/css/base.css`
 - Driver components: `static/driver/css/components.css`
-- Dispatcher (when added in v1.4): `static/dispatch/css/base.css`, `static/dispatch/css/components.css` — must import the same tokens.
+- Fleet (when added in v1.4): `static/fleet/css/base.css`, `static/fleet/css/components.css` — must import the same tokens.
 
 When extending, prefer adding a new component class in `components.css` over inline styles. When a component needs a new token, add it to `base.css` and document it here.

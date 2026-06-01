@@ -31,8 +31,8 @@ ollie exposes the same domain through four surfaces — pick by caller:
 
 | Surface | Path | Auth | Use |
 |---|---|---|---|
-| **Dispatcher MCP** | `POST /dispatch/mcp` | Dispatcher JWT or API key | AI agents and tool-using assistants. **Preferred.** |
-| **Dispatcher REST** | `/dispatch/api/v1/*` | Dispatcher JWT or API key | Dispatcher web app and programmatic integrations. |
+| **Fleet MCP** | `POST /fleet/mcp` | Dispatcher JWT or API key | AI agents and tool-using assistants. **Preferred.** |
+| **Fleet REST** | `/fleet/api/v1/*` | Dispatcher JWT or API key | Fleet web app and programmatic integrations. |
 | **Driver portal** | `/driver/api/v1/*` | Driver JWT (passkey or PIN) | The driver mobile PWA only. |
 | **Admin REST** | `/api/v1/*` | `ADMIN_API_KEY` bearer | **Deprecated** — backward compatibility only. |
 
@@ -40,7 +40,7 @@ Three endpoints are public (no auth): `GET /version`, `GET /openapi.json`, and
 `GET /llms.txt`. Start with `GET /llms.txt` — it's a hand-written, agent-oriented
 tour of every surface, tool, and the domain model.
 
-The web apps are served as static SPAs: the dispatcher at `/dispatch` and the
+The web apps are served as static SPAs: the fleet app at `/fleet` and the
 driver PWA at `/driver`.
 
 ## Prerequisites
@@ -148,19 +148,19 @@ curl http://localhost:3000/version           # { "version": "x.y.z" }
 
 ```bash
 # Log in with email + password to get a JWT
-curl -X POST http://localhost:3000/dispatch/auth/login \
+curl -X POST http://localhost:3000/fleet/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email": "you@example.com", "password": "..."}'
 
 # Use the returned token against MCP or REST
-curl -X POST http://localhost:3000/dispatch/mcp \
+curl -X POST http://localhost:3000/fleet/mcp \
   -H "Authorization: Bearer <JWT>" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 Headless callers can mint long-lived **dispatcher API keys** under
-`/dispatch/api-keys` (used in the `Authorization` header just like a JWT). See
+`/fleet/api-keys` (used in the `Authorization` header just like a JWT). See
 `/llms.txt` for the full MCP tool list, REST routes, auth model, and domain
 semantics (load/trip lifecycles, stop times and detention, facility resolution).
 

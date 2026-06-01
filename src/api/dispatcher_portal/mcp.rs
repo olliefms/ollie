@@ -610,7 +610,7 @@ async fn completion_values(
     Ok(matches.into_iter().take(COMPLETION_LIMIT).collect())
 }
 
-/// Build the rmcp Streamable HTTP service for mounting under `/dispatch/mcp`.
+/// Build the rmcp Streamable HTTP service for mounting under `/fleet/mcp`.
 ///
 /// Stateful mode (the full Streamable HTTP transport): an `initialize` POST opens
 /// a session (returned in the `Mcp-Session-Id` response header), and responses
