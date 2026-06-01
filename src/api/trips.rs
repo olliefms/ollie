@@ -50,6 +50,18 @@ pub async fn create_trip(
     State(state): State<AppState>,
     Json(body): Json<CreateTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    let record = apply_trip_create(&state, body).await?;
+    Ok((StatusCode::CREATED, Json(record)))
+}
+
+/// Shared trip-creation writer — used by the admin handler, the dispatcher HTTP
+/// handler, and the MCP `create_trip` tool. Performs all derivation (stops,
+/// mileage, embedding), inserts the trip, and RETURNS the created `TripRecord`
+/// so callers don't have to re-fetch (which races under concurrent creates).
+pub(crate) async fn apply_trip_create(
+    state: &AppState,
+    body: CreateTripRequest,
+) -> Result<TripRecord, AppError> {
     let now = Utc::now();
     use chrono::Datelike;
 
@@ -170,7 +182,7 @@ pub async fn create_trip(
 
     state.db.insert_trip(&record).await?;
     for s in &mut record.stops { s.fill_utc_fields(); }
-    Ok((StatusCode::CREATED, Json(record)))
+    Ok(record)
 }
 
 #[utoipa::path(

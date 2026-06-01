@@ -1516,6 +1516,377 @@ async fn test_dispatcher_assign_and_unassign() {
 }
 
 // ---------------------------------------------------------------------------
+// Dispatcher write-parity tests (#330): load delete/invoice/cancel/settle,
+// trip create/delete, driver delete + set-pin, truck/trailer delete.
+// ---------------------------------------------------------------------------
+
+/// Create a load with a pickup + delivery stop via the admin API and return its
+/// id. Both stops use the same facility for simplicity.
+async fn create_2stop_load(server: &axum_test::TestServer, fac_id: &str, customer: &str) -> String {
+    let resp = server.post("/api/v1/loads")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "customer_name": customer,
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                  "facility_id": fac_id, "scheduled_arrive": "2026-08-01T08:00:00",
+                  "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                  "facility_id": fac_id, "scheduled_arrive": "2026-08-01T16:00:00",
+                  "timezone": "America/Chicago" }
+            ],
+            "rate_items": []
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+/// Drive a load to `delivered` by creating a trip on it and walking the trip
+/// lifecycle to completion of all stops. Returns the trip id.
+async fn drive_load_to_delivered(
+    server: &axum_test::TestServer, token: &str, fac_id: &str, load_id: &str,
+) -> String {
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "Deliver Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": format!("TRK-{}", &load_id[..8]) }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
+        .await;
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-08-01T08:05:00" }))
+        .await;
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-08-01T09:00:00" }))
+        .await;
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/arrive"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-08-01T16:05:00" }))
+        .await;
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/2/depart"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-08-01T17:00:00" }))
+        .await;
+    trip_id
+}
+
+#[tokio::test]
+async fn test_dispatcher_create_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "ct1@example.com", "password-ct1").await;
+    let fac_id = create_test_facility(&server, "Create Trip Dock", "Memphis, TN").await;
+
+    let resp = server.post("/dispatch/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    let body = resp.json::<serde_json::Value>();
+    assert!(body["id"].as_str().is_some(), "created trip should carry an id");
+    assert_eq!(body["status"], "planned");
+    assert!(body["trip_number"].as_str().is_some(), "enriched detail should include trip_number");
+
+    // Confirm it is retrievable.
+    let trip_id = body["id"].as_str().unwrap();
+    let get = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(get.status_code(), 200);
+}
+
+#[tokio::test]
+async fn test_dispatcher_delete_trip() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "dt1@example.com", "password-dt1").await;
+    let fac_id = create_test_facility(&server, "Delete Trip Dock", "Mobile, AL").await;
+
+    // planned trip → soft-cancel (204), then GET shows cancelled.
+    let trip_id = server.post("/dispatch/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let del = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del.status_code(), 204);
+    let after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "cancelled");
+}
+
+#[tokio::test]
+async fn test_dispatcher_delete_trip_in_transit_conflict() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "dt2@example.com", "password-dt2").await;
+    let fac_id = create_test_facility(&server, "InTransit Dock", "Macon, GA").await;
+
+    let driver_id = server.post("/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "name": "InTransit Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "TRK-IT-1" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/dispatch/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
+        .await;
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_arrive": "2026-08-01T08:05:00" }))
+        .await;
+    let dep = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "actual_depart": "2026-08-01T09:00:00" }))
+        .await;
+    assert_eq!(dep.json::<serde_json::Value>()["status"], "in_transit");
+
+    let del = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del.status_code(), 409, "deleting an in_transit trip must 409");
+}
+
+#[tokio::test]
+async fn test_dispatcher_cancel_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "cl1@example.com", "password-cl1").await;
+    let fac_id = create_test_facility(&server, "Cancel Load Dock", "Tulsa, OK").await;
+    let load_id = create_2stop_load(&server, &fac_id, "Cancel Co").await;
+
+    let resp = server.post(&format!("/dispatch/api/v1/loads/{load_id}/cancel"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "reason": "customer fell through" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["status"], "cancelled");
+    assert_eq!(body["cancellation_reason"], "customer fell through");
+}
+
+#[tokio::test]
+async fn test_dispatcher_invoice_and_settle_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "is1@example.com", "password-is1").await;
+    let fac_id = create_test_facility(&server, "Invoice Dock", "Wichita, KS").await;
+    let load_id = create_2stop_load(&server, &fac_id, "Invoice Co").await;
+
+    drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
+
+    // Confirm the load reached delivered before invoicing.
+    let load = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(load["status"], "delivered", "load must be delivered to invoice");
+
+    let inv = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "invoice_number": "INV-9001" }))
+        .await;
+    assert_eq!(inv.status_code(), 200);
+    let inv_body = inv.json::<serde_json::Value>();
+    assert_eq!(inv_body["status"], "invoiced");
+    assert_eq!(inv_body["invoice_number"], "INV-9001");
+
+    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(settle.status_code(), 200);
+    assert_eq!(settle.json::<serde_json::Value>()["status"], "settled");
+}
+
+#[tokio::test]
+async fn test_dispatcher_delete_load_and_active_trip_conflict() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "dl1@example.com", "password-dl1").await;
+    let fac_id = create_test_facility(&server, "DelLoad Dock", "Omaha, NE").await;
+
+    // Load with an active trip → delete must 409.
+    let load_id = create_2stop_load(&server, &fac_id, "DelLoad Co").await;
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                { "sequence": 1, "stop_type": "origin", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let conflict = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(conflict.status_code(), 409, "load with an active trip must 409");
+
+    // Cancel the trip, then delete should succeed (204).
+    server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    let del = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del.status_code(), 204);
+    let after = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(after.status_code(), 404, "deleted load should be gone");
+}
+
+#[tokio::test]
+async fn test_dispatcher_delete_driver() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "dd1@example.com", "password-dd1").await;
+
+    let driver_id = server.post("/dispatch/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "name": "Delete Me Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let del = server.delete(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del.status_code(), 204);
+
+    let after = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "inactive", "soft-delete sets driver inactive");
+}
+
+#[tokio::test]
+async fn test_dispatcher_set_driver_pin() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "pin1@example.com", "password-pin1").await;
+
+    let driver_id = server.post("/dispatch/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "name": "PIN Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Happy path.
+    let ok = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "pin": "1234" }))
+        .await;
+    assert_eq!(ok.status_code(), 204);
+
+    // Bad format → 422.
+    let bad = server.post(&format!("/dispatch/api/v1/drivers/{driver_id}/pin"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "pin": "12ab" }))
+        .await;
+    assert_eq!(bad.status_code(), 422);
+}
+
+#[tokio::test]
+async fn test_dispatcher_delete_truck_and_trailer() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "eq1@example.com", "password-eq1").await;
+
+    let truck_id = server.post("/dispatch/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "unit_number": "TRK-DEL-1" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let del_truck = server.delete(&format!("/dispatch/api/v1/trucks/{truck_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del_truck.status_code(), 204);
+    let truck_after = server.get(&format!("/dispatch/api/v1/trucks/{truck_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(truck_after["status"], "inactive");
+
+    let trailer_id = server.post("/dispatch/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "unit_number": "TRL-DEL-1", "owner": "fleet" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let del_trailer = server.delete(&format!("/dispatch/api/v1/trailers/{trailer_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(del_trailer.status_code(), 204);
+    let trailer_after = server.get(&format!("/dispatch/api/v1/trailers/{trailer_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(trailer_after["status"], "inactive");
+}
+
+// ---------------------------------------------------------------------------
 // Dispatcher MCP tests
 // ---------------------------------------------------------------------------
 
@@ -6622,4 +6993,186 @@ async fn test_attach_equipment_via_mcp() {
     })).await;
     assert!(change["truck_id"].is_null());
     assert_eq!(change["trailer_ids"].as_array().unwrap().len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch-surface parity — write tools over MCP (#330)
+//
+// These mirror the dispatcher REST parity handlers (commit 9fc7748) through the
+// MCP `tools/call` path, covering happy paths plus the key guards. The test
+// client declares no elicitation support (capabilities: {}), so destructive
+// tools run without a confirmation round-trip (graceful fallback).
+// ---------------------------------------------------------------------------
+
+/// Invoke an MCP tool and return the full result block (so callers can inspect
+/// `isError` for domain rejections instead of asserting success).
+async fn mcp_call_result(
+    server: &axum_test::TestServer,
+    token: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let session = mcp_session(server, token).await;
+    let body = mcp_rpc(
+        server, token, &session, "tools/call",
+        serde_json::json!({ "name": name, "arguments": args }),
+    )
+    .await;
+    assert!(body["error"].is_null(), "MCP {name} protocol error: {:?}", body["error"]);
+    body["result"].clone()
+}
+
+#[tokio::test]
+async fn test_mcp_delete_load_happy_and_active_trip_guard() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_dl@example.com", "password-mcp-dl").await;
+    let fac_id = create_test_facility(&server, "MCP DelLoad Dock", "Fargo, ND").await;
+
+    // Load with an active trip → delete_load must isError.
+    let load_id = create_2stop_load(&server, &fac_id, "MCP DelLoad Co").await;
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                { "sequence": 1, "stop_type": "origin", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let guarded = mcp_call_result(&server, &token, "delete_load",
+        serde_json::json!({ "id": load_id })).await;
+    assert_eq!(guarded["isError"], serde_json::json!(true), "active-trip delete must isError");
+    let msg = guarded["content"][0]["text"].as_str().unwrap_or("");
+    assert!(msg.contains("active trip"), "guard message: {msg}");
+
+    // Cancel the trip, then delete_load succeeds.
+    mcp_call(&server, &token, "delete_trip", serde_json::json!({ "id": trip_id })).await;
+    let ok = mcp_call(&server, &token, "delete_load", serde_json::json!({ "id": load_id })).await;
+    assert_eq!(ok["deleted"], serde_json::json!(true));
+
+    let after = server.get(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(after.status_code(), 404, "deleted load should be gone");
+}
+
+#[tokio::test]
+async fn test_mcp_delete_trip_soft_cancel() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_dt@example.com", "password-mcp-dt").await;
+    let fac_id = create_test_facility(&server, "MCP DelTrip Dock", "Boise, ID").await;
+
+    let trip = mcp_call(&server, &token, "create_trip", serde_json::json!({
+        "stops": [
+            { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+              "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+            { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+              "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+        ]
+    })).await;
+    let trip_id = trip["id"].as_str().unwrap().to_string();
+
+    let del = mcp_call(&server, &token, "delete_trip", serde_json::json!({ "id": trip_id })).await;
+    assert_eq!(del["deleted"], serde_json::json!(true));
+
+    let after = server.get(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "cancelled", "planned trip soft-cancels");
+}
+
+#[tokio::test]
+async fn test_mcp_invoice_cancel_settle_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_ics@example.com", "password-mcp-ics").await;
+    let fac_id = create_test_facility(&server, "MCP Invoice Dock", "Reno, NV").await;
+
+    // cancel_load on a fresh load.
+    let cancel_load = create_2stop_load(&server, &fac_id, "MCP Cancel Co").await;
+    let cancelled = mcp_call(&server, &token, "cancel_load",
+        serde_json::json!({ "id": cancel_load, "reason": "fell through" })).await;
+    assert_eq!(cancelled["status"], "cancelled");
+    assert_eq!(cancelled["cancellation_reason"], "fell through");
+
+    // invoice → settle lifecycle on a delivered load.
+    let load_id = create_2stop_load(&server, &fac_id, "MCP Invoice Co").await;
+    drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
+
+    let invoiced = mcp_call(&server, &token, "invoice_load",
+        serde_json::json!({ "id": load_id, "invoice_number": "INV-MCP-1" })).await;
+    assert_eq!(invoiced["status"], "invoiced");
+    assert_eq!(invoiced["invoice_number"], "INV-MCP-1");
+
+    let settled = mcp_call(&server, &token, "settle_load",
+        serde_json::json!({ "id": load_id })).await;
+    assert_eq!(settled["status"], "settled");
+}
+
+#[tokio::test]
+async fn test_mcp_create_update_delete_driver_and_set_pin() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_drv@example.com", "password-mcp-drv").await;
+
+    let driver = mcp_call(&server, &token, "create_driver",
+        serde_json::json!({ "name": "MCP Driver" })).await;
+    let driver_id = driver["id"].as_str().unwrap().to_string();
+    assert_eq!(driver["status"], "available");
+
+    let updated = mcp_call(&server, &token, "update_driver",
+        serde_json::json!({ "id": driver_id, "notes": "updated via MCP" })).await;
+    assert_eq!(updated["notes"], "updated via MCP");
+
+    // set_driver_pin happy path.
+    let pin_ok = mcp_call(&server, &token, "set_driver_pin",
+        serde_json::json!({ "id": driver_id, "pin": "1234" })).await;
+    assert_eq!(pin_ok["pin_set"], serde_json::json!(true));
+
+    // set_driver_pin bad format → isError.
+    let pin_bad = mcp_call_result(&server, &token, "set_driver_pin",
+        serde_json::json!({ "id": driver_id, "pin": "12ab" })).await;
+    assert_eq!(pin_bad["isError"], serde_json::json!(true), "non-numeric PIN must isError");
+    let msg = pin_bad["content"][0]["text"].as_str().unwrap_or("");
+    assert!(msg.contains("PIN"), "guard message: {msg}");
+
+    // delete_driver soft-deletes.
+    let del = mcp_call(&server, &token, "delete_driver",
+        serde_json::json!({ "id": driver_id })).await;
+    assert_eq!(del["deleted"], serde_json::json!(true));
+    let after = server.get(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "inactive");
+}
+
+#[tokio::test]
+async fn test_mcp_delete_truck_trailer_facility() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = dispatcher_login(&server, "mcp_eq@example.com", "password-mcp-eq").await;
+
+    let truck_id = make_truck(&server, "MCP-DEL-TRK").await;
+    let del_truck = mcp_call(&server, &token, "delete_truck",
+        serde_json::json!({ "truck_id": truck_id })).await;
+    assert_eq!(del_truck["deleted"], serde_json::json!(true));
+    assert_eq!(truck_status(&server, &truck_id).await, "inactive");
+
+    let trailer_id = make_trailer(&server, "MCP-DEL-TRL").await;
+    let del_trailer = mcp_call(&server, &token, "delete_trailer",
+        serde_json::json!({ "trailer_id": trailer_id })).await;
+    assert_eq!(del_trailer["deleted"], serde_json::json!(true));
+    assert_eq!(trailer_status(&server, &trailer_id).await, "inactive");
+
+    // delete_facility happy path (no loads reference it).
+    let fac_id = create_test_facility(&server, "MCP Del Facility", "Provo, UT").await;
+    let del_fac = mcp_call(&server, &token, "delete_facility",
+        serde_json::json!({ "facility_id": fac_id })).await;
+    assert_eq!(del_fac["deleted"], serde_json::json!(true));
+    let after = server.get(&format!("/dispatch/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(after.status_code(), 404, "deleted facility should be gone");
 }

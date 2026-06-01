@@ -117,6 +117,26 @@ pub async fn update_truck_handler(
     Ok(Json(record))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/dispatch/api/v1/trucks/{id}",
+    params(("id" = Uuid, Path, description = "Truck UUID")),
+    responses(
+        (status = 204, description = "Soft-deleted (status set to inactive)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Truck not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn delete_truck_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.soft_delete_truck(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn apply_truck_create(
     state: &AppState,
     body: Value,
