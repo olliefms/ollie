@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::Path,
     Json,
 };
 use base64::Engine;
@@ -44,11 +44,9 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
-    api::trip_actions::{
-        self, CheckCallRequest, StopArriveRequest, StopDepartRequest, StopLateRequest,
-    },
     events,
     models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
+    services::trip_lifecycle::{CheckCallRequest, StopLateRequest},
     AppState,
 };
 
@@ -2080,14 +2078,14 @@ async fn tool_unassign_driver(state: &AppState, args: &Value) -> Result<Value, S
 }
 
 // ---------------------------------------------------------------------------
-// Trip lifecycle MCP tools — thin shims that invoke the admin trip_actions
-// handler and return the resulting trip record (or status acknowledgement
+// Trip lifecycle MCP tools — thin shims that invoke `services::trip_lifecycle`
+// and return the resulting trip record (or status acknowledgement
 // for 204 actions).
 // ---------------------------------------------------------------------------
 
 async fn tool_dispatch_trip(state: &AppState, args: &Value) -> Result<Value, String> {
     let trip_id = parse_uuid(args, "trip_id")?;
-    trip_actions::dispatch_trip(State(state.clone()), Path(trip_id))
+    crate::services::trip_lifecycle::dispatch(state, trip_id)
         .await
         .map_err(|e| e.to_string())?;
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
@@ -2096,7 +2094,7 @@ async fn tool_dispatch_trip(state: &AppState, args: &Value) -> Result<Value, Str
 
 async fn tool_undispatch_trip(state: &AppState, args: &Value) -> Result<Value, String> {
     let trip_id = parse_uuid(args, "trip_id")?;
-    trip_actions::undispatch_trip(State(state.clone()), Path(trip_id))
+    crate::services::trip_lifecycle::undispatch(state, trip_id)
         .await
         .map_err(|e| e.to_string())?;
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
@@ -2105,7 +2103,7 @@ async fn tool_undispatch_trip(state: &AppState, args: &Value) -> Result<Value, S
 
 async fn tool_cancel_trip(state: &AppState, args: &Value) -> Result<Value, String> {
     let trip_id = parse_uuid(args, "trip_id")?;
-    trip_actions::cancel_trip(State(state.clone()), Path(trip_id))
+    crate::services::trip_lifecycle::cancel(state, trip_id)
         .await
         .map_err(|e| e.to_string())?;
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
@@ -2114,7 +2112,7 @@ async fn tool_cancel_trip(state: &AppState, args: &Value) -> Result<Value, Strin
 
 async fn tool_complete_trip(state: &AppState, args: &Value) -> Result<Value, String> {
     let trip_id = parse_uuid(args, "trip_id")?;
-    trip_actions::complete_trip(State(state.clone()), Path(trip_id))
+    crate::services::trip_lifecycle::complete(state, trip_id)
         .await
         .map_err(|e| e.to_string())?;
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
@@ -2130,13 +2128,20 @@ async fn tool_stop_arrive(state: &AppState, args: &Value) -> Result<Value, Strin
         .as_str()
         .ok_or("missing or non-string field 'actual_arrive'")?
         .to_string();
-    trip_actions::stop_arrive(
-        State(state.clone()),
-        Path((trip_id, sequence)),
-        Json(StopArriveRequest { actual_arrive }),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let existing = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    if existing.settlement_ref.is_some() {
+        return Err("trip is settled; stop times are frozen".to_string());
+    }
+    let stop_tz = existing.stops.iter()
+        .find(|s| s.sequence == sequence)
+        .ok_or_else(|| crate::error::AppError::NotFound.to_string())?
+        .timezone
+        .clone();
+    crate::services::trip_stops::validate_arrive(&actual_arrive, stop_tz.as_deref())
+        .map_err(|e| e.to_string())?;
+    crate::services::trip_stops::record_stop_arrive(state, trip_id, sequence, actual_arrive)
+        .await
+        .map_err(|e| e.to_string())?;
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(trip))
 }
@@ -2150,13 +2155,20 @@ async fn tool_stop_depart(state: &AppState, args: &Value) -> Result<Value, Strin
         .as_str()
         .ok_or("missing or non-string field 'actual_depart'")?
         .to_string();
-    trip_actions::stop_depart(
-        State(state.clone()),
-        Path((trip_id, sequence)),
-        Json(StopDepartRequest { actual_depart }),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    let existing = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
+    if existing.settlement_ref.is_some() {
+        return Err("trip is settled; stop times are frozen".to_string());
+    }
+    let stop_tz = existing.stops.iter()
+        .find(|s| s.sequence == sequence)
+        .ok_or_else(|| crate::error::AppError::NotFound.to_string())?
+        .timezone
+        .clone();
+    crate::services::trip_stops::validate_depart(&actual_depart, stop_tz.as_deref())
+        .map_err(|e| e.to_string())?;
+    crate::services::trip_stops::record_stop_depart(state, trip_id, sequence, actual_depart)
+        .await
+        .map_err(|e| e.to_string())?;
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(trip))
 }
@@ -2168,13 +2180,9 @@ async fn tool_stop_late(state: &AppState, args: &Value) -> Result<Value, String>
         .ok_or("missing or non-integer field 'sequence'")? as u32;
     let eta = args["eta"].as_str().map(|s| s.to_string());
     let notes = args["notes"].as_str().map(|s| s.to_string());
-    trip_actions::stop_late(
-        State(state.clone()),
-        Path((trip_id, sequence)),
-        Json(StopLateRequest { eta, notes }),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    crate::services::trip_lifecycle::stop_late(state, trip_id, sequence, StopLateRequest { eta, notes })
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "trip_id": trip_id, "sequence": sequence, "status": "late_flag_recorded" })))
 }
 
@@ -2186,13 +2194,9 @@ async fn tool_check_call(state: &AppState, args: &Value) -> Result<Value, String
         .to_string();
     let notes = args["notes"].as_str().map(|s| s.to_string());
     let eta_next_stop = args["eta_next_stop"].as_str().map(|s| s.to_string());
-    trip_actions::check_call(
-        State(state.clone()),
-        Path(trip_id),
-        Json(CheckCallRequest { location, notes, eta_next_stop }),
-    )
-    .await
-    .map_err(|e| e.to_string())?;
+    crate::services::trip_lifecycle::check_call(state, trip_id, CheckCallRequest { location, notes, eta_next_stop })
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "trip_id": trip_id, "status": "check_call_recorded" })))
 }
 
@@ -2810,7 +2814,6 @@ mod tests {
     async fn test_state() -> (AppState, TempDir, TempDir) {
         let blob_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
-        std::env::set_var("ADMIN_API_KEY", "test-secret");
         std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
         std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-jwt-secret-that-is-long-enough");
         std::env::set_var("DRIVER_RP_ID", "localhost");

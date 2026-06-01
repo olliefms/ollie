@@ -1,16 +1,15 @@
-use crate::{
-    error::AppError,
-    events,
-    models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
-    AppState,
-};
-use axum::{
-    extract::{Path, State},
-    http::StatusCode,
-    response::IntoResponse,
-    routing::post,
-    Json, Router,
-};
+//! Surface-agnostic trip-lifecycle business logic.
+//!
+//! The admin REST API (`/api/v1`), the dispatcher REST API (`/dispatch/api/v1`),
+//! and the dispatcher MCP server all drive the same trip state machine: assign,
+//! unassign, dispatch, undispatch, cancel, complete, plus the late/check-call
+//! event emitters. Each surface owns its auth and request-shape concerns; the
+//! cascades (resource status, linked-load status), the events, and the re-fetch
+//! all live here so every surface behaves identically.
+
+use crate::events;
+use crate::models::{DriverStatus, LoadStatus, TrailerStatus, TripRecord, TripStatus, TruckStatus};
+use crate::{error::AppError, AppState};
 use serde::Deserialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -46,39 +45,24 @@ pub struct CheckCallRequest {
     pub eta_next_stop: Option<String>,
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/assign",
-    params(("id" = Uuid, Path, description = "Trip UUID")),
-    request_body(content = AssignTripRequest, description = "Driver, truck, and optional trailers to assign"),
-    responses(
-        (status = 200, description = "Trip assigned", body = TripRecord),
-        (status = 400, description = "Bad request"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — driver/truck/trailer not eligible for assignment (inactive/out-of-service) or invalid status transition"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn assign_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<AssignTripRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let driver = state.db.get_driver_by_id(body.driver_id).await?;
+pub async fn assign(
+    state: &AppState,
+    trip_id: Uuid,
+    req: AssignTripRequest,
+) -> Result<TripRecord, AppError> {
+    let driver = state.db.get_driver_by_id(req.driver_id).await?;
     if driver.status == DriverStatus::Inactive {
-        return Err(AppError::Conflict(format!("driver {} is not available for assignment", body.driver_id)));
+        return Err(AppError::Conflict(format!("driver {} is not available for assignment", req.driver_id)));
     }
 
-    let truck = state.db.get_truck_by_id(body.truck_id).await?;
+    let truck = state.db.get_truck_by_id(req.truck_id).await?;
     if matches!(truck.status, TruckStatus::OutOfService | TruckStatus::Inactive) {
-        return Err(AppError::Conflict(format!("truck {} is not available for assignment", body.truck_id)));
+        return Err(AppError::Conflict(format!("truck {} is not available for assignment", req.truck_id)));
     }
 
     // Pre-validate all trailers before any mutation to prevent partial state
     let mut trailers = Vec::new();
-    for &trailer_id in &body.trailer_ids {
+    for &trailer_id in &req.trailer_ids {
         let trailer = state.db.get_trailer_by_id(trailer_id).await?;
         if !matches!(
             trailer.status,
@@ -92,17 +76,17 @@ pub async fn assign_trip(
         trailers.push(trailer);
     }
 
-    state.db.transition_trip_status(id, TripStatus::Assigned).await?;
+    state.db.transition_trip_status(trip_id, TripStatus::Assigned).await?;
     state
         .db
-        .update_trip_resources(id, Some(body.driver_id), Some(body.truck_id), body.trailer_ids.clone())
+        .update_trip_resources(trip_id, Some(req.driver_id), Some(req.truck_id), req.trailer_ids.clone())
         .await?;
 
     if driver.status == DriverStatus::Available {
-        state.db.update_driver_status(body.driver_id, DriverStatus::Assigned).await?;
+        state.db.update_driver_status(req.driver_id, DriverStatus::Assigned).await?;
     }
     if truck.status == TruckStatus::Available {
-        state.db.update_truck_status(body.truck_id, TruckStatus::Assigned).await?;
+        state.db.update_truck_status(req.truck_id, TruckStatus::Assigned).await?;
     }
     for trailer in &trailers {
         if trailer.status == TrailerStatus::Available {
@@ -110,7 +94,7 @@ pub async fn assign_trip(
         }
     }
 
-    let trip = state.db.get_trip(id).await?;
+    let trip = state.db.get_trip(trip_id).await?;
 
     if let Some(load_id) = trip.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
@@ -120,30 +104,14 @@ pub async fn assign_trip(
         }
     }
 
-    events::on_trip_assigned(&state.db, id).await;
-    Ok(Json(trip))
+    events::on_trip_assigned(&state.db, trip_id).await;
+    Ok(trip)
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/unassign",
-    params(("id" = Uuid, Path, description = "Trip UUID")),
-    responses(
-        (status = 200, description = "Trip unassigned", body = TripRecord),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — invalid status transition"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn unassign_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
-    state.db.transition_trip_status(id, TripStatus::Planned).await?;
-    state.db.update_trip_resources(id, None, None, vec![]).await?;
+pub async fn unassign(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
+    state.db.transition_trip_status(trip_id, TripStatus::Planned).await?;
+    state.db.update_trip_resources(trip_id, None, None, vec![]).await?;
 
     if let Some(driver_id) = existing.driver_id {
         let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
@@ -166,29 +134,13 @@ pub async fn unassign_trip(
         }
     }
 
-    let trip = state.db.get_trip(id).await?;
-    events::on_trip_unassigned(&state.db, id).await;
-    Ok(Json(trip))
+    let trip = state.db.get_trip(trip_id).await?;
+    events::on_trip_unassigned(&state.db, trip_id).await;
+    Ok(trip)
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/dispatch",
-    params(("id" = Uuid, Path, description = "Trip UUID")),
-    responses(
-        (status = 200, description = "Trip dispatched", body = TripRecord),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — trip must be in assigned status"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn dispatch_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
+pub async fn dispatch(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
     if existing.status != TripStatus::Assigned {
         return Err(AppError::Conflict("trip must be in assigned status to dispatch".into()));
     }
@@ -240,7 +192,7 @@ pub async fn dispatch_trip(
         }
     }
 
-    let trip = state.db.transition_trip_status(id, TripStatus::Dispatched).await?;
+    let trip = state.db.transition_trip_status(trip_id, TripStatus::Dispatched).await?;
 
     if let Some(driver_id) = existing.driver_id {
         let _ = state.db.update_driver_status(driver_id, DriverStatus::Dispatched).await;
@@ -260,33 +212,17 @@ pub async fn dispatch_trip(
         }
     }
 
-    events::on_trip_dispatched(&state.db, id).await;
-    Ok(Json(trip))
+    events::on_trip_dispatched(&state.db, trip_id).await;
+    Ok(trip)
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/undispatch",
-    params(("id" = Uuid, Path, description = "Trip UUID")),
-    responses(
-        (status = 200, description = "Trip undispatched back to assigned", body = TripRecord),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — trip must be in dispatched status (not in_transit or beyond)"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn undispatch_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
+pub async fn undispatch(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
     if existing.status != TripStatus::Dispatched {
         return Err(AppError::Conflict("trip must be in dispatched status to undispatch".into()));
     }
 
-    let trip = state.db.transition_trip_status(id, TripStatus::Assigned).await?;
+    let trip = state.db.transition_trip_status(trip_id, TripStatus::Assigned).await?;
 
     if let Some(driver_id) = existing.driver_id {
         let _ = state.db.update_driver_status(driver_id, DriverStatus::Assigned).await;
@@ -301,7 +237,7 @@ pub async fn undispatch_trip(
     if let Some(load_id) = existing.load_id {
         if let Ok(all_trips) = state.db.list_trips_for_load(load_id).await {
             let any_dispatched = all_trips.iter().any(|t| {
-                t.id != id && (t.status == TripStatus::Dispatched || t.status == TripStatus::InTransit)
+                t.id != trip_id && (t.status == TripStatus::Dispatched || t.status == TripStatus::InTransit)
             });
             if !any_dispatched {
                 if let Ok(load) = state.db.get_load_by_id(load_id).await {
@@ -313,33 +249,17 @@ pub async fn undispatch_trip(
         }
     }
 
-    events::on_trip_undispatched(&state.db, id).await;
-    Ok(Json(trip))
+    events::on_trip_undispatched(&state.db, trip_id).await;
+    Ok(trip)
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/cancel",
-    params(("id" = Uuid, Path, description = "Trip UUID")),
-    responses(
-        (status = 200, description = "Trip cancelled", body = TripRecord),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — cannot cancel a trip that is in_transit or delivered"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn cancel_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
+pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
     if existing.status == TripStatus::InTransit || existing.status == TripStatus::Delivered {
         return Err(AppError::Conflict("cannot cancel a trip that is in_transit or delivered".into()));
     }
 
-    let trip = state.db.transition_trip_status(id, TripStatus::Cancelled).await?;
+    let trip = state.db.transition_trip_status(trip_id, TripStatus::Cancelled).await?;
 
     if let Some(driver_id) = existing.driver_id {
         let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
@@ -362,189 +282,66 @@ pub async fn cancel_trip(
         }
     }
 
-    events::on_trip_cancelled(&state.db, id).await;
-    Ok(Json(trip))
+    events::on_trip_cancelled(&state.db, trip_id).await;
+    Ok(trip)
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/stops/{seq}/arrive",
-    params(
-        ("id" = Uuid, Path, description = "Trip UUID"),
-        ("seq" = u32, Path, description = "Stop sequence number"),
-    ),
-    request_body(content = StopArriveRequest, description = "Actual arrival time"),
-    responses(
-        (status = 200, description = "Stop arrival recorded", body = TripRecord),
-        (status = 400, description = "Bad request"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn stop_arrive(
-    State(state): State<AppState>,
-    Path((id, seq)): Path<(Uuid, u32)>,
-    Json(body): Json<StopArriveRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
-    // Settlement freeze: a settled trip's stop times feed detention pay; they are frozen.
-    if existing.settlement_ref.is_some() {
-        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
-    }
-    let stop_tz = existing.stops.iter()
-        .find(|s| s.sequence == seq)
-        .ok_or(AppError::NotFound)?
-        .timezone
-        .clone();
-    // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
-    // is theoretically possible but negligible in practice — see #95.
-    crate::services::trip_stops::validate_arrive(&body.actual_arrive, stop_tz.as_deref())?;
-    let mut trip = crate::services::trip_stops::record_stop_arrive(
-        &state, id, seq, body.actual_arrive,
-    ).await?;
-    for s in &mut trip.stops { s.fill_utc_fields(); }
-    Ok(Json(trip))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/stops/{seq}/depart",
-    params(
-        ("id" = Uuid, Path, description = "Trip UUID"),
-        ("seq" = u32, Path, description = "Stop sequence number"),
-    ),
-    request_body(content = StopDepartRequest, description = "Actual departure time"),
-    responses(
-        (status = 200, description = "Stop departure recorded", body = TripRecord),
-        (status = 400, description = "Bad request"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn stop_depart(
-    State(state): State<AppState>,
-    Path((id, seq)): Path<(Uuid, u32)>,
-    Json(body): Json<StopDepartRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
-    // Settlement freeze: a settled trip's stop times feed detention pay; they are frozen.
-    if existing.settlement_ref.is_some() {
-        return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
-    }
-    let stop_tz = existing.stops.iter()
-        .find(|s| s.sequence == seq)
-        .ok_or(AppError::NotFound)?
-        .timezone
-        .clone();
-    // TOCTOU: timezone validated against pre-fetched stop; a concurrent admin change
-    // is theoretically possible but negligible in practice — see #95.
-    crate::services::trip_stops::validate_depart(&body.actual_depart, stop_tz.as_deref())?;
-    let mut trip = crate::services::trip_stops::record_stop_depart(
-        &state, id, seq, body.actual_depart,
-    ).await?;
-    for s in &mut trip.stops { s.fill_utc_fields(); }
-    Ok(Json(trip))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/stops/{seq}/late",
-    params(
-        ("id" = Uuid, Path, description = "Trip UUID"),
-        ("seq" = u32, Path, description = "Stop sequence number"),
-    ),
-    request_body(content = StopLateRequest, description = "ETA and optional notes"),
-    responses(
-        (status = 204, description = "Late flag recorded"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn stop_late(
-    State(state): State<AppState>,
-    Path((id, seq)): Path<(Uuid, u32)>,
-    Json(body): Json<StopLateRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    // Verify trip exists
-    state.db.get_trip(id).await?;
-    events::on_stop_late(&state.db, id, seq, body.eta, body.notes).await;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/check-call",
-    params(("id" = Uuid, Path, description = "Trip UUID")),
-    request_body(content = CheckCallRequest, description = "Location, notes, and optional next-stop ETA"),
-    responses(
-        (status = 204, description = "Check call recorded"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn check_call(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-    Json(body): Json<CheckCallRequest>,
-) -> Result<impl IntoResponse, AppError> {
-    state.db.get_trip(id).await?;
-    events::on_check_call(&state.db, id, body.location, body.notes, body.eta_next_stop).await;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/trips/{id}/complete",
-    params(("id" = Uuid, Path, description = "Trip UUID")),
-    responses(
-        (status = 204, description = "Trip completed and resources released"),
-        (status = 401, description = "Unauthorized"),
-        (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — trip must be in delivered status"),
-    ),
-    security(("BearerAuth" = [])),
-    tag = "trips"
-)]
-pub async fn complete_trip(
-    State(state): State<AppState>,
-    Path(id): Path<Uuid>,
-) -> Result<impl IntoResponse, AppError> {
-    let existing = state.db.get_trip(id).await?;
+/// Completes a delivered trip and releases its resources. Returns `()` because
+/// the admin/dispatch surfaces respond 204 No Content.
+pub async fn complete(state: &AppState, trip_id: Uuid) -> Result<(), AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
     if existing.status != TripStatus::Delivered {
         return Err(AppError::Conflict("trip must be in delivered status to complete".into()));
     }
 
-    state.db.transition_trip_status(id, TripStatus::Completed).await?;
+    state.db.transition_trip_status(trip_id, TripStatus::Completed).await?;
 
     // Only release a resource to Available if it has NOT already been rebound
     // to another active trip (e.g. via auto-dispatch when this trip delivered).
-    let active = list_active_trips(&state).await.unwrap_or_default();
+    let active = list_active_trips(state).await.unwrap_or_default();
     if let Some(driver_id) = existing.driver_id {
-        if !resource_on_other_active_trip(&active, id, Some(driver_id), None, None) {
+        if !resource_on_other_active_trip(&active, trip_id, Some(driver_id), None, None) {
             let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
         }
     }
     if let Some(truck_id) = existing.truck_id {
-        if !resource_on_other_active_trip(&active, id, None, Some(truck_id), None) {
+        if !resource_on_other_active_trip(&active, trip_id, None, Some(truck_id), None) {
             let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
         }
     }
     for &trailer_id in &existing.trailer_ids {
-        if !resource_on_other_active_trip(&active, id, None, None, Some(trailer_id)) {
+        if !resource_on_other_active_trip(&active, trip_id, None, None, Some(trailer_id)) {
             let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
         }
     }
 
-    events::on_trip_completed(&state.db, id, existing.driver_id, existing.truck_id, &existing.trailer_ids).await;
-    Ok(StatusCode::NO_CONTENT)
+    events::on_trip_completed(&state.db, trip_id, existing.driver_id, existing.truck_id, &existing.trailer_ids).await;
+    Ok(())
+}
+
+/// Records a stop-late flag by emitting the `stop.late` event. Verifies the trip
+/// exists first.
+pub async fn stop_late(
+    state: &AppState,
+    trip_id: Uuid,
+    seq: u32,
+    req: StopLateRequest,
+) -> Result<(), AppError> {
+    state.db.get_trip(trip_id).await?;
+    events::on_stop_late(&state.db, trip_id, seq, req.eta, req.notes).await;
+    Ok(())
+}
+
+/// Records a check call by emitting the `check_call` event. Verifies the trip
+/// exists first.
+pub async fn check_call(
+    state: &AppState,
+    trip_id: Uuid,
+    req: CheckCallRequest,
+) -> Result<(), AppError> {
+    state.db.get_trip(trip_id).await?;
+    events::on_check_call(&state.db, trip_id, req.location, req.notes, req.eta_next_stop).await;
+    Ok(())
 }
 
 /// Fetches all trips currently in Dispatched or InTransit status.
@@ -576,7 +373,7 @@ fn resource_on_other_active_trip(
 /// and auto-dispatch it. Best-effort: errors are logged and swallowed so a
 /// hiccup here does not break the calling endpoint.
 ///
-/// `dispatch_trip`'s resource-conflict checks are not reused as-is because the
+/// `dispatch`'s resource-conflict checks are not reused as-is because the
 /// driver and truck from the just-delivered trip will still read `Dispatched`.
 /// Instead this helper checks whether the candidate trip's truck/trailers are
 /// bound to ANOTHER active trip (not the one that just delivered) — if so, it
@@ -660,18 +457,4 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
 
     tracing::info!(prev_trip = %just_delivered_trip_id, next_trip = %trip_id, %driver_id, "auto-dispatched next trip");
     events::on_trip_dispatched(&state.db, trip_id).await;
-}
-
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/trips/{id}/assign", post(assign_trip))
-        .route("/api/v1/trips/{id}/unassign", post(unassign_trip))
-        .route("/api/v1/trips/{id}/dispatch", post(dispatch_trip))
-        .route("/api/v1/trips/{id}/undispatch", post(undispatch_trip))
-        .route("/api/v1/trips/{id}/cancel", post(cancel_trip))
-        .route("/api/v1/trips/{id}/complete", post(complete_trip))
-        .route("/api/v1/trips/{id}/stops/{seq}/arrive", post(stop_arrive))
-        .route("/api/v1/trips/{id}/stops/{seq}/depart", post(stop_depart))
-        .route("/api/v1/trips/{id}/stops/{seq}/late", post(stop_late))
-        .route("/api/v1/trips/{id}/check-call", post(check_call))
 }
