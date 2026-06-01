@@ -29,9 +29,8 @@ use crate::{
     events,
 };
 use crate::models::{CreateLoadRequest, UpdateLoadRequest};
-use crate::api::trip_actions::{
-    self, AssignTripRequest, CheckCallRequest, StopArriveRequest, StopDepartRequest,
-    StopLateRequest,
+use crate::services::trip_lifecycle::{
+    AssignTripRequest, CheckCallRequest, StopArriveRequest, StopDepartRequest, StopLateRequest,
 };
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -906,7 +905,7 @@ pub async fn unassign_trip(
 }
 
 // ---------------------------------------------------------------------------
-// Trip lifecycle actions — thin wrappers around admin trip_actions handlers.
+// Trip lifecycle actions — thin wrappers around `services::trip_lifecycle`.
 // Same business logic; separate utoipa annotations to surface under the
 // dispatcher path/tag.
 // ---------------------------------------------------------------------------
@@ -930,7 +929,8 @@ pub async fn dispatch_trip(
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    trip_actions::dispatch_trip(state, id).await
+    let trip = crate::services::trip_lifecycle::dispatch(&state, id.0).await?;
+    Ok(Json(trip))
 }
 
 #[utoipa::path(
@@ -952,7 +952,8 @@ pub async fn undispatch_trip(
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    trip_actions::undispatch_trip(state, id).await
+    let trip = crate::services::trip_lifecycle::undispatch(&state, id.0).await?;
+    Ok(Json(trip))
 }
 
 #[utoipa::path(
@@ -974,7 +975,8 @@ pub async fn cancel_trip(
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    trip_actions::cancel_trip(state, id).await
+    let trip = crate::services::trip_lifecycle::cancel(&state, id.0).await?;
+    Ok(Json(trip))
 }
 
 #[utoipa::path(
@@ -996,7 +998,8 @@ pub async fn complete_trip(
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    trip_actions::complete_trip(state, id).await
+    crate::services::trip_lifecycle::complete(&state, id.0).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -1023,12 +1026,23 @@ pub async fn stop_arrive(
     body: Json<StopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
+    let (id, seq) = path.0;
     // Edit-lock: a settled trip's stop times are frozen.
-    let trip = state.db.get_trip(path.0.0).await?;
-    if trip.settlement_ref.is_some() {
+    let existing = state.db.get_trip(id).await?;
+    if existing.settlement_ref.is_some() {
         return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
     }
-    trip_actions::stop_arrive(state, path, body).await
+    let stop_tz = existing.stops.iter()
+        .find(|s| s.sequence == seq)
+        .ok_or(AppError::NotFound)?
+        .timezone
+        .clone();
+    crate::services::trip_stops::validate_arrive(&body.actual_arrive, stop_tz.as_deref())?;
+    let mut trip = crate::services::trip_stops::record_stop_arrive(
+        &state, id, seq, body.0.actual_arrive,
+    ).await?;
+    for s in &mut trip.stops { s.fill_utc_fields(); }
+    Ok(Json(trip))
 }
 
 #[utoipa::path(
@@ -1055,12 +1069,23 @@ pub async fn stop_depart(
     body: Json<StopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
+    let (id, seq) = path.0;
     // Edit-lock: a settled trip's stop times are frozen.
-    let trip = state.db.get_trip(path.0.0).await?;
-    if trip.settlement_ref.is_some() {
+    let existing = state.db.get_trip(id).await?;
+    if existing.settlement_ref.is_some() {
         return Err(AppError::Conflict("trip is settled; stop times are frozen".into()));
     }
-    trip_actions::stop_depart(state, path, body).await
+    let stop_tz = existing.stops.iter()
+        .find(|s| s.sequence == seq)
+        .ok_or(AppError::NotFound)?
+        .timezone
+        .clone();
+    crate::services::trip_stops::validate_depart(&body.actual_depart, stop_tz.as_deref())?;
+    let mut trip = crate::services::trip_stops::record_stop_depart(
+        &state, id, seq, body.0.actual_depart,
+    ).await?;
+    for s in &mut trip.stops { s.fill_utc_fields(); }
+    Ok(Json(trip))
 }
 
 #[utoipa::path(
@@ -1086,7 +1111,9 @@ pub async fn stop_late(
     body: Json<StopLateRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    trip_actions::stop_late(state, path, body).await
+    let (id, seq) = path.0;
+    crate::services::trip_lifecycle::stop_late(&state, id, seq, body.0).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
@@ -1109,7 +1136,8 @@ pub async fn check_call(
     body: Json<CheckCallRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    trip_actions::check_call(state, id, body).await
+    crate::services::trip_lifecycle::check_call(&state, id.0, body.0).await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }
 
 // ---------------------------------------------------------------------------

@@ -58,34 +58,6 @@ pub async fn build_mileage_summary(
     }
 }
 
-/// Build the load-level MileageSummary: loaded miles only, no deadhead/origin.
-/// Picks the most-recent non-cancelled trip linked to this load and strips its
-/// deadhead leg + origin. Returns None when no eligible trip exists.
-pub async fn build_load_mileage_summary(
-    state: &AppState,
-    load_id: Uuid,
-) -> Option<MileageSummary> {
-    let mut trips = state.db.list_trips_for_load(load_id).await.ok()?;
-    trips.retain(|t| t.status != crate::models::TripStatus::Cancelled);
-    if trips.is_empty() {
-        return None;
-    }
-    trips.sort_by_key(|t| std::cmp::Reverse(t.created_at));
-    let trip = trips.into_iter().next()?;
-    let summary = build_mileage_summary(state, &trip).await;
-    let legs: Vec<LegMiles> = summary.legs.into_iter()
-        .filter(|l| l.kind != "deadhead")
-        .collect();
-    let total_miles = summary.loaded_miles;
-    Some(MileageSummary {
-        origin: None,
-        legs,
-        deadhead_miles: None,
-        loaded_miles: summary.loaded_miles,
-        total_miles,
-    })
-}
-
 async fn resolve_deadhead_origin(
     state: &AppState,
     trip: &TripRecord,

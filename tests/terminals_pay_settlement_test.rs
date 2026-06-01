@@ -24,7 +24,6 @@ async fn test_server() -> (TestServer, TempDir, TempDir) {
 async fn test_server_with_db() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
-    std::env::set_var("ADMIN_API_KEY", "test-secret");
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
@@ -63,18 +62,41 @@ async fn test_server_with_db() -> (TestServer, Arc<DbClient>, TempDir, TempDir) 
     (server, db_handle, blob_dir, db_dir)
 }
 
+const OWNER_EMAIL: &str = "owner@example.com";
+const OWNER_PASSWORD: &str = "owner-password-123";
+
+/// First-run owner bootstrap (idempotent), returning an owner JWT.
+async fn setup_owner(server: &TestServer) -> String {
+    let resp = server.post("/dispatch/setup")
+        .json(&serde_json::json!({
+            "email": OWNER_EMAIL, "name": "Owner", "password": OWNER_PASSWORD,
+        }))
+        .await;
+    if resp.status_code() == 200 {
+        return resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string();
+    }
+    let login = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({ "email": OWNER_EMAIL, "password": OWNER_PASSWORD }))
+        .await;
+    assert_eq!(login.status_code(), 200, "owner login failed");
+    login.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+}
+
 /// Create a dispatcher account and log in, returning a JWT. Provisioned as
 /// `owner` so these terminal/pay/settlement tests (which write terminals and
 /// settle trips) pass scope enforcement (#331).
 async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> String {
-    // Create dispatcher via admin API (ignore 409 if already exists)
-    server.post("/api/v1/dispatchers")
-        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+    // Bootstrap the first-run owner, then create the named user via the users surface.
+    // `fleet_manager` is operationally identical to owner (effective scope
+    // `["*"]`) but creatable via the users surface (owner is not).
+    let owner = setup_owner(server).await;
+    server.post("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner}"))
         .json(&serde_json::json!({
             "email": email,
             "name": "Test Dispatcher",
             "password": password,
-            "role": "owner",
+            "role": "fleet_manager",
         }))
         .await;
 

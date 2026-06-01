@@ -180,6 +180,6 @@ async fn cascade_final_stop_delivered(state: &AppState, trip_id: Uuid, seq: u32)
     }
 
     if let Some(driver_id) = delivered.driver_id {
-        crate::api::trip_actions::try_auto_dispatch_next_for_driver(state, driver_id, trip_id).await;
+        crate::services::trip_lifecycle::try_auto_dispatch_next_for_driver(state, driver_id, trip_id).await;
     }
 }
