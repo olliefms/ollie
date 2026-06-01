@@ -7425,3 +7425,278 @@ async fn test_scope_extra_scope_grant_allows_settle() {
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(settle.status_code(), 200, "granted dispatcher allowed to settle");
 }
+
+// ---------------------------------------------------------------------------
+// Fleet users management surface (#331)
+//
+// HTTP + MCP users CRUD gated by users:* scopes (owner + fleet_manager only),
+// with owner-protection rules: at-least-one-owner invariant, the owner cannot
+// be demoted/deactivated except via ownership transfer, and ownership transfer
+// is owner-only.
+// ---------------------------------------------------------------------------
+
+/// Create a user via the dispatch Users surface as `owner_token`, returning the
+/// created record's id.
+async fn create_user_via_surface(
+    server: &axum_test::TestServer,
+    owner_token: &str,
+    email: &str,
+    name: &str,
+    password: &str,
+    role: &str,
+) -> String {
+    let resp = server.post("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({
+            "email": email, "name": name, "password": password, "role": role,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "create user failed: {}", resp.text());
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_users_owner_full_crud() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "u_owner@example.com", "pw-u-owner", "owner").await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a dispatcher and a fleet_manager.
+    let disp_id = create_user_via_surface(&server, &owner,
+        "u_disp@example.com", "Disp One", "pw-disp-one", "dispatcher").await;
+    let fm_id = create_user_via_surface(&server, &owner,
+        "u_fm@example.com", "FM One", "pw-fm-one", "fleet_manager").await;
+
+    // List sees the owner + both created users (>=3), and never exposes hashes.
+    let list = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(list.status_code(), 200);
+    let body = list.json::<serde_json::Value>();
+    let users = body["users"].as_array().unwrap();
+    assert!(users.len() >= 3, "expected at least 3 users");
+    let raw = list.text();
+    assert!(!raw.contains("password_hash"), "list must not expose password_hash");
+
+    // Get one user.
+    let get = server.get(&format!("/dispatch/api/v1/users/{disp_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(get.status_code(), 200);
+    assert_eq!(get.json::<serde_json::Value>()["role"], "dispatcher");
+
+    // Update name + extra_scopes on the dispatcher.
+    let upd = server.patch(&format!("/dispatch/api/v1/users/{disp_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Disp Renamed", "extra_scopes": ["loads:settle"] }))
+        .await;
+    assert_eq!(upd.status_code(), 200);
+    let updated = upd.json::<serde_json::Value>();
+    assert_eq!(updated["name"], "Disp Renamed");
+    assert_eq!(updated["extra_scopes"][0], "loads:settle");
+
+    // Reset the fleet_manager's password — their old JWT must be invalidated.
+    let fm_token = {
+        let resp = server.post("/dispatch/auth/login")
+            .json(&serde_json::json!({ "email": "u_fm@example.com", "password": "pw-fm-one" }))
+            .await;
+        assert_eq!(resp.status_code(), 200);
+        resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+    };
+    // FM can list users before reset.
+    let pre = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, format!("Bearer {fm_token}")).await;
+    assert_eq!(pre.status_code(), 200, "fleet_manager can read users");
+
+    let reset = server.put(&format!("/dispatch/api/v1/users/{fm_id}/password"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "password": "pw-fm-new" })).await;
+    assert_eq!(reset.status_code(), 204);
+
+    // Old FM JWT is now invalid (token_version bumped).
+    let post_reset = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, format!("Bearer {fm_token}")).await;
+    assert_eq!(post_reset.status_code(), 401, "old JWT invalidated after password reset");
+
+    // Deactivate the dispatcher.
+    let del = server.delete(&format!("/dispatch/api/v1/users/{disp_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del.status_code(), 204);
+    let after = server.get(&format!("/dispatch/api/v1/users/{disp_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(after.json::<serde_json::Value>()["status"], "inactive");
+}
+
+#[tokio::test]
+async fn test_users_dispatcher_forbidden_everywhere() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "uf_owner@example.com", "pw-uf-owner", "owner").await;
+    let disp = login_with_role(&server, "uf_disp@example.com", "pw-uf-disp", "dispatcher").await;
+    let dauth = format!("Bearer {disp}");
+    let target_id = create_user_via_surface(&server, &owner,
+        "uf_target@example.com", "Target", "pw-target", "dispatcher").await;
+
+    // Every endpoint is 403 for a plain dispatcher.
+    assert_eq!(server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &dauth).await.status_code(), 403);
+    assert_eq!(server.get(&format!("/dispatch/api/v1/users/{target_id}"))
+        .add_header(header::AUTHORIZATION, &dauth).await.status_code(), 403);
+    assert_eq!(server.post("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &dauth)
+        .json(&serde_json::json!({ "email": "x@example.com", "name": "X", "password": "pwpwpwpw", "role": "dispatcher" }))
+        .await.status_code(), 403);
+    assert_eq!(server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+        .add_header(header::AUTHORIZATION, &dauth)
+        .json(&serde_json::json!({ "name": "Nope" })).await.status_code(), 403);
+    assert_eq!(server.put(&format!("/dispatch/api/v1/users/{target_id}/password"))
+        .add_header(header::AUTHORIZATION, &dauth)
+        .json(&serde_json::json!({ "password": "pwpwpwpw" })).await.status_code(), 403);
+    assert_eq!(server.delete(&format!("/dispatch/api/v1/users/{target_id}"))
+        .add_header(header::AUTHORIZATION, &dauth).await.status_code(), 403);
+}
+
+#[tokio::test]
+async fn test_users_fleet_manager_can_manage_but_not_set_owner() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "fm_owner@example.com", "pw-fm-owner", "owner").await;
+    // Create a fleet_manager and a plain dispatcher target.
+    create_user_via_surface(&server, &owner, "fm_mgr@example.com", "Mgr", "pw-fm-mgr", "fleet_manager").await;
+    let target_id = create_user_via_surface(&server, &owner,
+        "fm_tgt@example.com", "Tgt", "pw-fm-tgt", "dispatcher").await;
+
+    let fm = {
+        let resp = server.post("/dispatch/auth/login")
+            .json(&serde_json::json!({ "email": "fm_mgr@example.com", "password": "pw-fm-mgr" })).await;
+        resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+    };
+    let fmauth = format!("Bearer {fm}");
+
+    // FM can create/list/update normal users.
+    let new_id = create_user_via_surface(&server, &fm, "fm_new@example.com", "New", "pw-fm-new", "dispatcher").await;
+    assert_eq!(server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &fmauth).await.status_code(), 200);
+    assert_eq!(server.patch(&format!("/dispatch/api/v1/users/{new_id}"))
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({ "name": "Renamed" })).await.status_code(), 200);
+
+    // FM CANNOT set anyone's role to owner (transfer is owner-only) → 403.
+    let transfer = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({ "role": "owner" })).await;
+    assert_eq!(transfer.status_code(), 403, "fleet_manager cannot transfer ownership");
+}
+
+#[tokio::test]
+async fn test_users_owner_protection_rules() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "op_owner@example.com", "pw-op-owner", "owner").await;
+    let auth = format!("Bearer {owner}");
+
+    // The owner's own id.
+    let list = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    let owner_id = list["users"].as_array().unwrap().iter()
+        .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
+
+    // Cannot delete the sole owner → 409.
+    let del = server.delete(&format!("/dispatch/api/v1/users/{owner_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del.status_code(), 409, "cannot deactivate the sole owner");
+
+    // Cannot demote the sole owner via PATCH → 403.
+    let demote = server.patch(&format!("/dispatch/api/v1/users/{owner_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "role": "fleet_manager" })).await;
+    assert_eq!(demote.status_code(), 403, "cannot demote the sole owner");
+
+    // Cannot deactivate the sole owner via PATCH status → 403.
+    let deact = server.patch(&format!("/dispatch/api/v1/users/{owner_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "status": "inactive" })).await;
+    assert_eq!(deact.status_code(), 403, "cannot deactivate the owner via PATCH");
+
+    // create with role=owner is rejected → 403.
+    let bad = server.post("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "email": "op_new@example.com", "name": "N", "password": "pwpwpwpw", "role": "owner" }))
+        .await;
+    assert_eq!(bad.status_code(), 403, "create with role=owner rejected");
+}
+
+#[tokio::test]
+async fn test_users_ownership_transfer() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "tr_owner@example.com", "pw-tr-owner", "owner").await;
+    let auth = format!("Bearer {owner}");
+
+    let x_id = create_user_via_surface(&server, &owner,
+        "tr_x@example.com", "User X", "pw-tr-x", "fleet_manager").await;
+
+    // Owner promotes X to owner → transfer.
+    let transfer = server.patch(&format!("/dispatch/api/v1/users/{x_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "role": "owner" })).await;
+    assert_eq!(transfer.status_code(), 200, "owner can transfer: {}", transfer.text());
+    assert_eq!(transfer.json::<serde_json::Value>()["role"], "owner");
+
+    // X is owner via login; prior owner is now fleet_manager.
+    let x_token = {
+        let r = server.post("/dispatch/auth/login")
+            .json(&serde_json::json!({ "email": "tr_x@example.com", "password": "pw-tr-x" })).await;
+        r.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+    };
+    let xauth = format!("Bearer {x_token}");
+    let users = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &xauth).await.json::<serde_json::Value>();
+    let arr = users["users"].as_array().unwrap();
+    let owners: Vec<_> = arr.iter().filter(|u| u["role"] == "owner").collect();
+    assert_eq!(owners.len(), 1, "exactly one owner after transfer");
+    assert_eq!(owners[0]["id"].as_str().unwrap(), x_id);
+    let prior = arr.iter().find(|u| u["email"] == "tr_owner@example.com").unwrap();
+    assert_eq!(prior["role"], "fleet_manager", "prior owner demoted to fleet_manager");
+
+    // Prior owner (now fleet_manager) can no longer transfer → 403.
+    // (Their JWT still valid — transfer demotes role but does not bump token_version.)
+    // Make a fresh target and have the demoted prior owner attempt to promote it.
+    let y_id = create_user_via_surface(&server, &x_token,
+        "tr_y@example.com", "User Y", "pw-tr-y", "dispatcher").await;
+    let prior_transfer = server.patch(&format!("/dispatch/api/v1/users/{y_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "role": "owner" })).await;
+    assert_eq!(prior_transfer.status_code(), 403, "demoted prior owner can no longer transfer");
+}
+
+#[tokio::test]
+async fn test_users_mcp_parity() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "mcpu_owner@example.com", "pw-mcpu-owner", "owner").await;
+    let disp = login_with_role(&server, "mcpu_disp@example.com", "pw-mcpu-disp", "dispatcher").await;
+
+    // Dispatcher calling create_user via MCP is denied (scope isError).
+    let denied = mcp_call_result(&server, &disp, "create_user", serde_json::json!({
+        "email": "mcpu_x@example.com", "name": "X", "password": "pwpwpwpw", "role": "dispatcher"
+    })).await;
+    assert_eq!(denied["isError"], serde_json::json!(true), "dispatcher create_user must isError");
+    assert!(denied["content"][0]["text"].as_str().unwrap_or("").contains("scope"));
+
+    // Owner creates a user via MCP.
+    let created = mcp_call(&server, &owner, "create_user", serde_json::json!({
+        "email": "mcpu_made@example.com", "name": "Made", "password": "pw-made-1", "role": "dispatcher"
+    })).await;
+    let made_id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["role"], "dispatcher");
+
+    // Owner updates via MCP.
+    let updated = mcp_call(&server, &owner, "update_user", serde_json::json!({
+        "id": made_id, "name": "Made Renamed"
+    })).await;
+    assert_eq!(updated["name"], "Made Renamed");
+
+    // create_user with role=owner via MCP is rejected (owner-protection isError).
+    let bad = mcp_call_result(&server, &owner, "create_user", serde_json::json!({
+        "email": "mcpu_owner2@example.com", "name": "O2", "password": "pwpwpwpw", "role": "owner"
+    })).await;
+    assert_eq!(bad["isError"], serde_json::json!(true), "create_user role=owner must isError");
+
+    // delete_user via MCP deactivates.
+    let del = mcp_call(&server, &owner, "delete_user", serde_json::json!({ "id": made_id })).await;
+    assert_eq!(del["deleted"], serde_json::json!(true));
+}

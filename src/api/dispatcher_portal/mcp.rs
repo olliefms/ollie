@@ -113,13 +113,17 @@ impl ServerHandler for OllieMcp {
                 ))]));
             }
         }
+        // The authenticated caller's dispatcher id (for owner-protection/transfer
+        // checks in the Users tools). Absent for an API-key principal with no
+        // parseable id — those tools then treat the caller as least-privileged.
+        let caller_id = dispatcher_caller_id(&context);
         let args = Value::Object(request.arguments.unwrap_or_default());
         // Destructive ops ask the user to confirm via elicitation when the client
         // supports it; clients that don't degrade to the prior behavior (#300).
         if let Some(declined) = confirm_destructive(&request.name, &args, &context.peer).await {
             return Ok(declined);
         }
-        match handle_tool_call(&self.state, &request.name, &args, &scopes).await {
+        match handle_tool_call(&self.state, &request.name, &args, &scopes, caller_id).await {
             // Emit the payload as structuredContent (typed, schema-checkable) AND a
             // backward-compatible JSON text block, per MCP 2025-06-18 (#293). Blob-
             // returning tools also attach resource_link items pointing at the
@@ -229,6 +233,18 @@ fn dispatcher_scopes(context: &RequestContext<RoleServer>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Recover the authenticated caller's dispatcher id from the forwarded HTTP
+/// request parts, for owner-protection/transfer checks in the Users tools.
+/// `None` when claims are absent or the id is not a UUID (e.g. an API-key
+/// principal); the Users tools then treat the caller as least-privileged.
+fn dispatcher_caller_id(context: &RequestContext<RoleServer>) -> Option<Uuid> {
+    context
+        .extensions
+        .get::<axum::http::request::Parts>()
+        .and_then(|parts| parts.extensions.get::<super::jwt::DispatcherClaims>())
+        .and_then(|claims| claims.dispatcher_id.parse::<Uuid>().ok())
+}
+
 /// Build a minimal DispatcherClaims carrying only the given effective scopes, for
 /// passing the caller's authority into an HTTP handler reused as an MCP shim (e.g.
 /// `recalculate_miles_handler`). Identity fields are placeholders — the handler
@@ -295,6 +311,10 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "delete_blob" => "blobs:delete",
         // load_doctor reads a load's integrity.
         "load_doctor" => "loads:read",
+        // Users (#331)
+        "list_users" | "get_user" => "users:read",
+        "create_user" | "update_user" | "reset_user_password" => "users:write",
+        "delete_user" => "users:delete",
         _ => return None,
     };
     Some(scope)
@@ -323,7 +343,7 @@ rmcp::elicit_safe!(DestructiveConfirmation);
 fn is_destructive_op(name: &str, args: &Value) -> bool {
     match name {
         "cancel_trip" | "cancel_load" | "delete_load" | "delete_trip" | "delete_driver"
-        | "delete_truck" | "delete_trailer" | "delete_facility" => true,
+        | "delete_truck" | "delete_trailer" | "delete_facility" | "delete_user" => true,
         "delete_blob" => args["force"].as_bool() == Some(true),
         _ => false,
     }
@@ -370,6 +390,7 @@ fn destructive_op_description(name: &str) -> &'static str {
         "delete_truck" => "deactivate the truck",
         "delete_trailer" => "deactivate the trailer",
         "delete_facility" => "delete the facility record",
+        "delete_user" => "deactivate the user and revoke their access",
         "delete_blob" => "delete the blob",
         _ => "perform a destructive action",
     }
@@ -1507,6 +1528,71 @@ fn tools_list() -> Value {
                     },
                     "required": ["id"]
                 }
+            },
+            {
+                "name": "list_users",
+                "description": "List fleet users (the dispatchers-with-roles population). Requires users:read (owner/fleet_manager). Never returns password hashes.",
+                "inputSchema": { "type": "object", "properties": {} }
+            },
+            {
+                "name": "get_user",
+                "description": "Get a single fleet user by UUID. Requires users:read. Never returns the password hash.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "create_user",
+                "description": "Create a fleet user with a role (fleet_manager or dispatcher) and optional extra_scopes. Requires users:write. role=owner is rejected — ownership is established by bootstrap or transfer.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "email":        { "type": "string" },
+                        "name":         { "type": "string" },
+                        "password":     { "type": "string" },
+                        "role":         { "type": "string", "enum": ["fleet_manager","dispatcher"] },
+                        "extra_scopes": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["email", "name", "password", "role"]
+                }
+            },
+            {
+                "name": "update_user",
+                "description": "Update a user's name, status, role, and/or extra_scopes. Requires users:write. Owner-protection applies: the owner cannot be demoted/deactivated except via ownership transfer; setting a different user's role to owner is an ownership transfer permitted only when the caller is the current owner.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":           { "type": "string", "format": "uuid" },
+                        "name":         { "type": "string" },
+                        "status":       { "type": "string", "enum": ["active","inactive"] },
+                        "role":         { "type": "string", "enum": ["owner","fleet_manager","dispatcher"] },
+                        "extra_scopes": { "type": "array", "items": { "type": "string" } }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "reset_user_password",
+                "description": "Reset a user's password, invalidating their outstanding JWTs (token_version bump). Requires users:write. Returns { password_reset: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":       { "type": "string", "format": "uuid" },
+                        "password": { "type": "string" }
+                    },
+                    "required": ["id", "password"]
+                }
+            },
+            {
+                "name": "delete_user",
+                "description": "Deactivate a user (status → inactive) and revoke their access. Requires users:delete. The only owner cannot be deactivated — transfer ownership first. Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "id": { "type": "string", "format": "uuid" } },
+                    "required": ["id"]
+                }
             }
         ]
     })
@@ -1544,6 +1630,7 @@ async fn handle_tool_call(
     name: &str,
     args: &Value,
     scopes: &[String],
+    caller_id: Option<Uuid>,
 ) -> Result<Value, ToolError> {
     let result: Result<Value, String> = match name {
         "list_loads" => tool_list_loads(state, args).await,
@@ -1603,6 +1690,12 @@ async fn handle_tool_call(
         "set_driver_pin" => tool_set_driver_pin(state, args).await,
         "create_driver" => tool_create_driver(state, args).await,
         "update_driver" => tool_update_driver(state, args).await,
+        "list_users" => tool_list_users(state).await,
+        "get_user" => tool_get_user(state, args).await,
+        "create_user" => tool_create_user(state, args).await,
+        "update_user" => tool_update_user(state, args, caller_id).await,
+        "reset_user_password" => tool_reset_user_password(state, args).await,
+        "delete_user" => tool_delete_user(state, args).await,
         _ => return Err(ToolError::Unknown),
     };
     result.map_err(ToolError::Domain)
@@ -2616,6 +2709,67 @@ async fn tool_update_driver(state: &AppState, args: &Value) -> Result<Value, Str
         .await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(record))
+}
+
+// --- Users management (#331) ---
+
+async fn tool_list_users(state: &AppState) -> Result<Value, String> {
+    let users = super::users::apply_list_users(state).await.map_err(|e| e.to_string())?;
+    let returned = users.len();
+    Ok(mcp_content(serde_json::json!({ "users": users, "returned": returned })))
+}
+
+async fn tool_get_user(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = super::users::apply_get_user(state, id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_create_user(state: &AppState, args: &Value) -> Result<Value, String> {
+    let req: super::users::CreateUserRequest = serde_json::from_value(args.clone())
+        .map_err(|e| format!("invalid create_user arguments: {e}"))?;
+    let record = super::users::apply_create_user(state, req).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_user(
+    state: &AppState,
+    args: &Value,
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("id");
+    }
+    let req: super::users::UpdateUserRequest = serde_json::from_value(body)
+        .map_err(|e| format!("invalid update_user arguments: {e}"))?;
+    // Recover the caller's current role from the DB by their dispatcher id so the
+    // owner-only transfer rule can be enforced identically to the HTTP surface.
+    let caller_role = match caller_id {
+        Some(cid) => match state.db.get_dispatcher_by_id(cid).await {
+            Ok(r) => r.role,
+            Err(_) => crate::models::permission::Role::Dispatcher,
+        },
+        None => crate::models::permission::Role::Dispatcher,
+    };
+    let record = super::users::apply_update_user(state, caller_id, caller_role, id, req)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_reset_user_password(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let password = args["password"].as_str().ok_or("missing or non-string field 'password'")?.to_string();
+    super::users::apply_reset_password(state, id, password).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "password_reset": true })))
+}
+
+async fn tool_delete_user(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    super::users::apply_delete_user(state, id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
 }
 
 #[cfg(test)]

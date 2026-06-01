@@ -13,6 +13,7 @@ pub mod trailer_writes;
 pub mod terminal_writes;
 pub mod trip_writes;
 pub mod truck_writes;
+pub mod users;
 
 use crate::AppState;
 use axum::{
@@ -158,6 +159,8 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         // API key management (GET allowed for both JWT and API-key auth; POST/DELETE require JWT)
         .route("/dispatch/api-keys", post(api_keys::create_api_key).get(api_keys::list_api_keys))
         .route("/dispatch/api-keys/{id}", delete(api_keys::revoke_api_key))
+        // Fleet users management (#331) — gated by users:* scopes (owner + fleet_manager).
+        .merge(users::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_dispatcher_auth,
