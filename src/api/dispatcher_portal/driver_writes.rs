@@ -22,8 +22,9 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use super::jwt::DispatcherClaims;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -90,9 +91,11 @@ pub struct DriverEquipmentChange {
 )]
 pub async fn attach_equipment_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:write")?;
     let change = apply_attach_equipment(&state, id, body).await?;
     Ok(Json(change))
 }
@@ -114,9 +117,11 @@ pub async fn attach_equipment_handler(
 )]
 pub async fn detach_equipment_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:write")?;
     let change = apply_detach_equipment(&state, id, body).await?;
     Ok(Json(change))
 }
@@ -537,8 +542,10 @@ pub async fn apply_driver_patch(
 )]
 pub async fn create_driver_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Json(body): Json<CreateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:write")?;
     let record = apply_driver_create(&state, body).await?;
     Ok((StatusCode::CREATED, Json(record)))
 }
@@ -559,9 +566,11 @@ pub async fn create_driver_handler(
 )]
 pub async fn patch_driver_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:write")?;
     let record = apply_driver_patch(&state, id, body).await?;
     Ok(Json(record))
 }
@@ -580,8 +589,10 @@ pub async fn patch_driver_handler(
 )]
 pub async fn delete_driver_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:delete")?;
     apply_driver_delete(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -617,9 +628,11 @@ pub(crate) async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<()
 )]
 pub async fn set_driver_pin_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<SetDriverPinRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:write")?;
     apply_set_driver_pin(&state, id, body.pin).await?;
     Ok(StatusCode::NO_CONTENT)
 }

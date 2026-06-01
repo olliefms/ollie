@@ -13,8 +13,9 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use super::jwt::DispatcherClaims;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
@@ -84,8 +85,10 @@ pub struct PatchFacilityBody {
 )]
 pub async fn create_facility_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("facilities:write")?;
     let record = apply_facility_create(&state, body).await?;
     Ok((StatusCode::CREATED, Json(record)))
 }
@@ -107,9 +110,11 @@ pub async fn create_facility_handler(
 )]
 pub async fn update_facility_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("facilities:write")?;
     let record = apply_facility_patch(&state, id, body).await?;
     Ok(Json(record))
 }

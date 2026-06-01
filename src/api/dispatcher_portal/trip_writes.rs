@@ -13,8 +13,9 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use super::jwt::DispatcherClaims;
 use serde::Deserialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -96,9 +97,11 @@ pub struct PatchTripBody {
 )]
 pub async fn recalculate_miles_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     body: Option<Json<RecalculateMilesBody>>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     let force = body.map(|Json(b)| b.force).unwrap_or(false);
 
     let trip = state.db.get_trip(id).await?;
@@ -135,9 +138,11 @@ pub async fn recalculate_miles_handler(
 )]
 pub async fn patch_trip_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     let result = apply_trip_patch(&state, id, body).await?;
     Ok(Json(result))
 }
@@ -277,8 +282,10 @@ pub async fn apply_trip_patch(
 )]
 pub async fn delete_trip_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:delete")?;
     state.db.delete_trip(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

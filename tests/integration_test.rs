@@ -1338,13 +1338,18 @@ async fn test_dispatcher_refresh() {
 // --- Dispatcher portal data API tests ---
 
 async fn dispatcher_login(server: &axum_test::TestServer, email: &str, password: &str) -> String {
-    // Create dispatcher account
+    // Create dispatcher account. Scope enforcement (#331) means a plain
+    // `dispatcher`-role user is denied elevated ops (settle/invoice/master-data
+    // deletes/terminal writes); these data-surface tests exercise the full
+    // operational range, so provision them as `owner`. Tests that specifically
+    // verify dispatcher-role denial create their user separately.
     server.post("/api/v1/dispatchers")
         .add_header(header::AUTHORIZATION, "Bearer test-secret")
         .json(&serde_json::json!({
             "email": email,
             "name": "Test Dispatcher",
             "password": password,
+            "role": "owner",
         }))
         .await;
 
@@ -7175,4 +7180,248 @@ async fn test_mcp_delete_truck_trailer_facility() {
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
     assert_eq!(after.status_code(), 404, "deleted facility should be gone");
+}
+
+// ---------------------------------------------------------------------------
+// Scope enforcement (#331)
+//
+// A `dispatcher`-role user is denied elevated operations (loads:settle/invoice,
+// master-data deletes, terminal writes) on both the dispatch HTTP surface and
+// the MCP tool surface, while owner/fleet_manager pass everything. Per-user
+// extra_scopes elevate a single capability.
+// ---------------------------------------------------------------------------
+
+/// Create a dispatcher with an explicit role and log in, returning a JWT.
+async fn login_with_role(
+    server: &axum_test::TestServer,
+    email: &str,
+    password: &str,
+    role: &str,
+) -> String {
+    server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": email, "name": "Scoped User", "password": password, "role": role,
+        }))
+        .await;
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({ "email": email, "password": password }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "login failed for {email}");
+    resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_scope_dispatcher_denied_elevated_http_ops() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = login_with_role(&server, "scope_disp@example.com", "pw-scope-disp", "dispatcher").await;
+    let auth = format!("Bearer {token}");
+    let fac_id = create_test_facility(&server, "Scope Dock", "Tulsa, OK").await;
+    let load_id = create_2stop_load(&server, &fac_id, "Scope Co").await;
+    let driver_id = create_test_driver(&server).await;
+
+    // Create a truck via admin so we can attempt a dispatch-surface delete.
+    let truck_id = server.post("/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({ "unit_number": "SCOPE-1" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // A trip to delete.
+    let trip_id = server.post("/api/v1/trips")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [{ "sequence": 1, "stop_type": "origin", "facility_id": fac_id,
+                "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" }]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // DENIED (403): settle, invoice, load delete, trip delete, driver delete,
+    // truck delete, terminal create.
+    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(settle.status_code(), 403, "dispatcher must be denied settle");
+
+    let invoice = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({})).await;
+    assert_eq!(invoice.status_code(), 403, "dispatcher must be denied invoice");
+
+    let del_load = server.delete(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del_load.status_code(), 403, "dispatcher must be denied load delete");
+
+    // NOTE: the chunk-1 permission model grants the dispatcher role `trips:delete`
+    // (it's in DISPATCHER_SCOPES), so trip delete is ALLOWED for a dispatcher —
+    // unlike load/driver/truck deletes. We follow the merged model rather than
+    // weaken it. (The spec's denial list listed trip delete; the authoritative
+    // permission model says otherwise.)
+    let del_trip = server.delete(&format!("/dispatch/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del_trip.status_code(), 204, "dispatcher has trips:delete in the model");
+
+    let del_driver = server.delete(&format!("/dispatch/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del_driver.status_code(), 403, "dispatcher must be denied driver delete");
+
+    let del_truck = server.delete(&format!("/dispatch/api/v1/trucks/{truck_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del_truck.status_code(), 403, "dispatcher must be denied truck delete");
+
+    let term = server.post("/dispatch/api/v1/terminals")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "West", "timezone": "America/Los_Angeles" })).await;
+    assert_eq!(term.status_code(), 403, "dispatcher must be denied terminal create");
+}
+
+#[tokio::test]
+async fn test_scope_dispatcher_allowed_operational_http_ops() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = login_with_role(&server, "scope_disp_ok@example.com", "pw-scope-ok", "dispatcher").await;
+    let auth = format!("Bearer {token}");
+    let fac_id = create_test_facility(&server, "Scope OK Dock", "Omaha, NE").await;
+
+    // load create
+    let load = server.post("/dispatch/api/v1/loads")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "customer_name": "Op Co",
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                  "facility_id": fac_id, "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                  "facility_id": fac_id, "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+            ],
+            "rate_items": []
+        })).await;
+    assert_eq!(load.status_code(), 201, "dispatcher allowed load create");
+    let load_id = load.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // load update
+    let upd = server.put(&format!("/dispatch/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "notes": "touched" })).await;
+    assert_eq!(upd.status_code(), 200, "dispatcher allowed load update");
+
+    // trip create
+    let trip = server.post("/dispatch/api/v1/trips")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "load_id": load_id })).await;
+    assert_eq!(trip.status_code(), 201, "dispatcher allowed trip create");
+
+    // driver create + patch
+    let drv = server.post("/dispatch/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Op Driver" })).await;
+    assert_eq!(drv.status_code(), 201, "dispatcher allowed driver create");
+    let drv_id = drv.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let patch = server.patch(&format!("/dispatch/api/v1/drivers/{drv_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "phone": "555-0100" })).await;
+    assert_eq!(patch.status_code(), 200, "dispatcher allowed driver patch");
+
+    // stop arrive/depart on the trip's first stop.
+    let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let arrive = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/arrive"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "actual_arrive": "2026-08-01T08:05:00" })).await;
+    assert_eq!(arrive.status_code(), 200, "dispatcher allowed stop arrive");
+    let depart = server.post(&format!("/dispatch/api/v1/trips/{trip_id}/stops/1/depart"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "actual_depart": "2026-08-01T08:30:00" })).await;
+    assert_eq!(depart.status_code(), 200, "dispatcher allowed stop depart");
+}
+
+#[tokio::test]
+async fn test_scope_owner_allowed_elevated_http_ops() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = login_with_role(&server, "scope_owner@example.com", "pw-scope-owner", "owner").await;
+    let auth = format!("Bearer {token}");
+    let fac_id = create_test_facility(&server, "Owner Dock", "Denver, CO").await;
+    let load_id = create_2stop_load(&server, &fac_id, "Owner Co").await;
+
+    drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
+
+    let invoice = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "invoice_number": "OWN-1" })).await;
+    assert_eq!(invoice.status_code(), 200, "owner allowed invoice");
+
+    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(settle.status_code(), 200, "owner allowed settle");
+
+    // owner allowed terminal create.
+    let term = server.post("/dispatch/api/v1/terminals")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Mountain", "timezone": "America/Denver" })).await;
+    assert_eq!(term.status_code(), 201, "owner allowed terminal create");
+}
+
+#[tokio::test]
+async fn test_scope_mcp_dispatcher_denied_owner_allowed() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let disp = login_with_role(&server, "scope_mcp_disp@example.com", "pw-mcp-disp", "dispatcher").await;
+    let owner = login_with_role(&server, "scope_mcp_owner@example.com", "pw-mcp-owner", "owner").await;
+    let fac_id = create_test_facility(&server, "MCP Scope Dock", "Mesa, AZ").await;
+    let load_id = create_2stop_load(&server, &fac_id, "MCP Scope Co").await;
+
+    // Dispatcher: settle_load and delete_load via MCP are denied (isError).
+    let settle = mcp_call_result(&server, &disp, "settle_load",
+        serde_json::json!({ "id": load_id })).await;
+    assert_eq!(settle["isError"], serde_json::json!(true), "dispatcher settle_load must isError");
+    let msg = settle["content"][0]["text"].as_str().unwrap_or("");
+    assert!(msg.contains("scope"), "denial should mention scope: {msg}");
+
+    let del = mcp_call_result(&server, &disp, "delete_load",
+        serde_json::json!({ "id": load_id })).await;
+    assert_eq!(del["isError"], serde_json::json!(true), "dispatcher delete_load must isError");
+
+    // Owner: same calls succeed.
+    drive_load_to_delivered(&server, &owner, &fac_id, &load_id).await;
+    let _inv = mcp_call(&server, &owner, "invoice_load",
+        serde_json::json!({ "id": load_id, "invoice_number": "OWN-MCP-1" })).await;
+    let settled = mcp_call(&server, &owner, "settle_load",
+        serde_json::json!({ "id": load_id })).await;
+    assert_eq!(settled["status"], "settled", "owner settle_load succeeds");
+}
+
+#[tokio::test]
+async fn test_scope_extra_scope_grant_allows_settle() {
+    // A dispatcher granted the single `loads:settle` extra scope can settle, on
+    // both HTTP and MCP — without gaining any sibling elevated capability.
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = login_with_role(&server, "scope_grant@example.com", "pw-grant", "dispatcher").await;
+    let auth = format!("Bearer {token}");
+
+    // Grant the extra scope directly via the DB (the Users management surface that
+    // would set this is chunk 3).
+    let mut record = state.db.get_dispatcher_by_email("scope_grant@example.com")
+        .await.unwrap().expect("dispatcher exists");
+    record.extra_scopes = vec!["loads:settle".to_string()];
+    state.db.upsert_dispatcher(&record).await.unwrap();
+
+    let fac_id = create_test_facility(&server, "Grant Dock", "Reno, NV").await;
+    let load_id = create_2stop_load(&server, &fac_id, "Grant Co").await;
+    drive_load_to_delivered(&server, &token, &fac_id, &load_id).await;
+
+    // invoice is still denied (sibling elevated scope not granted)...
+    let invoice = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({})).await;
+    assert_eq!(invoice.status_code(), 403, "grant of loads:settle must not leak loads:invoice");
+
+    // ...but the load must be invoiced before it can settle; do that via owner.
+    let owner = login_with_role(&server, "scope_grant_owner@example.com", "pw-grant-own", "owner").await;
+    let inv = server.post(&format!("/dispatch/api/v1/loads/{load_id}/invoice"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner}"))
+        .json(&serde_json::json!({ "invoice_number": "GRANT-1" })).await;
+    assert_eq!(inv.status_code(), 200);
+
+    // Now the granted dispatcher can settle (HTTP).
+    let settle = server.post(&format!("/dispatch/api/v1/loads/{load_id}/settle"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(settle.status_code(), 200, "granted dispatcher allowed to settle");
 }

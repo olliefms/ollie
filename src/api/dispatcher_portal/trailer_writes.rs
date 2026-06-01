@@ -15,8 +15,9 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use super::jwt::DispatcherClaims;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
@@ -106,8 +107,10 @@ pub struct PatchTrailerBody {
 )]
 pub async fn create_trailer_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trailers:write")?;
     let record = apply_trailer_create(&state, body).await?;
     Ok((StatusCode::CREATED, Json(record)))
 }
@@ -128,9 +131,11 @@ pub async fn create_trailer_handler(
 )]
 pub async fn update_trailer_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trailers:write")?;
     let record = apply_trailer_patch(&state, id, body).await?;
     Ok(Json(record))
 }
@@ -149,8 +154,10 @@ pub async fn update_trailer_handler(
 )]
 pub async fn delete_trailer_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trailers:delete")?;
     state.db.soft_delete_trailer(id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

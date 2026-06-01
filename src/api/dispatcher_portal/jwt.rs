@@ -22,6 +22,32 @@ pub struct DispatcherClaims {
     pub api_key_id: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_label: Option<String>,
+    /// Effective authorization scopes for this request, computed server-side in
+    /// `require_dispatcher_auth` from the dispatcher's role + extra_scopes. NOT
+    /// carried in the JWT (skipped on serialize, defaults empty on decode) — the
+    /// token only identifies the dispatcher; authority is resolved fresh each
+    /// request so a role/scope change takes effect without re-issuing tokens.
+    #[serde(default, skip_serializing)]
+    pub effective_scopes: Vec<String>,
+}
+
+impl DispatcherClaims {
+    /// True if the granted scopes satisfy `required` (honors `resource:*` and the
+    /// global `*` superuser token via `permission::scope_granted`).
+    pub fn has_scope(&self, required: &str) -> bool {
+        crate::models::permission::scope_granted(&self.effective_scopes, required)
+    }
+
+    /// Authorize the request for `required`, returning a 403 Forbidden if the
+    /// dispatcher's effective scopes do not grant it.
+    pub fn require_scope(&self, required: &str) -> Result<(), AppError> {
+        if self.has_scope(required) {
+            return Ok(());
+        }
+        Err(AppError::Forbidden(format!(
+            "missing required scope: {required}"
+        )))
+    }
 }
 
 pub fn encode_dispatcher_jwt(id: Uuid, token_version: i64, secret: &str) -> Result<String, AppError> {
@@ -36,6 +62,7 @@ pub fn encode_dispatcher_jwt(id: Uuid, token_version: i64, secret: &str) -> Resu
         kid: KID.into(),
         api_key_id: None,
         api_key_label: None,
+        effective_scopes: Vec::new(),
     };
     let header = Header { kid: Some(KID.into()), ..Header::default() };
     encode(&header, &claims, &EncodingKey::from_secret(secret.as_bytes()))
@@ -71,6 +98,40 @@ mod tests {
     }
 
     #[test]
+    fn test_require_scope_grants_and_denies() {
+        let mut claims = DispatcherClaims {
+            dispatcher_id: Uuid::new_v4().to_string(),
+            token_version: 0,
+            iss: ISSUER.into(),
+            aud: AUDIENCE.into(),
+            exp: 0,
+            iat: 0,
+            kid: KID.into(),
+            api_key_id: None,
+            api_key_label: None,
+            effective_scopes: vec!["loads:read".into(), "loads:write".into()],
+        };
+        assert!(claims.has_scope("loads:read"));
+        assert!(claims.require_scope("loads:write").is_ok());
+        assert!(matches!(
+            claims.require_scope("loads:settle"),
+            Err(AppError::Forbidden(_))
+        ));
+        // Superuser passes everything.
+        claims.effective_scopes = vec!["*".into()];
+        assert!(claims.require_scope("loads:settle").is_ok());
+        assert!(claims.require_scope("anything:goes").is_ok());
+    }
+
+    #[test]
+    fn test_effective_scopes_not_serialized_into_jwt() {
+        // The token must not carry authority — it only identifies the dispatcher.
+        let token = encode_dispatcher_jwt(Uuid::new_v4(), 1, SECRET).unwrap();
+        let decoded = decode_dispatcher_jwt(&token, SECRET).unwrap();
+        assert!(decoded.effective_scopes.is_empty());
+    }
+
+    #[test]
     fn test_wrong_secret_rejected() {
         let dispatcher_id = Uuid::new_v4();
         let token = encode_dispatcher_jwt(dispatcher_id, 1, SECRET).unwrap();
@@ -93,6 +154,7 @@ mod tests {
             kid: KID.into(),
             api_key_id: None,
             api_key_label: None,
+            effective_scopes: Vec::new(),
         };
         let token = encode(&Header::default(), &claims, &EncodingKey::from_secret(SECRET.as_bytes())).unwrap();
         let result = decode_dispatcher_jwt(&token, SECRET);
