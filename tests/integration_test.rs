@@ -1682,7 +1682,7 @@ async fn create_2stop_load(server: &axum_test::TestServer, fac_id: &str, custome
 async fn drive_load_to_delivered(
     server: &axum_test::TestServer, token: &str, fac_id: &str, load_id: &str,
 ) -> String {
-    let owner_token = setup_owner(&server).await;
+    let owner_token = setup_owner(server).await;
     let driver_id = server.post("/dispatch/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Deliver Driver" }))
@@ -3384,7 +3384,7 @@ async fn setup_driver_with_intransit_trip_two_stops(
     server: &TestServer,
     state: &AppState,
 ) -> (String, String) {
-    let owner_token = setup_owner(&server).await;
+    let owner_token = setup_owner(server).await;
     let driver_id_str = server.post("/dispatch/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "InTransit Driver" }))
@@ -4194,7 +4194,7 @@ async fn setup_driver_with_three_historical_trips(
     server: &TestServer,
     state: &AppState,
 ) -> String {
-    let owner_token = setup_owner(&server).await;
+    let owner_token = setup_owner(server).await;
     let driver_id_str = server
         .post("/dispatch/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
@@ -4365,7 +4365,7 @@ async fn setup_driver_with_dispatched_load_trip(
     server: &TestServer,
     state: &AppState,
 ) -> (String, String, String) {
-    let owner_token = setup_owner(&server).await;
+    let owner_token = setup_owner(server).await;
     let driver_id_str = server.post("/dispatch/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "Cascade Driver" }))
