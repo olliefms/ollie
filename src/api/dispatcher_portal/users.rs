@@ -84,6 +84,33 @@ fn count_active_owners(users: &[DispatcherRecord]) -> usize {
         .count()
 }
 
+/// Validate that the caller may grant each requested `extra_scopes` entry.
+/// A caller can never grant a capability they do not themselves hold, and only
+/// the owner may grant user-management (`users:*`) or superuser (`*`) scopes —
+/// this prevents a fleet_manager from minting a de-facto admin (shadow admin).
+fn validate_grantable_scopes(
+    caller_effective: &[String],
+    caller_role: Role,
+    requested: &[String],
+) -> Result<(), AppError> {
+    for s in requested {
+        // Can't grant a capability you don't yourself hold.
+        if !crate::models::permission::scope_granted(caller_effective, s) {
+            return Err(AppError::Forbidden(format!(
+                "cannot grant a scope you do not hold: {s}"
+            )));
+        }
+        // Only the owner may grant user-management or superuser scopes (prevents shadow admins).
+        let elevated = s == "*" || s.starts_with("users:");
+        if elevated && caller_role != Role::Owner {
+            return Err(AppError::Forbidden(format!(
+                "only the owner can grant scope: {s}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// bcrypt(12) a password off the async runtime, mirroring admin create_dispatcher.
 async fn hash_password(password: String) -> Result<String, AppError> {
     tokio::task::spawn_blocking(move || bcrypt::hash(&password, 12u32))
@@ -108,12 +135,18 @@ pub async fn apply_get_user(state: &AppState, id: Uuid) -> Result<DispatcherReco
 /// bootstrap or by ownership transfer, never by create.
 pub async fn apply_create_user(
     state: &AppState,
+    caller_effective: &[String],
+    caller_role: Role,
     req: CreateUserRequest,
 ) -> Result<DispatcherRecord, AppError> {
     if req.role == Role::Owner {
         return Err(AppError::Forbidden(
             "cannot create a user with role=owner; ownership is established by bootstrap or transfer".into(),
         ));
+    }
+
+    if let Some(extra) = &req.extra_scopes {
+        validate_grantable_scopes(caller_effective, caller_role, extra)?;
     }
 
     let email = normalize_email(&req.email);
@@ -157,11 +190,16 @@ pub async fn apply_create_user(
 ///   demote the calling owner to fleet_manager).
 pub async fn apply_update_user(
     state: &AppState,
+    caller_effective: &[String],
     caller_id: Option<Uuid>,
     caller_role: Role,
     id: Uuid,
     req: UpdateUserRequest,
 ) -> Result<DispatcherRecord, AppError> {
+    if let Some(extra) = &req.extra_scopes {
+        validate_grantable_scopes(caller_effective, caller_role, extra)?;
+    }
+
     let mut record = state.db.get_dispatcher_by_id(id).await?;
     let was_owner = record.role == Role::Owner;
 
@@ -260,10 +298,19 @@ async fn apply_ownership_transfer(
 /// Reset a user's password and bump token_version (invalidating outstanding JWTs).
 pub async fn apply_reset_password(
     state: &AppState,
+    caller_role: Role,
     id: Uuid,
     password: String,
 ) -> Result<(), AppError> {
-    state.db.get_dispatcher_by_id(id).await?;
+    let target = state.db.get_dispatcher_by_id(id).await?;
+
+    // Only the current owner may reset the owner's password — otherwise a
+    // fleet_manager (who holds users:write) could take over the owner account.
+    if target.role == Role::Owner && caller_role != Role::Owner {
+        return Err(AppError::Forbidden(
+            "only the current owner can reset the owner's password".into(),
+        ));
+    }
 
     let password_hash = hash_password(password).await?;
     let now = Utc::now();
@@ -397,7 +444,9 @@ pub async fn create_user(
     Json(body): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("users:write")?;
-    let record = apply_create_user(&state, body).await?;
+    let (_caller_id, caller_role) = caller_identity(&state, &claims).await;
+    let record =
+        apply_create_user(&state, &claims.effective_scopes, caller_role, body).await?;
     Ok((StatusCode::CREATED, Json(record)))
 }
 
@@ -423,7 +472,15 @@ pub async fn update_user(
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("users:write")?;
     let (caller_id, caller_role) = caller_identity(&state, &claims).await;
-    let record = apply_update_user(&state, caller_id, caller_role, id, body).await?;
+    let record = apply_update_user(
+        &state,
+        &claims.effective_scopes,
+        caller_id,
+        caller_role,
+        id,
+        body,
+    )
+    .await?;
     Ok(Json(record))
 }
 
@@ -448,7 +505,8 @@ pub async fn reset_user_password(
     Json(body): Json<ResetUserPasswordRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("users:write")?;
-    apply_reset_password(&state, id, body.password).await?;
+    let (_caller_id, caller_role) = caller_identity(&state, &claims).await;
+    apply_reset_password(&state, caller_role, id, body.password).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

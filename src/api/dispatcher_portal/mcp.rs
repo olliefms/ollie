@@ -1692,9 +1692,9 @@ async fn handle_tool_call(
         "update_driver" => tool_update_driver(state, args).await,
         "list_users" => tool_list_users(state).await,
         "get_user" => tool_get_user(state, args).await,
-        "create_user" => tool_create_user(state, args).await,
-        "update_user" => tool_update_user(state, args, caller_id).await,
-        "reset_user_password" => tool_reset_user_password(state, args).await,
+        "create_user" => tool_create_user(state, args, scopes, caller_id).await,
+        "update_user" => tool_update_user(state, args, scopes, caller_id).await,
+        "reset_user_password" => tool_reset_user_password(state, args, caller_id).await,
         "delete_user" => tool_delete_user(state, args).await,
         _ => return Err(ToolError::Unknown),
     };
@@ -2713,6 +2713,22 @@ async fn tool_update_driver(state: &AppState, args: &Value) -> Result<Value, Str
 
 // --- Users management (#331) ---
 
+/// Recover the caller's current role from the DB by their dispatcher id, so the
+/// Users tools enforce owner-only rules identically to the HTTP surface. Falls
+/// back to the least-privileged `Dispatcher` when the caller is unidentified.
+async fn caller_role_from_id(
+    state: &AppState,
+    caller_id: Option<Uuid>,
+) -> crate::models::permission::Role {
+    match caller_id {
+        Some(cid) => match state.db.get_dispatcher_by_id(cid).await {
+            Ok(r) => r.role,
+            Err(_) => crate::models::permission::Role::Dispatcher,
+        },
+        None => crate::models::permission::Role::Dispatcher,
+    }
+}
+
 async fn tool_list_users(state: &AppState) -> Result<Value, String> {
     let users = super::users::apply_list_users(state).await.map_err(|e| e.to_string())?;
     let returned = users.len();
@@ -2725,16 +2741,25 @@ async fn tool_get_user(state: &AppState, args: &Value) -> Result<Value, String> 
     Ok(mcp_content(record))
 }
 
-async fn tool_create_user(state: &AppState, args: &Value) -> Result<Value, String> {
+async fn tool_create_user(
+    state: &AppState,
+    args: &Value,
+    scopes: &[String],
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
     let req: super::users::CreateUserRequest = serde_json::from_value(args.clone())
         .map_err(|e| format!("invalid create_user arguments: {e}"))?;
-    let record = super::users::apply_create_user(state, req).await.map_err(|e| e.to_string())?;
+    let caller_role = caller_role_from_id(state, caller_id).await;
+    let record = super::users::apply_create_user(state, scopes, caller_role, req)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(record))
 }
 
 async fn tool_update_user(
     state: &AppState,
     args: &Value,
+    scopes: &[String],
     caller_id: Option<Uuid>,
 ) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
@@ -2744,25 +2769,25 @@ async fn tool_update_user(
     }
     let req: super::users::UpdateUserRequest = serde_json::from_value(body)
         .map_err(|e| format!("invalid update_user arguments: {e}"))?;
-    // Recover the caller's current role from the DB by their dispatcher id so the
-    // owner-only transfer rule can be enforced identically to the HTTP surface.
-    let caller_role = match caller_id {
-        Some(cid) => match state.db.get_dispatcher_by_id(cid).await {
-            Ok(r) => r.role,
-            Err(_) => crate::models::permission::Role::Dispatcher,
-        },
-        None => crate::models::permission::Role::Dispatcher,
-    };
-    let record = super::users::apply_update_user(state, caller_id, caller_role, id, req)
-        .await
-        .map_err(|e| e.to_string())?;
+    let caller_role = caller_role_from_id(state, caller_id).await;
+    let record =
+        super::users::apply_update_user(state, scopes, caller_id, caller_role, id, req)
+            .await
+            .map_err(|e| e.to_string())?;
     Ok(mcp_content(record))
 }
 
-async fn tool_reset_user_password(state: &AppState, args: &Value) -> Result<Value, String> {
+async fn tool_reset_user_password(
+    state: &AppState,
+    args: &Value,
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
     let password = args["password"].as_str().ok_or("missing or non-string field 'password'")?.to_string();
-    super::users::apply_reset_password(state, id, password).await.map_err(|e| e.to_string())?;
+    let caller_role = caller_role_from_id(state, caller_id).await;
+    super::users::apply_reset_password(state, caller_role, id, password)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "password_reset": true })))
 }
 

@@ -7701,6 +7701,166 @@ async fn test_users_mcp_parity() {
     assert_eq!(del["deleted"], serde_json::json!(true));
 }
 
+/// Log in a fleet_manager that the owner created, returning their JWT.
+async fn login_as(server: &axum_test::TestServer, email: &str, password: &str) -> String {
+    let resp = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({ "email": email, "password": password })).await;
+    assert_eq!(resp.status_code(), 200, "login failed: {}", resp.text());
+    resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+}
+
+// Finding 1 (CRITICAL): a fleet_manager (who holds users:write) must NOT be able
+// to reset the owner's password; only the current owner may.
+#[tokio::test]
+async fn test_users_fleet_manager_cannot_reset_owner_password() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "rp_owner@example.com", "pw-rp-owner", "owner").await;
+    let auth = format!("Bearer {owner}");
+
+    // Identify the owner.
+    let list = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    let owner_id = list["users"].as_array().unwrap().iter()
+        .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
+
+    // Owner creates a fleet_manager and a plain dispatcher target.
+    create_user_via_surface(&server, &owner,
+        "rp_fm@example.com", "FM", "pw-rp-fm", "fleet_manager").await;
+    let disp_id = create_user_via_surface(&server, &owner,
+        "rp_disp@example.com", "Disp", "pw-rp-disp", "dispatcher").await;
+    let fm = login_as(&server, "rp_fm@example.com", "pw-rp-fm").await;
+    let fmauth = format!("Bearer {fm}");
+
+    // FM resetting the OWNER's password → 403.
+    let blocked = server.put(&format!("/dispatch/api/v1/users/{owner_id}/password"))
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({ "password": "pwned-owner-pw" })).await;
+    assert_eq!(blocked.status_code(), 403, "fleet_manager cannot reset owner password");
+
+    // FM resetting a non-owner's password is still fine.
+    let ok_disp = server.put(&format!("/dispatch/api/v1/users/{disp_id}/password"))
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({ "password": "new-disp-pw" })).await;
+    assert_eq!(ok_disp.status_code(), 204, "fleet_manager may reset a non-owner password");
+
+    // The owner may reset another user's password, and their own. Reset another's
+    // first — resetting own bumps the owner's token_version and invalidates `auth`.
+    let ok_other = server.put(&format!("/dispatch/api/v1/users/{disp_id}/password"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "password": "another-pw" })).await;
+    assert_eq!(ok_other.status_code(), 204, "owner may reset another's password");
+    let ok_self = server.put(&format!("/dispatch/api/v1/users/{owner_id}/password"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "password": "new-owner-pw" })).await;
+    assert_eq!(ok_self.status_code(), 204, "owner may reset own password");
+}
+
+// Finding 2 (HIGH): extra_scopes must be validated. A fleet_manager cannot grant
+// user-management/superuser scopes (shadow-admin minting); the owner can. A
+// fleet_manager CAN grant an operational scope they themselves hold.
+#[tokio::test]
+async fn test_users_extra_scopes_grant_gating() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "es_owner@example.com", "pw-es-owner", "owner").await;
+    let auth = format!("Bearer {owner}");
+
+    create_user_via_surface(&server, &owner,
+        "es_fm@example.com", "FM", "pw-es-fm", "fleet_manager").await;
+    let target_id = create_user_via_surface(&server, &owner,
+        "es_tgt@example.com", "Tgt", "pw-es-tgt", "dispatcher").await;
+    let fm = login_as(&server, "es_fm@example.com", "pw-es-fm").await;
+    let fmauth = format!("Bearer {fm}");
+
+    // FM creating a user with users:write → 403 (shadow admin).
+    let bad_create = server.post("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({
+            "email": "es_shadow@example.com", "name": "S", "password": "pwpwpwpw",
+            "role": "dispatcher", "extra_scopes": ["users:write"]
+        })).await;
+    assert_eq!(bad_create.status_code(), 403, "fleet_manager cannot grant users:write on create");
+
+    // FM creating a user with superuser * → 403.
+    let bad_star = server.post("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({
+            "email": "es_star@example.com", "name": "S", "password": "pwpwpwpw",
+            "role": "dispatcher", "extra_scopes": ["*"]
+        })).await;
+    assert_eq!(bad_star.status_code(), 403, "fleet_manager cannot grant * on create");
+
+    // FM updating a user with users:write → 403.
+    let bad_update = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({ "extra_scopes": ["users:write"] })).await;
+    assert_eq!(bad_update.status_code(), 403, "fleet_manager cannot grant users:write on update");
+
+    // FM granting an operational scope they hold (loads:settle) → ok. Sanity that
+    // the fix is not over-broad.
+    let ok_update = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+        .add_header(header::AUTHORIZATION, &fmauth)
+        .json(&serde_json::json!({ "extra_scopes": ["loads:settle"] })).await;
+    assert_eq!(ok_update.status_code(), 200, "fleet_manager may grant a scope it holds: {}", ok_update.text());
+    assert_eq!(ok_update.json::<serde_json::Value>()["extra_scopes"][0], "loads:settle");
+
+    // The OWNER may grant users:write and *.
+    let owner_create = server.post("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "email": "es_priv@example.com", "name": "P", "password": "pwpwpwpw",
+            "role": "dispatcher", "extra_scopes": ["users:write"]
+        })).await;
+    assert_eq!(owner_create.status_code(), 201, "owner may grant users:write: {}", owner_create.text());
+    let owner_update = server.patch(&format!("/dispatch/api/v1/users/{target_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "extra_scopes": ["*"] })).await;
+    assert_eq!(owner_update.status_code(), 200, "owner may grant *: {}", owner_update.text());
+}
+
+// Finding 1 + 2 enforced identically via the MCP tool surface.
+#[tokio::test]
+async fn test_users_mcp_grant_and_reset_gating() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = login_with_role(&server, "mg_owner@example.com", "pw-mg-owner", "owner").await;
+    let auth = format!("Bearer {owner}");
+
+    let list = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    let owner_id = list["users"].as_array().unwrap().iter()
+        .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
+
+    create_user_via_surface(&server, &owner,
+        "mg_fm@example.com", "FM", "pw-mg-fm", "fleet_manager").await;
+    let target_id = create_user_via_surface(&server, &owner,
+        "mg_tgt@example.com", "Tgt", "pw-mg-tgt", "dispatcher").await;
+    let fm = login_as(&server, "mg_fm@example.com", "pw-mg-fm").await;
+
+    // FM reset_user_password against the owner via MCP → isError.
+    let reset_blocked = mcp_call_result(&server, &fm, "reset_user_password",
+        serde_json::json!({ "id": owner_id, "password": "pwned-via-mcp" })).await;
+    assert_eq!(reset_blocked["isError"], serde_json::json!(true), "fm reset owner pw via MCP must isError");
+
+    // FM create_user with users:write via MCP → isError.
+    let create_blocked = mcp_call_result(&server, &fm, "create_user", serde_json::json!({
+        "email": "mg_shadow@example.com", "name": "S", "password": "pwpwpwpw",
+        "role": "dispatcher", "extra_scopes": ["users:write"]
+    })).await;
+    assert_eq!(create_blocked["isError"], serde_json::json!(true), "fm grant users:write via MCP must isError");
+
+    // FM update_user granting * via MCP → isError.
+    let update_blocked = mcp_call_result(&server, &fm, "update_user", serde_json::json!({
+        "id": target_id, "extra_scopes": ["*"]
+    })).await;
+    assert_eq!(update_blocked["isError"], serde_json::json!(true), "fm grant * via MCP must isError");
+
+    // Owner doing the same via MCP succeeds.
+    let owner_made = mcp_call(&server, &owner, "create_user", serde_json::json!({
+        "email": "mg_priv@example.com", "name": "P", "password": "pwpwpwpw",
+        "role": "dispatcher", "extra_scopes": ["users:write"]
+    })).await;
+    assert_eq!(owner_made["extra_scopes"][0], "users:write");
+}
+
 // ---------------------------------------------------------------------------
 // First-run owner setup wizard (#331)
 //
