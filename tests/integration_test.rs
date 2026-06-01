@@ -7596,10 +7596,16 @@ async fn test_users_owner_protection_rules() {
     let owner_id = list["users"].as_array().unwrap().iter()
         .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
 
-    // Cannot delete the sole owner → 409.
+    // Cannot delete the sole owner → 403 (role-based owner-protection, not a
+    // count-based conflict): owners are immutable except via ownership transfer.
     let del = server.delete(&format!("/dispatch/api/v1/users/{owner_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
-    assert_eq!(del.status_code(), 409, "cannot deactivate the sole owner");
+    assert_eq!(del.status_code(), 403, "cannot deactivate the owner");
+    assert!(
+        del.text().contains("transfer ownership first"),
+        "expected transfer-ownership message, got: {}",
+        del.text()
+    );
 
     // Cannot demote the sole owner via PATCH → 403.
     let demote = server.patch(&format!("/dispatch/api/v1/users/{owner_id}"))
@@ -7619,6 +7625,50 @@ async fn test_users_owner_protection_rules() {
         .json(&serde_json::json!({ "email": "op_new@example.com", "name": "N", "password": "pwpwpwpw", "role": "owner" }))
         .await;
     assert_eq!(bad.status_code(), 403, "create with role=owner rejected");
+}
+
+// A fleet_manager (who holds users:delete) must not be able to deactivate ANY
+// owner via DELETE /users/{id}, even when ≥2 owners exist — not just the sole
+// owner. This mirrors apply_update_user's unconditional owner-protection.
+#[tokio::test]
+async fn test_users_delete_owner_forbidden_with_two_owners() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Seed two owners directly via the admin provisioning endpoint.
+    let owner1 = login_with_role(&server, "two_owner1@example.com", "pw-two-owner1", "owner").await;
+    let _owner2 = login_with_role(&server, "two_owner2@example.com", "pw-two-owner2", "owner").await;
+    let auth = format!("Bearer {owner1}");
+
+    // Confirm two active owners present.
+    let list = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    let arr = list["users"].as_array().unwrap();
+    let owner_ids: Vec<String> = arr.iter()
+        .filter(|u| u["role"] == "owner")
+        .map(|u| u["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(owner_ids.len(), 2, "expected two seeded owners");
+
+    // A fleet_manager (holds users:delete) attempts to deactivate owner2.
+    let fm = login_with_role(&server, "two_fm@example.com", "pw-two-fm", "fleet_manager").await;
+    let fmauth = format!("Bearer {fm}");
+    let target = arr.iter()
+        .find(|u| u["email"] == "two_owner2@example.com").unwrap()["id"].as_str().unwrap();
+    let del = server.delete(&format!("/dispatch/api/v1/users/{target}"))
+        .add_header(header::AUTHORIZATION, &fmauth).await;
+    assert_eq!(del.status_code(), 403, "fleet_manager cannot deactivate an owner even with two owners");
+    assert!(
+        del.text().contains("transfer ownership first"),
+        "expected transfer-ownership message, got: {}",
+        del.text()
+    );
+
+    // Owner count unchanged: both owners still active.
+    let after = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth).await.json::<serde_json::Value>();
+    let still_owners = after["users"].as_array().unwrap().iter()
+        .filter(|u| u["role"] == "owner" && u["status"] == "active").count();
+    assert_eq!(still_owners, 2, "owner count must be unchanged after rejected delete");
 }
 
 #[tokio::test]

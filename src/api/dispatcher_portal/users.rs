@@ -75,15 +75,6 @@ pub struct UserListResponse {
 // Owner-protection helpers (shared by HTTP + MCP)
 // ---------------------------------------------------------------------------
 
-/// Count the active owners in the fleet. The at-least-one-owner invariant is
-/// stated in terms of *active* owners — an Inactive owner does not satisfy it.
-fn count_active_owners(users: &[DispatcherRecord]) -> usize {
-    users
-        .iter()
-        .filter(|u| u.role == Role::Owner && u.status == DispatcherStatus::Active)
-        .count()
-}
-
 /// Validate that the caller may grant each requested `extra_scopes` entry.
 /// A caller can never grant a capability they do not themselves hold, and only
 /// the owner may grant user-management (`users:*`) or superuser (`*`) scopes —
@@ -331,17 +322,17 @@ pub async fn apply_reset_password(
 }
 
 /// Deactivate a user (status → Inactive + bump token_version). Soft delete,
-/// mirroring the driver delete. The sole active owner cannot be deactivated.
+/// mirroring the driver delete. Owners cannot be deactivated at all — this
+/// mirrors `apply_update_user`'s owner-protection: an owner (sole or not) is
+/// immutable except via ownership transfer, which demotes the prior owner to
+/// fleet_manager; only then can that (now non-owner) account be deactivated.
 pub async fn apply_delete_user(state: &AppState, id: Uuid) -> Result<(), AppError> {
     let mut record = state.db.get_dispatcher_by_id(id).await?;
 
     if record.role == Role::Owner {
-        let users = state.db.list_dispatchers().await?;
-        if count_active_owners(&users) <= 1 {
-            return Err(AppError::Conflict(
-                "cannot deactivate the only owner; transfer ownership first".into(),
-            ));
-        }
+        return Err(AppError::Forbidden(
+            "cannot deactivate the owner; transfer ownership first".into(),
+        ));
     }
 
     if record.status != DispatcherStatus::Inactive {
@@ -517,9 +508,8 @@ pub async fn reset_user_password(
     responses(
         (status = 204, description = "Deactivated (status → inactive); outstanding JWTs invalidated"),
         (status = 401, description = "Unauthorized"),
-        (status = 403, description = "Forbidden — missing users:delete"),
+        (status = 403, description = "Forbidden — missing users:delete, or target is an owner (transfer ownership first)"),
         (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — cannot deactivate the only owner"),
     ),
     security(("BearerAuth" = [])),
     tag = "users"
