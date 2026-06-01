@@ -94,6 +94,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatchers::reset_dispatcher_password,
         dispatcher_portal::auth::login,
         dispatcher_portal::auth::refresh,
+        dispatcher_portal::auth::setup_status,
+        dispatcher_portal::auth::setup,
         dispatcher_portal::data::list_loads,
         dispatcher_portal::data::get_load,
         dispatcher_portal::data::create_load,
@@ -146,6 +148,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatcher_portal::trailer_writes::update_trailer_handler,
         dispatcher_portal::trailer_writes::delete_trailer_handler,
         dispatcher_portal::data::list_events,
+        dispatcher_portal::users::list_users,
+        dispatcher_portal::users::get_user,
+        dispatcher_portal::users::create_user,
+        dispatcher_portal::users::update_user,
+        dispatcher_portal::users::reset_user_password,
+        dispatcher_portal::users::delete_user,
         dispatcher_portal::blobs::list_blobs,
         dispatcher_portal::blobs::upload_blob,
         dispatcher_portal::blobs::get_blob,
@@ -263,13 +271,20 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             driver_portal::equipment::AvailableTrailersResponse,
             models::DispatcherStatus,
             models::DispatcherRecord,
+            models::Role,
             dispatchers::CreateDispatcherRequest,
             dispatchers::UpdateDispatcherRequest,
             dispatchers::ResetDispatcherPasswordRequest,
             dispatchers::DispatcherListResponse,
+            dispatcher_portal::users::CreateUserRequest,
+            dispatcher_portal::users::UpdateUserRequest,
+            dispatcher_portal::users::ResetUserPasswordRequest,
+            dispatcher_portal::users::UserListResponse,
             dispatcher_portal::auth::LoginRequest,
             dispatcher_portal::auth::LoginResponse,
             dispatcher_portal::auth::LockResponse,
+            dispatcher_portal::auth::SetupRequest,
+            dispatcher_portal::auth::SetupStatusResponse,
             version::VersionResponse,
         )
     ),
@@ -424,12 +439,31 @@ within the 7-day window).
              (multipart POST /blobs accepts an optional visibility=driver field to expose the
              document in the driver portal; prefer the presigned flow above for large uploads)
   Events     GET /events (?trip_id, ?driver_id, ?limit, ?offset)
+  Users      GET /users, GET /users/:id, POST /users, PATCH /users/:id,
+             PUT /users/:id/password, DELETE /users/:id
   Counts     GET /loads/count, /drivers/count, /blobs/count, /events/count
 
 Truck/trailer PATCH: `status` is not settable — equipment transitions via the trip
 lifecycle; unknown body fields are rejected. Facility PATCH: setting `address`
 re-queues the geocoder, while explicit lat+lng set geocode_status=ready and reset
 the failure count.
+
+### Fleet users & roles — /dispatch/api/v1/users (requires users:* scopes)
+The Users surface manages fleet user accounts (roles: owner, fleet_manager,
+dispatcher) and per-user extra_scopes. It is gated by `users:*` scopes, which only
+owner and fleet_manager hold — a plain dispatcher is forbidden (403) from every
+endpoint. Responses expose the user record (id, email, name, status, role,
+extra_scopes, timestamps) and NEVER password hashes. MCP parity tools: list_users,
+get_user, create_user, update_user, reset_user_password, delete_user.
+  POST   /users               Create {email, name, password, role, extra_scopes?}. role=owner rejected.
+  PATCH  /users/:id           Update {name?, status?, role?, extra_scopes?}.
+  PUT    /users/:id/password  Reset {password} (bumps token_version, invalidates JWTs).
+  DELETE /users/:id           Deactivate (status→inactive + bump token_version).
+Owner-protection: at least one active owner must always exist; the owner cannot be
+demoted or deactivated except via ownership transfer. Ownership transfer (owner-only):
+a PATCH setting a different user's role to owner promotes that user and demotes the
+calling owner to fleet_manager. A fleet_manager attempting to set role=owner is
+forbidden (403).
 
 ## Domain model
 

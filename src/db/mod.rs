@@ -94,12 +94,7 @@ impl DbClient {
             empty_driver_passkey_credentials_batch,
         ).await?;
 
-        let dispatcher_table = open_or_create(
-            &conn,
-            "dispatchers",
-            dispatcher_schema(),
-            empty_dispatcher_batch,
-        ).await?;
+        let dispatcher_table = open_or_create_dispatcher(&conn).await?;
 
         let dispatcher_credentials_table = open_or_create(
             &conn,
@@ -136,7 +131,7 @@ impl DbClient {
             empty_authorization_code_batch,
         ).await?;
 
-        Ok(Self {
+        let client = Self {
             blob_table,
             dispatcher_table,
             dispatcher_credentials_table,
@@ -155,7 +150,14 @@ impl DbClient {
             trip_table,
             truck_table,
             embed_dim,
-        })
+        };
+
+        // Migration (existing installs): if dispatchers exist but no owner does,
+        // promote the oldest. No-op on fresh installs (they use the setup wizard)
+        // and idempotent once an owner exists.
+        client.reconcile_owner().await?;
+
+        Ok(client)
     }
 }
 
@@ -176,6 +178,36 @@ where
             let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
             conn.create_table(name, reader).execute().await
                 .map_err(|e| AppError::Internal(e.to_string()))
+        }
+    }
+}
+
+async fn open_or_create_dispatcher(conn: &lancedb::Connection) -> Result<Table, AppError> {
+    let schema = dispatcher_schema();
+    match conn.open_table("dispatchers").execute().await {
+        Err(_) => {
+            let batch = empty_dispatcher_batch(schema.clone())?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("dispatchers", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            // SQL keyword type `string`, never the Arrow name `Utf8` — see AGENTS.md.
+            if existing.field_with_name("role").is_err() {
+                transforms.push(("role".into(), "CAST('dispatcher' AS string)".into()));
+            }
+            if existing.field_with_name("extra_scopes").is_err() {
+                transforms.push(("extra_scopes".into(), "CAST('[]' AS string)".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating dispatchers table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("dispatcher schema migration failed: {e}")))?;
+            }
+            Ok(table)
         }
     }
 }
@@ -1028,6 +1060,8 @@ pub fn dispatcher_schema() -> Arc<Schema> {
         Field::new("email", DataType::Utf8, false),
         Field::new("name", DataType::Utf8, false),
         Field::new("status", DataType::Utf8, false),
+        Field::new("role", DataType::Utf8, false),
+        Field::new("extra_scopes", DataType::Utf8, false),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
     ]))
@@ -1035,6 +1069,8 @@ pub fn dispatcher_schema() -> Arc<Schema> {
 
 fn empty_dispatcher_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
     RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),

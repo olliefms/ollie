@@ -49,6 +49,41 @@ impl DbClient {
         batches_to_dispatchers(collect_stream(stream).await?)
     }
 
+    /// Number of rows in the dispatcher (== user) table. Used by the first-run
+    /// setup wizard guard (`needs_setup == count == 0`).
+    pub async fn count_dispatchers(&self) -> Result<usize, AppError> {
+        self.dispatcher_table.count_rows(None).await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
+    /// One-time reconcile run at startup: if there is at least one dispatcher
+    /// but no owner, promote the oldest dispatcher (lowest `created_at`) to
+    /// `role=owner`. Idempotent — once any owner exists it is a no-op. Fresh
+    /// installs (zero dispatchers) are untouched; they use the setup wizard.
+    pub async fn reconcile_owner(&self) -> Result<(), AppError> {
+        use crate::models::Role;
+        let users = self.list_dispatchers().await?;
+        if users.is_empty() {
+            return Ok(());
+        }
+        if users.iter().any(|u| u.role == Role::Owner) {
+            return Ok(());
+        }
+        let Some(oldest) = users.iter().min_by_key(|u| u.created_at) else {
+            return Ok(());
+        };
+        let mut promoted = oldest.clone();
+        promoted.role = Role::Owner;
+        promoted.updated_at = chrono::Utc::now();
+        self.upsert_dispatcher(&promoted).await?;
+        tracing::info!(
+            dispatcher_id = %promoted.id,
+            email = %promoted.email,
+            "auto-promoted oldest dispatcher to owner (migration: no owner existed)"
+        );
+        Ok(())
+    }
+
     pub async fn upsert_dispatcher(&self, record: &DispatcherRecord) -> Result<(), AppError> {
         let batch = dispatcher_to_batch(record)?;
         let schema = dispatcher_schema();
@@ -90,6 +125,9 @@ impl DbClient {
 fn dispatcher_to_batch(record: &DispatcherRecord) -> Result<RecordBatch, AppError> {
     let schema = dispatcher_schema();
     let id_str = record.id.to_string();
+    let role_str = record.role.as_str();
+    let extra_scopes_str = serde_json::to_string(&record.extra_scopes)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
     let created_str = record.created_at.to_rfc3339();
     let updated_str = record.updated_at.to_rfc3339();
 
@@ -98,6 +136,8 @@ fn dispatcher_to_batch(record: &DispatcherRecord) -> Result<RecordBatch, AppErro
         Arc::new(StringArray::from(vec![record.email.as_str()])),
         Arc::new(StringArray::from(vec![record.name.as_str()])),
         Arc::new(StringArray::from(vec![record.status.as_str()])),
+        Arc::new(StringArray::from(vec![role_str])),
+        Arc::new(StringArray::from(vec![extra_scopes_str.as_str()])),
         Arc::new(StringArray::from(vec![created_str.as_str()])),
         Arc::new(StringArray::from(vec![updated_str.as_str()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
@@ -137,11 +177,23 @@ fn row_to_dispatcher(batch: &RecordBatch, i: usize) -> Result<DispatcherRecord, 
             .unwrap_or_default()
     };
 
+    let role = str_col("role")
+        .parse()
+        .unwrap_or(crate::models::Role::Dispatcher);
+    let extra_scopes_raw = str_col("extra_scopes");
+    let extra_scopes = if extra_scopes_raw.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&extra_scopes_raw).unwrap_or_default()
+    };
+
     Ok(DispatcherRecord {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         email: str_col("email"),
         name: str_col("name"),
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
+        role,
+        extra_scopes,
         created_at: str_col("created_at").parse()
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
         updated_at: str_col("updated_at").parse()
@@ -226,6 +278,8 @@ mod tests {
             email: "dispatch@example.com".into(),
             name: "Jane Dispatcher".into(),
             status: DispatcherStatus::Active,
+            role: crate::models::Role::Dispatcher,
+            extra_scopes: Vec::new(),
             created_at: now,
             updated_at: now,
         }
@@ -270,6 +324,8 @@ mod tests {
             email: "other@example.com".into(),
             name: "Other Dispatcher".into(),
             status: DispatcherStatus::Inactive,
+            role: crate::models::Role::FleetManager,
+            extra_scopes: vec!["loads:settle".into()],
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };

@@ -19,8 +19,9 @@ use axum::{
     extract::{Multipart, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
+use super::jwt::DispatcherClaims;
 use axum_extra::extract::Query;
 use bytes::Bytes;
 use serde::Deserialize;
@@ -42,8 +43,10 @@ use super::blob_links::{self, BlobUrlOp};
 )]
 pub async fn list_blobs(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("blobs:read")?;
     let limit = q.limit.unwrap_or(20).min(100);
     let offset = q.offset.unwrap_or(0);
 
@@ -78,8 +81,10 @@ pub async fn list_blobs(
 )]
 pub async fn upload_blob(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("blobs:write")?;
     let mut file_bytes: Option<Bytes> = None;
     let mut filename: Option<String> = None;
     let mut file_content_type: Option<String> = None;
@@ -172,9 +177,11 @@ pub async fn upload_blob(
 )]
 pub async fn get_blob(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("blobs:read")?;
     let record = state.db.get_by_id(id).await?;
 
     let wants_json = headers
@@ -217,9 +224,11 @@ pub async fn get_blob(
 )]
 pub async fn update_blob(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateBlobRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("blobs:write")?;
     if body.name.is_none() && body.tags.is_none() {
         return Err(AppError::BadRequest(
             "at least one of 'name' or 'tags' is required".into(),
@@ -244,8 +253,10 @@ pub async fn update_blob(
 )]
 pub async fn delete_blob(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("blobs:delete")?;
     let record = state.db.get_by_id(id).await?;
 
     if state.db.any_load_references_blob(id).await? {
@@ -288,9 +299,11 @@ pub async fn delete_blob(
 )]
 pub async fn query_blob(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<BlobQueryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("blobs:read")?;
     if body.prompt.is_empty() {
         return Err(AppError::BadRequest("prompt must not be empty".into()));
     }

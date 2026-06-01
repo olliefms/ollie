@@ -119,7 +119,37 @@ async function apiFetch(path, options = {}) {
 function showLogin() {
   document.getElementById('login-view').hidden = false;
   document.getElementById('app-shell').hidden = true;
+  // Default to the sign-in pane; boot() flips to setup if needed.
+  const loginPane = document.getElementById('login-pane');
+  const setupPane = document.getElementById('setup-pane');
+  if (loginPane) loginPane.hidden = false;
+  if (setupPane) setupPane.hidden = true;
   clearEventsRefresh();
+}
+
+function showSetup() {
+  document.getElementById('login-view').hidden = false;
+  document.getElementById('app-shell').hidden = true;
+  const loginPane = document.getElementById('login-pane');
+  const setupPane = document.getElementById('setup-pane');
+  if (loginPane) loginPane.hidden = true;
+  if (setupPane) setupPane.hidden = false;
+  clearEventsRefresh();
+}
+
+// Show the setup pane when no users exist yet, otherwise the sign-in pane.
+async function showLoginOrSetup() {
+  try {
+    const res = await fetch(`${API_BASE}/setup/status`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.needs_setup) {
+        showSetup();
+        return;
+      }
+    }
+  } catch (_) { /* fall through to login */ }
+  showLogin();
 }
 
 function showApp() {
@@ -1817,6 +1847,57 @@ function initLoginForm() {
   });
 }
 
+function initSetupForm() {
+  const form = document.getElementById('setup-form');
+  if (!form) return;
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+
+    const alertEl = document.getElementById('setup-alert');
+    const submitBtn = document.getElementById('setup-submit');
+    const name = document.getElementById('setup-name').value.trim();
+    const email = document.getElementById('setup-email').value.trim();
+    const password = document.getElementById('setup-password').value;
+
+    alertEl.hidden = true;
+    alertEl.className = 'alert';
+    alertEl.textContent = '';
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Creating…';
+
+    try {
+      const res = await fetch('/dispatch/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ name, email, password }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        saveToken(data.token || data.access_token);
+        showApp();
+        navigate('home');
+        return;
+      }
+
+      if (res.status === 409 || res.status === 410) {
+        showAlert(alertEl, 'alert--warning', 'Setup has already been completed. Please sign in.');
+        showLogin();
+        return;
+      }
+
+      showAlert(alertEl, 'alert--error', `Setup failed (HTTP ${res.status}). Please try again.`);
+    } catch (err) {
+      showAlert(alertEl, 'alert--error', `Network error: ${err.message}`);
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Create owner account';
+    }
+  });
+}
+
 function showAlert(el, cls, msg) {
   el.className = `alert ${cls}`;
   el.textContent = msg;
@@ -1850,6 +1931,7 @@ function initSidebar() {
 
 async function boot() {
   initLoginForm();
+  initSetupForm();
   initSidebar();
 
   if (isAuthenticated()) {
@@ -1863,7 +1945,7 @@ async function boot() {
       const { view, params } = decodeViewHash(window.location.hash);
       _renderView(view, params);
     } else {
-      showLogin();
+      await showLoginOrSetup();
     }
   }
 }

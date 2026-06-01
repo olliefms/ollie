@@ -2,8 +2,9 @@
 use crate::{
     AppState,
     error::AppError,
-    models::DispatcherStatus,
+    models::{DispatcherCredentials, DispatcherRecord, DispatcherStatus, permission::Role},
 };
+use uuid::Uuid;
 use axum::{
     Json,
     extract::State,
@@ -220,6 +221,103 @@ pub async fn refresh(
         }
         _ => Err(AppError::Unauthorized),
     }
+}
+
+// --- First-run owner setup wizard (UNauthenticated) ---
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SetupStatusResponse {
+    pub needs_setup: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetupRequest {
+    pub email: String,
+    pub name: String,
+    pub password: String,
+}
+
+/// Report whether first-run setup is needed (zero users exist). Unauthenticated:
+/// it is only meaningful, and the setup endpoint only open, while the table is empty.
+#[utoipa::path(
+    get,
+    path = "/dispatch/api/v1/setup/status",
+    responses((status = 200, description = "Whether first-run setup is needed", body = SetupStatusResponse)),
+    tag = "dispatch-auth"
+)]
+pub async fn setup_status(
+    State(state): State<AppState>,
+) -> Result<impl IntoResponse, AppError> {
+    let needs_setup = state.db.count_dispatchers().await? == 0;
+    Ok(Json(SetupStatusResponse { needs_setup }))
+}
+
+/// Create the first user with `role=owner`. Unauthenticated, guarded by
+/// `count_dispatchers() == 0` — the guard slams shut the instant any user exists,
+/// returning `409 Conflict`. On success the new owner is logged straight in
+/// (token + refresh cookie), the same shape as `/dispatch/auth/login`.
+#[utoipa::path(
+    post,
+    path = "/dispatch/setup",
+    request_body(content = SetupRequest, description = "First owner account"),
+    responses(
+        (status = 200, description = "Owner created; logged in", body = LoginResponse),
+        (status = 409, description = "Setup already completed — a user already exists"),
+    ),
+    tag = "dispatch-auth"
+)]
+pub async fn setup(
+    State(state): State<AppState>,
+    Json(req): Json<SetupRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    if state.db.count_dispatchers().await? != 0 {
+        return Err(AppError::Conflict("setup already completed".into()));
+    }
+
+    let email = normalize_email(&req.email);
+    let now = Utc::now();
+    let id = Uuid::new_v4();
+    let record = DispatcherRecord {
+        id,
+        email,
+        name: req.name,
+        status: DispatcherStatus::Active,
+        role: Role::Owner,
+        extra_scopes: Vec::new(),
+        created_at: now,
+        updated_at: now,
+    };
+    state.db.insert_dispatcher(&record).await?;
+
+    let pw = req.password;
+    let password_hash = tokio::task::spawn_blocking(move || bcrypt::hash(&pw, 12u32))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let creds = DispatcherCredentials {
+        dispatcher_id: id,
+        password_hash,
+        token_version: 0,
+        failed_attempts: 0,
+        locked_until: None,
+        updated_at: now,
+    };
+    state.db.upsert_dispatcher_credentials(&creds).await?;
+
+    tracing::info!(dispatcher_id = %id, "first-run setup: owner account created");
+
+    // Log the new owner straight in (same shape as login).
+    let token = encode_dispatcher_jwt(id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
+    let issued = refresh_tokens::issue(
+        &state.db, "dispatcher", id, None, creds.token_version, Utc::now(),
+    ).await?;
+    let cookie = refresh_tokens::set_cookie_header(&issued.secret, state.config.cookie_secure);
+    let mut response = (StatusCode::OK, Json(LoginResponse { token })).into_response();
+    response.headers_mut().insert(
+        SET_COOKIE,
+        cookie.parse().map_err(|_| AppError::Internal("bad cookie".into()))?,
+    );
+    Ok(response)
 }
 
 /// Revoke the caller's refresh-token family and clear the cookie.

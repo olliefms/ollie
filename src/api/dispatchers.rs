@@ -25,6 +25,12 @@ pub struct CreateDispatcherRequest {
     pub email: String,
     pub name: String,
     pub password: String,
+    /// Optional role for the new dispatcher (owner / fleet_manager / dispatcher).
+    /// Defaults to `dispatcher`. The dispatcher-facing Users management surface
+    /// (with owner-protection rules) lands in a later chunk (#331); this admin-key
+    /// path simply provisions the record at the requested role.
+    #[serde(default)]
+    pub role: crate::models::permission::Role,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -76,6 +82,8 @@ pub async fn create_dispatcher(
         email,
         name: body.name,
         status: DispatcherStatus::Active,
+        role: body.role,
+        extra_scopes: Vec::new(),
         created_at: now,
         updated_at: now,
     };

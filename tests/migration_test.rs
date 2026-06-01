@@ -299,6 +299,208 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
     assert_eq!(client.trips_referencing_blob(blob_id).await.unwrap(), vec![new_id]);
 }
 
+/// Pre-#331 dispatchers schema: current `dispatcher_schema` minus the
+/// appended `role` and `extra_scopes` columns.
+fn dispatcher_schema_pre_roles() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("email", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+async fn seed_pre_roles_dispatchers(path: &str) -> Uuid {
+    let conn = lancedb::connect(path).execute().await.unwrap();
+    let schema = dispatcher_schema_pre_roles();
+    let id = Uuid::new_v4();
+    let id_str = id.to_string();
+    let now = Utc::now().to_rfc3339();
+    let batch = RecordBatch::try_new(schema.clone(), vec![
+        Arc::new(StringArray::from(vec![Some(id_str.as_str())])),
+        Arc::new(StringArray::from(vec![Some("legacy@example.com")])),
+        Arc::new(StringArray::from(vec![Some("Legacy Dispatcher")])),
+        Arc::new(StringArray::from(vec![Some("active")])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+    ]).unwrap();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    conn.create_table("dispatchers", reader).execute().await.unwrap();
+    id
+}
+
+/// #331 added `role` + `extra_scopes` columns to the dispatchers table (the
+/// permission model's per-user storage). Seed a pre-#331 dispatchers table,
+/// then assert the migration adds the columns with the documented defaults
+/// (`role='dispatcher'`, `extra_scopes='[]'`) and that the pre-existing row
+/// round-trips through the ops layer.
+#[tokio::test]
+async fn migration_opens_pre_roles_dispatchers_and_adds_role_and_extra_scopes() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    let seeded_id = seed_pre_roles_dispatchers(path).await;
+
+    let client = DbClient::new(path, EMBED_DIM).await.expect(
+        "DbClient::new must migrate a pre-#331 dispatchers table without erroring. \
+         If this fails with a DataFusion CAST parser error, the role/extra_scopes \
+         migration is using an Arrow type name (e.g. `Utf8`) where a SQL keyword \
+         (`string`) is required — see AGENTS.md.",
+    );
+
+    let schema = client.dispatcher_table.schema().await.unwrap();
+    assert!(schema.field_with_name("role").is_ok(),
+        "post-migration dispatchers schema missing role (#331)");
+    assert!(schema.field_with_name("extra_scopes").is_ok(),
+        "post-migration dispatchers schema missing extra_scopes (#331)");
+
+    assert_eq!(client.dispatcher_table.count_rows(None).await.unwrap(), 1);
+
+    // Pre-existing row reads back with migration defaults for extra_scopes. Its
+    // role column is added as `dispatcher`, but the #331 owner-bootstrap reconcile
+    // (run from DbClient::new) then auto-promotes the sole/oldest dispatcher to
+    // owner, since an existing install would otherwise have no owner.
+    use ollie::models::Role;
+    let fetched = client.get_dispatcher_by_id(seeded_id).await.unwrap();
+    assert_eq!(fetched.email, "legacy@example.com");
+    assert_eq!(fetched.role, Role::Owner);
+    assert_eq!(fetched.extra_scopes, Vec::<String>::new());
+
+    // A fresh write carrying role + extra_scopes round-trips.
+    use ollie::models::{DispatcherRecord, DispatcherStatus};
+    let new_id = Uuid::new_v4();
+    let now = Utc::now();
+    let record = DispatcherRecord {
+        id: new_id,
+        email: "owner@example.com".into(),
+        name: "New Owner".into(),
+        status: DispatcherStatus::Active,
+        role: Role::FleetManager,
+        extra_scopes: vec!["loads:settle".into(), "loads:invoice".into()],
+        created_at: now,
+        updated_at: now,
+    };
+    client.upsert_dispatcher(&record).await.unwrap();
+    let refetched = client.get_dispatcher_by_id(new_id).await.unwrap();
+    assert_eq!(refetched.role, Role::FleetManager);
+    assert_eq!(refetched.extra_scopes, vec!["loads:settle".to_string(), "loads:invoice".to_string()]);
+}
+
+/// #331 owner-bootstrap reconcile: an existing install with dispatchers but no
+/// owner must auto-promote the OLDEST dispatcher (lowest created_at) on the next
+/// DbClient::new, leaving the others as `dispatcher`. Seed three dispatchers with
+/// distinct created_at through a first DbClient (whose reconcile is a no-op over
+/// the initially-empty table), then re-open over the same data to run reconcile.
+#[tokio::test]
+async fn reconcile_promotes_oldest_dispatcher_when_no_owner_exists() {
+    use ollie::models::{DispatcherRecord, DispatcherStatus, Role};
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    let oldest_id;
+    {
+        let client = DbClient::new(path, EMBED_DIM).await.unwrap();
+        let base = Utc::now();
+        let mk = |email: &str, mins_ago: i64| DispatcherRecord {
+            id: Uuid::new_v4(),
+            email: email.into(),
+            name: email.into(),
+            status: DispatcherStatus::Active,
+            role: Role::Dispatcher,
+            extra_scopes: Vec::new(),
+            created_at: base - chrono::Duration::minutes(mins_ago),
+            updated_at: base,
+        };
+        let oldest = mk("oldest@example.com", 100);
+        oldest_id = oldest.id;
+        client.insert_dispatcher(&oldest).await.unwrap();
+        client.insert_dispatcher(&mk("middle@example.com", 50)).await.unwrap();
+        client.insert_dispatcher(&mk("newest@example.com", 10)).await.unwrap();
+    }
+
+    // Re-open: reconcile runs and promotes the oldest.
+    let client = DbClient::new(path, EMBED_DIM).await.unwrap();
+    let users = client.list_dispatchers().await.unwrap();
+    assert_eq!(users.len(), 3);
+    let owners: Vec<_> = users.iter().filter(|u| u.role == Role::Owner).collect();
+    assert_eq!(owners.len(), 1, "exactly one owner after reconcile");
+    assert_eq!(owners[0].id, oldest_id, "oldest dispatcher must be promoted");
+    for u in &users {
+        if u.id != oldest_id {
+            assert_eq!(u.role, Role::Dispatcher, "non-oldest must stay dispatcher");
+        }
+    }
+
+    // Idempotent: a further re-open does not change ownership.
+    let client2 = DbClient::new(path, EMBED_DIM).await.unwrap();
+    let owners2: Vec<_> = client2.list_dispatchers().await.unwrap()
+        .into_iter().filter(|u| u.role == Role::Owner).collect();
+    assert_eq!(owners2.len(), 1);
+    assert_eq!(owners2[0].id, oldest_id);
+}
+
+/// Reconcile is a no-op when an owner already exists: an install that already has
+/// an owner (plus older dispatchers) must keep that owner untouched.
+#[tokio::test]
+async fn reconcile_is_noop_when_owner_already_exists() {
+    use ollie::models::{DispatcherRecord, DispatcherStatus, Role};
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    let owner_id;
+    {
+        let client = DbClient::new(path, EMBED_DIM).await.unwrap();
+        let base = Utc::now();
+        // An OLDER dispatcher plus a newer explicit owner. If reconcile fired it
+        // would (wrongly) promote the older dispatcher.
+        let older = DispatcherRecord {
+            id: Uuid::new_v4(),
+            email: "older@example.com".into(),
+            name: "Older".into(),
+            status: DispatcherStatus::Active,
+            role: Role::Dispatcher,
+            extra_scopes: Vec::new(),
+            created_at: base - chrono::Duration::minutes(100),
+            updated_at: base,
+        };
+        let owner = DispatcherRecord {
+            id: Uuid::new_v4(),
+            email: "owner@example.com".into(),
+            name: "Owner".into(),
+            status: DispatcherStatus::Active,
+            role: Role::Owner,
+            extra_scopes: Vec::new(),
+            created_at: base - chrono::Duration::minutes(10),
+            updated_at: base,
+        };
+        owner_id = owner.id;
+        client.insert_dispatcher(&older).await.unwrap();
+        client.insert_dispatcher(&owner).await.unwrap();
+    }
+
+    let client = DbClient::new(path, EMBED_DIM).await.unwrap();
+    let owners: Vec<_> = client.list_dispatchers().await.unwrap()
+        .into_iter().filter(|u| u.role == Role::Owner).collect();
+    assert_eq!(owners.len(), 1, "reconcile must not add a second owner");
+    assert_eq!(owners[0].id, owner_id, "existing owner must be unchanged");
+}
+
+/// Fresh install (zero dispatchers): reconcile leaves the table empty.
+#[tokio::test]
+async fn reconcile_noop_on_fresh_install() {
+    use ollie::models::Role;
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+    let client = DbClient::new(path, EMBED_DIM).await.unwrap();
+    let users = client.list_dispatchers().await.unwrap();
+    assert!(users.is_empty(), "fresh install has zero dispatchers");
+    assert_eq!(client.count_dispatchers().await.unwrap(), 0);
+    assert!(!users.iter().any(|u| u.role == Role::Owner));
+}
+
 /// Pre-#279 trucks schema: current `truck_schema` minus the appended `blob_ids`.
 fn truck_schema_pre_blob_ids(embed_dim: usize) -> Arc<Schema> {
     Arc::new(Schema::new(vec![

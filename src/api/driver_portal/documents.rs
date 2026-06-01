@@ -300,7 +300,7 @@ pub async fn delete_document(
         return Err(AppError::NotFound);
     }
     if record.uploaded_by != Some(driver_id) {
-        return Err(AppError::Forbidden);
+        return Err(AppError::Forbidden("not the uploader of this document".into()));
     }
     state.db.delete_by_id(blob_id).await?;
     Ok(StatusCode::NO_CONTENT)

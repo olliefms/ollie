@@ -7,9 +7,10 @@
 use axum::{
     extract::{Path, Query, State},
     response::IntoResponse,
-    Json,
+    Extension, Json,
 };
 use axum::http::StatusCode;
+use super::jwt::DispatcherClaims;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -185,8 +186,10 @@ fn enrich_trip(
 )]
 pub async fn list_loads(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListLoadsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:read")?;
     let limit = q.limit.unwrap_or(20).min(100);
     let offset = q.offset.unwrap_or(0);
 
@@ -217,8 +220,10 @@ pub async fn list_loads(
 )]
 pub async fn get_load(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:read")?;
     let record = state.db.get_load_by_id(id).await?;
     let response = build_load_detail(&state, record).await?;
     Ok(Json(response))
@@ -238,8 +243,10 @@ pub async fn get_load(
 )]
 pub async fn create_load(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Json(body): Json<CreateLoadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:write")?;
     use chrono::Utc;
     use crate::models::{LoadRecord, LoadStatus};
 
@@ -319,9 +326,11 @@ pub async fn create_load(
 )]
 pub async fn update_load(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateLoadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:write")?;
     let stops_provided = body.stops.is_some();
     let stops = match body.stops {
         Some(inputs) => Some(resolve_stops_pub(&state, inputs).await?),
@@ -387,8 +396,10 @@ pub async fn update_load(
 )]
 pub async fn delete_load_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:delete")?;
     state.db.get_load_by_id(id).await?;
     let active = state.db.count_active_trips_for_load(id).await?;
     if active > 0 {
@@ -416,9 +427,11 @@ pub async fn delete_load_handler(
 )]
 pub async fn invoice_load_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<crate::models::InvoiceActionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:invoice")?;
     let record = state.db.transition_load_status(
         id, LoadStatus::Invoiced,
         body.invoice_number, body.invoice_date, None,
@@ -443,9 +456,11 @@ pub async fn invoice_load_handler(
 )]
 pub async fn cancel_load_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<crate::models::CancelActionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:write")?;
     let record = state.db.transition_load_status(
         id, LoadStatus::Cancelled, None, None, body.reason,
     ).await?;
@@ -468,8 +483,10 @@ pub async fn cancel_load_handler(
 )]
 pub async fn settle_load_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:settle")?;
     let record = state.db.transition_load_status(
         id, LoadStatus::Settled, None, None, None,
     ).await?;
@@ -511,8 +528,10 @@ pub struct ListTripsQuery {
 )]
 pub async fn list_trips(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListTripsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:read")?;
     let items = build_trip_list_items(&state, q).await?;
     Ok(Json(DispatcherTripListResponse { items }))
 }
@@ -533,8 +552,10 @@ pub async fn list_trips(
 )]
 pub async fn create_trip_handler(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Json(body): Json<crate::models::trip::CreateTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     // Create via the shared writer, which returns the created record — no
     // re-fetch (that races under concurrent creates).
     let record = crate::api::trips::apply_trip_create(&state, body).await?;
@@ -654,8 +675,10 @@ pub async fn build_trip_list_items(
 )]
 pub async fn get_trip(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:read")?;
     let item = build_trip_detail(&state, id).await?;
     Ok(Json(item))
 }
@@ -766,9 +789,11 @@ pub async fn driver_pay_for_record(
 )]
 pub async fn assign_trip(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<AssignTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     use crate::models::DriverStatus;
 
     let driver = state.db.get_driver_by_id(body.driver_id).await?;
@@ -845,8 +870,10 @@ pub async fn assign_trip(
 )]
 pub async fn unassign_trip(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     let existing = state.db.get_trip(id).await?;
     state.db.transition_trip_status(id, TripStatus::Planned).await?;
     state.db.update_trip_resources(id, None, None, vec![]).await?;
@@ -899,8 +926,10 @@ pub async fn unassign_trip(
 )]
 pub async fn dispatch_trip(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     trip_actions::dispatch_trip(state, id).await
 }
 
@@ -919,8 +948,10 @@ pub async fn dispatch_trip(
 )]
 pub async fn undispatch_trip(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     trip_actions::undispatch_trip(state, id).await
 }
 
@@ -939,8 +970,10 @@ pub async fn undispatch_trip(
 )]
 pub async fn cancel_trip(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     trip_actions::cancel_trip(state, id).await
 }
 
@@ -959,8 +992,10 @@ pub async fn cancel_trip(
 )]
 pub async fn complete_trip(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     trip_actions::complete_trip(state, id).await
 }
 
@@ -983,9 +1018,11 @@ pub async fn complete_trip(
 )]
 pub async fn stop_arrive(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     path: Path<(Uuid, u32)>,
     body: Json<StopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     // Edit-lock: a settled trip's stop times are frozen.
     let trip = state.db.get_trip(path.0.0).await?;
     if trip.settlement_ref.is_some() {
@@ -1013,9 +1050,11 @@ pub async fn stop_arrive(
 )]
 pub async fn stop_depart(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     path: Path<(Uuid, u32)>,
     body: Json<StopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     // Edit-lock: a settled trip's stop times are frozen.
     let trip = state.db.get_trip(path.0.0).await?;
     if trip.settlement_ref.is_some() {
@@ -1042,9 +1081,11 @@ pub async fn stop_depart(
 )]
 pub async fn stop_late(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     path: Path<(Uuid, u32)>,
     body: Json<StopLateRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     trip_actions::stop_late(state, path, body).await
 }
 
@@ -1063,9 +1104,11 @@ pub async fn stop_late(
 )]
 pub async fn check_call(
     state: State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     id: Path<Uuid>,
     body: Json<CheckCallRequest>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
     trip_actions::check_call(state, id, body).await
 }
 
@@ -1093,8 +1136,10 @@ pub struct ListDriversQuery {
 )]
 pub async fn list_drivers(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListDriversQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:read")?;
     let (total, items) = state.db.list_drivers(q.status.as_deref(), 100, 0).await?;
     Ok(Json(DriverListResponse { returned: total, items }))
 }
@@ -1113,8 +1158,10 @@ pub async fn list_drivers(
 )]
 pub async fn get_driver(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:read")?;
     let record = state.db.get_driver_by_id(id).await?;
     Ok(Json(record))
 }
@@ -1143,8 +1190,10 @@ pub struct ListTrucksQuery {
 )]
 pub async fn list_trucks(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListTrucksQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trucks:read")?;
     let (total, items) = state.db.list_trucks(q.status.as_deref(), 100, 0).await?;
     Ok(Json(TruckListResponse { returned: total, items }))
 }
@@ -1163,8 +1212,10 @@ pub async fn list_trucks(
 )]
 pub async fn get_truck(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trucks:read")?;
     let record = state.db.get_truck_by_id(id).await?;
     Ok(Json(record))
 }
@@ -1193,8 +1244,10 @@ pub struct ListTrailersQuery {
 )]
 pub async fn list_trailers(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListTrailersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trailers:read")?;
     let (total, items) = state.db.list_trailers(q.status.as_deref(), None, 100, 0).await?;
     Ok(Json(TrailerListResponse { returned: total, items }))
 }
@@ -1213,8 +1266,10 @@ pub async fn list_trailers(
 )]
 pub async fn get_trailer(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trailers:read")?;
     let record = state.db.get_trailer_by_id(id).await?;
     Ok(Json(record))
 }
@@ -1248,8 +1303,10 @@ pub struct ListFacilitiesDispatchQuery {
 )]
 pub async fn list_facilities(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListFacilitiesDispatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("facilities:read")?;
     let limit = q.limit.unwrap_or(20).min(100);
     let offset = q.offset.unwrap_or(0);
 
@@ -1291,8 +1348,10 @@ pub async fn list_facilities(
 )]
 pub async fn get_facility(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("facilities:read")?;
     let record = state.db.get_facility_by_id(id).await?;
     Ok(Json(record))
 }
@@ -1327,8 +1386,10 @@ pub struct ListEventsDispatchQuery {
 )]
 pub async fn list_events(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
     Query(q): Query<ListEventsDispatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("events:read")?;
     let limit = q.limit.unwrap_or(20).min(100);
     let offset = q.offset.unwrap_or(0);
 
@@ -1369,7 +1430,9 @@ pub struct CountResponse {
 )]
 pub async fn count_open_loads(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("loads:read")?;
     let filter = Some("status = 'planned' OR status = 'assigned' OR status = 'dispatched' OR status = 'in_transit'".to_string());
     let count = state.db.load_table.count_rows(filter).await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -1388,7 +1451,9 @@ pub async fn count_open_loads(
 )]
 pub async fn count_active_drivers(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("drivers:read")?;
     let filter = Some("status = 'available' OR status = 'assigned' OR status = 'dispatched'".to_string());
     let count = state.db.driver_table.count_rows(filter).await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -1407,7 +1472,9 @@ pub async fn count_active_drivers(
 )]
 pub async fn count_pending_documents(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("blobs:read")?;
     let filter = Some("status = 'pending'".to_string());
     let count = state.db.blob_table.count_rows(filter).await
         .map_err(|e| AppError::Internal(e.to_string()))?;
@@ -1426,7 +1493,9 @@ pub async fn count_pending_documents(
 )]
 pub async fn count_events_today(
     State(state): State<AppState>,
+    Extension(claims): Extension<DispatcherClaims>,
 ) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("events:read")?;
     let today = chrono::Utc::now().date_naive().format("%Y-%m-%dT00:00:00Z").to_string();
     let filter = Some(format!("occurred_at >= '{today}'"));
     let count = state.db.event_table.count_rows(filter).await
