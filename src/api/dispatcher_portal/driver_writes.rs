@@ -34,7 +34,7 @@ use crate::{
     ai::embed::embed_text,
     error::AppError,
     events,
-    models::{CreateDriverRequest, DriverRecord, DriverStatus, TrailerStatus, TripStatus, TruckStatus, UpdateDriverRequest},
+    models::{CreateDriverRequest, DriverCredentials, DriverRecord, DriverStatus, SetDriverPinRequest, TrailerStatus, TripStatus, TruckStatus, UpdateDriverRequest},
     AppState,
 };
 
@@ -564,6 +564,111 @@ pub async fn patch_driver_handler(
 ) -> Result<impl IntoResponse, AppError> {
     let record = apply_driver_patch(&state, id, body).await?;
     Ok(Json(record))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/dispatch/api/v1/drivers/{id}",
+    params(("id" = Uuid, Path, description = "Driver UUID")),
+    responses(
+        (status = 204, description = "Soft-deleted (status set to inactive); outstanding JWTs invalidated"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Driver not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn delete_driver_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    apply_driver_delete(&state, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shared driver-delete writer — used by the HTTP handler and the MCP
+/// `delete_driver` tool. Soft-deletes the driver, then invalidates any
+/// outstanding JWTs by bumping the credential `token_version` (propagating the
+/// upsert error rather than swallowing it).
+pub(crate) async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<(), AppError> {
+    state.db.soft_delete_driver(id).await?;
+    // Invalidate any outstanding JWTs by bumping the credential token_version.
+    if let Some(mut creds) = state.db.get_driver_credentials(id).await? {
+        creds.token_version += 1;
+        creds.updated_at = Utc::now();
+        state.db.upsert_driver_credentials(&creds).await?;
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/drivers/{id}/pin",
+    params(("id" = Uuid, Path, description = "Driver UUID")),
+    request_body(content = SetDriverPinRequest, description = "PIN (4–6 numeric digits)"),
+    responses(
+        (status = 204, description = "PIN set successfully; outstanding JWTs invalidated"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Driver not found"),
+        (status = 422, description = "Invalid PIN format"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn set_driver_pin_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<SetDriverPinRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    apply_set_driver_pin(&state, id, body.pin).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shared set-PIN writer — used by the HTTP handler and the MCP `set_driver_pin`
+/// tool. Validates the PIN (4–6 numeric digits), bcrypt-hashes at cost 12, and
+/// upserts the driver's credentials while bumping token_version to invalidate any
+/// outstanding JWTs.
+pub async fn apply_set_driver_pin(
+    state: &AppState,
+    id: Uuid,
+    pin: String,
+) -> Result<(), AppError> {
+    state.db.get_driver_by_id(id).await?;
+
+    let pin = pin.trim().to_string();
+    let len = pin.len();
+    if !(4..=6).contains(&len) || !pin.chars().all(|c| c.is_ascii_digit()) {
+        return Err(AppError::UnprocessableEntity("PIN must be 4–6 numeric digits".into()));
+    }
+
+    let pin_hash = tokio::task::spawn_blocking(move || bcrypt::hash(&pin, 12u32))
+        .await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let now = Utc::now();
+    let credentials = match state.db.get_driver_credentials(id).await? {
+        Some(existing) => DriverCredentials {
+            driver_id: id,
+            pin_hash: Some(pin_hash),
+            token_version: existing.token_version + 1,
+            failed_pin_attempts: 0,
+            locked_until: None,
+            updated_at: now,
+        },
+        None => DriverCredentials {
+            driver_id: id,
+            pin_hash: Some(pin_hash),
+            token_version: 0,
+            failed_pin_attempts: 0,
+            locked_until: None,
+            updated_at: now,
+        },
+    };
+
+    state.db.upsert_driver_credentials(&credentials).await?;
+    tracing::info!(driver_id = %id, "dispatcher set PIN for driver");
+    Ok(())
 }
 
 /// Sync the driver's active trip's resources to the driver's current

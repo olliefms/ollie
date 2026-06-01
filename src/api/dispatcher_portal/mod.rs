@@ -53,11 +53,19 @@ pub fn auth_router() -> Router<AppState> {
 pub fn data_router(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/dispatch/api/v1/loads", get(data::list_loads).post(data::create_load))
-        .route("/dispatch/api/v1/loads/{id}", get(data::get_load).put(data::update_load))
-        .route("/dispatch/api/v1/trips", get(data::list_trips))
+        .route(
+            "/dispatch/api/v1/loads/{id}",
+            get(data::get_load).put(data::update_load).delete(data::delete_load_handler),
+        )
+        .route("/dispatch/api/v1/loads/{id}/invoice", post(data::invoice_load_handler))
+        .route("/dispatch/api/v1/loads/{id}/cancel", post(data::cancel_load_handler))
+        .route("/dispatch/api/v1/loads/{id}/settle", post(data::settle_load_handler))
+        .route("/dispatch/api/v1/trips", get(data::list_trips).post(data::create_trip_handler))
         .route(
             "/dispatch/api/v1/trips/{id}",
-            get(data::get_trip).patch(trip_writes::patch_trip_handler),
+            get(data::get_trip)
+                .patch(trip_writes::patch_trip_handler)
+                .delete(trip_writes::delete_trip_handler),
         )
         .route(
             "/dispatch/api/v1/trips/{id}/recalculate-miles",
@@ -74,7 +82,13 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/dispatch/api/v1/trips/{id}/stops/{seq}/late", post(data::stop_late))
         .route("/dispatch/api/v1/trips/{id}/check-call", post(data::check_call))
         .route("/dispatch/api/v1/drivers", get(data::list_drivers).post(driver_writes::create_driver_handler))
-        .route("/dispatch/api/v1/drivers/{id}", get(data::get_driver).patch(driver_writes::patch_driver_handler))
+        .route(
+            "/dispatch/api/v1/drivers/{id}",
+            get(data::get_driver)
+                .patch(driver_writes::patch_driver_handler)
+                .delete(driver_writes::delete_driver_handler),
+        )
+        .route("/dispatch/api/v1/drivers/{id}/pin", post(driver_writes::set_driver_pin_handler))
         .route(
             "/dispatch/api/v1/drivers/{id}/attach-equipment",
             post(driver_writes::attach_equipment_handler),
@@ -89,7 +103,9 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         )
         .route(
             "/dispatch/api/v1/trucks/{id}",
-            get(data::get_truck).patch(truck_writes::update_truck_handler),
+            get(data::get_truck)
+                .patch(truck_writes::update_truck_handler)
+                .delete(truck_writes::delete_truck_handler),
         )
         .route(
             "/dispatch/api/v1/trailers",
@@ -97,7 +113,9 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         )
         .route(
             "/dispatch/api/v1/trailers/{id}",
-            get(data::get_trailer).patch(trailer_writes::update_trailer_handler),
+            get(data::get_trailer)
+                .patch(trailer_writes::update_trailer_handler)
+                .delete(trailer_writes::delete_trailer_handler),
         )
         .route("/dispatch/api/v1/events", get(data::list_events))
         // Facilities

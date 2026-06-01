@@ -33,7 +33,7 @@ use crate::api::trip_actions::{
     StopLateRequest,
 };
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct DispatcherTripListItem {
     pub id: uuid::Uuid,
     pub trip_number: String,
@@ -372,6 +372,111 @@ pub async fn update_load(
     Ok(Json(response))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/dispatch/api/v1/loads/{id}",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Load has active trips — cancel or complete them first"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn delete_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    state.db.get_load_by_id(id).await?;
+    let active = state.db.count_active_trips_for_load(id).await?;
+    if active > 0 {
+        return Err(AppError::Conflict(format!(
+            "load has {active} active trip(s); cancel or complete them first"
+        )));
+    }
+    state.db.delete_load_by_id(id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/loads/{id}/invoice",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    request_body(content = InvoiceActionRequest, description = "Optional invoice number and date"),
+    responses(
+        (status = 200, description = "Load transitioned to invoiced", body = LoadDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn invoice_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<crate::models::InvoiceActionRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Invoiced,
+        body.invoice_number, body.invoice_date, None,
+    ).await?;
+    let response = build_load_detail(&state, record).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/loads/{id}/cancel",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    request_body(content = CancelActionRequest, description = "Optional cancellation reason"),
+    responses(
+        (status = 200, description = "Load transitioned to cancelled", body = LoadDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn cancel_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(body): Json<crate::models::CancelActionRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Cancelled, None, None, body.reason,
+    ).await?;
+    let response = build_load_detail(&state, record).await?;
+    Ok(Json(response))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/loads/{id}/settle",
+    params(("id" = Uuid, Path, description = "Load UUID")),
+    responses(
+        (status = 200, description = "Load transitioned to settled", body = LoadDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Invalid status transition"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn settle_load_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    let record = state.db.transition_load_status(
+        id, LoadStatus::Settled, None, None, None,
+    ).await?;
+    let response = build_load_detail(&state, record).await?;
+    Ok(Json(response))
+}
+
 // ---------------------------------------------------------------------------
 // Trips
 // ---------------------------------------------------------------------------
@@ -410,6 +515,31 @@ pub async fn list_trips(
 ) -> Result<impl IntoResponse, AppError> {
     let items = build_trip_list_items(&state, q).await?;
     Ok(Json(DispatcherTripListResponse { items }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dispatch/api/v1/trips",
+    request_body(content = CreateTripRequest, description = "Trip to create"),
+    responses(
+        (status = 201, description = "Created trip (enriched with driver/truck names and mileage_summary)", body = DispatcherTripListItem),
+        (status = 400, description = "Bad request"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Referenced load/driver/truck/trailer not found"),
+        (status = 409, description = "Conflict — invalid assignment"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "dispatch"
+)]
+pub async fn create_trip_handler(
+    State(state): State<AppState>,
+    Json(body): Json<crate::models::trip::CreateTripRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // Create via the shared writer, which returns the created record — no
+    // re-fetch (that races under concurrent creates).
+    let record = crate::api::trips::apply_trip_create(&state, body).await?;
+    let detail = build_trip_detail(&state, record.id).await?;
+    Ok((StatusCode::CREATED, Json(detail)))
 }
 
 /// Shared list-trips builder used by the HTTP handler and the MCP `list_trips` tool.
@@ -1308,7 +1438,7 @@ pub async fn count_events_today(
 // Internal helpers — mirror build_detail_response from src/api/loads.rs
 // ---------------------------------------------------------------------------
 
-async fn build_load_detail(
+pub async fn build_load_detail(
     state: &AppState,
     record: crate::models::LoadRecord,
 ) -> Result<LoadDetailResponse, AppError> {
