@@ -7700,3 +7700,84 @@ async fn test_users_mcp_parity() {
     let del = mcp_call(&server, &owner, "delete_user", serde_json::json!({ "id": made_id })).await;
     assert_eq!(del["deleted"], serde_json::json!(true));
 }
+
+// ---------------------------------------------------------------------------
+// First-run owner setup wizard (#331)
+//
+// Unauthenticated /dispatch/api/v1/setup/status + /dispatch/setup, guarded by
+// count_dispatchers() == 0. Creates the first owner and logs them straight in.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_setup_wizard_full_flow() {
+    let (server, _b, _d, _rx) = test_server().await;
+
+    // Empty server → needs_setup = true.
+    let status = server.get("/dispatch/api/v1/setup/status").await;
+    assert_eq!(status.status_code(), 200);
+    assert_eq!(status.json::<serde_json::Value>()["needs_setup"], serde_json::json!(true));
+
+    // POST /dispatch/setup creates an owner and returns a session token.
+    let created = server.post("/dispatch/setup")
+        .json(&serde_json::json!({
+            "email": "boss@example.com", "name": "The Boss", "password": "owner-password-1",
+        }))
+        .await;
+    assert_eq!(created.status_code(), 200, "setup failed: {}", created.text());
+    let token = created.json::<serde_json::Value>()["token"].as_str().unwrap().to_string();
+    assert!(!token.is_empty(), "setup must return a session token");
+    // Auto-login: a refresh cookie is set, same shape as login.
+    assert!(created.headers().get(header::SET_COOKIE).is_some(),
+        "setup must set a refresh cookie (auto-login)");
+
+    // Status now reports false.
+    let status2 = server.get("/dispatch/api/v1/setup/status").await;
+    assert_eq!(status2.json::<serde_json::Value>()["needs_setup"], serde_json::json!(false));
+
+    // Second POST is rejected — guard slammed shut.
+    let again = server.post("/dispatch/setup")
+        .json(&serde_json::json!({
+            "email": "intruder@example.com", "name": "Nope", "password": "another-password",
+        }))
+        .await;
+    assert_eq!(again.status_code(), 409, "second setup must be 409 Conflict");
+
+    // The created owner really has role=owner: the returned token can drive the
+    // users:* surface (owner-only) and the table holds exactly one owner.
+    let auth = format!("Bearer {token}");
+    let list = server.get("/dispatch/api/v1/users")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(list.status_code(), 200, "owner token must reach users surface: {}", list.text());
+    let users = list.json::<serde_json::Value>();
+    assert_eq!(users["returned"], serde_json::json!(1));
+    assert_eq!(users["users"][0]["role"], serde_json::json!("owner"));
+    assert_eq!(users["users"][0]["email"], serde_json::json!("boss@example.com"));
+
+    // And the owner can log in normally afterward.
+    let login = server.post("/dispatch/auth/login")
+        .json(&serde_json::json!({ "email": "boss@example.com", "password": "owner-password-1" }))
+        .await;
+    assert_eq!(login.status_code(), 200, "owner must be able to log in normally");
+}
+
+#[tokio::test]
+async fn test_setup_status_false_once_user_exists() {
+    let (server, _b, _d, _rx) = test_server().await;
+    // Provision a user via the existing admin path.
+    server.post("/api/v1/dispatchers")
+        .add_header(header::AUTHORIZATION, "Bearer test-secret")
+        .json(&serde_json::json!({
+            "email": "pre@example.com", "name": "Pre", "password": "pre-password",
+        }))
+        .await;
+    let status = server.get("/dispatch/api/v1/setup/status").await;
+    assert_eq!(status.json::<serde_json::Value>()["needs_setup"], serde_json::json!(false));
+
+    // And setup is closed.
+    let attempt = server.post("/dispatch/setup")
+        .json(&serde_json::json!({
+            "email": "late@example.com", "name": "Late", "password": "late-password",
+        }))
+        .await;
+    assert_eq!(attempt.status_code(), 409);
+}

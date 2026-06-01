@@ -49,6 +49,10 @@ pub fn auth_router() -> Router<AppState> {
         .route("/dispatch/auth/login", post(auth::login))
         .route("/dispatch/auth/refresh", post(auth::refresh))
         .route("/dispatch/auth/logout", post(auth::logout))
+        // First-run owner setup wizard — UNauthenticated (table is empty), guarded
+        // by count_dispatchers() == 0. Deliberately outside require_dispatcher_auth.
+        .route("/dispatch/api/v1/setup/status", get(auth::setup_status))
+        .route("/dispatch/setup", post(auth::setup))
 }
 
 pub fn data_router(state: &AppState) -> Router<AppState> {

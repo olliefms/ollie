@@ -94,6 +94,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         dispatchers::reset_dispatcher_password,
         dispatcher_portal::auth::login,
         dispatcher_portal::auth::refresh,
+        dispatcher_portal::auth::setup_status,
+        dispatcher_portal::auth::setup,
         dispatcher_portal::data::list_loads,
         dispatcher_portal::data::get_load,
         dispatcher_portal::data::create_load,
@@ -281,6 +283,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             dispatcher_portal::auth::LoginRequest,
             dispatcher_portal::auth::LoginResponse,
             dispatcher_portal::auth::LockResponse,
+            dispatcher_portal::auth::SetupRequest,
+            dispatcher_portal::auth::SetupStatusResponse,
             version::VersionResponse,
         )
     ),

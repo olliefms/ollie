@@ -49,6 +49,41 @@ impl DbClient {
         batches_to_dispatchers(collect_stream(stream).await?)
     }
 
+    /// Number of rows in the dispatcher (== user) table. Used by the first-run
+    /// setup wizard guard (`needs_setup == count == 0`).
+    pub async fn count_dispatchers(&self) -> Result<usize, AppError> {
+        self.dispatcher_table.count_rows(None).await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
+    /// One-time reconcile run at startup: if there is at least one dispatcher
+    /// but no owner, promote the oldest dispatcher (lowest `created_at`) to
+    /// `role=owner`. Idempotent — once any owner exists it is a no-op. Fresh
+    /// installs (zero dispatchers) are untouched; they use the setup wizard.
+    pub async fn reconcile_owner(&self) -> Result<(), AppError> {
+        use crate::models::Role;
+        let users = self.list_dispatchers().await?;
+        if users.is_empty() {
+            return Ok(());
+        }
+        if users.iter().any(|u| u.role == Role::Owner) {
+            return Ok(());
+        }
+        let Some(oldest) = users.iter().min_by_key(|u| u.created_at) else {
+            return Ok(());
+        };
+        let mut promoted = oldest.clone();
+        promoted.role = Role::Owner;
+        promoted.updated_at = chrono::Utc::now();
+        self.upsert_dispatcher(&promoted).await?;
+        tracing::info!(
+            dispatcher_id = %promoted.id,
+            email = %promoted.email,
+            "auto-promoted oldest dispatcher to owner (migration: no owner existed)"
+        );
+        Ok(())
+    }
+
     pub async fn upsert_dispatcher(&self, record: &DispatcherRecord) -> Result<(), AppError> {
         let batch = dispatcher_to_batch(record)?;
         let schema = dispatcher_schema();

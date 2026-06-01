@@ -131,7 +131,7 @@ impl DbClient {
             empty_authorization_code_batch,
         ).await?;
 
-        Ok(Self {
+        let client = Self {
             blob_table,
             dispatcher_table,
             dispatcher_credentials_table,
@@ -150,7 +150,14 @@ impl DbClient {
             trip_table,
             truck_table,
             embed_dim,
-        })
+        };
+
+        // Migration (existing installs): if dispatchers exist but no owner does,
+        // promote the oldest. No-op on fresh installs (they use the setup wizard)
+        // and idempotent once an owner exists.
+        client.reconcile_owner().await?;
+
+        Ok(client)
     }
 }
 
