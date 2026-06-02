@@ -1,5 +1,7 @@
 # .github/workflows/gitleaks.yml
 # Secret-scan guard. Fails the build if any commit introduces a secret.
+# Runs the gitleaks CLI directly (MIT-licensed, free) rather than
+# gitleaks/gitleaks-action, which requires a paid license for organizations.
 name: gitleaks
 
 on:
@@ -9,7 +11,9 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read   # gitleaks-action needs this to post PR annotations
+
+env:
+  GITLEAKS_VERSION: "8.24.3"
 
 jobs:
   scan:
@@ -18,8 +22,10 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0   # full history so the scan matches local runs
+      - name: Install gitleaks
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # required by gitleaks-action to scan pull_request events
-          GITLEAKS_CONFIG: .gitleaks.toml
+        run: gitleaks detect --source . --config .gitleaks.toml --no-banner --redact
