@@ -1,6 +1,6 @@
 // tests/refresh_token_flow.rs
 //
-// End-to-end integration tests for the dispatcher PWA refresh-token flow.
+// End-to-end integration tests for the fleet_user PWA refresh-token flow.
 // Covers: login sets cookie, refresh without access token (overnight-refresh
 // regression), rotation, reuse detection, logout, and token_version kill switch.
 
@@ -11,7 +11,7 @@ use ollie::{
     api,
     config::Config,
     db::DbClient,
-    models::{DispatcherCredentials, DispatcherRecord, DispatcherStatus},
+    models::{FleetUserCredentials, FleetUserRecord, FleetUserStatus},
     storage::BlobStore,
     AppState,
 };
@@ -32,7 +32,7 @@ async fn build_app() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     std::env::set_var("DRIVER_JWT_SECRET",    "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID",         "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN",     "http://localhost:3000");
-    std::env::set_var("DISPATCHER_JWT_SECRET","test-dispatcher-secret-must-be-32b");
+    std::env::set_var("FLEET_JWT_SECRET","test-fleet_user-secret-must-be-32b");
 
     let config = Arc::new(Config::from_env().unwrap());
     let db     = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
@@ -63,17 +63,17 @@ async fn build_app() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     (server, db, blob_dir, db_dir)
 }
 
-/// Seed a dispatcher with a known password and return its Uuid.
+/// Seed a fleet_user with a known password and return its Uuid.
 /// Uses bcrypt cost 4 so tests run fast.
-async fn seed_dispatcher(db: &DbClient, email: &str, password: &str) -> Uuid {
+async fn seed_fleet_user(db: &DbClient, email: &str, password: &str) -> Uuid {
     let id  = Uuid::new_v4();
     let now = Utc::now();
 
-    db.upsert_dispatcher(&DispatcherRecord {
+    db.upsert_fleet_user(&FleetUserRecord {
         id,
         email:      email.into(),
         name:       "Test Dispatcher".into(),
-        status:     DispatcherStatus::Active,
+        status:     FleetUserStatus::Active,
         role:       Default::default(),
         extra_scopes: Vec::new(),
         created_at: now,
@@ -81,8 +81,8 @@ async fn seed_dispatcher(db: &DbClient, email: &str, password: &str) -> Uuid {
     }).await.unwrap();
 
     let hash = bcrypt::hash(password, 4).unwrap();
-    db.upsert_dispatcher_credentials(&DispatcherCredentials {
-        dispatcher_id:   id,
+    db.upsert_fleet_user_credentials(&FleetUserCredentials {
+        fleet_user_id:   id,
         password_hash:   hash,
         token_version:   0,
         failed_attempts: 0,
@@ -133,7 +133,7 @@ fn cookie_header(secret: &str) -> String {
 #[tokio::test]
 async fn login_sets_refresh_cookie() {
     let (server, db, _b, _d) = build_app().await;
-    seed_dispatcher(&db, "disp@example.com", "correct horse").await;
+    seed_fleet_user(&db, "disp@example.com", "correct horse").await;
 
     let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": "disp@example.com", "password": "correct horse" }))
@@ -161,7 +161,7 @@ async fn login_sets_refresh_cookie() {
 #[tokio::test]
 async fn refresh_after_access_expiry() {
     let (server, db, _b, _d) = build_app().await;
-    seed_dispatcher(&db, "disp2@example.com", "correct horse").await;
+    seed_fleet_user(&db, "disp2@example.com", "correct horse").await;
 
     let set_cookie = login_get_cookie(&server, "disp2@example.com", "correct horse").await;
     let secret     = extract_refresh_value(&set_cookie);
@@ -192,7 +192,7 @@ async fn refresh_after_access_expiry() {
 #[tokio::test]
 async fn refresh_rotates_secret() {
     let (server, db, _b, _d) = build_app().await;
-    seed_dispatcher(&db, "disp3@example.com", "correct horse").await;
+    seed_fleet_user(&db, "disp3@example.com", "correct horse").await;
 
     let sc0  = login_get_cookie(&server, "disp3@example.com", "correct horse").await;
     let tok0 = extract_refresh_value(&sc0);
@@ -218,7 +218,7 @@ async fn refresh_rotates_secret() {
 #[tokio::test]
 async fn reused_refresh_revokes_family() {
     let (server, db, _b, _d) = build_app().await;
-    seed_dispatcher(&db, "disp4@example.com", "correct horse").await;
+    seed_fleet_user(&db, "disp4@example.com", "correct horse").await;
 
     // Login → C0
     let sc0  = login_get_cookie(&server, "disp4@example.com", "correct horse").await;
@@ -248,7 +248,7 @@ async fn reused_refresh_revokes_family() {
 #[tokio::test]
 async fn logout_revokes_and_clears() {
     let (server, db, _b, _d) = build_app().await;
-    seed_dispatcher(&db, "disp5@example.com", "correct horse").await;
+    seed_fleet_user(&db, "disp5@example.com", "correct horse").await;
 
     let sc     = login_get_cookie(&server, "disp5@example.com", "correct horse").await;
     let secret = extract_refresh_value(&sc);
@@ -277,16 +277,16 @@ async fn logout_revokes_and_clears() {
 #[tokio::test]
 async fn token_version_bump_kills_refresh() {
     let (server, db, _b, _d) = build_app().await;
-    let id = seed_dispatcher(&db, "disp6@example.com", "correct horse").await;
+    let id = seed_fleet_user(&db, "disp6@example.com", "correct horse").await;
 
     let sc     = login_get_cookie(&server, "disp6@example.com", "correct horse").await;
     let secret = extract_refresh_value(&sc);
 
     // Bump token_version
-    let mut creds = db.get_dispatcher_credentials(id).await.unwrap().unwrap();
+    let mut creds = db.get_fleet_user_credentials(id).await.unwrap().unwrap();
     creds.token_version += 1;
     creds.updated_at     = Utc::now();
-    db.upsert_dispatcher_credentials(&creds).await.unwrap();
+    db.upsert_fleet_user_credentials(&creds).await.unwrap();
 
     // Refresh with the old cookie (token_version mismatch) → 401
     let resp = server.post("/fleet/auth/refresh")

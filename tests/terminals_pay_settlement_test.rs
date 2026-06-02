@@ -1,6 +1,6 @@
 // tests/terminals_pay_settlement_test.rs
 //
-// Integration tests for dispatcher terminal CRUD (#185).
+// Integration tests for fleet_user terminal CRUD (#185).
 
 use axum::http::header;
 use axum_test::TestServer;
@@ -27,7 +27,7 @@ async fn test_server_with_db() -> (TestServer, Arc<DbClient>, TempDir, TempDir) 
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
-    std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-secret-must-be-32b");
+    std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-secret-must-be-32b");
 
     let config = Arc::new(Config::from_env().unwrap());
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
@@ -82,10 +82,10 @@ async fn setup_owner(server: &TestServer) -> String {
     login.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
 }
 
-/// Create a dispatcher account and log in, returning a JWT. Provisioned as
+/// Create a fleet_user account and log in, returning a JWT. Provisioned as
 /// `owner` so these terminal/pay/settlement tests (which write terminals and
 /// settle trips) pass scope enforcement (#331).
-async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> String {
+async fn fleet_user_login(server: &TestServer, email: &str, password: &str) -> String {
     // Bootstrap the first-run owner, then create the named user via the users surface.
     // `fleet_manager` is operationally identical to owner (effective scope
     // `["*"]`) but creatable via the users surface (owner is not).
@@ -104,7 +104,7 @@ async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> S
     let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({ "email": email, "password": password }))
         .await;
-    assert_eq!(resp.status_code(), 200, "dispatcher login failed");
+    assert_eq!(resp.status_code(), 200, "fleet_user login failed");
     resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
 }
 
@@ -112,7 +112,7 @@ async fn dispatcher_login(server: &TestServer, email: &str, password: &str) -> S
 #[tokio::test]
 async fn test_create_terminal_returns_201() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term1@example.com", "pw-term1").await;
+    let token = fleet_user_login(&server, "term1@example.com", "pw-term1").await;
 
     let resp = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -133,7 +133,7 @@ async fn test_create_terminal_returns_201() {
 #[tokio::test]
 async fn test_list_terminals_contains_east_and_default() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term2@example.com", "pw-term2").await;
+    let token = fleet_user_login(&server, "term2@example.com", "pw-term2").await;
     let auth = format!("Bearer {token}");
 
     // Create "East"
@@ -160,7 +160,7 @@ async fn test_list_terminals_contains_east_and_default() {
 #[tokio::test]
 async fn test_update_terminal_rate() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term3@example.com", "pw-term3").await;
+    let token = fleet_user_login(&server, "term3@example.com", "pw-term3").await;
     let auth = format!("Bearer {token}");
 
     let create_resp = server.post("/fleet/api/v1/terminals")
@@ -188,7 +188,7 @@ async fn test_update_terminal_rate() {
 #[tokio::test]
 async fn test_delete_terminal_returns_204() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term4@example.com", "pw-term4").await;
+    let token = fleet_user_login(&server, "term4@example.com", "pw-term4").await;
     let auth = format!("Bearer {token}");
 
     let create_resp = server.post("/fleet/api/v1/terminals")
@@ -211,7 +211,7 @@ async fn test_delete_terminal_returns_204() {
 #[tokio::test]
 async fn test_delete_default_terminal_returns_409() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term5@example.com", "pw-term5").await;
+    let token = fleet_user_login(&server, "term5@example.com", "pw-term5").await;
     let auth = format!("Bearer {token}");
 
     // List to find the default terminal
@@ -234,7 +234,7 @@ async fn test_delete_default_terminal_returns_409() {
 #[tokio::test]
 async fn test_unset_default_terminal_returns_409() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term5b@example.com", "pw-term5b").await;
+    let token = fleet_user_login(&server, "term5b@example.com", "pw-term5b").await;
     let auth = format!("Bearer {token}");
 
     let list_resp = server.get("/fleet/api/v1/terminals")
@@ -263,7 +263,7 @@ async fn test_unset_default_terminal_returns_409() {
 #[tokio::test]
 async fn test_create_terminal_invalid_timezone_returns_422() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term6@example.com", "pw-term6").await;
+    let token = fleet_user_login(&server, "term6@example.com", "pw-term6").await;
 
     let resp = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -279,7 +279,7 @@ async fn test_create_terminal_invalid_timezone_returns_422() {
 #[tokio::test]
 async fn test_patch_terminal_clears_address() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term7@example.com", "pw-term7").await;
+    let token = fleet_user_login(&server, "term7@example.com", "pw-term7").await;
     let auth = format!("Bearer {token}");
 
     let created: serde_json::Value = server.post("/fleet/api/v1/terminals")
@@ -313,7 +313,7 @@ async fn test_patch_terminal_clears_address() {
 #[tokio::test]
 async fn test_delete_terminal_with_drivers_returns_409() {
     let (server, _b, _d) = test_server().await;
-    let token = dispatcher_login(&server, "term8@example.com", "pw-term8").await;
+    let token = fleet_user_login(&server, "term8@example.com", "pw-term8").await;
     let auth = format!("Bearer {token}");
 
     // Create a non-default terminal.
@@ -351,14 +351,14 @@ async fn default_terminal_id(server: &TestServer, auth: &str) -> String {
         .as_str().unwrap().to_string()
 }
 
-// (g) Driver pay is computed on dispatcher trip detail using terminal-floor rates
+// (g) Driver pay is computed on fleet_user trip detail using terminal-floor rates
 //     resolved through trip -> driver -> terminal, then driver override wins.
 #[tokio::test]
 async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
     use ollie::models::{TripRecord, TripStatus};
 
     let (server, db, _b, _d) = test_server_with_db().await;
-    let token = dispatcher_login(&server, "pay1@example.com", "pw-pay1").await;
+    let token = fleet_user_login(&server, "pay1@example.com", "pw-pay1").await;
     let auth = format!("Bearer {token}");
 
     // Set the Default terminal's rate floor.
@@ -421,7 +421,7 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
     };
     db.insert_trip(&trip).await.unwrap();
 
-    // GET dispatcher trip detail -> driver_pay computed from terminal floor.
+    // GET fleet_user trip detail -> driver_pay computed from terminal floor.
     let detail = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .await;
@@ -466,7 +466,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
     use ollie::models::trip::TripStopType;
 
     let (server, db, _b, _d) = test_server_with_db().await;
-    let token = dispatcher_login(&server, "settle1@example.com", "pw-settle1").await;
+    let token = fleet_user_login(&server, "settle1@example.com", "pw-settle1").await;
     let auth = format!("Bearer {token}");
 
     // 1) Set Default terminal rates.

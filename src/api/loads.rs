@@ -31,7 +31,7 @@ pub struct ListLoadsQuery {
 }
 
 /// Resolve `StopInput`s into validated `Stop`s, creating/deduplicating facilities
-/// as needed. Shared by the dispatcher load create/update handlers and the MCP
+/// as needed. Shared by the fleet_user load create/update handlers and the MCP
 /// load tools.
 pub async fn resolve_stops_pub(state: &AppState, inputs: Vec<StopInput>) -> Result<Vec<Stop>, AppError> {
     resolve_stops(state, inputs).await

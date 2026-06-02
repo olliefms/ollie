@@ -1,4 +1,4 @@
-// src/api/dispatcher_portal/mod.rs
+// src/api/fleet_portal/mod.rs
 pub mod api_keys;
 pub mod auth;
 pub mod blob_links;
@@ -50,7 +50,7 @@ pub fn auth_router() -> Router<AppState> {
         .route("/fleet/auth/refresh", post(auth::refresh))
         .route("/fleet/auth/logout", post(auth::logout))
         // First-run owner setup wizard — UNauthenticated (table is empty), guarded
-        // by count_dispatchers() == 0. Deliberately outside require_dispatcher_auth.
+        // by count_fleet_users() == 0. Deliberately outside require_fleet_user_auth.
         .route("/fleet/api/v1/setup/status", get(auth::setup_status))
         .route("/fleet/setup", post(auth::setup))
 }
@@ -167,7 +167,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .merge(users::router())
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            middleware::require_dispatcher_auth,
+            middleware::require_fleet_user_auth,
         ))
         // MCP route: auth + body limit + WWW-Authenticate on 401.
         // Mounted separately (outside the shared route_layer) so that the
@@ -178,7 +178,7 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
 
 /// MCP endpoint with its own layering stack:
 ///   map_response_with_state (outer, sees auth 401s)
-///     → require_dispatcher_auth (route_layer)
+///     → require_fleet_user_auth (route_layer)
 ///       → rmcp StreamableHttpService (nested; owns GET/POST/DELETE + JSON-RPC)
 ///
 /// The rmcp service is mounted with `nest_service` (not `post(...)`) because it
@@ -194,7 +194,7 @@ fn mcp_router(state: &AppState) -> Router<AppState> {
         .nest_service("/fleet/mcp", mcp::mcp_service(state))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
-            middleware::require_dispatcher_auth,
+            middleware::require_fleet_user_auth,
         ))
         .layer(tower_http::limit::RequestBodyLimitLayer::new(1024 * 1024))
         .layer(axum::middleware::map_response_with_state(state.clone(), mcp_www_authenticate))
@@ -202,7 +202,7 @@ fn mcp_router(state: &AppState) -> Router<AppState> {
 
 /// Presigned blob byte-transfer routes. Token-authenticated via the `token` query
 /// param (see `blob_links`), so these are deliberately mounted WITHOUT the
-/// dispatcher JWT middleware — an agent holding only a presigned token (no JWT)
+/// fleet user JWT middleware — an agent holding only a presigned token (no JWT)
 /// must be able to reach them.
 pub(crate) fn public_router() -> Router<AppState> {
     Router::new()
@@ -217,6 +217,6 @@ pub(crate) fn public_router() -> Router<AppState> {
         )
 }
 
-pub fn dispatcher_portal_router(state: &AppState) -> Router<AppState> {
+pub fn fleet_portal_router(state: &AppState) -> Router<AppState> {
     auth_router().merge(data_router(state))
 }

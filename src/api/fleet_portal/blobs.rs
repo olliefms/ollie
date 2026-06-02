@@ -1,7 +1,7 @@
-// src/api/dispatcher_portal/blobs.rs
+// src/api/fleet_portal/blobs.rs
 //
-// Dispatcher portal blob endpoints. Auth enforced at router layer via
-// require_dispatcher_jwt. Handlers delegate to the same DB ops, storage, and
+// Fleet portal blob endpoints. Auth enforced at router layer via
+// require_fleet_user_jwt. Handlers delegate to the same DB ops, storage, and
 // AI layer used by the admin blob API.
 
 use crate::{
@@ -21,7 +21,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use axum_extra::extract::Query;
 use bytes::Bytes;
 use serde::Deserialize;
@@ -43,7 +43,7 @@ use super::blob_links::{self, BlobUrlOp};
 )]
 pub async fn list_blobs(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("blobs:read")?;
@@ -81,7 +81,7 @@ pub async fn list_blobs(
 )]
 pub async fn upload_blob(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     mut multipart: Multipart,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("blobs:write")?;
@@ -177,7 +177,7 @@ pub async fn upload_blob(
 )]
 pub async fn get_blob(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, AppError> {
@@ -224,7 +224,7 @@ pub async fn get_blob(
 )]
 pub async fn update_blob(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateBlobRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -253,7 +253,7 @@ pub async fn update_blob(
 )]
 pub async fn delete_blob(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("blobs:delete")?;
@@ -299,7 +299,7 @@ pub async fn delete_blob(
 )]
 pub async fn query_blob(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<BlobQueryRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -384,10 +384,10 @@ pub async fn query_blob(
 // ---------------------------------------------------------------------------
 // Presigned (token-authenticated) blob byte transfer.
 //
-// These two routes are mounted OUTSIDE the dispatcher JWT middleware. They are
+// These two routes are mounted OUTSIDE the fleet user JWT middleware. They are
 // authenticated by a short-lived, blob-scoped token in the `token` query param
 // (minted by the MCP tools `upload_blob` / `get_blob_url`), letting an
-// agent that holds no dispatcher JWT move file bytes over plain HTTP without
+// agent that holds no fleet user JWT move file bytes over plain HTTP without
 // putting large payloads on the MCP transport. See `blob_links.rs`.
 // ---------------------------------------------------------------------------
 
@@ -431,7 +431,7 @@ pub async fn presigned_upload(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, AppError> {
-    blob_links::verify_token(&state.config.dispatcher_jwt_secret, &q.token, BlobUrlOp::Post)?;
+    blob_links::verify_token(&state.config.fleet_jwt_secret, &q.token, BlobUrlOp::Post)?;
 
     if body.is_empty() {
         return Err(AppError::BadRequest("request body is empty".into()));
@@ -474,7 +474,7 @@ pub async fn presigned_download(
     Path(id): Path<Uuid>,
     Query(q): Query<PresignedDownloadQuery>,
 ) -> Result<impl IntoResponse, AppError> {
-    let claims = blob_links::verify_token(&state.config.dispatcher_jwt_secret, &q.token, BlobUrlOp::Get)?;
+    let claims = blob_links::verify_token(&state.config.fleet_jwt_secret, &q.token, BlobUrlOp::Get)?;
     // Token is bound to a single blob — reject if the path id doesn't match.
     if claims.sub != id.to_string() {
         return Err(AppError::Unauthorized);

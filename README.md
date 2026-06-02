@@ -5,8 +5,8 @@ A self-hosted freight **Transportation Management System (TMS)** written in Rust
 ollie runs the operational core of a trucking dispatch operation — loads, trips,
 drivers, trucks, trailers, and facilities — and pairs it with an AI-enabled
 document store. It exposes four API surfaces (an MCP server for AI agents, a
-dispatcher REST API, a driver mobile portal, and a legacy admin API) plus two
-bundled web apps: a dispatcher SPA and a driver PWA.
+Fleet REST API, a driver mobile portal, and a legacy admin API) plus two
+bundled web apps: a Fleet SPA and a driver PWA.
 
 Uploaded documents (rate cons, BOLs, PODs, photos) are stored content-addressed
 on disk and processed in the background by Ollama — text summaries and vector
@@ -31,8 +31,8 @@ ollie exposes the same domain through four surfaces — pick by caller:
 
 | Surface | Path | Auth | Use |
 |---|---|---|---|
-| **Fleet MCP** | `POST /fleet/mcp` | Dispatcher JWT or API key | AI agents and tool-using assistants. **Preferred.** |
-| **Fleet REST** | `/fleet/api/v1/*` | Dispatcher JWT or API key | Fleet web app and programmatic integrations. |
+| **Fleet MCP** | `POST /fleet/mcp` | Fleet user JWT or API key | AI agents and tool-using assistants. **Preferred.** |
+| **Fleet REST** | `/fleet/api/v1/*` | Fleet user JWT or API key | Fleet web app and programmatic integrations. |
 | **Driver portal** | `/driver/api/v1/*` | Driver JWT (passkey or PIN) | The driver mobile PWA only. |
 | **Admin REST** | `/api/v1/*` | `ADMIN_API_KEY` bearer | **Deprecated** — backward compatibility only. |
 
@@ -99,7 +99,7 @@ All configuration is via environment variables (or a `.env` file).
 |---|---|
 | `ADMIN_API_KEY` | Bearer token for the deprecated admin REST API. Any non-empty string. |
 | `DRIVER_JWT_SECRET` | Signing secret for driver-portal JWTs. **Min 32 bytes.** |
-| `DISPATCHER_JWT_SECRET` | Signing secret for dispatcher JWTs and API keys. **Min 32 bytes.** |
+| `FLEET_JWT_SECRET` | Signing secret for fleet user JWTs and API keys. **Min 32 bytes.** |
 | `DRIVER_RP_ID` | WebAuthn relying-party ID for driver passkeys (e.g. `localhost`). |
 | `DRIVER_RP_ORIGIN` | WebAuthn relying-party origin (e.g. `http://localhost:3000`). |
 
@@ -144,7 +144,7 @@ curl http://localhost:3000/openapi.json      # full OpenAPI 3.0 spec
 curl http://localhost:3000/version           # { "version": "x.y.z" }
 ```
 
-### Dispatcher auth
+### Fleet auth
 
 ```bash
 # Log in with email + password to get a JWT
@@ -159,7 +159,7 @@ curl -X POST http://localhost:3000/fleet/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
-Headless callers can mint long-lived **dispatcher API keys** under
+Headless callers can mint long-lived **fleet user API keys** under
 `/fleet/api-keys` (used in the `Authorization` header just like a JWT). See
 `/llms.txt` for the full MCP tool list, REST routes, auth model, and domain
 semantics (load/trip lifecycles, stop times and detention, facility resolution).

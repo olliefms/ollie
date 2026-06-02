@@ -1,11 +1,11 @@
-// src/api/dispatcher_portal/facility_writes.rs
+// src/api/fleet_portal/facility_writes.rs
 //
-// Dispatcher-portal facility write endpoints (#265):
+// Fleet-portal facility write endpoints (#265):
 //   - POST  /fleet/api/v1/facilities
 //   - PATCH /fleet/api/v1/facilities/{id}
 //
 // Mirrors the admin behaviour in `src/api/facilities.rs` but exposes it under
-// the dispatcher JWT instead of the admin Bearer key. The `apply_*` helpers
+// the fleet user JWT instead of the admin Bearer key. The `apply_*` helpers
 // are shared with the MCP tools so validation and side effects (embedding
 // refresh, geocode re-queue, manual-coords override) stay in one place.
 
@@ -15,7 +15,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
@@ -31,7 +31,7 @@ use crate::{
     AppState,
 };
 
-/// Strict create body — rejects unknown fields so dispatcher agents can't
+/// Strict create body — rejects unknown fields so fleet_user agents can't
 /// accidentally pass admin-only or stale fields and have them silently
 /// ignored. Mirrors the field set of `models::CreateFacilityRequest`.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -85,7 +85,7 @@ pub struct PatchFacilityBody {
 )]
 pub async fn create_facility_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("facilities:write")?;
@@ -110,7 +110,7 @@ pub async fn create_facility_handler(
 )]
 pub async fn update_facility_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {

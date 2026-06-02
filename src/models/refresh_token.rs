@@ -10,7 +10,7 @@ use uuid::Uuid;
 pub struct RefreshToken {
     pub id: Uuid,
     pub token_hash: String,
-    /// "dispatcher" or "driver"
+    /// "fleet_user" or "driver"
     pub subject_type: String,
     pub subject_id: Uuid,
     /// NULL = PWA session; set = an OAuth client (Plan 2).
@@ -35,7 +35,7 @@ mod tests {
         let active = RefreshToken {
             id: Uuid::new_v4(),
             token_hash: "h".into(),
-            subject_type: "dispatcher".into(),
+            subject_type: "fleet_user".into(),
             subject_id: Uuid::new_v4(),
             client_id: None,
             family_id: Uuid::new_v4(),

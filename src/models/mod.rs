@@ -1,8 +1,8 @@
 pub mod authorization_code;
 pub mod blob;
-pub mod dispatcher;
-pub mod dispatcher_api_key;
-pub mod dispatcher_credentials;
+pub mod fleet_user;
+pub mod fleet_user_api_key;
+pub mod fleet_user_credentials;
 pub mod driver;
 pub mod driver_credentials;
 pub mod event;
@@ -19,9 +19,9 @@ pub mod truck;
 
 pub use authorization_code::*;
 pub use blob::*;
-pub use dispatcher::*;
-pub use dispatcher_api_key::*;
-pub use dispatcher_credentials::*;
+pub use fleet_user::*;
+pub use fleet_user_api_key::*;
+pub use fleet_user_credentials::*;
 pub use driver::*;
 pub use driver_credentials::*;
 pub use event::*;

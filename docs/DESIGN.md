@@ -8,12 +8,12 @@
 2. **Glanceable status.** A driver on the road or a dispatcher scanning a list must read state in under a second. Status is carried by color + label, never color alone.
 3. **Surface ladder, not shadows.** Hierarchy comes from layered surfaces with hairline borders, not drop shadows. One soft shadow token exists for popovers — that's it.
 4. **Scarce accent.** Brand blue (`--color-primary`) is reserved for primary CTA, focused element, active nav, and link emphasis. Never as a section background or decorative fill.
-5. **One voice, two surfaces.** Driver (mobile, single-task) and Dispatcher (desktop, multi-panel) share tokens, components, and rules. Density and target sizes differ; everything else does not.
+5. **One voice, two surfaces.** Driver (mobile, single-task) and Fleet (desktop, multi-panel) share tokens, components, and rules. Density and target sizes differ; everything else does not.
 6. **Light by default.** Drivers use the PWA outdoors in cabs and yards — sunlight readability matters more than a moody UI. A future dark mode is allowed but is not the canonical surface.
 
 ## Color Tokens
 
-The existing Driver palette is canonical. Dispatcher extends it with a surface ladder, hairline scale, and information-density tones. Do not redefine the canonical tokens.
+The existing Driver palette is canonical. Fleet extends it with a surface ladder, hairline scale, and information-density tones. Do not redefine the canonical tokens.
 
 ```css
 :root {
@@ -67,7 +67,7 @@ The existing Driver palette is canonical. Dispatcher extends it with a surface l
 }
 ```
 
-Dispatcher and Driver both consume this same token set. Component CSS references tokens, never raw hex.
+Fleet and Driver both consume this same token set. Component CSS references tokens, never raw hex.
 
 ## Typography
 
@@ -75,14 +75,14 @@ System font stack only. No webfont download. We rely on Apple SD Gothic / SF on 
 
 | Token        | Size | Weight | Line | Tracking | Use |
 |--------------|------|--------|------|----------|-----|
-| display      | 28px | 600    | 1.2  | -0.4px   | Page title (rare; mainly Dispatcher) |
+| display      | 28px | 600    | 1.2  | -0.4px   | Page title (rare; mainly Fleet) |
 | heading      | 20px | 600    | 1.3  | -0.2px   | Card title, section heading |
 | subhead      | 16px | 600    | 1.4  | -0.1px   | Dense list group header |
 | body         | 16px | 400    | 1.5  | 0        | Default |
-| body-sm      | 14px | 400    | 1.45 | 0        | Table cells, dense Dispatcher rows |
+| body-sm      | 14px | 400    | 1.45 | 0        | Table cells, dense Fleet rows |
 | caption      | 12px | 500    | 1.4  | 0.2px    | Badge text, meta, timestamps |
 | button       | 15px | 600    | 1.2  | 0        | Driver primary CTA (touch) |
-| button-sm    | 14px | 500    | 1.2  | 0        | Dispatcher button, secondary |
+| button-sm    | 14px | 500    | 1.2  | 0        | Fleet button, secondary |
 | mono         | 13px | 400    | 1.5  | 0        | IDs, checksums, lat/lng, timestamps in detail views |
 
 Rules:
@@ -98,7 +98,7 @@ Rules:
 ```
 --space-1: 4px    /* tight inline */
 --space-2: 8px    /* default gap */
---space-3: 12px   /* row padding (Dispatcher) */
+--space-3: 12px   /* row padding (Fleet) */
 --space-4: 16px   /* card interior */
 --space-5: 24px   /* section gap */
 --space-6: 32px   /* page padding */
@@ -106,8 +106,8 @@ Rules:
 ```
 
 - Driver card padding: 16px (`--space-4`).
-- Dispatcher card padding: 16px; table row vertical padding 12px (`--space-3`); dense table 8px.
-- Section separation: 24px on Driver, 16–24px on Dispatcher (information density wins).
+- Fleet card padding: 16px; table row vertical padding 12px (`--space-3`); dense table 8px.
+- Section separation: 24px on Driver, 16–24px on Fleet (information density wins).
 
 ## Surface & Elevation
 
@@ -126,7 +126,7 @@ Popovers (dropdowns, menus, toasts, modal): `--color-surface` background, 1px `-
 
 ### Buttons
 
-Three variants. Min height 44px on Driver (touch), 32px on Dispatcher (cursor).
+Three variants. Min height 44px on Driver (touch), 32px on Fleet (cursor).
 
 - **Primary** — `--color-primary` bg, white text, no border. Hover: `--color-primary-hover`. Active: `--color-primary-dark`. One per view.
 - **Secondary** — `--color-surface` bg, `--color-border` 1px, `--color-text` text. Hover: `--color-surface-2`.
@@ -142,7 +142,7 @@ Focus ring: 3px `rgba(26,86,219,0.15)` outer + 1px `--color-primary` border. Alw
 - 1.5px border in `--color-border-strong`, 8px radius, white surface.
 - Focus: border becomes `--color-primary`, 3px soft ring `rgba(26,86,219,0.15)`.
 - Error: border `--color-danger`, helper text below in `--color-danger`, 13px.
-- Driver: min-height 44px. Dispatcher: 32px (compact) or 36px (default).
+- Driver: min-height 44px. Fleet: 32px (compact) or 36px (default).
 - Labels above the field, weight 500, `body-sm`, color `--color-text`. Never use placeholder as a label.
 
 ### Badges (status pills)
@@ -166,9 +166,9 @@ Shape: `--radius-pill`, `caption` type, padding 2px 8px. Always include a text l
 
 `--color-surface` bg, 1px `--color-border`, `--radius` 8px, 16px interior padding. Card title: `heading`. Card body: `body` or `body-sm`. No shadow on cards by default (the existing `--shadow` is preserved for back-compat with the Driver app but new code should rely on the hairline border instead).
 
-### Tables (Dispatcher)
+### Tables (Fleet)
 
-The Dispatcher leans on tables for trips, loads, and assignments.
+The Fleet leans on tables for trips, loads, and assignments.
 
 - Header row: `--color-surface-2` bg, `caption` type uppercase, `--color-text-muted`, sticky on scroll.
 - Body row: `--color-surface` bg, 1px `--color-border` bottom, 12px vertical padding.
@@ -178,18 +178,18 @@ The Dispatcher leans on tables for trips, loads, and assignments.
 
 ### Forms
 
-- Stack vertically. Two-column layout only on Dispatcher when fields are obviously paired (lat/lng, start/end).
+- Stack vertically. Two-column layout only on Fleet when fields are obviously paired (lat/lng, start/end).
 - Required fields marked with `*` after label, `--color-danger`.
 - Submit button right-aligned in a footer row separated by 1px `--color-border`.
 
 ### Navigation
 
 - **Driver** — bottom tab bar on mobile (3–4 tabs max), top app bar with current view title and one optional action button. Active tab: `--color-primary` icon + label, others `--color-text-muted`.
-- **Dispatcher** — left sidebar (220px) with grouped link list, top bar with breadcrumb + global actions. Active link: `--color-surface-2` bg, `--color-text` text, 2px `--color-primary` left border.
+- **Fleet** — left sidebar (220px) with grouped link list, top bar with breadcrumb + global actions. Active link: `--color-surface-2` bg, `--color-text` text, 2px `--color-primary` left border.
 
 ### Dialogs / modals
 
-Center on Dispatcher; bottom-sheet on Driver mobile. Surface 1, 1px border, 12px radius, `--shadow-popover`. Backdrop `rgba(17,24,39,0.4)`.
+Center on Fleet; bottom-sheet on Driver mobile. Surface 1, 1px border, 12px radius, `--shadow-popover`. Backdrop `rgba(17,24,39,0.4)`.
 
 ## Layout
 
@@ -201,16 +201,16 @@ Center on Dispatcher; bottom-sheet on Driver mobile. Surface 1, 1px border, 12px
 - Touch targets ≥ 44×44px. Buttons full-width by default in primary action zones.
 - One primary action per screen. Secondary actions in a kebab menu or below the fold.
 
-### Dispatcher (desktop SPA)
+### Fleet (desktop SPA)
 
 - Three-region shell: sidebar (220px fixed), top bar (48px fixed), content (fluid).
-- Content max-width: none — Dispatcher is meant to fill wide monitors. Set per-page max widths only when the content is genuinely narrow (forms, detail panes).
+- Content max-width: none — Fleet is meant to fill wide monitors. Set per-page max widths only when the content is genuinely narrow (forms, detail panes).
 - Multi-panel views (list + detail) use a 2-pane split, resizable where useful, with a 1px `--color-border` divider.
 - Information density: prefer 14px body in lists/tables, 16px in detail views.
 
 ## Icons
 
-Use [Lucide](https://lucide.dev) (MIT, SVG, tree-shake-friendly) at 20px (Dispatcher) and 24px (Driver). Stroke width 2. Color inherits from text (`currentColor`). No filled/duotone variants. No emoji as UI icons.
+Use [Lucide](https://lucide.dev) (MIT, SVG, tree-shake-friendly) at 20px (Fleet) and 24px (Driver). Stroke width 2. Color inherits from text (`currentColor`). No filled/duotone variants. No emoji as UI icons.
 
 ## Motion
 

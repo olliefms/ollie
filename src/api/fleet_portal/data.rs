@@ -1,6 +1,6 @@
-// src/api/dispatcher_portal/data.rs
+// src/api/fleet_portal/data.rs
 //
-// Dispatcher portal data endpoints — protected by require_dispatcher_jwt.
+// Fleet portal data endpoints — protected by require_fleet_user_jwt.
 // All business logic is delegated to the same DB ops used by the admin API.
 // No new DTOs are introduced; admin response shapes are reused throughout.
 
@@ -10,7 +10,7 @@ use axum::{
     Extension, Json,
 };
 use axum::http::StatusCode;
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -34,7 +34,7 @@ use crate::services::trip_lifecycle::{
 };
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct DispatcherTripListItem {
+pub struct FleetTripListItem {
     pub id: uuid::Uuid,
     pub trip_number: String,
     pub status: String,
@@ -68,8 +68,8 @@ pub struct DispatcherTripListItem {
 }
 
 #[derive(serde::Serialize)]
-pub struct DispatcherTripListResponse {
-    pub items: Vec<DispatcherTripListItem>,
+pub struct FleetTripListResponse {
+    pub items: Vec<FleetTripListItem>,
 }
 
 #[derive(serde::Serialize)]
@@ -127,7 +127,7 @@ fn enrich_trip(
     driver_map: &std::collections::HashMap<uuid::Uuid, String>,
     truck_map: &std::collections::HashMap<uuid::Uuid, String>,
     trailer_map: &std::collections::HashMap<uuid::Uuid, String>,
-) -> DispatcherTripListItem {
+) -> FleetTripListItem {
     let driver_name = trip.driver_id.and_then(|did| driver_map.get(&did).cloned());
     let truck_unit  = trip.truck_id.and_then(|tid| truck_map.get(&tid).cloned());
     let trailer_units = trip.trailer_ids.iter()
@@ -137,7 +137,7 @@ fn enrich_trip(
     let mut stops = trip.stops;
     for s in &mut stops { s.fill_utc_fields(); }
 
-    DispatcherTripListItem {
+    FleetTripListItem {
         id: trip.id,
         trip_number: trip.trip_number,
         status: trip.status.as_str().to_string(),
@@ -185,7 +185,7 @@ fn enrich_trip(
 )]
 pub async fn list_loads(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListLoadsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:read")?;
@@ -219,7 +219,7 @@ pub async fn list_loads(
 )]
 pub async fn get_load(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:read")?;
@@ -242,7 +242,7 @@ pub async fn get_load(
 )]
 pub async fn create_load(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<CreateLoadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:write")?;
@@ -325,7 +325,7 @@ pub async fn create_load(
 )]
 pub async fn update_load(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateLoadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -395,7 +395,7 @@ pub async fn update_load(
 )]
 pub async fn delete_load_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:delete")?;
@@ -426,7 +426,7 @@ pub async fn delete_load_handler(
 )]
 pub async fn invoice_load_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<crate::models::InvoiceActionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -455,7 +455,7 @@ pub async fn invoice_load_handler(
 )]
 pub async fn cancel_load_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<crate::models::CancelActionRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -482,7 +482,7 @@ pub async fn cancel_load_handler(
 )]
 pub async fn settle_load_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:settle")?;
@@ -527,12 +527,12 @@ pub struct ListTripsQuery {
 )]
 pub async fn list_trips(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListTripsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:read")?;
     let items = build_trip_list_items(&state, q).await?;
-    Ok(Json(DispatcherTripListResponse { items }))
+    Ok(Json(FleetTripListResponse { items }))
 }
 
 #[utoipa::path(
@@ -540,7 +540,7 @@ pub async fn list_trips(
     path = "/fleet/api/v1/trips",
     request_body(content = CreateTripRequest, description = "Trip to create"),
     responses(
-        (status = 201, description = "Created trip (enriched with driver/truck names and mileage_summary)", body = DispatcherTripListItem),
+        (status = 201, description = "Created trip (enriched with driver/truck names and mileage_summary)", body = FleetTripListItem),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Referenced load/driver/truck/trailer not found"),
@@ -551,7 +551,7 @@ pub async fn list_trips(
 )]
 pub async fn create_trip_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<crate::models::trip::CreateTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
@@ -569,7 +569,7 @@ pub async fn create_trip_handler(
 pub async fn build_trip_list_items(
     state: &AppState,
     q: ListTripsQuery,
-) -> Result<Vec<DispatcherTripListItem>, AppError> {
+) -> Result<Vec<FleetTripListItem>, AppError> {
     // Resolve `load_number` → `load_id` if provided; if no such load exists, return [].
     let load_id_filter = if let Some(ln) = &q.load_number {
         match state.db.get_load_by_number(ln).await {
@@ -649,7 +649,7 @@ pub async fn build_trip_list_items(
         }
     }
 
-    let items: Vec<DispatcherTripListItem> = trips.into_iter()
+    let items: Vec<FleetTripListItem> = trips.into_iter()
         .map(|trip| {
             let trip_id = trip.id;
             let mut item = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
@@ -674,7 +674,7 @@ pub async fn build_trip_list_items(
 )]
 pub async fn get_trip(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:read")?;
@@ -683,12 +683,12 @@ pub async fn get_trip(
 }
 
 /// Shared trip-detail builder — used by the HTTP handler and the MCP `get_trip` tool.
-/// Returns the enriched `DispatcherTripListItem` carrying a full `mileage_summary`
+/// Returns the enriched `FleetTripListItem` carrying a full `mileage_summary`
 /// (origin + legs[]) so callers get a single, coherent shape.
 pub async fn build_trip_detail(
     state: &AppState,
     id: Uuid,
-) -> Result<DispatcherTripListItem, AppError> {
+) -> Result<FleetTripListItem, AppError> {
     let record = state.db.get_trip(id).await?;
     let trip: crate::models::TripListItem = record.clone().into();
 
@@ -788,7 +788,7 @@ pub async fn driver_pay_for_record(
 )]
 pub async fn assign_trip(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<AssignTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -869,7 +869,7 @@ pub async fn assign_trip(
 )]
 pub async fn unassign_trip(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
@@ -907,7 +907,7 @@ pub async fn unassign_trip(
 // ---------------------------------------------------------------------------
 // Trip lifecycle actions — thin wrappers around `services::trip_lifecycle`.
 // Same business logic; separate utoipa annotations to surface under the
-// dispatcher path/tag.
+// fleet_user path/tag.
 // ---------------------------------------------------------------------------
 
 #[utoipa::path(
@@ -925,7 +925,7 @@ pub async fn unassign_trip(
 )]
 pub async fn dispatch_trip(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
@@ -948,7 +948,7 @@ pub async fn dispatch_trip(
 )]
 pub async fn undispatch_trip(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
@@ -971,7 +971,7 @@ pub async fn undispatch_trip(
 )]
 pub async fn cancel_trip(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
@@ -994,7 +994,7 @@ pub async fn cancel_trip(
 )]
 pub async fn complete_trip(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     id: Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
@@ -1021,7 +1021,7 @@ pub async fn complete_trip(
 )]
 pub async fn stop_arrive(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     path: Path<(Uuid, u32)>,
     body: Json<StopArriveRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1064,7 +1064,7 @@ pub async fn stop_arrive(
 )]
 pub async fn stop_depart(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     path: Path<(Uuid, u32)>,
     body: Json<StopDepartRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1106,7 +1106,7 @@ pub async fn stop_depart(
 )]
 pub async fn stop_late(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     path: Path<(Uuid, u32)>,
     body: Json<StopLateRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1131,7 +1131,7 @@ pub async fn stop_late(
 )]
 pub async fn check_call(
     state: State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     id: Path<Uuid>,
     body: Json<CheckCallRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -1164,7 +1164,7 @@ pub struct ListDriversQuery {
 )]
 pub async fn list_drivers(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListDriversQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:read")?;
@@ -1186,7 +1186,7 @@ pub async fn list_drivers(
 )]
 pub async fn get_driver(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:read")?;
@@ -1218,7 +1218,7 @@ pub struct ListTrucksQuery {
 )]
 pub async fn list_trucks(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListTrucksQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trucks:read")?;
@@ -1240,7 +1240,7 @@ pub async fn list_trucks(
 )]
 pub async fn get_truck(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trucks:read")?;
@@ -1272,7 +1272,7 @@ pub struct ListTrailersQuery {
 )]
 pub async fn list_trailers(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListTrailersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trailers:read")?;
@@ -1294,7 +1294,7 @@ pub async fn list_trailers(
 )]
 pub async fn get_trailer(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trailers:read")?;
@@ -1331,7 +1331,7 @@ pub struct ListFacilitiesDispatchQuery {
 )]
 pub async fn list_facilities(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListFacilitiesDispatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("facilities:read")?;
@@ -1376,7 +1376,7 @@ pub async fn list_facilities(
 )]
 pub async fn get_facility(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("facilities:read")?;
@@ -1414,7 +1414,7 @@ pub struct ListEventsDispatchQuery {
 )]
 pub async fn list_events(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Query(q): Query<ListEventsDispatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("events:read")?;
@@ -1458,7 +1458,7 @@ pub struct CountResponse {
 )]
 pub async fn count_open_loads(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:read")?;
     let filter = Some("status = 'planned' OR status = 'assigned' OR status = 'dispatched' OR status = 'in_transit'".to_string());
@@ -1479,7 +1479,7 @@ pub async fn count_open_loads(
 )]
 pub async fn count_active_drivers(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:read")?;
     let filter = Some("status = 'available' OR status = 'assigned' OR status = 'dispatched'".to_string());
@@ -1500,7 +1500,7 @@ pub async fn count_active_drivers(
 )]
 pub async fn count_pending_documents(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("blobs:read")?;
     let filter = Some("status = 'pending'".to_string());
@@ -1521,7 +1521,7 @@ pub async fn count_pending_documents(
 )]
 pub async fn count_events_today(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("events:read")?;
     let today = chrono::Utc::now().date_naive().format("%Y-%m-%dT00:00:00Z").to_string();

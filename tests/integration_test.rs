@@ -19,7 +19,7 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
-    std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-secret-must-be-32b");
+    std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-secret-must-be-32b");
 
     let config = Arc::new(Config::from_env().unwrap());
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
@@ -59,7 +59,7 @@ async fn test_server_with_state() -> (TestServer, TempDir, TempDir, async_channe
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID", "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
-    std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-secret-must-be-32b");
+    std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-secret-must-be-32b");
 
     let config = Arc::new(Config::from_env().unwrap());
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
@@ -96,7 +96,7 @@ const OWNER_PASSWORD: &str = "owner-password-123";
 
 /// Returns an owner JWT for the dispatch surface, performing first-run setup if
 /// needed. Idempotent: the first call runs `POST /fleet/setup` (only legal
-/// while the dispatcher table is empty) and returns the auto-login token; later
+/// while the fleet_user table is empty) and returns the auto-login token; later
 /// calls hit the 409 ("already set up") path and log in with the same creds.
 /// An owner is used so every elevated op (settle/invoice/delete/terminal-writes/
 /// user-mgmt) is permitted. Replaces the old admin `Bearer test-secret` setup.
@@ -120,23 +120,23 @@ async fn setup_owner(server: &axum_test::TestServer) -> String {
 /// Used only to set up the otherwise-unreachable two-owner precondition; the
 /// users surface forbids creating a second owner.
 async fn seed_owner_direct(state: &AppState, email: &str, password: &str) {
-    use ollie::models::{DispatcherCredentials, DispatcherRecord, DispatcherStatus};
+    use ollie::models::{FleetUserCredentials, FleetUserRecord, FleetUserStatus};
     use ollie::models::permission::Role;
     let now = chrono::Utc::now();
     let id = uuid::Uuid::new_v4();
-    state.db.insert_dispatcher(&DispatcherRecord {
+    state.db.insert_fleet_user(&FleetUserRecord {
         id,
         email: email.to_string(),
         name: "Seeded Owner".to_string(),
-        status: DispatcherStatus::Active,
+        status: FleetUserStatus::Active,
         role: Role::Owner,
         extra_scopes: Vec::new(),
         created_at: now,
         updated_at: now,
     }).await.unwrap();
     let password_hash = bcrypt::hash(password, 4).unwrap();
-    state.db.upsert_dispatcher_credentials(&DispatcherCredentials {
-        dispatcher_id: id,
+    state.db.upsert_fleet_user_credentials(&FleetUserCredentials {
+        fleet_user_id: id,
         password_hash,
         token_version: 0,
         failed_attempts: 0,
@@ -1253,13 +1253,13 @@ async fn test_trip_stop_depart_returns_404_for_missing_sequence() {
 // --- Dispatcher integration tests ---
 
 #[tokio::test]
-async fn test_create_dispatcher_returns_201() {
+async fn test_create_fleet_user_returns_201() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let resp = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
-            "email": "dispatcher@example.com",
+            "email": "fleet_user@example.com",
             "name": "Jane Dispatcher",
             "password": "securepassword123",
             "role": "dispatcher"
@@ -1268,14 +1268,14 @@ async fn test_create_dispatcher_returns_201() {
     assert_eq!(resp.status_code(), 201);
     let body = resp.json::<serde_json::Value>();
     assert!(body["id"].as_str().is_some());
-    assert_eq!(body["email"], "dispatcher@example.com");
+    assert_eq!(body["email"], "fleet_user@example.com");
     assert_eq!(body["name"], "Jane Dispatcher");
     assert_eq!(body["status"], "active");
     assert_eq!(body["role"], "dispatcher");
 }
 
 #[tokio::test]
-async fn test_create_dispatcher_duplicate_email_returns_409() {
+async fn test_create_fleet_user_duplicate_email_returns_409() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let body = serde_json::json!({
@@ -1303,7 +1303,7 @@ async fn test_create_dispatcher_duplicate_email_returns_409() {
 }
 
 #[tokio::test]
-async fn test_list_dispatchers_returns_empty_initially() {
+async fn test_list_fleet_users_returns_empty_initially() {
     let (server, _b, _d, _rx) = test_server().await;
     // The dispatch users surface always has at least the first-run owner; assert
     // the list shape (`users`/`returned`) and that the owner is the sole member.
@@ -1319,7 +1319,7 @@ async fn test_list_dispatchers_returns_empty_initially() {
 }
 
 #[tokio::test]
-async fn test_get_dispatcher_by_id() {
+async fn test_get_fleet_user_by_id() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let create = server.post("/fleet/api/v1/users")
@@ -1347,10 +1347,10 @@ async fn test_get_dispatcher_by_id() {
 // --- Dispatcher portal auth tests ---
 
 #[tokio::test]
-async fn test_dispatcher_login_success() {
+async fn test_fleet_user_login_success() {
     let (server, _b, _d, _rx) = test_server().await;
 
-    // Create a dispatcher via the users surface
+    // Create a fleet_user via the users surface
     let owner_token = setup_owner(&server).await;
     let create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
@@ -1363,7 +1363,7 @@ async fn test_dispatcher_login_success() {
         .await;
     assert_eq!(create.status_code(), 201);
 
-    // Login via dispatcher portal
+    // Login via fleet_user portal
     let resp = server.post("/fleet/auth/login")
         .json(&serde_json::json!({
             "email": "login@example.com",
@@ -1376,7 +1376,7 @@ async fn test_dispatcher_login_success() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_login_bad_password() {
+async fn test_fleet_user_login_bad_password() {
     let (server, _b, _d, _rx) = test_server().await;
 
     let owner_token = setup_owner(&server).await;
@@ -1401,7 +1401,7 @@ async fn test_dispatcher_login_bad_password() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_login_unknown_email() {
+async fn test_fleet_user_login_unknown_email() {
     let (server, _b, _d, _rx) = test_server().await;
 
     let resp = server.post("/fleet/auth/login")
@@ -1414,10 +1414,10 @@ async fn test_dispatcher_login_unknown_email() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_refresh() {
+async fn test_fleet_user_refresh() {
     let (server, _b, _d, _rx) = test_server().await;
 
-    // Create dispatcher
+    // Create fleet_user
     let owner_token = setup_owner(&server).await;
     let create = server.post("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
@@ -1458,12 +1458,12 @@ async fn test_dispatcher_refresh() {
 
 // --- Dispatcher portal data API tests ---
 
-async fn dispatcher_login(server: &axum_test::TestServer, email: &str, password: &str) -> String {
-    // Create dispatcher account. Scope enforcement (#331) means a plain
-    // `dispatcher`-role user is denied elevated ops (settle/invoice/master-data
+async fn fleet_user_login(server: &axum_test::TestServer, email: &str, password: &str) -> String {
+    // Create fleet_user account. Scope enforcement (#331) means a plain
+    // `fleet_user`-role user is denied elevated ops (settle/invoice/master-data
     // deletes/terminal writes); these data-surface tests exercise the full
     // operational range, so provision them as `owner`. Tests that specifically
-    // verify dispatcher-role denial create their user separately.
+    // verify fleet_user-role denial create their user separately.
     // The named user is created via the users surface as `fleet_manager`, which
     // is operationally identical to owner (effective scope `["*"]`) but — unlike
     // owner — is creatable (the surface forbids creating role=owner). This keeps
@@ -1488,12 +1488,12 @@ async fn dispatcher_login(server: &axum_test::TestServer, email: &str, password:
 }
 
 #[tokio::test]
-async fn test_dispatcher_list_loads() {
+async fn test_fleet_user_list_loads() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
 
-    // Login as dispatcher
-    let token = dispatcher_login(&server, "data1@example.com", "password-data1").await;
+    // Login as fleet_user
+    let token = fleet_user_login(&server, "data1@example.com", "password-data1").await;
 
     // Create a facility and load via admin API first
     let fac_id = create_test_facility(&server, "Dispatch Dock", "Chicago, IL").await;
@@ -1510,7 +1510,7 @@ async fn test_dispatcher_list_loads() {
         }))
         .await;
 
-    // GET /fleet/api/v1/loads as dispatcher — should return 200
+    // GET /fleet/api/v1/loads as fleet_user — should return 200
     let resp = server.get("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
@@ -1521,12 +1521,12 @@ async fn test_dispatcher_list_loads() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_get_trip() {
+async fn test_fleet_user_get_trip() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
 
-    // Login as dispatcher
-    let token = dispatcher_login(&server, "data2@example.com", "password-data2").await;
+    // Login as fleet_user
+    let token = fleet_user_login(&server, "data2@example.com", "password-data2").await;
 
     // Create a facility, load, and trip via admin API
     let fac_id = create_test_facility(&server, "Trip Dock", "Dallas, TX").await;
@@ -1559,7 +1559,7 @@ async fn test_dispatcher_get_trip() {
     assert_eq!(trip_resp.status_code(), 201);
     let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    // GET /fleet/api/v1/trips/:id as dispatcher — should return 200
+    // GET /fleet/api/v1/trips/:id as fleet_user — should return 200
     let resp = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
@@ -1569,12 +1569,12 @@ async fn test_dispatcher_get_trip() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_assign_and_unassign() {
+async fn test_fleet_user_assign_and_unassign() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
 
-    // Login as dispatcher
-    let token = dispatcher_login(&server, "data3@example.com", "password-data3").await;
+    // Login as fleet_user
+    let token = fleet_user_login(&server, "data3@example.com", "password-data3").await;
 
     // Create resources via admin API
     let fac_id = create_test_facility(&server, "Assign Dock", "Houston, TX").await;
@@ -1609,7 +1609,7 @@ async fn test_dispatcher_assign_and_unassign() {
     assert_eq!(trip_resp.status_code(), 201);
     let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    // Assign via dispatcher API
+    // Assign via fleet_user API
     let assign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({
@@ -1634,7 +1634,7 @@ async fn test_dispatcher_assign_and_unassign() {
     let get_body = get_resp.json::<serde_json::Value>();
     assert_eq!(get_body["driver_id"], driver_id);
 
-    // Unassign via dispatcher API
+    // Unassign via fleet_user API
     let unassign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/unassign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
@@ -1735,9 +1735,9 @@ async fn drive_load_to_delivered(
 }
 
 #[tokio::test]
-async fn test_dispatcher_create_trip() {
+async fn test_fleet_user_create_trip() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "ct1@example.com", "password-ct1").await;
+    let token = fleet_user_login(&server, "ct1@example.com", "password-ct1").await;
     let fac_id = create_test_facility(&server, "Create Trip Dock", "Memphis, TN").await;
 
     let resp = server.post("/fleet/api/v1/trips")
@@ -1766,9 +1766,9 @@ async fn test_dispatcher_create_trip() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_delete_trip() {
+async fn test_fleet_user_delete_trip() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "dt1@example.com", "password-dt1").await;
+    let token = fleet_user_login(&server, "dt1@example.com", "password-dt1").await;
     let fac_id = create_test_facility(&server, "Delete Trip Dock", "Mobile, AL").await;
 
     // planned trip → soft-cancel (204), then GET shows cancelled.
@@ -1797,10 +1797,10 @@ async fn test_dispatcher_delete_trip() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_delete_trip_in_transit_conflict() {
+async fn test_fleet_user_delete_trip_in_transit_conflict() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "dt2@example.com", "password-dt2").await;
+    let token = fleet_user_login(&server, "dt2@example.com", "password-dt2").await;
     let fac_id = create_test_facility(&server, "InTransit Dock", "Macon, GA").await;
 
     let driver_id = server.post("/fleet/api/v1/drivers")
@@ -1851,9 +1851,9 @@ async fn test_dispatcher_delete_trip_in_transit_conflict() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_cancel_load() {
+async fn test_fleet_user_cancel_load() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "cl1@example.com", "password-cl1").await;
+    let token = fleet_user_login(&server, "cl1@example.com", "password-cl1").await;
     let fac_id = create_test_facility(&server, "Cancel Load Dock", "Tulsa, OK").await;
     let load_id = create_2stop_load(&server, &fac_id, "Cancel Co").await;
 
@@ -1868,9 +1868,9 @@ async fn test_dispatcher_cancel_load() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_invoice_and_settle_load() {
+async fn test_fleet_user_invoice_and_settle_load() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "is1@example.com", "password-is1").await;
+    let token = fleet_user_login(&server, "is1@example.com", "password-is1").await;
     let fac_id = create_test_facility(&server, "Invoice Dock", "Wichita, KS").await;
     let load_id = create_2stop_load(&server, &fac_id, "Invoice Co").await;
 
@@ -1900,10 +1900,10 @@ async fn test_dispatcher_invoice_and_settle_load() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_delete_load_and_active_trip_conflict() {
+async fn test_fleet_user_delete_load_and_active_trip_conflict() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "dl1@example.com", "password-dl1").await;
+    let token = fleet_user_login(&server, "dl1@example.com", "password-dl1").await;
     let fac_id = create_test_facility(&server, "DelLoad Dock", "Omaha, NE").await;
 
     // Load with an active trip → delete must 409.
@@ -1940,9 +1940,9 @@ async fn test_dispatcher_delete_load_and_active_trip_conflict() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_delete_driver() {
+async fn test_fleet_user_delete_driver() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "dd1@example.com", "password-dd1").await;
+    let token = fleet_user_login(&server, "dd1@example.com", "password-dd1").await;
 
     let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -1963,9 +1963,9 @@ async fn test_dispatcher_delete_driver() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_set_driver_pin() {
+async fn test_fleet_user_set_driver_pin() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "pin1@example.com", "password-pin1").await;
+    let token = fleet_user_login(&server, "pin1@example.com", "password-pin1").await;
 
     let driver_id = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -1989,9 +1989,9 @@ async fn test_dispatcher_set_driver_pin() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_delete_truck_and_trailer() {
+async fn test_fleet_user_delete_truck_and_trailer() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "eq1@example.com", "password-eq1").await;
+    let token = fleet_user_login(&server, "eq1@example.com", "password-eq1").await;
 
     let truck_id = server.post("/fleet/api/v1/trucks")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -2029,7 +2029,7 @@ async fn test_dispatcher_delete_truck_and_trailer() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_dispatcher_mcp_requires_auth() {
+async fn test_fleet_user_mcp_requires_auth() {
     let (server, _b, _d, _rx) = test_server().await;
 
     // POST /fleet/mcp without auth header → 401
@@ -2046,10 +2046,10 @@ async fn test_dispatcher_mcp_requires_auth() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_mcp_tools_list() {
+async fn test_fleet_user_mcp_tools_list() {
     let (server, _b, _d, _rx) = test_server().await;
 
-    let token = dispatcher_login(&server, "mcp1@example.com", "password-mcp1").await;
+    let token = fleet_user_login(&server, "mcp1@example.com", "password-mcp1").await;
     let session = mcp_session(&server, &token).await;
 
     let body = mcp_rpc(&server, &token, &session, "tools/list", serde_json::json!({})).await;
@@ -2089,7 +2089,7 @@ async fn test_dispatcher_mcp_tools_list() {
 #[tokio::test]
 async fn test_mcp_search_blobs_rejects_blank_query() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_sb@example.com", "password-mcp-sb").await;
+    let token = fleet_user_login(&server, "mcp_sb@example.com", "password-mcp-sb").await;
     let session = mcp_session(&server, &token).await;
 
     for q in ["", "   "] {
@@ -2109,7 +2109,7 @@ async fn test_mcp_search_blobs_rejects_blank_query() {
 #[tokio::test]
 async fn test_mcp_resources_list_and_read_roundtrip() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_res@example.com", "password-mcp-res").await;
+    let token = fleet_user_login(&server, "mcp_res@example.com", "password-mcp-res").await;
     let created = upload_blob_via_presigned(&server, b"resource blob body".to_vec(), "text/plain", "res.txt").await;
     let blob_id = created["id"].as_str().unwrap().to_string();
     let fac = create_test_facility(&server, "Res Dock", "Dallas, TX").await;
@@ -2178,7 +2178,7 @@ async fn test_mcp_resources_list_and_read_roundtrip() {
 #[tokio::test]
 async fn test_mcp_blob_tools_emit_resource_links() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_link@example.com", "password-mcp-link").await;
+    let token = fleet_user_login(&server, "mcp_link@example.com", "password-mcp-link").await;
     let created = upload_blob_via_presigned(&server, b"link body".to_vec(), "text/plain", "link.txt").await;
     let blob_id = created["id"].as_str().unwrap().to_string();
     let blob_uri = format!("ollie://blob/{blob_id}");
@@ -2239,7 +2239,7 @@ async fn mcp_complete(
 #[tokio::test]
 async fn test_mcp_completions_for_reference_args() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_cmp@example.com", "password-mcp-cmp").await;
+    let token = fleet_user_login(&server, "mcp_cmp@example.com", "password-mcp-cmp").await;
 
     // Seed: a load (customer "ACME"), a facility, and a tagged blob.
     let fac = create_test_facility(&server, "Houston Terminal", "Houston, TX").await;
@@ -2296,7 +2296,7 @@ async fn test_mcp_completions_for_reference_args() {
 #[tokio::test]
 async fn test_mcp_destructive_ops_proceed_without_elicitation_support() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_eli@example.com", "password-mcp-eli").await;
+    let token = fleet_user_login(&server, "mcp_eli@example.com", "password-mcp-eli").await;
     let trip_id = make_trip_with_two_stops(&server).await;
     let created = upload_blob_via_presigned(&server, b"del me".to_vec(), "text/plain", "del.txt").await;
     let blob_id = created["id"].as_str().unwrap().to_string();
@@ -2369,7 +2369,7 @@ fn structured_conforms(schema: &serde_json::Value, instance: &serde_json::Value)
 #[tokio::test]
 async fn test_mcp_structured_content_validates_against_output_schema() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_struct@example.com", "password-mcp-struct").await;
+    let token = fleet_user_login(&server, "mcp_struct@example.com", "password-mcp-struct").await;
     let fac = create_test_facility(&server, "Struct Dock", "Dallas, TX").await;
     let load_id = create_test_load(&server, &fac).await;
     let trip_id = make_trip_with_two_stops(&server).await;
@@ -2431,9 +2431,9 @@ async fn assert_structured(
 /// must yield every record exactly once, and the final page must omit nextCursor.
 /// Uses list_facilities with a page size of 2 so a 5-record dataset spans 3 pages.
 #[tokio::test]
-async fn test_dispatcher_mcp_list_cursor_paginates_all_records() {
+async fn test_fleet_user_mcp_list_cursor_paginates_all_records() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_pg@example.com", "password-mcp-pg").await;
+    let token = fleet_user_login(&server, "mcp_pg@example.com", "password-mcp-pg").await;
 
     let mut created = std::collections::HashSet::new();
     for i in 0..5 {
@@ -2470,10 +2470,10 @@ async fn test_dispatcher_mcp_list_cursor_paginates_all_records() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_mcp_list_loads() {
+async fn test_fleet_user_mcp_list_loads() {
     let (server, _b, _d, _rx) = test_server().await;
 
-    let token = dispatcher_login(&server, "mcp2@example.com", "password-mcp2").await;
+    let token = fleet_user_login(&server, "mcp2@example.com", "password-mcp2").await;
     let session = mcp_session(&server, &token).await;
 
     let body = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
@@ -2661,10 +2661,10 @@ async fn test_dispatch_trip_when_driver_already_dispatched_fails() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_dispatcher_trip_lifecycle_actions() {
+async fn test_fleet_user_trip_lifecycle_actions() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "lifecycle1@example.com", "password-lifecycle1").await;
+    let token = fleet_user_login(&server, "lifecycle1@example.com", "password-lifecycle1").await;
 
     let fac_id = create_test_facility(&server, "Lifecycle Dock", "Houston, TX").await;
 
@@ -2693,14 +2693,14 @@ async fn test_dispatcher_trip_lifecycle_actions() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    // Assign via dispatcher API (covered by existing test) — needed to drive transitions
+    // Assign via fleet_user API (covered by existing test) — needed to drive transitions
     let assign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
         .await;
     assert_eq!(assign_resp.status_code(), 200);
 
-    // Dispatch via dispatcher API
+    // Dispatch via fleet_user API
     let dispatch_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await;
@@ -2781,10 +2781,10 @@ async fn test_dispatcher_trip_lifecycle_actions() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_cancel_trip() {
+async fn test_fleet_user_cancel_trip() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "cancel1@example.com", "password-cancel1").await;
+    let token = fleet_user_login(&server, "cancel1@example.com", "password-cancel1").await;
 
     let trip_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
@@ -2802,9 +2802,9 @@ async fn test_dispatcher_cancel_trip() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_mcp_lifecycle_tools_listed() {
+async fn test_fleet_user_mcp_lifecycle_tools_listed() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_lc@example.com", "password-mcp-lc").await;
+    let token = fleet_user_login(&server, "mcp_lc@example.com", "password-mcp-lc").await;
     let session = mcp_session(&server, &token).await;
 
     let body = mcp_rpc(&server, &token, &session, "tools/list", serde_json::json!({})).await;
@@ -2822,10 +2822,10 @@ async fn test_dispatcher_mcp_lifecycle_tools_listed() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_mcp_dispatch_and_complete() {
+async fn test_fleet_user_mcp_dispatch_and_complete() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "mcp_dc@example.com", "password-mcp-dc").await;
+    let token = fleet_user_login(&server, "mcp_dc@example.com", "password-mcp-dc").await;
     let session = mcp_session(&server, &token).await;
 
     let fac_id = create_test_facility(&server, "MCP Dock", "Dallas, TX").await;
@@ -2854,7 +2854,7 @@ async fn test_dispatcher_mcp_dispatch_and_complete() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    // assign via dispatcher API (already covered)
+    // assign via fleet_user API (already covered)
     let _ = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
@@ -2893,16 +2893,16 @@ async fn test_dispatcher_mcp_dispatch_and_complete() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_dispatcher_blob_requires_auth() {
+async fn test_fleet_user_blob_requires_auth() {
     let (server, _b, _d, _rx) = test_server().await;
     let resp = server.get("/fleet/api/v1/blobs").await;
     assert_eq!(resp.status_code(), 401);
 }
 
 #[tokio::test]
-async fn test_dispatcher_upload_blob_returns_202() {
+async fn test_fleet_user_upload_blob_returns_202() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobs-up@example.com", "password-blobs-up").await;
+    let token = fleet_user_login(&server, "blobs-up@example.com", "password-blobs-up").await;
 
     let resp = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -2917,9 +2917,9 @@ async fn test_dispatcher_upload_blob_returns_202() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_list_blobs() {
+async fn test_fleet_user_list_blobs() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobs-list@example.com", "password-blobs-list").await;
+    let token = fleet_user_login(&server, "blobs-list@example.com", "password-blobs-list").await;
 
     server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -2938,9 +2938,9 @@ async fn test_dispatcher_list_blobs() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_get_blob_json() {
+async fn test_fleet_user_get_blob_json() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobs-get@example.com", "password-blobs-get").await;
+    let token = fleet_user_login(&server, "blobs-get@example.com", "password-blobs-get").await;
 
     let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -2959,9 +2959,9 @@ async fn test_dispatcher_get_blob_json() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_get_blob_raw_bytes() {
+async fn test_fleet_user_get_blob_raw_bytes() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobs-raw@example.com", "password-blobs-raw").await;
+    let token = fleet_user_login(&server, "blobs-raw@example.com", "password-blobs-raw").await;
 
     let content = b"raw document for download test";
     let upload = server.post("/fleet/api/v1/blobs")
@@ -2981,9 +2981,9 @@ async fn test_dispatcher_get_blob_raw_bytes() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_update_blob() {
+async fn test_fleet_user_update_blob() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobs-upd@example.com", "password-blobs-upd").await;
+    let token = fleet_user_login(&server, "blobs-upd@example.com", "password-blobs-upd").await;
 
     let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -3004,9 +3004,9 @@ async fn test_dispatcher_update_blob() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_delete_blob() {
+async fn test_fleet_user_delete_blob() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobs-del@example.com", "password-blobs-del").await;
+    let token = fleet_user_login(&server, "blobs-del@example.com", "password-blobs-del").await;
 
     let upload = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -3032,7 +3032,7 @@ async fn test_dispatcher_delete_blob() {
 async fn test_assign_trip_oos_trailer_returns_409_no_partial_mutation() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "oos-trailer@example.com", "password-oos-trailer").await;
+    let token = fleet_user_login(&server, "oos-trailer@example.com", "password-oos-trailer").await;
 
     let fac_id = create_test_facility(&server, "OOS Dock", "Phoenix, AZ").await;
 
@@ -3194,7 +3194,7 @@ async fn test_previous_trip_id_auto_populated_from_driver_last_trip() {
 }
 
 #[tokio::test]
-async fn test_previous_trip_id_dispatcher_override() {
+async fn test_previous_trip_id_fleet_user_override() {
     // `previous_trip_id` is not exposed by the dispatch trip DTO; the override is
     // verified against the persisted TripRecord via the DB handle.
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
@@ -3220,7 +3220,7 @@ async fn test_previous_trip_id_dispatcher_override() {
         .await.json::<serde_json::Value>();
     let rec3 = state.db.get_trip(trip3["id"].as_str().unwrap().parse().unwrap()).await.unwrap();
     assert_eq!(rec3.previous_trip_id.map(|u| u.to_string()).as_deref(), Some(trip1_id),
-        "dispatcher override should be respected");
+        "fleet_user override should be respected");
 }
 
 #[tokio::test]
@@ -3241,10 +3241,10 @@ async fn test_deadhead_and_loaded_miles_null_without_ors() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_loads_list_route_column_has_facility_names() {
+async fn test_fleet_user_loads_list_route_column_has_facility_names() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "route-test@example.com", "pw-route-test").await;
+    let token = fleet_user_login(&server, "route-test@example.com", "pw-route-test").await;
 
     let origin_id = create_test_facility(&server, "Origin Hub", "Chicago, IL").await;
     let dest_id   = create_test_facility(&server, "Dest Hub",   "Dallas, TX").await;
@@ -3283,9 +3283,9 @@ async fn test_dispatcher_loads_list_route_column_has_facility_names() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_count_endpoints_return_200() {
+async fn test_fleet_user_count_endpoints_return_200() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "kpi-test@example.com", "pw-kpi-test").await;
+    let token = fleet_user_login(&server, "kpi-test@example.com", "pw-kpi-test").await;
 
     for path in &[
         "/fleet/api/v1/loads/count",
@@ -4358,7 +4358,7 @@ async fn test_version_endpoint_is_unauthenticated() {
 
 // ---------------------------------------------------------------------------
 // Issue #220 — driver PATCH must cascade actuals to load stop and fire status
-// transitions, mirroring the dispatcher stop_arrive/stop_depart handlers.
+// transitions, mirroring the fleet_user stop_arrive/stop_depart handlers.
 // ---------------------------------------------------------------------------
 
 async fn setup_driver_with_dispatched_load_trip(
@@ -4501,7 +4501,7 @@ async fn test_220_driver_patch_cascades_to_load_and_transitions_status() {
 // Dispatcher API key tests
 // ============================================================
 
-async fn create_dispatcher_api_key(
+async fn create_fleet_user_api_key(
     server: &axum_test::TestServer,
     token: &str,
     label: &str,
@@ -4517,9 +4517,9 @@ async fn create_dispatcher_api_key(
 #[tokio::test]
 async fn test_api_key_create_returns_plaintext_once() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikey1@example.com", "pass-apikey1").await;
+    let token = fleet_user_login(&server, "apikey1@example.com", "pass-apikey1").await;
 
-    let body = create_dispatcher_api_key(&server, &token, "Claude desktop").await;
+    let body = create_fleet_user_api_key(&server, &token, "Claude desktop").await;
 
     assert!(body["key"].as_str().unwrap().starts_with("olld_"));
     assert_eq!(body["key"].as_str().unwrap().len(), 48);
@@ -4533,7 +4533,7 @@ async fn test_api_key_create_returns_plaintext_once() {
 #[tokio::test]
 async fn test_api_key_custom_expiry() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikey2@example.com", "pass-apikey2").await;
+    let token = fleet_user_login(&server, "apikey2@example.com", "pass-apikey2").await;
 
     let resp = server.post("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -4550,7 +4550,7 @@ async fn test_api_key_custom_expiry() {
 #[tokio::test]
 async fn test_api_key_expiry_over_365_rejected() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikey3@example.com", "pass-apikey3").await;
+    let token = fleet_user_login(&server, "apikey3@example.com", "pass-apikey3").await;
 
     let resp = server.post("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -4562,11 +4562,11 @@ async fn test_api_key_expiry_over_365_rejected() {
 #[tokio::test]
 async fn test_api_key_list_returns_own_keys_only() {
     let (server, _b, _d, _rx) = test_server().await;
-    let t1 = dispatcher_login(&server, "apikeylist1@example.com", "pass1").await;
-    let t2 = dispatcher_login(&server, "apikeylist2@example.com", "pass2").await;
+    let t1 = fleet_user_login(&server, "apikeylist1@example.com", "pass1").await;
+    let t2 = fleet_user_login(&server, "apikeylist2@example.com", "pass2").await;
 
-    create_dispatcher_api_key(&server, &t1, "d1-key").await;
-    create_dispatcher_api_key(&server, &t2, "d2-key").await;
+    create_fleet_user_api_key(&server, &t1, "d1-key").await;
+    create_fleet_user_api_key(&server, &t2, "d2-key").await;
 
     let resp = server.get("/fleet/api-keys")
         .add_header(header::AUTHORIZATION, format!("Bearer {t1}"))
@@ -4582,9 +4582,9 @@ async fn test_api_key_list_returns_own_keys_only() {
 #[tokio::test]
 async fn test_api_key_list_excludes_revoked() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeyrev1@example.com", "pass-rev1").await;
+    let token = fleet_user_login(&server, "apikeyrev1@example.com", "pass-rev1").await;
 
-    let body = create_dispatcher_api_key(&server, &token, "to-revoke").await;
+    let body = create_fleet_user_api_key(&server, &token, "to-revoke").await;
     let key_id = body["id"].as_str().unwrap();
 
     let del = server.delete(&format!("/fleet/api-keys/{key_id}"))
@@ -4600,12 +4600,12 @@ async fn test_api_key_list_excludes_revoked() {
 }
 
 #[tokio::test]
-async fn test_api_key_revoke_not_found_for_other_dispatcher() {
+async fn test_api_key_revoke_not_found_for_other_fleet_user() {
     let (server, _b, _d, _rx) = test_server().await;
-    let t1 = dispatcher_login(&server, "apikeyown1@example.com", "pass-own1").await;
-    let t2 = dispatcher_login(&server, "apikeyown2@example.com", "pass-own2").await;
+    let t1 = fleet_user_login(&server, "apikeyown1@example.com", "pass-own1").await;
+    let t2 = fleet_user_login(&server, "apikeyown2@example.com", "pass-own2").await;
 
-    let body = create_dispatcher_api_key(&server, &t1, "t1-key").await;
+    let body = create_fleet_user_api_key(&server, &t1, "t1-key").await;
     let key_id = body["id"].as_str().unwrap();
 
     let resp = server.delete(&format!("/fleet/api-keys/{key_id}"))
@@ -4617,9 +4617,9 @@ async fn test_api_key_revoke_not_found_for_other_dispatcher() {
 #[tokio::test]
 async fn test_api_key_auth_grants_access_to_protected_endpoint() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeyauth1@example.com", "pass-auth1").await;
+    let token = fleet_user_login(&server, "apikeyauth1@example.com", "pass-auth1").await;
 
-    let body = create_dispatcher_api_key(&server, &token, "Claude desktop").await;
+    let body = create_fleet_user_api_key(&server, &token, "Claude desktop").await;
     let api_key = body["key"].as_str().unwrap();
 
     let resp = server.get("/fleet/api/v1/loads")
@@ -4631,9 +4631,9 @@ async fn test_api_key_auth_grants_access_to_protected_endpoint() {
 #[tokio::test]
 async fn test_api_key_auth_works_on_mcp_endpoint() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeymcp1@example.com", "pass-mcp1").await;
+    let token = fleet_user_login(&server, "apikeymcp1@example.com", "pass-mcp1").await;
 
-    let body = create_dispatcher_api_key(&server, &token, "Claude MCP").await;
+    let body = create_fleet_user_api_key(&server, &token, "Claude MCP").await;
     let api_key = body["key"].as_str().unwrap();
 
     let resp = server.post("/fleet/mcp")
@@ -4658,9 +4658,9 @@ async fn test_api_key_auth_works_on_mcp_endpoint() {
 #[tokio::test]
 async fn test_revoked_api_key_rejected() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeyrvk1@example.com", "pass-rvk1").await;
+    let token = fleet_user_login(&server, "apikeyrvk1@example.com", "pass-rvk1").await;
 
-    let body = create_dispatcher_api_key(&server, &token, "to-revoke").await;
+    let body = create_fleet_user_api_key(&server, &token, "to-revoke").await;
     let api_key = body["key"].as_str().unwrap().to_string();
     let key_id = body["id"].as_str().unwrap();
 
@@ -4677,7 +4677,7 @@ async fn test_revoked_api_key_rejected() {
 #[tokio::test]
 async fn test_jwt_auth_still_works_after_api_key_feature() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeycompat1@example.com", "pass-compat1").await;
+    let token = fleet_user_login(&server, "apikeycompat1@example.com", "pass-compat1").await;
 
     let resp = server.get("/fleet/api/v1/loads")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -4688,9 +4688,9 @@ async fn test_jwt_auth_still_works_after_api_key_feature() {
 #[tokio::test]
 async fn test_api_key_create_requires_jwt_not_api_key() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeyself1@example.com", "pass-self1").await;
+    let token = fleet_user_login(&server, "apikeyself1@example.com", "pass-self1").await;
 
-    let body = create_dispatcher_api_key(&server, &token, "first-key").await;
+    let body = create_fleet_user_api_key(&server, &token, "first-key").await;
     let api_key = body["key"].as_str().unwrap();
 
     let resp = server.post("/fleet/api-keys")
@@ -4703,9 +4703,9 @@ async fn test_api_key_create_requires_jwt_not_api_key() {
 #[tokio::test]
 async fn test_api_key_revoke_requires_jwt_not_api_key() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeyself2@example.com", "pass-self2").await;
+    let token = fleet_user_login(&server, "apikeyself2@example.com", "pass-self2").await;
 
-    let body = create_dispatcher_api_key(&server, &token, "key-to-revoke").await;
+    let body = create_fleet_user_api_key(&server, &token, "key-to-revoke").await;
     let api_key = body["key"].as_str().unwrap().to_string();
     let key_id = body["id"].as_str().unwrap();
 
@@ -4718,7 +4718,7 @@ async fn test_api_key_revoke_requires_jwt_not_api_key() {
 #[tokio::test]
 async fn test_api_key_20_key_cap() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "apikeycap1@example.com", "pass-cap1").await;
+    let token = fleet_user_login(&server, "apikeycap1@example.com", "pass-cap1").await;
 
     for i in 0..20 {
         let resp = server.post("/fleet/api-keys")
@@ -4787,7 +4787,7 @@ async fn test_compute_and_persist_mileage_not_found() {
     assert!(matches!(result, Err(ollie::error::AppError::NotFound)));
 }
 
-// ── dispatcher PATCH + recalculate-miles endpoints (Task 4, #259, #262) ─────
+// ── fleet_user PATCH + recalculate-miles endpoints (Task 4, #259, #262) ─────
 
 async fn make_trip_with_two_stops(server: &axum_test::TestServer) -> String {
     let owner_token = setup_owner(server).await;
@@ -4826,7 +4826,7 @@ async fn make_trip_with_two_stops(server: &axum_test::TestServer) -> String {
 #[tokio::test]
 async fn test_recalculate_miles_returns_409_when_ors_unavailable() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "recalc1@example.com", "password-recalc1").await;
+    let token = fleet_user_login(&server, "recalc1@example.com", "password-recalc1").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
     let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/recalculate-miles"))
@@ -4847,7 +4847,7 @@ async fn test_recalculate_miles_requires_auth() {
 #[tokio::test]
 async fn test_recalculate_miles_returns_existing_summary_when_already_set() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "recalc2@example.com", "password-recalc2").await;
+    let token = fleet_user_login(&server, "recalc2@example.com", "password-recalc2").await;
     let trip_id_str = make_trip_with_two_stops(&server).await;
     let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
 
@@ -4874,7 +4874,7 @@ async fn test_recalculate_miles_returns_existing_summary_when_already_set() {
 #[tokio::test]
 async fn test_recalculate_miles_force_triggers_recompute() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "recalc3@example.com", "password-recalc3").await;
+    let token = fleet_user_login(&server, "recalc3@example.com", "password-recalc3").await;
     let trip_id_str = make_trip_with_two_stops(&server).await;
     let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
 
@@ -4896,31 +4896,31 @@ async fn test_recalculate_miles_force_triggers_recompute() {
 async fn test_patch_trip_updates_notes() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "patch1@example.com", "password-patch1").await;
+    let token = fleet_user_login(&server, "patch1@example.com", "password-patch1").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
     let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({ "notes": "dispatcher note" }))
+        .json(&serde_json::json!({ "notes": "fleet_user note" }))
         .await;
     assert_eq!(resp.status_code(), 200);
     let body = resp.json::<serde_json::Value>();
     assert_eq!(body["id"], trip_id);
-    assert_eq!(body["notes"], "dispatcher note",
-        "dispatcher PATCH response should echo updated notes");
+    assert_eq!(body["notes"], "fleet_user note",
+        "fleet_user PATCH response should echo updated notes");
 
     // Also confirm persistence via admin GET.
     let get = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .await;
     let get_body = get.json::<serde_json::Value>();
-    assert_eq!(get_body["notes"], "dispatcher note");
+    assert_eq!(get_body["notes"], "fleet_user note");
 }
 
 #[tokio::test]
 async fn test_patch_trip_rejects_raw_mileage() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "patch2@example.com", "password-patch2").await;
+    let token = fleet_user_login(&server, "patch2@example.com", "password-patch2").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
     for field in ["deadhead_miles", "loaded_miles", "total_miles", "segment_miles"] {
@@ -4940,7 +4940,7 @@ async fn test_patch_trip_rejects_raw_mileage() {
 #[tokio::test]
 async fn test_patch_trip_rejects_unknown_field() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "patch3@example.com", "password-patch3").await;
+    let token = fleet_user_login(&server, "patch3@example.com", "password-patch3").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
     let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
@@ -4963,7 +4963,7 @@ async fn test_patch_trip_requires_auth() {
 #[tokio::test]
 async fn test_patch_trip_previous_trip_id_commits_even_when_recompute_fails() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "patch4@example.com", "password-patch4").await;
+    let token = fleet_user_login(&server, "patch4@example.com", "password-patch4").await;
     let trip_id = make_trip_with_two_stops(&server).await;
     let other_trip_id = make_trip_with_two_stops(&server).await;
 
@@ -4985,7 +4985,7 @@ async fn test_patch_trip_previous_trip_id_commits_even_when_recompute_fails() {
     );
 
     // Verify the previous_trip_id link did commit by re-reading the persisted
-    // record via the DB handle (the dispatcher view doesn't expose
+    // record via the DB handle (the fleet_user view doesn't expose
     // previous_trip_id as a top-level field).
     let rec = state.db.get_trip(trip_id.parse().unwrap()).await.unwrap();
     assert_eq!(rec.previous_trip_id.map(|u| u.to_string()).as_deref(),
@@ -4998,7 +4998,7 @@ async fn test_patch_trip_previous_trip_id_commits_even_when_recompute_fails() {
 async fn test_trip_doctor_dry_run_reports_missing_stop_metadata_without_writes() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "doctor1@example.com", "password-doctor1").await;
+    let token = fleet_user_login(&server, "doctor1@example.com", "password-doctor1").await;
     let fac1 = create_test_facility(&server, "Doc Dock A", "Memphis, TN").await;
     let fac2 = create_test_facility(&server, "Doc Dock B", "Atlanta, GA").await;
 
@@ -5062,7 +5062,7 @@ async fn test_trip_doctor_dry_run_reports_missing_stop_metadata_without_writes()
 async fn test_trip_doctor_apply_resyncs_stops_from_load_without_overwriting() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "doctor2@example.com", "password-doctor2").await;
+    let token = fleet_user_login(&server, "doctor2@example.com", "password-doctor2").await;
     let fac1 = create_test_facility(&server, "Apply Dock A", "Memphis, TN").await;
     let fac2 = create_test_facility(&server, "Apply Dock B", "Atlanta, GA").await;
 
@@ -5093,7 +5093,7 @@ async fn test_trip_doctor_apply_resyncs_stops_from_load_without_overwriting() {
             "load_id": load_id,
             "stops": [
                 {"sequence": 1, "stop_type": "pickup", "facility_id": fac1,
-                 "notes": "dispatcher amended note"},
+                 "notes": "fleet_user amended note"},
                 {"sequence": 2, "stop_type": "delivery", "facility_id": fac2},
             ]
         }))
@@ -5124,14 +5124,14 @@ async fn test_trip_doctor_apply_resyncs_stops_from_load_without_overwriting() {
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .await
         .json::<serde_json::Value>();
-    assert_eq!(trip_after["stops"][0]["notes"], "dispatcher amended note");
+    assert_eq!(trip_after["stops"][0]["notes"], "fleet_user amended note");
 }
 
 #[tokio::test]
 async fn test_load_doctor_flags_ungeocoded_facility() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "doctor3@example.com", "password-doctor3").await;
+    let token = fleet_user_login(&server, "doctor3@example.com", "password-doctor3").await;
     // The test geocoder doesn't fire — facilities created here have no
     // lat/lng, which is exactly what load_doctor's facility_geocoded check
     // should flag.
@@ -5269,7 +5269,7 @@ async fn mcp_call(
 #[tokio::test]
 async fn test_mcp_create_trip_returns_trip_with_mileage_summary() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_ct@example.com", "password-mcp-ct").await;
+    let token = fleet_user_login(&server, "mcp_ct@example.com", "password-mcp-ct").await;
 
     let fac1 = create_test_facility(&server, "MCP CT Dock A", "Dallas, TX").await;
     let fac2 = create_test_facility(&server, "MCP CT Dock B", "Houston, TX").await;
@@ -5294,7 +5294,7 @@ async fn test_mcp_create_trip_returns_trip_with_mileage_summary() {
 async fn test_mcp_update_trip_updates_notes() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "mcp_ut@example.com", "password-mcp-ut").await;
+    let token = fleet_user_login(&server, "mcp_ut@example.com", "password-mcp-ut").await;
     let trip_id = make_trip_with_two_stops(&server).await;
 
     let trip = mcp_call(&server, &token, "update_trip", serde_json::json!({
@@ -5313,7 +5313,7 @@ async fn test_mcp_update_trip_updates_notes() {
 #[tokio::test]
 async fn test_mcp_update_trip_rejects_raw_mileage() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_ut2@example.com", "password-mcp-ut2").await;
+    let token = fleet_user_login(&server, "mcp_ut2@example.com", "password-mcp-ut2").await;
     let trip_id = make_trip_with_two_stops(&server).await;
     let session = mcp_session(&server, &token).await;
 
@@ -5335,7 +5335,7 @@ async fn test_mcp_update_trip_rejects_raw_mileage() {
 #[tokio::test]
 async fn test_mcp_unknown_tool_is_jsonrpc_error_not_iserror() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_unk@example.com", "password-mcp-unk").await;
+    let token = fleet_user_login(&server, "mcp_unk@example.com", "password-mcp-unk").await;
     let session = mcp_session(&server, &token).await;
 
     let body = mcp_rpc(&server, &token, &session, "tools/call", serde_json::json!({
@@ -5352,7 +5352,7 @@ async fn test_mcp_unknown_tool_is_jsonrpc_error_not_iserror() {
 #[tokio::test]
 async fn test_mcp_recalculate_trip_miles_returns_summary() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "mcp_rc@example.com", "password-mcp-rc").await;
+    let token = fleet_user_login(&server, "mcp_rc@example.com", "password-mcp-rc").await;
     let trip_id_str = make_trip_with_two_stops(&server).await;
     let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
 
@@ -5372,7 +5372,7 @@ async fn test_mcp_recalculate_trip_miles_returns_summary() {
 #[tokio::test]
 async fn test_mcp_get_trip_includes_full_mileage_summary() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "mcp_gt@example.com", "password-mcp-gt").await;
+    let token = fleet_user_login(&server, "mcp_gt@example.com", "password-mcp-gt").await;
     let trip_id_str = make_trip_with_two_stops(&server).await;
     let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
     state.db.update_trip_mileage(
@@ -5392,7 +5392,7 @@ async fn test_mcp_get_trip_includes_full_mileage_summary() {
 #[tokio::test]
 async fn test_mcp_list_trips_items_carry_mileage_fields() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "mcp_lt@example.com", "password-mcp-lt").await;
+    let token = fleet_user_login(&server, "mcp_lt@example.com", "password-mcp-lt").await;
     let trip_id_str = make_trip_with_two_stops(&server).await;
     let trip_id = uuid::Uuid::parse_str(&trip_id_str).unwrap();
     state.db.update_trip_mileage(
@@ -5415,7 +5415,7 @@ async fn test_mcp_list_trips_items_carry_mileage_fields() {
 async fn test_list_trips_filter_by_trip_number_rest() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "ltn@example.com", "password-ltn").await;
+    let token = fleet_user_login(&server, "ltn@example.com", "password-ltn").await;
 
     let trip_id = make_trip_with_two_stops(&server).await;
     let get = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
@@ -5439,7 +5439,7 @@ async fn test_list_trips_filter_by_trip_number_rest() {
 async fn test_list_trips_filter_by_load_number_rest() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "lln@example.com", "password-lln").await;
+    let token = fleet_user_login(&server, "lln@example.com", "password-lln").await;
 
     let fac1 = create_test_facility(&server, "LLN Dock A", "Dallas, TX").await;
     let fac2 = create_test_facility(&server, "LLN Dock B", "Houston, TX").await;
@@ -5492,7 +5492,7 @@ async fn test_list_trips_filter_by_load_number_rest() {
 async fn test_mcp_list_trips_filter_by_load_number() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "mcp_lln@example.com", "password-mcp-lln").await;
+    let token = fleet_user_login(&server, "mcp_lln@example.com", "password-mcp-lln").await;
 
     let fac1 = create_test_facility(&server, "MCP LLN Dock A", "Dallas, TX").await;
     let fac2 = create_test_facility(&server, "MCP LLN Dock B", "Houston, TX").await;
@@ -5664,9 +5664,9 @@ async fn test_load_detail_mileage_summary_none_when_only_cancelled_trip() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_dispatcher_facility_crud_http() {
+async fn test_fleet_user_facility_crud_http() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "fac-crud@example.com", "password-fac1").await;
+    let token = fleet_user_login(&server, "fac-crud@example.com", "password-fac1").await;
     let auth = format!("Bearer {token}");
 
     // POST create
@@ -5710,9 +5710,9 @@ async fn test_dispatcher_facility_crud_http() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_facility_create_with_explicit_coords_marks_ready() {
+async fn test_fleet_user_facility_create_with_explicit_coords_marks_ready() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "fac-coords@example.com", "password-fac2").await;
+    let token = fleet_user_login(&server, "fac-coords@example.com", "password-fac2").await;
 
     let resp = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -5730,9 +5730,9 @@ async fn test_dispatcher_facility_create_with_explicit_coords_marks_ready() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_facility_patch_address_requeues_geocode() {
+async fn test_fleet_user_facility_patch_address_requeues_geocode() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "fac-readdress@example.com", "password-fac3").await;
+    let token = fleet_user_login(&server, "fac-readdress@example.com", "password-fac3").await;
     let auth = format!("Bearer {token}");
 
     // Seed a Ready facility directly so we can observe the transition to Pending.
@@ -5763,9 +5763,9 @@ async fn test_dispatcher_facility_patch_address_requeues_geocode() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_facility_patch_explicit_coords_repair_failed_geocode() {
+async fn test_fleet_user_facility_patch_explicit_coords_repair_failed_geocode() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "fac-repair@example.com", "password-fac4").await;
+    let token = fleet_user_login(&server, "fac-repair@example.com", "password-fac4").await;
     let auth = format!("Bearer {token}");
 
     let now = chrono::Utc::now();
@@ -5794,9 +5794,9 @@ async fn test_dispatcher_facility_patch_explicit_coords_repair_failed_geocode() 
 }
 
 #[tokio::test]
-async fn test_dispatcher_facility_create_rejects_unknown_field() {
+async fn test_fleet_user_facility_create_rejects_unknown_field() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "fac-unk1@example.com", "password-fac5").await;
+    let token = fleet_user_login(&server, "fac-unk1@example.com", "password-fac5").await;
 
     let resp = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -5809,9 +5809,9 @@ async fn test_dispatcher_facility_create_rejects_unknown_field() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_facility_patch_rejects_unknown_field() {
+async fn test_fleet_user_facility_patch_rejects_unknown_field() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "fac-unk2@example.com", "password-fac6").await;
+    let token = fleet_user_login(&server, "fac-unk2@example.com", "password-fac6").await;
     let auth = format!("Bearer {token}");
 
     let created = server.post("/fleet/api/v1/facilities")
@@ -5828,9 +5828,9 @@ async fn test_dispatcher_facility_patch_rejects_unknown_field() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_facility_mcp_create_and_update() {
+async fn test_fleet_user_facility_mcp_create_and_update() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "fac-mcp@example.com", "password-mcp-fac").await;
+    let token = fleet_user_login(&server, "fac-mcp@example.com", "password-mcp-fac").await;
 
     // MCP create_facility
     let record = mcp_call(&server, &token, "create_facility", serde_json::json!({
@@ -5850,7 +5850,7 @@ async fn test_dispatcher_facility_mcp_create_and_update() {
 #[tokio::test]
 async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let token = dispatcher_login(&server, "fac-doc@example.com", "password-fac-doc").await;
+    let token = fleet_user_login(&server, "fac-doc@example.com", "password-fac-doc").await;
 
     let now = chrono::Utc::now();
     let id = uuid::Uuid::new_v4();
@@ -6358,9 +6358,9 @@ async fn test_driver_equipment_prefers_running_trip_over_newer_queued_trip() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn test_dispatcher_trailer_crud_http() {
+async fn test_fleet_user_trailer_crud_http() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trl-crud@example.com", "password-trl1").await;
+    let token = fleet_user_login(&server, "trl-crud@example.com", "password-trl1").await;
     let auth = format!("Bearer {token}");
 
     // POST create — fleet trailer
@@ -6407,9 +6407,9 @@ async fn test_dispatcher_trailer_crud_http() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_trailer_create_requires_owner_name_when_not_fleet() {
+async fn test_fleet_user_trailer_create_requires_owner_name_when_not_fleet() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trl-owner@example.com", "password-trl2").await;
+    let token = fleet_user_login(&server, "trl-owner@example.com", "password-trl2").await;
 
     let resp = server.post("/fleet/api/v1/trailers")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
@@ -6422,9 +6422,9 @@ async fn test_dispatcher_trailer_create_requires_owner_name_when_not_fleet() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_trailer_create_rejects_unknown_field() {
+async fn test_fleet_user_trailer_create_rejects_unknown_field() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trl-unk1@example.com", "password-trl3").await;
+    let token = fleet_user_login(&server, "trl-unk1@example.com", "password-trl3").await;
 
     // status is admin-only — must be rejected
     let resp = server.post("/fleet/api/v1/trailers")
@@ -6439,9 +6439,9 @@ async fn test_dispatcher_trailer_create_rejects_unknown_field() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_trailer_patch_rejects_status_and_unknown_fields() {
+async fn test_fleet_user_trailer_patch_rejects_status_and_unknown_fields() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trl-unk2@example.com", "password-trl4").await;
+    let token = fleet_user_login(&server, "trl-unk2@example.com", "password-trl4").await;
     let auth = format!("Bearer {token}");
 
     let created = server.post("/fleet/api/v1/trailers")
@@ -6466,9 +6466,9 @@ async fn test_dispatcher_trailer_patch_rejects_status_and_unknown_fields() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_truck_crud_http() {
+async fn test_fleet_user_truck_crud_http() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trk-crud@example.com", "password-trk1").await;
+    let token = fleet_user_login(&server, "trk-crud@example.com", "password-trk1").await;
     let auth = format!("Bearer {token}");
 
     let created = server.post("/fleet/api/v1/trucks")
@@ -6500,9 +6500,9 @@ async fn test_dispatcher_truck_crud_http() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_truck_patch_rejects_status_and_unknown_fields() {
+async fn test_fleet_user_truck_patch_rejects_status_and_unknown_fields() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trk-unk@example.com", "password-trk2").await;
+    let token = fleet_user_login(&server, "trk-unk@example.com", "password-trk2").await;
     let auth = format!("Bearer {token}");
 
     let created = server.post("/fleet/api/v1/trucks")
@@ -6525,9 +6525,9 @@ async fn test_dispatcher_truck_patch_rejects_status_and_unknown_fields() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_trailer_mcp_create_get_update() {
+async fn test_fleet_user_trailer_mcp_create_get_update() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trl-mcp@example.com", "password-trl-mcp").await;
+    let token = fleet_user_login(&server, "trl-mcp@example.com", "password-trl-mcp").await;
 
     // create_trailer
     let record = mcp_call(&server, &token, "create_trailer", serde_json::json!({
@@ -6553,9 +6553,9 @@ async fn test_dispatcher_trailer_mcp_create_get_update() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_truck_mcp_create_get_update() {
+async fn test_fleet_user_truck_mcp_create_get_update() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "trk-mcp@example.com", "password-trk-mcp").await;
+    let token = fleet_user_login(&server, "trk-mcp@example.com", "password-trk-mcp").await;
 
     let record = mcp_call(&server, &token, "create_truck", serde_json::json!({
         "unit_number": "MCP-TRK-001", "make": "Peterbilt",
@@ -6576,14 +6576,14 @@ async fn test_dispatcher_truck_mcp_create_get_update() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
-    // Acceptance criteria: dispatcher agent creates a trailer (and truck)
+async fn test_fleet_user_mcp_create_truck_and_trailer_then_assign() {
+    // Acceptance criteria: fleet_user agent creates a trailer (and truck)
     // mid-conversation via MCP and immediately references them in assign_driver.
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "asg-mcp@example.com", "password-asg-mcp").await;
+    let token = fleet_user_login(&server, "asg-mcp@example.com", "password-asg-mcp").await;
 
-    // Driver (admin API — there's no dispatcher driver-create)
+    // Driver (admin API — there's no fleet_user driver-create)
     let driver_resp = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "name": "MCP Assign Driver" }))
@@ -6633,12 +6633,12 @@ async fn test_dispatcher_mcp_create_truck_and_trailer_then_assign() {
 // Blob-store MCP tools + presigned byte-transfer endpoints (#277)
 // ---------------------------------------------------------------------------
 
-const DISPATCHER_SECRET: &str = "test-dispatcher-secret-must-be-32b";
+const DISPATCHER_SECRET: &str = "test-fleet_user-secret-must-be-32b";
 
 fn mint_upload_token() -> String {
-    ollie::api::dispatcher_portal::blob_links::mint_token(
+    ollie::api::fleet_portal::blob_links::mint_token(
         DISPATCHER_SECRET,
-        ollie::api::dispatcher_portal::blob_links::BlobUrlOp::Post,
+        ollie::api::fleet_portal::blob_links::BlobUrlOp::Post,
         None,
         300,
     )
@@ -6647,9 +6647,9 @@ fn mint_upload_token() -> String {
 }
 
 fn mint_download_token(id: uuid::Uuid) -> String {
-    ollie::api::dispatcher_portal::blob_links::mint_token(
+    ollie::api::fleet_portal::blob_links::mint_token(
         DISPATCHER_SECRET,
-        ollie::api::dispatcher_portal::blob_links::BlobUrlOp::Get,
+        ollie::api::fleet_portal::blob_links::BlobUrlOp::Get,
         Some(id),
         300,
     )
@@ -6749,7 +6749,7 @@ async fn test_presigned_upload_rejects_download_token() {
 #[tokio::test]
 async fn test_mcp_get_blob_metadata_and_delete() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobmcp3@example.com", "password-blobmcp3").await;
+    let token = fleet_user_login(&server, "blobmcp3@example.com", "password-blobmcp3").await;
 
     // Create a blob via the presigned upload path.
     let created =
@@ -6777,7 +6777,7 @@ async fn test_mcp_get_blob_metadata_and_delete() {
 #[tokio::test]
 async fn test_mcp_delete_blob_keeps_bytes_when_checksum_shared() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "blobmcp5@example.com", "password-blobmcp5").await;
+    let token = fleet_user_login(&server, "blobmcp5@example.com", "password-blobmcp5").await;
 
     // Two records, identical content → same checksum (the second dedups).
     let raw = b"shared-content document body".to_vec();
@@ -6852,12 +6852,12 @@ async fn test_admin_delete_blob_keeps_bytes_when_checksum_shared() {
 }
 
 #[tokio::test]
-async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
+async fn test_fleet_user_delete_blob_keeps_bytes_when_checksum_shared() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "toctou-disp@example.com", "password-toctou-disp").await;
+    let token = fleet_user_login(&server, "toctou-disp@example.com", "password-toctou-disp").await;
 
     // Upload the same bytes twice — dedup gives two records with the same checksum.
-    let content = b"shared-checksum-dispatcher-test-bytes";
+    let content = b"shared-checksum-fleet_user-test-bytes";
     let r1 = server.post("/fleet/api/v1/blobs")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .multipart(axum_test::multipart::MultipartForm::new()
@@ -6893,7 +6893,7 @@ async fn test_dispatcher_delete_blob_keeps_bytes_when_checksum_shared() {
 }
 
 // ---------------------------------------------------------------------------
-// Driver equipment attach/detach (dispatcher surface) — #181
+// Driver equipment attach/detach (fleet_user surface) — #181
 // ---------------------------------------------------------------------------
 
 async fn make_driver(server: &axum_test::TestServer, name: &str) -> String {
@@ -6942,7 +6942,7 @@ async fn trailer_status(server: &axum_test::TestServer, id: &str) -> String {
 #[tokio::test]
 async fn test_attach_equipment_truck_and_trailers() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "attach1@example.com", "password-attach1").await;
+    let token = fleet_user_login(&server, "attach1@example.com", "password-attach1").await;
     let auth = format!("Bearer {token}");
 
     let driver = make_driver(&server, "Attach Driver").await;
@@ -6970,7 +6970,7 @@ async fn test_attach_equipment_truck_and_trailers() {
 #[tokio::test]
 async fn test_attach_equipment_trailers_are_additive() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "attach2@example.com", "password-attach2").await;
+    let token = fleet_user_login(&server, "attach2@example.com", "password-attach2").await;
     let auth = format!("Bearer {token}");
 
     let driver = make_driver(&server, "Additive Driver").await;
@@ -7002,7 +7002,7 @@ async fn test_attach_equipment_trailers_are_additive() {
 #[tokio::test]
 async fn test_attach_truck_releases_previous_truck() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "attach3@example.com", "password-attach3").await;
+    let token = fleet_user_login(&server, "attach3@example.com", "password-attach3").await;
     let auth = format!("Bearer {token}");
 
     let driver = make_driver(&server, "Swap Driver").await;
@@ -7024,7 +7024,7 @@ async fn test_attach_truck_releases_previous_truck() {
 #[tokio::test]
 async fn test_attach_equipment_empty_body_400() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "attach4@example.com", "password-attach4").await;
+    let token = fleet_user_login(&server, "attach4@example.com", "password-attach4").await;
     let driver = make_driver(&server, "Empty Driver").await;
 
     let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/attach-equipment"))
@@ -7037,7 +7037,7 @@ async fn test_attach_equipment_empty_body_400() {
 async fn test_attach_equipment_inactive_driver_409() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "attach5@example.com", "password-attach5").await;
+    let token = fleet_user_login(&server, "attach5@example.com", "password-attach5").await;
     let auth = format!("Bearer {token}");
     let driver = make_driver(&server, "Inactive Driver").await;
     let truck = make_truck(&server, "IN-TRK-1").await;
@@ -7056,7 +7056,7 @@ async fn test_attach_equipment_inactive_driver_409() {
 async fn test_attach_equipment_conflict_on_other_active_trip() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "attach6@example.com", "password-attach6").await;
+    let token = fleet_user_login(&server, "attach6@example.com", "password-attach6").await;
     let auth = format!("Bearer {token}");
 
     // Driver A gets a dispatched trip with truck + trailer.
@@ -7095,7 +7095,7 @@ async fn test_attach_equipment_conflict_on_other_active_trip() {
 async fn test_attach_detach_cascades_active_trip() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "attach7@example.com", "password-attach7").await;
+    let token = fleet_user_login(&server, "attach7@example.com", "password-attach7").await;
     let auth = format!("Bearer {token}");
 
     let driver = make_driver(&server, "Cascade Driver").await;
@@ -7148,7 +7148,7 @@ async fn test_attach_detach_cascades_active_trip() {
 #[tokio::test]
 async fn test_detach_equipment_truck_and_all_trailers() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "detach1@example.com", "password-detach1").await;
+    let token = fleet_user_login(&server, "detach1@example.com", "password-detach1").await;
     let auth = format!("Bearer {token}");
 
     let driver = make_driver(&server, "Detach Driver").await;
@@ -7176,7 +7176,7 @@ async fn test_detach_equipment_truck_and_all_trailers() {
 #[tokio::test]
 async fn test_detach_equipment_empty_body_400() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "detach2@example.com", "password-detach2").await;
+    let token = fleet_user_login(&server, "detach2@example.com", "password-detach2").await;
     let driver = make_driver(&server, "Detach Empty").await;
 
     let resp = server.post(&format!("/fleet/api/v1/drivers/{driver}/detach-equipment"))
@@ -7188,7 +7188,7 @@ async fn test_detach_equipment_empty_body_400() {
 #[tokio::test]
 async fn test_attach_equipment_via_mcp() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcpattach@example.com", "password-mcpattach").await;
+    let token = fleet_user_login(&server, "mcpattach@example.com", "password-mcpattach").await;
 
     let driver = make_driver(&server, "MCP Attach Driver").await;
     let truck = make_truck(&server, "MCP-TRK-1").await;
@@ -7211,7 +7211,7 @@ async fn test_attach_equipment_via_mcp() {
 // ---------------------------------------------------------------------------
 // Dispatch-surface parity — write tools over MCP (#330)
 //
-// These mirror the dispatcher REST parity handlers (commit 9fc7748) through the
+// These mirror the fleet_user REST parity handlers (commit 9fc7748) through the
 // MCP `tools/call` path, covering happy paths plus the key guards. The test
 // client declares no elicitation support (capabilities: {}), so destructive
 // tools run without a confirmation round-trip (graceful fallback).
@@ -7239,7 +7239,7 @@ async fn mcp_call_result(
 async fn test_mcp_delete_load_happy_and_active_trip_guard() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
-    let token = dispatcher_login(&server, "mcp_dl@example.com", "password-mcp-dl").await;
+    let token = fleet_user_login(&server, "mcp_dl@example.com", "password-mcp-dl").await;
     let fac_id = create_test_facility(&server, "MCP DelLoad Dock", "Fargo, ND").await;
 
     // Load with an active trip → delete_load must isError.
@@ -7276,7 +7276,7 @@ async fn test_mcp_delete_load_happy_and_active_trip_guard() {
 #[tokio::test]
 async fn test_mcp_delete_trip_soft_cancel() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_dt@example.com", "password-mcp-dt").await;
+    let token = fleet_user_login(&server, "mcp_dt@example.com", "password-mcp-dt").await;
     let fac_id = create_test_facility(&server, "MCP DelTrip Dock", "Boise, ID").await;
 
     let trip = mcp_call(&server, &token, "create_trip", serde_json::json!({
@@ -7302,7 +7302,7 @@ async fn test_mcp_delete_trip_soft_cancel() {
 #[tokio::test]
 async fn test_mcp_invoice_cancel_settle_load() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_ics@example.com", "password-mcp-ics").await;
+    let token = fleet_user_login(&server, "mcp_ics@example.com", "password-mcp-ics").await;
     let fac_id = create_test_facility(&server, "MCP Invoice Dock", "Reno, NV").await;
 
     // cancel_load on a fresh load.
@@ -7329,7 +7329,7 @@ async fn test_mcp_invoice_cancel_settle_load() {
 #[tokio::test]
 async fn test_mcp_create_update_delete_driver_and_set_pin() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_drv@example.com", "password-mcp-drv").await;
+    let token = fleet_user_login(&server, "mcp_drv@example.com", "password-mcp-drv").await;
 
     let driver = mcp_call(&server, &token, "create_driver",
         serde_json::json!({ "name": "MCP Driver" })).await;
@@ -7366,7 +7366,7 @@ async fn test_mcp_create_update_delete_driver_and_set_pin() {
 #[tokio::test]
 async fn test_mcp_delete_truck_trailer_facility() {
     let (server, _b, _d, _rx) = test_server().await;
-    let token = dispatcher_login(&server, "mcp_eq@example.com", "password-mcp-eq").await;
+    let token = fleet_user_login(&server, "mcp_eq@example.com", "password-mcp-eq").await;
 
     let truck_id = make_truck(&server, "MCP-DEL-TRK").await;
     let del_truck = mcp_call(&server, &token, "delete_truck",
@@ -7408,13 +7408,13 @@ async fn test_mcp_delete_truck_trailer_facility() {
 // ---------------------------------------------------------------------------
 // Scope enforcement (#331)
 //
-// A `dispatcher`-role user is denied elevated operations (loads:settle/invoice,
+// A `fleet_user`-role user is denied elevated operations (loads:settle/invoice,
 // master-data deletes, terminal writes) on both the dispatch HTTP surface and
 // the MCP tool surface, while owner/fleet_manager pass everything. Per-user
 // extra_scopes elevate a single capability.
 // ---------------------------------------------------------------------------
 
-/// Create a dispatcher with an explicit role and log in, returning a JWT.
+/// Create a fleet_user with an explicit role and log in, returning a JWT.
 async fn login_with_role(
     server: &axum_test::TestServer,
     email: &str,
@@ -7442,7 +7442,7 @@ async fn login_with_role(
 }
 
 #[tokio::test]
-async fn test_scope_dispatcher_denied_elevated_http_ops() {
+async fn test_scope_fleet_user_denied_elevated_http_ops() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;
     let token = login_with_role(&server, "scope_disp@example.com", "pw-scope-disp", "dispatcher").await;
@@ -7473,42 +7473,42 @@ async fn test_scope_dispatcher_denied_elevated_http_ops() {
     // truck delete, terminal create.
     let settle = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
         .add_header(header::AUTHORIZATION, &auth).await;
-    assert_eq!(settle.status_code(), 403, "dispatcher must be denied settle");
+    assert_eq!(settle.status_code(), 403, "fleet_user must be denied settle");
 
     let invoice = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({})).await;
-    assert_eq!(invoice.status_code(), 403, "dispatcher must be denied invoice");
+    assert_eq!(invoice.status_code(), 403, "fleet_user must be denied invoice");
 
     let del_load = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
-    assert_eq!(del_load.status_code(), 403, "dispatcher must be denied load delete");
+    assert_eq!(del_load.status_code(), 403, "fleet_user must be denied load delete");
 
-    // NOTE: the chunk-1 permission model grants the dispatcher role `trips:delete`
-    // (it's in DISPATCHER_SCOPES), so trip delete is ALLOWED for a dispatcher —
+    // NOTE: the chunk-1 permission model grants the fleet_user role `trips:delete`
+    // (it's in DISPATCHER_SCOPES), so trip delete is ALLOWED for a fleet_user —
     // unlike load/driver/truck deletes. We follow the merged model rather than
     // weaken it. (The spec's denial list listed trip delete; the authoritative
     // permission model says otherwise.)
     let del_trip = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
-    assert_eq!(del_trip.status_code(), 204, "dispatcher has trips:delete in the model");
+    assert_eq!(del_trip.status_code(), 204, "fleet_user has trips:delete in the model");
 
     let del_driver = server.delete(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
-    assert_eq!(del_driver.status_code(), 403, "dispatcher must be denied driver delete");
+    assert_eq!(del_driver.status_code(), 403, "fleet_user must be denied driver delete");
 
     let del_truck = server.delete(&format!("/fleet/api/v1/trucks/{truck_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
-    assert_eq!(del_truck.status_code(), 403, "dispatcher must be denied truck delete");
+    assert_eq!(del_truck.status_code(), 403, "fleet_user must be denied truck delete");
 
     let term = server.post("/fleet/api/v1/terminals")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "West", "timezone": "America/Los_Angeles" })).await;
-    assert_eq!(term.status_code(), 403, "dispatcher must be denied terminal create");
+    assert_eq!(term.status_code(), 403, "fleet_user must be denied terminal create");
 }
 
 #[tokio::test]
-async fn test_scope_dispatcher_allowed_operational_http_ops() {
+async fn test_scope_fleet_user_allowed_operational_http_ops() {
     let (server, _b, _d, _rx) = test_server().await;
     let token = login_with_role(&server, "scope_disp_ok@example.com", "pw-scope-ok", "dispatcher").await;
     let auth = format!("Bearer {token}");
@@ -7527,42 +7527,42 @@ async fn test_scope_dispatcher_allowed_operational_http_ops() {
             ],
             "rate_items": []
         })).await;
-    assert_eq!(load.status_code(), 201, "dispatcher allowed load create");
+    assert_eq!(load.status_code(), 201, "fleet_user allowed load create");
     let load_id = load.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
     // load update
     let upd = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "notes": "touched" })).await;
-    assert_eq!(upd.status_code(), 200, "dispatcher allowed load update");
+    assert_eq!(upd.status_code(), 200, "fleet_user allowed load update");
 
     // trip create
     let trip = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "load_id": load_id })).await;
-    assert_eq!(trip.status_code(), 201, "dispatcher allowed trip create");
+    assert_eq!(trip.status_code(), 201, "fleet_user allowed trip create");
 
     // driver create + patch
     let drv = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Op Driver" })).await;
-    assert_eq!(drv.status_code(), 201, "dispatcher allowed driver create");
+    assert_eq!(drv.status_code(), 201, "fleet_user allowed driver create");
     let drv_id = drv.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
     let patch = server.patch(&format!("/fleet/api/v1/drivers/{drv_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "phone": "555-0100" })).await;
-    assert_eq!(patch.status_code(), 200, "dispatcher allowed driver patch");
+    assert_eq!(patch.status_code(), 200, "fleet_user allowed driver patch");
 
     // stop arrive/depart on the trip's first stop.
     let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
     let arrive = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/arrive"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "actual_arrive": "2026-08-01T08:05:00" })).await;
-    assert_eq!(arrive.status_code(), 200, "dispatcher allowed stop arrive");
+    assert_eq!(arrive.status_code(), 200, "fleet_user allowed stop arrive");
     let depart = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "actual_depart": "2026-08-01T08:30:00" })).await;
-    assert_eq!(depart.status_code(), 200, "dispatcher allowed stop depart");
+    assert_eq!(depart.status_code(), 200, "fleet_user allowed stop depart");
 }
 
 #[tokio::test]
@@ -7592,7 +7592,7 @@ async fn test_scope_owner_allowed_elevated_http_ops() {
 }
 
 #[tokio::test]
-async fn test_scope_mcp_dispatcher_denied_owner_allowed() {
+async fn test_scope_mcp_fleet_user_denied_owner_allowed() {
     let (server, _b, _d, _rx) = test_server().await;
     let disp = login_with_role(&server, "scope_mcp_disp@example.com", "pw-mcp-disp", "dispatcher").await;
     let owner = login_with_role(&server, "scope_mcp_owner@example.com", "pw-mcp-owner", "owner").await;
@@ -7602,13 +7602,13 @@ async fn test_scope_mcp_dispatcher_denied_owner_allowed() {
     // Dispatcher: settle_load and delete_load via MCP are denied (isError).
     let settle = mcp_call_result(&server, &disp, "settle_load",
         serde_json::json!({ "id": load_id })).await;
-    assert_eq!(settle["isError"], serde_json::json!(true), "dispatcher settle_load must isError");
+    assert_eq!(settle["isError"], serde_json::json!(true), "fleet_user settle_load must isError");
     let msg = settle["content"][0]["text"].as_str().unwrap_or("");
     assert!(msg.contains("scope"), "denial should mention scope: {msg}");
 
     let del = mcp_call_result(&server, &disp, "delete_load",
         serde_json::json!({ "id": load_id })).await;
-    assert_eq!(del["isError"], serde_json::json!(true), "dispatcher delete_load must isError");
+    assert_eq!(del["isError"], serde_json::json!(true), "fleet_user delete_load must isError");
 
     // Owner: same calls succeed.
     drive_load_to_delivered(&server, &owner, &fac_id, &load_id).await;
@@ -7621,7 +7621,7 @@ async fn test_scope_mcp_dispatcher_denied_owner_allowed() {
 
 #[tokio::test]
 async fn test_scope_extra_scope_grant_allows_settle() {
-    // A dispatcher granted the single `loads:settle` extra scope can settle, on
+    // A fleet_user granted the single `loads:settle` extra scope can settle, on
     // both HTTP and MCP — without gaining any sibling elevated capability.
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
     let token = login_with_role(&server, "scope_grant@example.com", "pw-grant", "dispatcher").await;
@@ -7629,10 +7629,10 @@ async fn test_scope_extra_scope_grant_allows_settle() {
 
     // Grant the extra scope directly via the DB (the Users management surface that
     // would set this is chunk 3).
-    let mut record = state.db.get_dispatcher_by_email("scope_grant@example.com")
-        .await.unwrap().expect("dispatcher exists");
+    let mut record = state.db.get_fleet_user_by_email("scope_grant@example.com")
+        .await.unwrap().expect("fleet_user exists");
     record.extra_scopes = vec!["loads:settle".to_string()];
-    state.db.upsert_dispatcher(&record).await.unwrap();
+    state.db.upsert_fleet_user(&record).await.unwrap();
 
     let fac_id = create_test_facility(&server, "Grant Dock", "Reno, NV").await;
     let load_id = create_2stop_load(&server, &fac_id, "Grant Co").await;
@@ -7651,10 +7651,10 @@ async fn test_scope_extra_scope_grant_allows_settle() {
         .json(&serde_json::json!({ "invoice_number": "GRANT-1" })).await;
     assert_eq!(inv.status_code(), 200);
 
-    // Now the granted dispatcher can settle (HTTP).
+    // Now the granted fleet_user can settle (HTTP).
     let settle = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
         .add_header(header::AUTHORIZATION, &auth).await;
-    assert_eq!(settle.status_code(), 200, "granted dispatcher allowed to settle");
+    assert_eq!(settle.status_code(), 200, "granted fleet_user allowed to settle");
 }
 
 // ---------------------------------------------------------------------------
@@ -7692,7 +7692,7 @@ async fn test_users_owner_full_crud() {
     let owner = login_with_role(&server, "u_owner@example.com", "pw-u-owner", "owner").await;
     let auth = format!("Bearer {owner}");
 
-    // Create a dispatcher and a fleet_manager.
+    // Create a fleet_user and a fleet_manager.
     let disp_id = create_user_via_surface(&server, &owner,
         "u_disp@example.com", "Disp One", "pw-disp-one", "dispatcher").await;
     let fm_id = create_user_via_surface(&server, &owner,
@@ -7714,7 +7714,7 @@ async fn test_users_owner_full_crud() {
     assert_eq!(get.status_code(), 200);
     assert_eq!(get.json::<serde_json::Value>()["role"], "dispatcher");
 
-    // Update name + extra_scopes on the dispatcher.
+    // Update name + extra_scopes on the fleet_user.
     let upd = server.patch(&format!("/fleet/api/v1/users/{disp_id}"))
         .add_header(header::AUTHORIZATION, &auth)
         .json(&serde_json::json!({ "name": "Disp Renamed", "extra_scopes": ["loads:settle"] }))
@@ -7747,7 +7747,7 @@ async fn test_users_owner_full_crud() {
         .add_header(header::AUTHORIZATION, format!("Bearer {fm_token}")).await;
     assert_eq!(post_reset.status_code(), 401, "old JWT invalidated after password reset");
 
-    // Deactivate the dispatcher.
+    // Deactivate the fleet_user.
     let del = server.delete(&format!("/fleet/api/v1/users/{disp_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(del.status_code(), 204);
@@ -7757,7 +7757,7 @@ async fn test_users_owner_full_crud() {
 }
 
 #[tokio::test]
-async fn test_users_dispatcher_forbidden_everywhere() {
+async fn test_users_fleet_user_forbidden_everywhere() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner = login_with_role(&server, "uf_owner@example.com", "pw-uf-owner", "owner").await;
     let disp = login_with_role(&server, "uf_disp@example.com", "pw-uf-disp", "dispatcher").await;
@@ -7765,7 +7765,7 @@ async fn test_users_dispatcher_forbidden_everywhere() {
     let target_id = create_user_via_surface(&server, &owner,
         "uf_target@example.com", "Target", "pw-target", "dispatcher").await;
 
-    // Every endpoint is 403 for a plain dispatcher.
+    // Every endpoint is 403 for a plain fleet_user.
     assert_eq!(server.get("/fleet/api/v1/users")
         .add_header(header::AUTHORIZATION, &dauth).await.status_code(), 403);
     assert_eq!(server.get(&format!("/fleet/api/v1/users/{target_id}"))
@@ -7788,7 +7788,7 @@ async fn test_users_dispatcher_forbidden_everywhere() {
 async fn test_users_fleet_manager_can_manage_but_not_set_owner() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner = login_with_role(&server, "fm_owner@example.com", "pw-fm-owner", "owner").await;
-    // Create a fleet_manager and a plain dispatcher target.
+    // Create a fleet_manager and a plain fleet_user target.
     create_user_via_surface(&server, &owner, "fm_mgr@example.com", "Mgr", "pw-fm-mgr", "fleet_manager").await;
     let target_id = create_user_via_surface(&server, &owner,
         "fm_tgt@example.com", "Tgt", "pw-fm-tgt", "dispatcher").await;
@@ -7959,7 +7959,7 @@ async fn test_users_mcp_parity() {
     let denied = mcp_call_result(&server, &disp, "create_user", serde_json::json!({
         "email": "mcpu_x@example.com", "name": "X", "password": "pwpwpwpw", "role": "dispatcher"
     })).await;
-    assert_eq!(denied["isError"], serde_json::json!(true), "dispatcher create_user must isError");
+    assert_eq!(denied["isError"], serde_json::json!(true), "fleet_user create_user must isError");
     assert!(denied["content"][0]["text"].as_str().unwrap_or("").contains("scope"));
 
     // Owner creates a user via MCP.
@@ -8008,7 +8008,7 @@ async fn test_users_fleet_manager_cannot_reset_owner_password() {
     let owner_id = list["users"].as_array().unwrap().iter()
         .find(|u| u["role"] == "owner").unwrap()["id"].as_str().unwrap().to_string();
 
-    // Owner creates a fleet_manager and a plain dispatcher target.
+    // Owner creates a fleet_manager and a plain fleet_user target.
     create_user_via_surface(&server, &owner,
         "rp_fm@example.com", "FM", "pw-rp-fm", "fleet_manager").await;
     let disp_id = create_user_via_surface(&server, &owner,
@@ -8150,7 +8150,7 @@ async fn test_users_mcp_grant_and_reset_gating() {
 // First-run owner setup wizard (#331)
 //
 // Unauthenticated /fleet/api/v1/setup/status + /fleet/setup, guarded by
-// count_dispatchers() == 0. Creates the first owner and logs them straight in.
+// count_fleet_users() == 0. Creates the first owner and logs them straight in.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

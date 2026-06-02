@@ -1,8 +1,8 @@
-// src/api/dispatcher_portal/auth.rs
+// src/api/fleet_portal/auth.rs
 use crate::{
     AppState,
     error::AppError,
-    models::{DispatcherCredentials, DispatcherRecord, DispatcherStatus, permission::Role},
+    models::{FleetUserCredentials, FleetUserRecord, FleetUserStatus, permission::Role},
 };
 use uuid::Uuid;
 use axum::{
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 use utoipa::ToSchema;
 
-use super::jwt::encode_dispatcher_jwt;
+use super::jwt::encode_fleet_user_jwt;
 use crate::api::refresh_tokens;
 use axum::http::header::SET_COOKIE;
 
@@ -27,16 +27,16 @@ pub(crate) fn dummy_hash() -> &'static str {
     DUMMY_HASH.get_or_init(|| bcrypt::hash("dummy-sentinel", 12).expect("bcrypt init failed"))
 }
 
-/// Verify a dispatcher's password and maintain the failed-attempt lockout
+/// Verify a fleet_user's password and maintain the failed-attempt lockout
 /// counter. Returns `Ok(true)` on a valid password (resetting the counter) and
 /// `Ok(false)` on an invalid one (incrementing `failed_attempts` and applying
 /// the lockout backoff). Persists `creds` either way. Callers MUST reject an
 /// already-locked account (`creds.locked_until`) BEFORE calling. Shared by
 /// `/fleet/auth/login` and `/oauth/authorize` so the lockout gate cannot be
 /// bypassed by choosing a different endpoint.
-pub(crate) async fn verify_dispatcher_password(
+pub(crate) async fn verify_fleet_user_password(
     state: &AppState,
-    creds: &mut crate::models::DispatcherCredentials,
+    creds: &mut crate::models::FleetUserCredentials,
     password: &str,
 ) -> Result<bool, AppError> {
     let pw = password.to_string();
@@ -56,18 +56,18 @@ pub(crate) async fn verify_dispatcher_password(
             tracing::warn!(
                 failed_attempts = creds.failed_attempts,
                 locked_until = ?creds.locked_until,
-                "dispatcher lockout"
+                "fleet_user lockout"
             );
         }
         creds.updated_at = Utc::now();
-        state.db.upsert_dispatcher_credentials(creds).await?;
+        state.db.upsert_fleet_user_credentials(creds).await?;
         return Ok(false);
     }
 
     creds.failed_attempts = 0;
     creds.locked_until = None;
     creds.updated_at = Utc::now();
-    state.db.upsert_dispatcher_credentials(creds).await?;
+    state.db.upsert_fleet_user_credentials(creds).await?;
     Ok(true)
 }
 
@@ -98,11 +98,11 @@ fn normalize_email(email: &str) -> String {
 
 // --- Handlers ---
 
-/// Login as a dispatcher using email and password. Returns a JWT on success.
+/// Login as a fleet_user using email and password. Returns a JWT on success.
 #[utoipa::path(
     post,
     path = "/fleet/auth/login",
-    request_body(content = LoginRequest, description = "Dispatcher credentials"),
+    request_body(content = LoginRequest, description = "Fleet user credentials"),
     responses(
         (status = 200, description = "JWT token", body = LoginResponse),
         (status = 401, description = "Invalid credentials or account inactive"),
@@ -116,8 +116,8 @@ pub async fn login(
 ) -> Result<impl IntoResponse, AppError> {
     let email = normalize_email(&req.email);
 
-    let dispatcher_opt = state.db.get_dispatcher_by_email(&email).await?;
-    let dispatcher = match dispatcher_opt {
+    let fleet_user_opt = state.db.get_fleet_user_by_email(&email).await?;
+    let fleet_user = match fleet_user_opt {
         Some(d) => d,
         None => {
             // Run bcrypt on a dummy hash to equalise timing for unknown vs wrong-password (#107).
@@ -127,11 +127,11 @@ pub async fn login(
         }
     };
 
-    if dispatcher.status == DispatcherStatus::Inactive {
+    if fleet_user.status == FleetUserStatus::Inactive {
         return Err(AppError::Unauthorized);
     }
 
-    let mut creds = state.db.get_dispatcher_credentials(dispatcher.id).await?
+    let mut creds = state.db.get_fleet_user_credentials(fleet_user.id).await?
         .ok_or(AppError::Unauthorized)?;
 
     // Check lockout
@@ -148,16 +148,16 @@ pub async fn login(
     }
 
     // Verify password + maintain the failed-attempt lockout (shared with /oauth/authorize).
-    if !verify_dispatcher_password(&state, &mut creds, &req.password).await? {
+    if !verify_fleet_user_password(&state, &mut creds, &req.password).await? {
         return Err(AppError::Unauthorized);
     }
 
-    let token = encode_dispatcher_jwt(dispatcher.id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
+    let token = encode_fleet_user_jwt(fleet_user.id, creds.token_version, &state.config.fleet_jwt_secret)?;
 
-    tracing::info!(dispatcher_id = %dispatcher.id, "dispatcher login succeeded");
+    tracing::info!(fleet_user_id = %fleet_user.id, "fleet user login succeeded");
 
     let issued = refresh_tokens::issue(
-        &state.db, "dispatcher", dispatcher.id, None, creds.token_version, Utc::now(),
+        &state.db, "fleet_user", fleet_user.id, None, creds.token_version, Utc::now(),
     ).await?;
     let cookie = refresh_tokens::set_cookie_header(&issued.secret, state.config.cookie_secure);
 
@@ -169,7 +169,7 @@ pub async fn login(
     Ok(response)
 }
 
-/// Refresh a dispatcher JWT using the httpOnly refresh-token cookie.
+/// Refresh a fleet user JWT using the httpOnly refresh-token cookie.
 #[utoipa::path(
     post,
     path = "/fleet/auth/refresh",
@@ -188,10 +188,10 @@ pub async fn refresh(
     let hash = refresh_tokens::hash_token(&secret);
     let row = state.db.get_refresh_token_by_hash(&hash).await?
         .ok_or(AppError::Unauthorized)?;
-    if row.subject_type != "dispatcher" {
+    if row.subject_type != "fleet_user" {
         return Err(AppError::Unauthorized);
     }
-    let creds = state.db.get_dispatcher_credentials(row.subject_id).await?
+    let creds = state.db.get_fleet_user_credentials(row.subject_id).await?
         .ok_or(AppError::Unauthorized)?;
 
     if let Some(locked_until) = creds.locked_until {
@@ -200,17 +200,17 @@ pub async fn refresh(
         }
     }
 
-    // Reject inactive accounts before rotating, so an inactive dispatcher's
+    // Reject inactive accounts before rotating, so an inactive fleet_user's
     // refresh attempt doesn't needlessly consume their token.
-    let dispatcher = state.db.get_dispatcher_by_id(row.subject_id).await
+    let fleet_user = state.db.get_fleet_user_by_id(row.subject_id).await
         .map_err(|_| AppError::Unauthorized)?;
-    if dispatcher.status == DispatcherStatus::Inactive {
+    if fleet_user.status == FleetUserStatus::Inactive {
         return Err(AppError::Unauthorized);
     }
 
     match refresh_tokens::rotate(&state.db, &secret, creds.token_version, Utc::now()).await? {
         refresh_tokens::RotateResult::Rotated(next) => {
-            let token = encode_dispatcher_jwt(row.subject_id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
+            let token = encode_fleet_user_jwt(row.subject_id, creds.token_version, &state.config.fleet_jwt_secret)?;
             let cookie = refresh_tokens::set_cookie_header(&next.secret, state.config.cookie_secure);
             let mut response = Json(LoginResponse { token }).into_response();
             response.headers_mut().insert(
@@ -248,12 +248,12 @@ pub struct SetupRequest {
 pub async fn setup_status(
     State(state): State<AppState>,
 ) -> Result<impl IntoResponse, AppError> {
-    let needs_setup = state.db.count_dispatchers().await? == 0;
+    let needs_setup = state.db.count_fleet_users().await? == 0;
     Ok(Json(SetupStatusResponse { needs_setup }))
 }
 
 /// Create the first user with `role=owner`. Unauthenticated, guarded by
-/// `count_dispatchers() == 0` — the guard slams shut the instant any user exists,
+/// `count_fleet_users() == 0` — the guard slams shut the instant any user exists,
 /// returning `409 Conflict`. On success the new owner is logged straight in
 /// (token + refresh cookie), the same shape as `/fleet/auth/login`.
 #[utoipa::path(
@@ -270,46 +270,46 @@ pub async fn setup(
     State(state): State<AppState>,
     Json(req): Json<SetupRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    if state.db.count_dispatchers().await? != 0 {
+    if state.db.count_fleet_users().await? != 0 {
         return Err(AppError::Conflict("setup already completed".into()));
     }
 
     let email = normalize_email(&req.email);
     let now = Utc::now();
     let id = Uuid::new_v4();
-    let record = DispatcherRecord {
+    let record = FleetUserRecord {
         id,
         email,
         name: req.name,
-        status: DispatcherStatus::Active,
+        status: FleetUserStatus::Active,
         role: Role::Owner,
         extra_scopes: Vec::new(),
         created_at: now,
         updated_at: now,
     };
-    state.db.insert_dispatcher(&record).await?;
+    state.db.insert_fleet_user(&record).await?;
 
     let pw = req.password;
     let password_hash = tokio::task::spawn_blocking(move || bcrypt::hash(&pw, 12u32))
         .await
         .map_err(|e| AppError::Internal(e.to_string()))?
         .map_err(|e| AppError::Internal(e.to_string()))?;
-    let creds = DispatcherCredentials {
-        dispatcher_id: id,
+    let creds = FleetUserCredentials {
+        fleet_user_id: id,
         password_hash,
         token_version: 0,
         failed_attempts: 0,
         locked_until: None,
         updated_at: now,
     };
-    state.db.upsert_dispatcher_credentials(&creds).await?;
+    state.db.upsert_fleet_user_credentials(&creds).await?;
 
-    tracing::info!(dispatcher_id = %id, "first-run setup: owner account created");
+    tracing::info!(fleet_user_id = %id, "first-run setup: owner account created");
 
     // Log the new owner straight in (same shape as login).
-    let token = encode_dispatcher_jwt(id, creds.token_version, &state.config.dispatcher_jwt_secret)?;
+    let token = encode_fleet_user_jwt(id, creds.token_version, &state.config.fleet_jwt_secret)?;
     let issued = refresh_tokens::issue(
-        &state.db, "dispatcher", id, None, creds.token_version, Utc::now(),
+        &state.db, "fleet_user", id, None, creds.token_version, Utc::now(),
     ).await?;
     let cookie = refresh_tokens::set_cookie_header(&issued.secret, state.config.cookie_secure);
     let mut response = (StatusCode::OK, Json(LoginResponse { token })).into_response();

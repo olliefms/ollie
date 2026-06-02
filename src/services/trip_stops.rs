@@ -1,12 +1,12 @@
 //! Cross-surface stop-time operations.
 //!
-//! Both the dispatcher portal (POST /fleet/api/v1/trips/{id}/stops/{seq}/arrive|depart)
+//! Both the fleet portal (POST /fleet/api/v1/trips/{id}/stops/{seq}/arrive|depart)
 //! and the driver portal (PATCH /driver/api/v1/trips/{id}/stops/{seq}) record actual
 //! arrival and departure times. The cascade to the linked load stop, the trip/load
 //! status transitions, the auto-dispatch of the next assigned trip, and the event
 //! hooks must behave identically regardless of which surface initiated the call.
 //!
-//! Driver/dispatcher handlers own auth and request-shape validation; everything
+//! Driver/fleet_user handlers own auth and request-shape validation; everything
 //! downstream of `db.update_trip_stop` lives here.
 
 use crate::events;

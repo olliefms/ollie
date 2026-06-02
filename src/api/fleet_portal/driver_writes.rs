@@ -1,11 +1,11 @@
-// src/api/dispatcher_portal/driver_writes.rs
+// src/api/fleet_portal/driver_writes.rs
 //
-// Dispatcher-portal driver equipment write endpoints (#181):
+// Fleet-portal driver equipment write endpoints (#181):
 //   - POST /fleet/api/v1/drivers/{id}/attach-equipment
 //   - POST /fleet/api/v1/drivers/{id}/detach-equipment
 //
-// Dispatcher-facing equipment management the driver portal does not cover: a
-// dispatcher can seat a driver on a truck and/or add trailers (attach), or
+// Fleet-facing equipment management the driver portal does not cover: a
+// fleet_user can seat a driver on a truck and/or add trailers (attach), or
 // un-seat the truck and drop trailers (detach), releasing them back to
 // `Available`. These are pure equipment events — they never transition trip
 // status. When the driver has an active (Dispatched/InTransit) trip, the
@@ -24,7 +24,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -91,7 +91,7 @@ pub struct DriverEquipmentChange {
 )]
 pub async fn attach_equipment_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -117,7 +117,7 @@ pub async fn attach_equipment_handler(
 )]
 pub async fn detach_equipment_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -419,7 +419,7 @@ pub async fn apply_detach_equipment(
     })
 }
 
-// --- Driver create / patch (dispatcher portal) ---
+// --- Driver create / patch (fleet portal) ---
 
 /// Shared driver-create writer. Defaults terminal_id to the default terminal
 /// when the request omits it. Used by the HTTP handler (and optionally MCP).
@@ -542,7 +542,7 @@ pub async fn apply_driver_patch(
 )]
 pub async fn create_driver_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<CreateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:write")?;
@@ -566,7 +566,7 @@ pub async fn create_driver_handler(
 )]
 pub async fn patch_driver_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -589,7 +589,7 @@ pub async fn patch_driver_handler(
 )]
 pub async fn delete_driver_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:delete")?;
@@ -628,7 +628,7 @@ pub(crate) async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<()
 )]
 pub async fn set_driver_pin_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<SetDriverPinRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -680,7 +680,7 @@ pub async fn apply_set_driver_pin(
     };
 
     state.db.upsert_driver_credentials(&credentials).await?;
-    tracing::info!(driver_id = %id, "dispatcher set PIN for driver");
+    tracing::info!(driver_id = %id, "fleet_user set PIN for driver");
     Ok(())
 }
 

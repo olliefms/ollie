@@ -1,6 +1,6 @@
-// src/api/dispatcher_portal/terminal_writes.rs
+// src/api/fleet_portal/terminal_writes.rs
 //
-// Dispatcher-portal terminal CRUD endpoints (#185):
+// Fleet-portal terminal CRUD endpoints (#185):
 //   POST   /fleet/api/v1/terminals
 //   GET    /fleet/api/v1/terminals
 //   GET    /fleet/api/v1/terminals/{id}
@@ -11,7 +11,7 @@ use axum::{extract::{Path, State}, http::StatusCode, response::IntoResponse, Ext
 use chrono::Utc;
 use uuid::Uuid;
 
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 
 use crate::error::AppError;
 use crate::models::terminal::{CreateTerminalRequest, UpdateTerminalRequest};
@@ -113,7 +113,7 @@ pub async fn apply_terminal_patch(
 )]
 pub async fn create_terminal(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(req): Json<CreateTerminalRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("terminals:write")?;
@@ -133,7 +133,7 @@ pub async fn create_terminal(
 )]
 pub async fn list_terminals(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("terminals:read")?;
     Ok(Json(state.db.list_terminals().await?))
@@ -153,7 +153,7 @@ pub async fn list_terminals(
 )]
 pub async fn get_terminal(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("terminals:read")?;
@@ -176,7 +176,7 @@ pub async fn get_terminal(
 )]
 pub async fn update_terminal(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateTerminalRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -199,7 +199,7 @@ pub async fn update_terminal(
 )]
 pub async fn delete_terminal(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("terminals:delete")?;

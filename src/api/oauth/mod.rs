@@ -1,7 +1,7 @@
 // src/api/oauth/mod.rs
 //
 // Portal-agnostic OAuth 2.1 Authorization Server for MCP connectors.
-// One resource wired today: dispatcher (/fleet/mcp). Driver is future work.
+// One resource wired today: fleet_user (/fleet/mcp). Driver is future work.
 pub mod authorize;
 pub mod metadata;
 pub mod register;
@@ -10,19 +10,19 @@ pub mod token;
 use crate::AppState;
 use axum::{routing::{get, post}, Router};
 
-pub const DISPATCH_MCP_PATH: &str = "/fleet/mcp";
+pub const FLEET_MCP_PATH: &str = "/fleet/mcp";
 
 /// Absolute issuer/base URL from config (e.g. https://ollie.oberonlogistics.com).
 pub fn issuer(state: &AppState) -> String {
     state.config.public_base_url.trim_end_matches('/').to_string()
 }
 
-/// The protected-resource URL for the dispatcher MCP endpoint.
+/// The protected-resource URL for the Fleet MCP endpoint.
 pub fn dispatch_resource(state: &AppState) -> String {
-    format!("{}{}", issuer(state), DISPATCH_MCP_PATH)
+    format!("{}{}", issuer(state), FLEET_MCP_PATH)
 }
 
-/// All OAuth routes — mounted PUBLIC (no dispatcher middleware) by T10.
+/// All OAuth routes — mounted PUBLIC (no fleet user middleware) by T10.
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/.well-known/oauth-authorization-server", get(metadata::authorization_server))

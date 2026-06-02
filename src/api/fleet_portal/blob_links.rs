@@ -1,18 +1,18 @@
-// src/api/dispatcher_portal/blob_links.rs
+// src/api/fleet_portal/blob_links.rs
 //
 // Short-lived, blob-scoped signed URLs ("presigned" URLs) for moving file bytes
 // off the MCP transport and onto plain HTTP.
 //
 // Why this exists: MCP agents authenticate to /fleet/mcp via the MCP client
-// layer and never see the dispatcher JWT, so they cannot authenticate their own
-// HTTP requests. Handing them a full dispatcher JWT would let them bypass MCP and
-// hit every dispatcher endpoint. Instead, an MCP tool mints a token that is scoped
+// layer and never see the fleet user JWT, so they cannot authenticate their own
+// HTTP requests. Handing them a full fleet user JWT would let them bypass MCP and
+// hit every fleet_user endpoint. Instead, an MCP tool mints a token that is scoped
 // to a single blob + operation and expires in minutes. The token rides in the URL
 // query string so a header-less GET client (e.g. an agent's `web_fetch`) can use a
 // download URL, and any HTTP client can POST bytes to an upload URL.
 //
-// Tokens are HS256 JWTs signed with the dispatcher secret but carry a distinct
-// audience so they can never be used as — or confused with — a dispatcher session
+// Tokens are HS256 JWTs signed with the fleet_user secret but carry a distinct
+// audience so they can never be used as — or confused with — a fleet_user session
 // token.
 
 use crate::error::AppError;
@@ -20,7 +20,7 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-const ISSUER: &str = "ollie-dispatcher";
+const ISSUER: &str = "ollie-fleet_user";
 const AUDIENCE: &str = "ollie-blob-url";
 
 /// The operation a presigned token authorizes. Encoded as the `op` claim so a
@@ -112,7 +112,7 @@ pub fn download_url(base: &str, blob_id: Uuid, token: &str) -> String {
 mod tests {
     use super::*;
 
-    const SECRET: &str = "a-dispatcher-secret-at-least-32-bytes!!";
+    const SECRET: &str = "a-fleet_user-secret-at-least-32-bytes!!";
 
     #[test]
     fn get_token_roundtrip_binds_blob_id() {
@@ -165,9 +165,9 @@ mod tests {
     }
 
     #[test]
-    fn dispatcher_session_token_rejected_as_blob_token() {
-        // A token minted with the dispatcher session audience must not pass here.
-        let token = crate::api::dispatcher_portal::jwt::encode_dispatcher_jwt(Uuid::new_v4(), 1, SECRET).unwrap();
+    fn fleet_user_session_token_rejected_as_blob_token() {
+        // A token minted with the fleet_user session audience must not pass here.
+        let token = crate::api::fleet_portal::jwt::encode_fleet_user_jwt(Uuid::new_v4(), 1, SECRET).unwrap();
         assert!(matches!(verify_token(SECRET, &token, BlobUrlOp::Get), Err(AppError::Unauthorized)));
     }
 

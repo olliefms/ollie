@@ -1,6 +1,6 @@
 // src/api/oauth/token.rs
 use crate::{
-    api::dispatcher_portal::jwt::encode_dispatcher_jwt,
+    api::fleet_portal::jwt::encode_fleet_user_jwt,
     api::refresh_tokens,
     AppState,
 };
@@ -72,14 +72,14 @@ async fn auth_code_grant(state: &AppState, f: TokenForm) -> Result<Json<TokenRes
         return Err(OauthError::InvalidGrant("PKCE verification failed".into()));
     }
 
-    let creds = state.db.get_dispatcher_credentials(record.subject_id).await
+    let creds = state.db.get_fleet_user_credentials(record.subject_id).await
         .map_err(|e| OauthError::ServerError(e.to_string()))?
         .ok_or_else(|| OauthError::InvalidGrant("unknown subject".into()))?;
 
-    let access = encode_dispatcher_jwt(record.subject_id, creds.token_version, &state.config.dispatcher_jwt_secret)
+    let access = encode_fleet_user_jwt(record.subject_id, creds.token_version, &state.config.fleet_jwt_secret)
         .map_err(|e| OauthError::ServerError(e.to_string()))?;
     let issued = refresh_tokens::issue(
-        &state.db, "dispatcher", record.subject_id, Some(record.client_id), creds.token_version, Utc::now(),
+        &state.db, "fleet_user", record.subject_id, Some(record.client_id), creds.token_version, Utc::now(),
     ).await.map_err(|e| OauthError::ServerError(e.to_string()))?;
 
     Ok(Json(TokenResponse {
@@ -110,10 +110,10 @@ async fn refresh_grant(state: &AppState, f: TokenForm) -> Result<Json<TokenRespo
         return Err(OauthError::InvalidGrant("client_id mismatch".into()));
     }
 
-    if row.subject_type != "dispatcher" {
+    if row.subject_type != "fleet_user" {
         return Err(OauthError::InvalidGrant("unsupported subject".into()));
     }
-    let creds = state.db.get_dispatcher_credentials(row.subject_id).await
+    let creds = state.db.get_fleet_user_credentials(row.subject_id).await
         .map_err(|e| OauthError::ServerError(e.to_string()))?
         .ok_or_else(|| OauthError::InvalidGrant("unknown subject".into()))?;
 
@@ -122,9 +122,9 @@ async fn refresh_grant(state: &AppState, f: TokenForm) -> Result<Json<TokenRespo
             return Err(OauthError::InvalidGrant("account locked".into()));
         }
     }
-    let dispatcher = state.db.get_dispatcher_by_id(row.subject_id).await
+    let fleet_user = state.db.get_fleet_user_by_id(row.subject_id).await
         .map_err(|_| OauthError::InvalidGrant("unknown subject".into()))?;
-    if dispatcher.status == crate::models::DispatcherStatus::Inactive {
+    if fleet_user.status == crate::models::FleetUserStatus::Inactive {
         return Err(OauthError::InvalidGrant("account inactive".into()));
     }
 
@@ -132,7 +132,7 @@ async fn refresh_grant(state: &AppState, f: TokenForm) -> Result<Json<TokenRespo
         .map_err(|e| OauthError::ServerError(e.to_string()))?
     {
         refresh_tokens::RotateResult::Rotated(next) => {
-            let access = encode_dispatcher_jwt(row.subject_id, creds.token_version, &state.config.dispatcher_jwt_secret)
+            let access = encode_fleet_user_jwt(row.subject_id, creds.token_version, &state.config.fleet_jwt_secret)
                 .map_err(|e| OauthError::ServerError(e.to_string()))?;
             Ok(Json(TokenResponse {
                 access_token: access,

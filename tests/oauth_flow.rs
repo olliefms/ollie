@@ -12,7 +12,7 @@ use ollie::{
     api,
     config::Config,
     db::DbClient,
-    models::{DispatcherApiKey, DispatcherCredentials, DispatcherRecord, DispatcherStatus},
+    models::{FleetUserApiKey, FleetUserCredentials, FleetUserRecord, FleetUserStatus},
     storage::BlobStore,
     AppState,
 };
@@ -36,7 +36,7 @@ async fn build_app() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     std::env::set_var("DRIVER_JWT_SECRET",       "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID",            "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN",        "http://localhost:3000");
-    std::env::set_var("DISPATCHER_JWT_SECRET",   "test-dispatcher-secret-must-be-32b");
+    std::env::set_var("FLEET_JWT_SECRET",   "test-fleet_user-secret-must-be-32b");
     std::env::set_var("OLLIE_PUBLIC_BASE_URL",   TEST_BASE_URL);
 
     let config = Arc::new(Config::from_env().unwrap());
@@ -68,22 +68,22 @@ async fn build_app() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     (server, db, blob_dir, db_dir)
 }
 
-async fn seed_dispatcher(db: &DbClient, email: &str, password: &str) -> Uuid {
+async fn seed_fleet_user(db: &DbClient, email: &str, password: &str) -> Uuid {
     let id  = Uuid::new_v4();
     let now = Utc::now();
-    db.upsert_dispatcher(&DispatcherRecord {
+    db.upsert_fleet_user(&FleetUserRecord {
         id,
         email:      email.into(),
         name:       "Test Dispatcher".into(),
-        status:     DispatcherStatus::Active,
+        status:     FleetUserStatus::Active,
         role:       Default::default(),
         extra_scopes: Vec::new(),
         created_at: now,
         updated_at: now,
     }).await.unwrap();
     let hash = bcrypt::hash(password, 4).unwrap();
-    db.upsert_dispatcher_credentials(&DispatcherCredentials {
-        dispatcher_id:   id,
+    db.upsert_fleet_user_credentials(&FleetUserCredentials {
+        fleet_user_id:   id,
         password_hash:   hash,
         token_version:   0,
         failed_attempts: 0,
@@ -187,7 +187,7 @@ async fn full_oauth_dance() {
 
     let email    = "oauth_dance@example.com";
     let password = "hunter2_long_enough_password";
-    seed_dispatcher(&db, email, password).await;
+    seed_fleet_user(&db, email, password).await;
 
     // 4a. Register client
     let reg_resp = server.post("/oauth/register")
@@ -328,16 +328,16 @@ async fn olld_api_key_authenticates_mcp() {
 
     let email    = "apikey_mcp@example.com";
     let password = "hunter2_long_enough_password";
-    let dispatcher_id = seed_dispatcher(&db, email, password).await;
+    let fleet_user_id = seed_fleet_user(&db, email, password).await;
 
     let plaintext  = format!("olld_{}", "s3cr3tSuffix1234567890abcdef");
     let key_hash   = hex::encode(Sha256::digest(plaintext.as_bytes()));
     let key_prefix = plaintext.chars().take(12).collect::<String>();
     let now        = Utc::now();
 
-    db.insert_dispatcher_api_key(&DispatcherApiKey {
+    db.insert_fleet_user_api_key(&FleetUserApiKey {
         id:           Uuid::new_v4(),
-        dispatcher_id,
+        fleet_user_id,
         label:        "test".into(),
         key_hash,
         key_prefix,
@@ -378,7 +378,7 @@ async fn token_rejects_bad_pkce() {
 
     let email    = "bad_pkce@example.com";
     let password = "hunter2_long_enough_password";
-    seed_dispatcher(&db, email, password).await;
+    seed_fleet_user(&db, email, password).await;
 
     // Register
     let reg_resp = server.post("/oauth/register")

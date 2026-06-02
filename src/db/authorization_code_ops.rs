@@ -116,7 +116,7 @@ mod tests {
             client_id: Uuid::new_v4(),
             redirect_uri: "http://127.0.0.1/cb".into(),
             code_challenge: "chal".into(),
-            subject_type: "dispatcher".into(),
+            subject_type: "fleet_user".into(),
             subject_id: Uuid::new_v4(),
             resource: "https://x/fleet/mcp".into(),
             scope: None,

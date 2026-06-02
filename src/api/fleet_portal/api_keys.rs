@@ -1,4 +1,4 @@
-// src/api/dispatcher_portal/api_keys.rs
+// src/api/fleet_portal/api_keys.rs
 use axum::{
     Extension,
     extract::{Path, State},
@@ -15,9 +15,9 @@ use uuid::Uuid;
 
 use crate::{
     AppState,
-    api::dispatcher_portal::jwt::DispatcherClaims,
+    api::fleet_portal::jwt::FleetUserClaims,
     error::AppError,
-    models::DispatcherApiKey,
+    models::FleetUserApiKey,
 };
 
 pub fn generate_api_key() -> String {
@@ -73,13 +73,13 @@ pub struct ApiKeyListResponse {
         (status = 201, description = "API key created (plaintext returned once)", body = CreateApiKeyResponse),
         (status = 400, description = "Invalid label or expires_in_days"),
         (status = 401, description = "Unauthorized (JWT required, API-key auth not allowed)"),
-        (status = 429, description = "Dispatcher already has 20 active keys"),
+        (status = 429, description = "Fleet user already has 20 active keys"),
     ),
     tag = "fleet-api-keys"
 )]
 pub async fn create_api_key(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(req): Json<CreateApiKeyRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("api_keys:write")?;
@@ -96,9 +96,9 @@ pub async fn create_api_key(
         return Err(AppError::BadRequest("expires_in_days must be between 1 and 365".into()));
     }
 
-    let dispatcher_id: Uuid = claims.dispatcher_id.parse().map_err(|_| AppError::Unauthorized)?;
+    let fleet_user_id: Uuid = claims.fleet_user_id.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let active = state.db.count_active_dispatcher_api_keys(dispatcher_id).await?;
+    let active = state.db.count_active_fleet_user_api_keys(fleet_user_id).await?;
     if active >= 20 {
         return Err(AppError::TooManyRequests);
     }
@@ -108,9 +108,9 @@ pub async fn create_api_key(
     let key_hash = hash_api_key(&plaintext);
     let key_prefix = plaintext[..12].to_string();
 
-    let record = DispatcherApiKey {
+    let record = FleetUserApiKey {
         id: Uuid::new_v4(),
-        dispatcher_id,
+        fleet_user_id,
         label: label.clone(),
         key_hash,
         key_prefix: key_prefix.clone(),
@@ -119,7 +119,7 @@ pub async fn create_api_key(
         revoked_at: None,
         last_used_at: None,
     };
-    state.db.insert_dispatcher_api_key(&record).await?;
+    state.db.insert_fleet_user_api_key(&record).await?;
 
     Ok((StatusCode::CREATED, Json(CreateApiKeyResponse {
         id: record.id,
@@ -135,18 +135,18 @@ pub async fn create_api_key(
     get,
     path = "/fleet/api-keys",
     responses(
-        (status = 200, description = "List active API keys for the calling dispatcher", body = ApiKeyListResponse),
+        (status = 200, description = "List active API keys for the calling fleet_user", body = ApiKeyListResponse),
         (status = 401, description = "Unauthorized"),
     ),
     tag = "fleet-api-keys"
 )]
 pub async fn list_api_keys(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("api_keys:read")?;
-    let dispatcher_id: Uuid = claims.dispatcher_id.parse().map_err(|_| AppError::Unauthorized)?;
-    let keys = state.db.list_active_dispatcher_api_keys(dispatcher_id).await?;
+    let fleet_user_id: Uuid = claims.fleet_user_id.parse().map_err(|_| AppError::Unauthorized)?;
+    let keys = state.db.list_active_fleet_user_api_keys(fleet_user_id).await?;
     let items = keys.into_iter().map(|k| ApiKeyListItem {
         id: k.id,
         label: k.label,
@@ -165,13 +165,13 @@ pub async fn list_api_keys(
     responses(
         (status = 204, description = "Revoked"),
         (status = 401, description = "Unauthorized (JWT required)"),
-        (status = 404, description = "Not found or owned by another dispatcher"),
+        (status = 404, description = "Not found or owned by another fleet_user"),
     ),
     tag = "fleet-api-keys"
 )]
 pub async fn revoke_api_key(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(key_id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("api_keys:delete")?;
@@ -179,9 +179,9 @@ pub async fn revoke_api_key(
         return Err(AppError::Unauthorized);
     }
 
-    let dispatcher_id: Uuid = claims.dispatcher_id.parse().map_err(|_| AppError::Unauthorized)?;
+    let fleet_user_id: Uuid = claims.fleet_user_id.parse().map_err(|_| AppError::Unauthorized)?;
 
-    let key = state.db.get_dispatcher_api_key_by_id(key_id, dispatcher_id).await?
+    let key = state.db.get_fleet_user_api_key_by_id(key_id, fleet_user_id).await?
         .ok_or(AppError::NotFound)?;
 
     if key.revoked_at.is_some() {
@@ -190,7 +190,7 @@ pub async fn revoke_api_key(
 
     let mut updated = key;
     updated.revoked_at = Some(Utc::now());
-    state.db.upsert_dispatcher_api_key(&updated).await?;
+    state.db.upsert_fleet_user_api_key(&updated).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

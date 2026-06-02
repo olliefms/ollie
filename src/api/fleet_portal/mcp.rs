@@ -1,6 +1,6 @@
-// src/api/dispatcher_portal/mcp.rs
+// src/api/fleet_portal/mcp.rs
 //
-// MCP server for the dispatcher agent surface, built on rmcp's Streamable HTTP
+// MCP server for the fleet_user agent surface, built on rmcp's Streamable HTTP
 // transport (the official Rust MCP SDK, adopted in #105 once the project moved
 // to Axum 0.8). rmcp owns the JSON-RPC envelope, protocol-version negotiation,
 // the MCP-Protocol-Version header check, the notifications→202 behaviour, and
@@ -8,7 +8,7 @@
 // (server info + tool list + tool dispatch) and wires the 47 existing tool
 // shims into it; no business logic lives here.
 //
-// Auth is enforced at the HTTP layer — the require_dispatcher_auth route_layer
+// Auth is enforced at the HTTP layer — the require_fleet_user_auth route_layer
 // in mod.rs runs BEFORE the request reaches this service, so rmcp tool handlers
 // receive no auth context and enforce none themselves.
 //
@@ -56,7 +56,7 @@ use super::blob_links::{self, BlobUrlOp};
 // rmcp ServerHandler
 // ---------------------------------------------------------------------------
 
-/// The dispatcher MCP server. Holds shared app state; the transport's service
+/// The Fleet MCP server. Holds shared app state; the transport's service
 /// factory builds one per session (a cheap clone of `AppState`).
 #[derive(Clone)]
 pub struct OllieMcp {
@@ -80,7 +80,7 @@ impl ServerHandler for OllieMcp {
         )
         .with_protocol_version(ProtocolVersion::V_2025_06_18)
         .with_server_info(Implementation::new(
-            "ollie-dispatcher",
+            "ollie-fleet_user",
             env!("CARGO_PKG_VERSION"),
         ))
     }
@@ -99,10 +99,10 @@ impl ServerHandler for OllieMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         // Scope enforcement (#331): the auth middleware inserted the authenticated
-        // dispatcher's DispatcherClaims into the HTTP request extensions; rmcp
+        // fleet_user's FleetUserClaims into the HTTP request extensions; rmcp
         // forwards the request Parts into the RequestContext extensions. Resolve the
         // effective scopes from there and gate the tool before any side effect.
-        let scopes = dispatcher_scopes(&context);
+        let scopes = fleet_user_scopes(&context);
         if let Some(required) = tool_required_scope(&request.name) {
             if !crate::models::permission::scope_granted(&scopes, required) {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -111,10 +111,10 @@ impl ServerHandler for OllieMcp {
                 ))]));
             }
         }
-        // The authenticated caller's dispatcher id (for owner-protection/transfer
+        // The authenticated caller's fleet_user id (for owner-protection/transfer
         // checks in the Users tools). Absent for an API-key principal with no
         // parseable id — those tools then treat the caller as least-privileged.
-        let caller_id = dispatcher_caller_id(&context);
+        let caller_id = fleet_user_caller_id(&context);
         let args = Value::Object(request.arguments.unwrap_or_default());
         // Destructive ops ask the user to confirm via elicitation when the client
         // supports it; clients that don't degrade to the prior behavior (#300).
@@ -212,8 +212,8 @@ enum ToolError {
 // ---------------------------------------------------------------------------
 // Scope enforcement (#331)
 //
-// HTTP auth (require_dispatcher_auth) runs before rmcp and inserts the
-// authenticated DispatcherClaims (carrying server-computed effective_scopes)
+// HTTP auth (require_fleet_user_auth) runs before rmcp and inserts the
+// authenticated FleetUserClaims (carrying server-computed effective_scopes)
 // into the axum request extensions. rmcp forwards the remaining
 // `http::request::Parts` into RequestContext.extensions, so the tool layer
 // recovers the caller's scopes from there and gates each tool by the same
@@ -222,34 +222,34 @@ enum ToolError {
 
 /// Recover the caller's effective scopes from the forwarded HTTP request parts.
 /// Empty when the claims are absent — which denies every gated tool (fail-closed).
-fn dispatcher_scopes(context: &RequestContext<RoleServer>) -> Vec<String> {
+fn fleet_user_scopes(context: &RequestContext<RoleServer>) -> Vec<String> {
     context
         .extensions
         .get::<axum::http::request::Parts>()
-        .and_then(|parts| parts.extensions.get::<super::jwt::DispatcherClaims>())
+        .and_then(|parts| parts.extensions.get::<super::jwt::FleetUserClaims>())
         .map(|claims| claims.effective_scopes.clone())
         .unwrap_or_default()
 }
 
-/// Recover the authenticated caller's dispatcher id from the forwarded HTTP
+/// Recover the authenticated caller's fleet_user id from the forwarded HTTP
 /// request parts, for owner-protection/transfer checks in the Users tools.
 /// `None` when claims are absent or the id is not a UUID (e.g. an API-key
 /// principal); the Users tools then treat the caller as least-privileged.
-fn dispatcher_caller_id(context: &RequestContext<RoleServer>) -> Option<Uuid> {
+fn fleet_user_caller_id(context: &RequestContext<RoleServer>) -> Option<Uuid> {
     context
         .extensions
         .get::<axum::http::request::Parts>()
-        .and_then(|parts| parts.extensions.get::<super::jwt::DispatcherClaims>())
-        .and_then(|claims| claims.dispatcher_id.parse::<Uuid>().ok())
+        .and_then(|parts| parts.extensions.get::<super::jwt::FleetUserClaims>())
+        .and_then(|claims| claims.fleet_user_id.parse::<Uuid>().ok())
 }
 
-/// Build a minimal DispatcherClaims carrying only the given effective scopes, for
+/// Build a minimal FleetUserClaims carrying only the given effective scopes, for
 /// passing the caller's authority into an HTTP handler reused as an MCP shim (e.g.
 /// `recalculate_miles_handler`). Identity fields are placeholders — the handler
 /// only consults `effective_scopes` via `require_scope`.
-fn claims_with_scopes(scopes: &[String]) -> super::jwt::DispatcherClaims {
-    super::jwt::DispatcherClaims {
-        dispatcher_id: String::new(),
+fn claims_with_scopes(scopes: &[String]) -> super::jwt::FleetUserClaims {
+    super::jwt::FleetUserClaims {
+        fleet_user_id: String::new(),
         token_version: 0,
         iss: String::new(),
         aud: String::new(),
@@ -1296,7 +1296,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "facility_doctor",
-                "description": "Diagnose a facility's data integrity. Checks: address present, lat/lng present, coordinates inside US bounding box (warning), normalized_address present when geocoded. With apply=true, re-queues geocoding for facilities stuck at geocode_status=permanently_failed (resets failure count, sets status=pending, pushes onto the geocoding worker). Setting manual coordinates remains a deliberate dispatcher action via update_facility.",
+                "description": "Diagnose a facility's data integrity. Checks: address present, lat/lng present, coordinates inside US bounding box (warning), normalized_address present when geocoded. With apply=true, re-queues geocoding for facilities stuck at geocode_status=permanently_failed (resets failure count, sets status=pending, pushes onto the geocoding worker). Setting manual coordinates remains a deliberate fleet_user action via update_facility.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1434,7 +1434,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "invoice_load",
-                "description": "Transition a load to `invoiced`, optionally recording an invoice number and date. Returns the dispatcher-enriched load detail.",
+                "description": "Transition a load to `invoiced`, optionally recording an invoice number and date. Returns the fleet_user-enriched load detail.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1447,7 +1447,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "cancel_load",
-                "description": "Transition a load to `cancelled`, optionally recording a reason. Returns the dispatcher-enriched load detail.",
+                "description": "Transition a load to `cancelled`, optionally recording a reason. Returns the fleet_user-enriched load detail.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1459,7 +1459,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "settle_load",
-                "description": "Transition a load to `settled`. Returns the dispatcher-enriched load detail.",
+                "description": "Transition a load to `settled`. Returns the fleet_user-enriched load detail.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "id": { "type": "string", "format": "uuid" } },
@@ -1529,7 +1529,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "list_users",
-                "description": "List fleet users (the dispatchers-with-roles population). Requires users:read (owner/fleet_manager). Never returns password hashes.",
+                "description": "List fleet users (the fleet_users-with-roles population). Requires users:read (owner/fleet_manager). Never returns password hashes.",
                 "inputSchema": { "type": "object", "properties": {} }
             },
             {
@@ -1543,7 +1543,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "create_user",
-                "description": "Create a fleet user with a role (fleet_manager or dispatcher) and optional extra_scopes. Requires users:write. role=owner is rejected — ownership is established by bootstrap or transfer.",
+                "description": "Create a fleet user with a role (fleet_manager or fleet_user) and optional extra_scopes. Requires users:write. role=owner is rejected — ownership is established by bootstrap or transfer.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -2329,7 +2329,7 @@ async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, Strin
 }
 
 // ---------------------------------------------------------------------------
-// Facilities — list / get / create / update share the dispatcher write helpers
+// Facilities — list / get / create / update share the fleet_user write helpers
 // in `facility_writes` so HTTP and MCP enforce the same validation + side
 // effects (geocode queue, manual-coords override).
 // ---------------------------------------------------------------------------
@@ -2452,7 +2452,7 @@ fn unix_to_rfc3339(ts: i64) -> String {
 async fn tool_upload_blob(state: &AppState, args: &Value) -> Result<Value, String> {
     let base = require_base_url(state)?;
     let ttl = resolve_presign_ttl(state, args);
-    let (token, exp) = blob_links::mint_token(&state.config.dispatcher_jwt_secret, BlobUrlOp::Post, None, ttl)
+    let (token, exp) = blob_links::mint_token(&state.config.fleet_jwt_secret, BlobUrlOp::Post, None, ttl)
         .map_err(|e| e.to_string())?;
     let url = blob_links::upload_url(&base, &token);
     Ok(mcp_content(serde_json::json!({
@@ -2473,7 +2473,7 @@ async fn tool_get_blob_url(state: &AppState, args: &Value) -> Result<Value, Stri
     // Confirm the blob exists before handing out a URL for it.
     state.db.get_by_id(id).await.map_err(|e| e.to_string())?;
     let ttl = resolve_presign_ttl(state, args);
-    let (token, exp) = blob_links::mint_token(&state.config.dispatcher_jwt_secret, BlobUrlOp::Get, Some(id), ttl)
+    let (token, exp) = blob_links::mint_token(&state.config.fleet_jwt_secret, BlobUrlOp::Get, Some(id), ttl)
         .map_err(|e| e.to_string())?;
     let url = blob_links::download_url(&base, id, &token);
     Ok(mcp_content(serde_json::json!({
@@ -2601,7 +2601,7 @@ async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, Strin
 
 // ---------------------------------------------------------------------------
 // Dispatch-parity write tools (#330) — delete / lifecycle / driver-admin tools
-// that mirror the dispatcher REST handlers, reusing the same DbClient ops and
+// that mirror the Fleet REST handlers, reusing the same DbClient ops and
 // apply_* helpers so HTTP and MCP stay in lockstep.
 // ---------------------------------------------------------------------------
 
@@ -2717,7 +2717,7 @@ async fn tool_update_driver(state: &AppState, args: &Value) -> Result<Value, Str
 
 // --- Users management (#331) ---
 
-/// Recover the caller's current role from the DB by their dispatcher id, so the
+/// Recover the caller's current role from the DB by their fleet_user id, so the
 /// Users tools enforce owner-only rules identically to the HTTP surface. Falls
 /// back to the least-privileged `Dispatcher` when the caller is unidentified.
 async fn caller_role_from_id(
@@ -2725,7 +2725,7 @@ async fn caller_role_from_id(
     caller_id: Option<Uuid>,
 ) -> crate::models::permission::Role {
     match caller_id {
-        Some(cid) => match state.db.get_dispatcher_by_id(cid).await {
+        Some(cid) => match state.db.get_fleet_user_by_id(cid).await {
             Ok(r) => r.role,
             Err(_) => crate::models::permission::Role::Dispatcher,
         },
@@ -2815,7 +2815,7 @@ mod tests {
         let blob_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
         std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
-        std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-jwt-secret-that-is-long-enough");
+        std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-jwt-secret-that-is-long-enough");
         std::env::set_var("DRIVER_RP_ID", "localhost");
         std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
         let config = Arc::new(Config::from_env().unwrap());
@@ -2863,7 +2863,7 @@ mod tests {
         let (state, _b, _d) = test_state().await;
         let info = OllieMcp::new(state).get_info();
         assert_eq!(info.protocol_version, ProtocolVersion::V_2025_06_18);
-        assert_eq!(info.server_info.name, "ollie-dispatcher");
+        assert_eq!(info.server_info.name, "ollie-fleet_user");
         assert!(
             info.capabilities.tools.is_some(),
             "server must advertise tools capability"
