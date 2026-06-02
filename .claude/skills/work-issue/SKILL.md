@@ -69,6 +69,8 @@ Then triage the response yourself — **Opus output is input, not orders.** Fix 
 
 ## Self-merge gate
 
+- Sign off every commit with `git commit -s` (DCO is enforced; unsigned commits block the merge).
+
 Squash-merge and close the issue **only if all** hold:
 - blockers = 0
 - significants = 0, *addressed in this PR* (not deferred)

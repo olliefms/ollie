@@ -1,7 +1,7 @@
 # Agent Automation Architecture
 
 **Status:** Design — pre-implementation
-**Scope:** Ollie repository (initial), a second project (second deployment), generalizable to SMB multi-project engagements
+**Scope:** Ollie repository (generalizable to other projects)
 **Author:** Jim (ergophobe)
 **Last revised:** May 2026
 
@@ -70,14 +70,12 @@ Decision: Use `anthropics/claude-code-action@v1` triggered by GitHub Actions, au
 - Research-preview status means features can be restructured without notice — wrong foundation for production.
 - Identity blur: routine actions appear under the personal account, breaking attribution for audit purposes.
 - No retry semantics; "green" status indicates infrastructure success only, not task success.
-
+- Individual-account-bound; cannot be legitimately used to run automation across multiple repositories.
 
 **Why not API key:**
 
 - Max OAuth is functionally identical for single-user workloads and uses already-paid subscription quota.
 - Switching between OAuth and direct API key is one line of YAML, so this is not a lock-in decision.
-
-
 
 **Bot identity:** A dedicated GitHub App (e.g., `ollie-agent[bot]`) is created so agent commits and comments are visibly attributable to the automation rather than the human operator. This is essential for audit clarity and is solved structurally by GHA in a way that Routines cannot match.
 
@@ -221,16 +219,15 @@ These are the deliverables of the next implementation session.
 
 ## 14. Portability Notes
 
-This architecture is designed to be portable to other repositories. When deployed elsewhere:
+This architecture is designed to be reusable across other repositories. When porting to a new repo:
 
-- **Execution layer:** Identical GHA workflows, with `anthropic_api_key` replacing `claude_code_oauth_token`.
-- **Identity:** A GitHub App is provisioned within the target GitHub org. Agent actions appear under that bot identity.
-- **Trust list:** Initialized with the target repo's maintainers; tier definitions ported as-is.
+- **Execution layer:** Identical GHA workflows, with `anthropic_api_key` replacing `claude_code_oauth_token` depending on auth preference.
+- **Identity:** A new GitHub App is provisioned within the target GitHub org. All agent actions appear under that bot identity.
+- **Trust list:** Initialized with the repo's maintainers; tier definitions ported as-is.
 - **AGENTS.md:** Shippability principles port verbatim; project-specific specifics layered on top.
 - **Project board:** Template structure ported; populated with the repo's labels and milestones.
-- **Maintainer role:** Configuration, calibration, periodic audit of metrics, evolution of the shippability bar.
 
-The repeatable artifacts are this design document, the workflow YAML templates, the `AGENTS.md` template, the trust-list schema, and the Project board template.
+The reusable artifacts are this design document, the workflow YAML templates, the `AGENTS.md` template, the trust-list schema, and the Project board template.
 
 ---
 

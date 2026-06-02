@@ -1308,7 +1308,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "upload_blob",
-                "description": "Upload a file (PDF, scan, contract, etc.) to the blob store. Returns a short-lived presigned URL — do NOT stream file bytes through this tool call. POST the raw file bytes to the returned url with a Content-Type header (optional query params name and tags, comma-separated), e.g. curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<url>&name=doc.pdf'. The HTTP response is the created blob record; use its id in the blob_ids of create_load/update_load, create_facility/update_facility, create_trip/update_trip, create_driver/update_driver (admin API), create_truck/update_truck, and create_trailer/update_trailer. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
+                "description": "Upload a file (PDF, scan, contract, etc.) to the blob store. Returns a short-lived presigned URL — do NOT stream file bytes through this tool call. POST the raw file bytes to the returned url with a Content-Type header (optional query params name and tags, comma-separated), e.g. curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<url>&name=doc.pdf'. The HTTP response is the created blob record; use its id in the blob_ids of create_load/update_load, create_facility/update_facility, create_trip/update_trip, create_driver/update_driver, create_truck/update_truck, and create_trailer/update_trailer. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

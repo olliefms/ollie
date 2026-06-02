@@ -197,7 +197,7 @@ The MCP endpoint already sits behind `require_dispatcher_jwt`. After the rename 
   "mcpServers": {
     "ollie-dispatch": {
       "type": "sse",
-      "url": "https://ollie.your-ollie-instance.example.com/dispatch/mcp",
+      "url": "https://your-ollie-instance.example.com/dispatch/mcp",
       "headers": {
         "Authorization": "Bearer olld_…"
       }

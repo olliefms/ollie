@@ -1,0 +1,18 @@
+# Ollie gitleaks configuration.
+# Extends the built-in ruleset, then allowlists known documentation placeholders.
+title = "Ollie gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation placeholders in example commands — not real secrets"
+# These literal placeholder tokens appear in README/docs example curl commands.
+# Keep this list in sync with the placeholders used in documentation (see Task B5).
+# Note: gitleaks v8 global allowlist regexes match against the secret *value*.
+regexes = [
+  '''your-secret-key''',
+  '''your_admin_api_key_here''',
+  '''change_me_to_a_random_string_at_least_32_bytes''',
+  '''your_ors_api_key_here''',
+]
