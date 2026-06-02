@@ -214,10 +214,11 @@ async fn migrate_dispatcher_to_fleet_user(conn: &lancedb::Connection) -> Result<
         rewrite_table_renamed(conn, "dispatcher_api_keys", "fleet_user_api_keys",
             Some(("dispatcher_id", "fleet_user_id"))).await?;
     }
-    for tbl in ["refresh_tokens", "authorization_codes"] {
-        if has(tbl) {
-            rewrite_subject_type(conn, tbl).await?;
-        }
+    if has("refresh_tokens") {
+        rewrite_subject_type(conn, "refresh_tokens", "id").await?;
+    }
+    if has("authorization_codes") {
+        rewrite_subject_type(conn, "authorization_codes", "code_hash").await?;
     }
     Ok(())
 }
@@ -267,7 +268,9 @@ async fn rewrite_table_renamed(
 
 /// Rewrite `subject_type` values of `"dispatcher"` to `"fleet_user"` in `name`,
 /// preserving all other rows (e.g. driver tokens). No-op if no such rows exist.
-async fn rewrite_subject_type(conn: &lancedb::Connection, name: &str) -> Result<(), AppError> {
+/// Uses an atomic `merge_insert` keyed on `key` (the table's primary key) rather
+/// than drop-then-create, so a crash mid-migration cannot lose the table.
+async fn rewrite_subject_type(conn: &lancedb::Connection, name: &str, key: &str) -> Result<(), AppError> {
     use arrow_array::Array;
     use futures::TryStreamExt;
     use lancedb::query::ExecutableQuery;
@@ -303,12 +306,15 @@ async fn rewrite_subject_type(conn: &lancedb::Connection, name: &str) -> Result<
         return Ok(());
     }
     tracing::info!("migrating {name}: subject_type dispatcher -> fleet_user");
-    conn.drop_table(name, &[]).await
-        .map_err(|e| AppError::Internal(format!("migrate drop {name}: {e}")))?;
+    // Atomic upsert: every row matches on its PK and is rewritten in place
+    // (driver rows re-written to identical values). No drop window.
     let iter = RecordBatchIterator::new(mapped.into_iter().map(Ok), schema.clone());
     let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
-    conn.create_table(name, reader).execute().await
-        .map_err(|e| AppError::Internal(format!("migrate recreate {name}: {e}")))?;
+    let mut op = table.merge_insert(&[key]);
+    op.when_matched_update_all(None).when_not_matched_insert_all();
+    op.execute(reader).await
+        .map(|_| ())
+        .map_err(|e| AppError::Internal(format!("migrate {name} subject_type: {e}")))?;
     Ok(())
 }
 
