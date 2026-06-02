@@ -1,0 +1,52 @@
+# .github/workflows/codeql.yml
+# CodeQL static analysis (advanced setup). Replaces GitHub's default setup so
+# we can exclude test fixtures via paths-ignore — the rust/hard-coded-cryptographic-value
+# rule otherwise floods alerts with hard-coded secrets/passwords from tests/**.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "27 4 * * 1" # weekly, Monday 04:27 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: rust
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@84498526a009a99c875e83ef4821a8ba52de7c22 # codeql-bundle-v2.25.5
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Exclude test fixtures: hard-coded test secrets are not real findings.
+          config: |
+            paths-ignore:
+              - tests
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@84498526a009a99c875e83ef4821a8ba52de7c22 # codeql-bundle-v2.25.5
+        with:
+          category: "/language:${{ matrix.language }}"
