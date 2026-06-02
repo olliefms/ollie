@@ -27,13 +27,12 @@ This spec covers **B only**.
 
 ## Scope boundary (hard constraint)
 
-This design targets single-fleet scope. Multi-tenancy is intentionally out of scope for
+This design targets **single-fleet scope**. Multi-tenancy is intentionally out of scope for
 this repository; per-tenant/org concerns are handled outside it.
 
 Therefore everything here is **single-fleet**: users and roles exist within one implicit
-fleet. There is **no `fleet` entity, no `fleet_id`, no tenancy plumbing**. The commercial
-tenancy is handled outside this repository. "Fleet owner" here means "the root user of this
-single-fleet instance," not "tenant."
+fleet. There is **no `fleet` entity, no `fleet_id`, no tenancy plumbing**. "Fleet owner"
+here means "the root user of this single-fleet instance," not "tenant."
 
 ## Goals
 
