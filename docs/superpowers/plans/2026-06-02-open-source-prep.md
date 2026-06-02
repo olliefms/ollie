@@ -457,6 +457,23 @@ git commit -s -m "docs: remove non-public planning content ahead of open-sourcin
 ```
 (If nothing was flagged, record "internal-docs review: clean, no relocations needed" in the PR description and skip the commit.)
 
+### Task C2: History scrub [LAUNCH-DAY]
+
+The C1 audit found residual non-public content (and the author email) present in historical
+commits, not just the working tree. The working tree is cleaned by C1; this task purges the
+residue from history. It is a repo-wide `git filter-repo` pass that cannot run inside the
+feature worktree — it runs once, on a fresh clone, at launch, before the repo is public.
+
+- [ ] **Step 1: Run the prepared scrub** (launch-day, fresh clone)
+
+The exact `filter-repo` procedure, the `--replace-text` rules, and the `--mailmap` (which
+rewrites the author email to the GitHub noreply address) live in the maintainer's **private**
+planning location — they are intentionally NOT committed to this repo. Follow that procedure
+on a fresh clone after all prep PRs are merged.
+
+- [ ] **Step 2: Verify** rewritten history is clean (`gitleaks detect` on the rewritten clone;
+  confirm the identity sweep and author-email list are clean) before force-pushing to the new remote.
+
 ---
 
 ## Workstream D — Agent-automation hardening for public exposure
@@ -746,6 +763,7 @@ Expected: the ruleset exists with `enforcement: active` and both required checks
 ## Out of scope (handled elsewhere / at launch)
 
 - The version cut, the `olliefms` org move, and the public flip itself (and their sequencing).
+- The launch-day history scrub (Task C2) — runs on a fresh clone at launch, not in this branch.
 - Launch comms/announcement.
 - Any feature beyond single-fleet self-hosting scope.
 - Per-file source license headers.
