@@ -1,7 +1,7 @@
 //! Surface-agnostic trip-lifecycle business logic.
 //!
-//! The admin REST API (`/api/v1`), the Fleet REST API (`/fleet/api/v1`),
-//! and the Fleet MCP server all drive the same trip state machine: assign,
+//! The Fleet REST API (`/fleet/api/v1`) and the Fleet MCP server both drive
+//! the same trip state machine: assign,
 //! unassign, dispatch, undispatch, cancel, complete, plus the late/check-call
 //! event emitters. Each surface owns its auth and request-shape concerns; the
 //! cascades (resource status, linked-load status), the events, and the re-fetch
