@@ -20,7 +20,7 @@ pub struct Config {
     pub driver_jwt_secret: String,
     pub driver_rp_id: String,
     pub driver_rp_origin: String,
-    pub dispatcher_jwt_secret: String,
+    pub fleet_jwt_secret: String,
     /// Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`.
     /// Used to build absolute presigned blob upload/download URLs handed to MCP agents.
     /// Empty when unset — the presigned MCP tools error clearly in that case rather than
@@ -41,10 +41,10 @@ impl Config {
         if driver_jwt_secret.len() < 32 {
             return Err("DRIVER_JWT_SECRET must be at least 32 bytes".into());
         }
-        let dispatcher_jwt_secret = env::var("DISPATCHER_JWT_SECRET")
-            .map_err(|_| "DISPATCHER_JWT_SECRET is required")?;
-        if dispatcher_jwt_secret.len() < 32 {
-            return Err("DISPATCHER_JWT_SECRET must be at least 32 bytes".into());
+        let fleet_jwt_secret = env::var("FLEET_JWT_SECRET")
+            .map_err(|_| "FLEET_JWT_SECRET is required")?;
+        if fleet_jwt_secret.len() < 32 {
+            return Err("FLEET_JWT_SECRET must be at least 32 bytes".into());
         }
         let driver_rp_id = env::var("DRIVER_RP_ID")
             .map_err(|_| "DRIVER_RP_ID is required")?;
@@ -92,7 +92,7 @@ impl Config {
             driver_jwt_secret,
             driver_rp_id,
             driver_rp_origin,
-            dispatcher_jwt_secret,
+            fleet_jwt_secret,
             public_base_url,
             cookie_secure,
             blob_presign_ttl_secs: env::var("OLLIE_BLOB_PRESIGN_TTL_SECS")
@@ -114,14 +114,14 @@ mod tests {
         env::set_var("DRIVER_JWT_SECRET", "a-secret-that-is-at-least-32-bytes-long!");
         env::set_var("DRIVER_RP_ID", "localhost");
         env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
-        env::set_var("DISPATCHER_JWT_SECRET", "a-dispatcher-secret-at-least-32-bytes!!");
+        env::set_var("FLEET_JWT_SECRET", "a-fleet_user-secret-at-least-32-bytes!!");
     }
 
     fn remove_driver_vars() {
         env::remove_var("DRIVER_JWT_SECRET");
         env::remove_var("DRIVER_RP_ID");
         env::remove_var("DRIVER_RP_ORIGIN");
-        env::remove_var("DISPATCHER_JWT_SECRET");
+        env::remove_var("FLEET_JWT_SECRET");
     }
 
     #[test]
@@ -157,7 +157,7 @@ mod tests {
         env::remove_var("DRIVER_JWT_SECRET");
         env::set_var("DRIVER_RP_ID", "localhost");
         env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
-        env::set_var("DISPATCHER_JWT_SECRET", "a-dispatcher-secret-at-least-32-bytes!!");
+        env::set_var("FLEET_JWT_SECRET", "a-fleet_user-secret-at-least-32-bytes!!");
         let result = Config::from_env();
         assert!(result.is_err());
         let msg = result.unwrap_err();
@@ -171,7 +171,7 @@ mod tests {
         env::set_var("DRIVER_JWT_SECRET", "tooshort");
         env::set_var("DRIVER_RP_ID", "localhost");
         env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
-        env::set_var("DISPATCHER_JWT_SECRET", "a-dispatcher-secret-at-least-32-bytes!!");
+        env::set_var("FLEET_JWT_SECRET", "a-fleet_user-secret-at-least-32-bytes!!");
         let result = Config::from_env();
         assert!(result.is_err());
         let msg = result.unwrap_err();

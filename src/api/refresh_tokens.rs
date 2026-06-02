@@ -171,7 +171,7 @@ mod tests {
     async fn test_issue_then_rotate_returns_new_secret() {
         let (db, _d) = test_db().await;
         let subj = Uuid::new_v4();
-        let issued = issue(&db, "dispatcher", subj, None, 0, Utc::now()).await.unwrap();
+        let issued = issue(&db, "fleet_user", subj, None, 0, Utc::now()).await.unwrap();
         let r = rotate(&db, &issued.secret, 0, Utc::now()).await.unwrap();
         match r {
             RotateResult::Rotated(next) => {
@@ -186,7 +186,7 @@ mod tests {
     async fn test_reused_token_revokes_family() {
         let (db, _d) = test_db().await;
         let subj = Uuid::new_v4();
-        let issued = issue(&db, "dispatcher", subj, None, 0, Utc::now()).await.unwrap();
+        let issued = issue(&db, "fleet_user", subj, None, 0, Utc::now()).await.unwrap();
         let _ = rotate(&db, &issued.secret, 0, Utc::now()).await.unwrap();
         let again = rotate(&db, &issued.secret, 0, Utc::now()).await.unwrap();
         assert!(matches!(again, RotateResult::ReusedFamilyRevoked));
@@ -198,7 +198,7 @@ mod tests {
     async fn test_token_version_mismatch_is_invalid() {
         let (db, _d) = test_db().await;
         let subj = Uuid::new_v4();
-        let issued = issue(&db, "dispatcher", subj, None, 0, Utc::now()).await.unwrap();
+        let issued = issue(&db, "fleet_user", subj, None, 0, Utc::now()).await.unwrap();
         let r = rotate(&db, &issued.secret, 1, Utc::now()).await.unwrap();
         assert!(matches!(r, RotateResult::Invalid));
     }
@@ -208,7 +208,7 @@ mod tests {
         let (db, _d) = test_db().await;
         let subj = Uuid::new_v4();
         let past = Utc::now() - chrono::Duration::days(15);
-        let issued = issue(&db, "dispatcher", subj, None, 0, past).await.unwrap();
+        let issued = issue(&db, "fleet_user", subj, None, 0, past).await.unwrap();
         let r = rotate(&db, &issued.secret, 0, Utc::now()).await.unwrap();
         assert!(matches!(r, RotateResult::Invalid));
     }

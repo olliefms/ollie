@@ -1,4 +1,4 @@
-// src/api/dispatcher_portal/middleware.rs
+// src/api/fleet_portal/middleware.rs
 use axum::{
     extract::{Request, State},
     middleware::Next,
@@ -10,12 +10,12 @@ use uuid::Uuid;
 use crate::{
     AppState,
     error::AppError,
-    models::DispatcherStatus,
+    models::FleetUserStatus,
 };
 
-use super::jwt::{decode_dispatcher_jwt, DispatcherClaims};
+use super::jwt::{decode_fleet_user_jwt, FleetUserClaims};
 
-pub async fn require_dispatcher_auth(
+pub async fn require_fleet_user_auth(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -38,23 +38,23 @@ pub async fn require_dispatcher_auth(
     Ok(next.run(request).await)
 }
 
-async fn validate_jwt_token(state: &AppState, token: &str) -> Result<DispatcherClaims, AppError> {
-    let mut claims = decode_dispatcher_jwt(token, &state.config.dispatcher_jwt_secret)?;
+async fn validate_jwt_token(state: &AppState, token: &str) -> Result<FleetUserClaims, AppError> {
+    let mut claims = decode_fleet_user_jwt(token, &state.config.fleet_jwt_secret)?;
 
-    let dispatcher_id: Uuid = claims.dispatcher_id.parse()
+    let fleet_user_id: Uuid = claims.fleet_user_id.parse()
         .map_err(|_| AppError::Unauthorized)?;
 
-    let creds = state.db.get_dispatcher_credentials(dispatcher_id).await?
+    let creds = state.db.get_fleet_user_credentials(fleet_user_id).await?
         .ok_or(AppError::Unauthorized)?;
 
     if creds.token_version != claims.token_version {
         return Err(AppError::Unauthorized);
     }
 
-    let dispatcher = state.db.get_dispatcher_by_id(dispatcher_id).await
+    let fleet_user = state.db.get_fleet_user_by_id(fleet_user_id).await
         .map_err(|_| AppError::Unauthorized)?;
 
-    if dispatcher.status == DispatcherStatus::Inactive {
+    if fleet_user.status == FleetUserStatus::Inactive {
         return Err(AppError::Unauthorized);
     }
 
@@ -65,29 +65,29 @@ async fn validate_jwt_token(state: &AppState, token: &str) -> Result<DispatcherC
     }
 
     claims.effective_scopes =
-        crate::models::permission::effective_scopes(dispatcher.role, &dispatcher.extra_scopes);
+        crate::models::permission::effective_scopes(fleet_user.role, &fleet_user.extra_scopes);
 
     Ok(claims)
 }
 
-async fn validate_api_key(state: &AppState, token: &str) -> Result<DispatcherClaims, AppError> {
+async fn validate_api_key(state: &AppState, token: &str) -> Result<FleetUserClaims, AppError> {
     let hash = hex::encode(Sha256::digest(token.as_bytes()));
 
-    let key = state.db.get_dispatcher_api_key_by_hash(&hash).await?
+    let key = state.db.get_fleet_user_api_key_by_hash(&hash).await?
         .ok_or(AppError::Unauthorized)?;
 
     if key.revoked_at.is_some() || key.expires_at <= Utc::now() {
         return Err(AppError::Unauthorized);
     }
 
-    let dispatcher = state.db.get_dispatcher_by_id(key.dispatcher_id).await
+    let fleet_user = state.db.get_fleet_user_by_id(key.fleet_user_id).await
         .map_err(|_| AppError::Unauthorized)?;
 
-    if dispatcher.status == DispatcherStatus::Inactive {
+    if fleet_user.status == FleetUserStatus::Inactive {
         return Err(AppError::Unauthorized);
     }
 
-    let creds = state.db.get_dispatcher_credentials(key.dispatcher_id).await?
+    let creds = state.db.get_fleet_user_credentials(key.fleet_user_id).await?
         .ok_or(AppError::Unauthorized)?;
 
     if let Some(locked_until) = creds.locked_until {
@@ -97,13 +97,13 @@ async fn validate_api_key(state: &AppState, token: &str) -> Result<DispatcherCla
     }
 
     let key_id = key.id;
-    let dispatcher_id = key.dispatcher_id;
+    let fleet_user_id = key.fleet_user_id;
     let db_for_touch = state.db.clone();
     tokio::spawn(async move {
-        match db_for_touch.get_dispatcher_api_key_by_id(key_id, dispatcher_id).await {
+        match db_for_touch.get_fleet_user_api_key_by_id(key_id, fleet_user_id).await {
             Ok(Some(mut current)) => {
                 current.last_used_at = Some(Utc::now());
-                if let Err(e) = db_for_touch.upsert_dispatcher_api_key(&current).await {
+                if let Err(e) = db_for_touch.upsert_fleet_user_api_key(&current).await {
                     tracing::warn!(key_id = %key_id, err = ?e, "failed to update api key last_used_at");
                 }
             }
@@ -112,16 +112,16 @@ async fn validate_api_key(state: &AppState, token: &str) -> Result<DispatcherCla
         }
     });
 
-    // An API key grants its dispatcher's full effective scopes; per-key scope
+    // An API key grants its fleet_user's full effective scopes; per-key scope
     // narrowing is #243 (out of scope here).
     let effective_scopes =
-        crate::models::permission::effective_scopes(dispatcher.role, &dispatcher.extra_scopes);
+        crate::models::permission::effective_scopes(fleet_user.role, &fleet_user.extra_scopes);
 
-    Ok(DispatcherClaims {
-        dispatcher_id: key.dispatcher_id.to_string(),
+    Ok(FleetUserClaims {
+        fleet_user_id: key.fleet_user_id.to_string(),
         token_version: creds.token_version,
-        iss: "ollie-dispatcher".into(),
-        aud: "ollie-dispatcher".into(),
+        iss: "ollie-fleet_user".into(),
+        aud: "ollie-fleet_user".into(),
         exp: 0,
         iat: 0,
         kid: "api-key".into(),
@@ -166,14 +166,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_require_dispatcher_auth_missing_header() {
+    async fn test_require_fleet_user_auth_missing_header() {
         let server = TestServer::new(protected_app()).unwrap();
         let resp = server.get("/protected").await;
         assert_eq!(resp.status_code(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
-    async fn test_require_dispatcher_auth_invalid_token() {
+    async fn test_require_fleet_user_auth_invalid_token() {
         let server = TestServer::new(protected_app()).unwrap();
         let resp = server.get("/protected")
             .add_header(axum::http::header::AUTHORIZATION, "Bearer ")

@@ -5,7 +5,7 @@ pub mod refresh_tokens;
 pub mod utils;
 pub mod version;
 pub mod blobs;
-pub mod dispatcher_portal;
+pub mod fleet_portal;
 pub mod driver_portal;
 pub mod drivers;
 pub mod facilities;
@@ -27,76 +27,76 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        dispatcher_portal::auth::login,
-        dispatcher_portal::auth::refresh,
-        dispatcher_portal::auth::setup_status,
-        dispatcher_portal::auth::setup,
-        dispatcher_portal::data::list_loads,
-        dispatcher_portal::data::get_load,
-        dispatcher_portal::data::create_load,
-        dispatcher_portal::data::update_load,
-        dispatcher_portal::data::delete_load_handler,
-        dispatcher_portal::data::invoice_load_handler,
-        dispatcher_portal::data::cancel_load_handler,
-        dispatcher_portal::data::settle_load_handler,
-        dispatcher_portal::data::list_trips,
-        dispatcher_portal::data::create_trip_handler,
-        dispatcher_portal::data::get_trip,
-        dispatcher_portal::data::assign_trip,
-        dispatcher_portal::data::unassign_trip,
-        dispatcher_portal::data::dispatch_trip,
-        dispatcher_portal::data::undispatch_trip,
-        dispatcher_portal::data::cancel_trip,
-        dispatcher_portal::data::complete_trip,
-        dispatcher_portal::data::stop_arrive,
-        dispatcher_portal::data::stop_depart,
-        dispatcher_portal::data::stop_late,
-        dispatcher_portal::data::check_call,
-        dispatcher_portal::trip_writes::recalculate_miles_handler,
-        dispatcher_portal::trip_writes::patch_trip_handler,
-        dispatcher_portal::trip_writes::delete_trip_handler,
-        dispatcher_portal::data::list_facilities,
-        dispatcher_portal::data::get_facility,
-        dispatcher_portal::facility_writes::create_facility_handler,
-        dispatcher_portal::facility_writes::update_facility_handler,
-        dispatcher_portal::data::list_drivers,
-        dispatcher_portal::data::get_driver,
-        dispatcher_portal::driver_writes::create_driver_handler,
-        dispatcher_portal::driver_writes::patch_driver_handler,
-        dispatcher_portal::driver_writes::delete_driver_handler,
-        dispatcher_portal::driver_writes::set_driver_pin_handler,
-        dispatcher_portal::driver_writes::attach_equipment_handler,
-        dispatcher_portal::driver_writes::detach_equipment_handler,
-        dispatcher_portal::terminal_writes::create_terminal,
-        dispatcher_portal::terminal_writes::list_terminals,
-        dispatcher_portal::terminal_writes::get_terminal,
-        dispatcher_portal::terminal_writes::update_terminal,
-        dispatcher_portal::terminal_writes::delete_terminal,
-        dispatcher_portal::data::list_trucks,
-        dispatcher_portal::data::get_truck,
-        dispatcher_portal::truck_writes::create_truck_handler,
-        dispatcher_portal::truck_writes::update_truck_handler,
-        dispatcher_portal::truck_writes::delete_truck_handler,
-        dispatcher_portal::data::list_trailers,
-        dispatcher_portal::data::get_trailer,
-        dispatcher_portal::trailer_writes::create_trailer_handler,
-        dispatcher_portal::trailer_writes::update_trailer_handler,
-        dispatcher_portal::trailer_writes::delete_trailer_handler,
-        dispatcher_portal::data::list_events,
-        dispatcher_portal::users::list_users,
-        dispatcher_portal::users::get_user,
-        dispatcher_portal::users::create_user,
-        dispatcher_portal::users::update_user,
-        dispatcher_portal::users::reset_user_password,
-        dispatcher_portal::users::delete_user,
-        dispatcher_portal::blobs::list_blobs,
-        dispatcher_portal::blobs::upload_blob,
-        dispatcher_portal::blobs::get_blob,
-        dispatcher_portal::blobs::update_blob,
-        dispatcher_portal::blobs::delete_blob,
-        dispatcher_portal::blobs::query_blob,
-        dispatcher_portal::blobs::presigned_upload,
-        dispatcher_portal::blobs::presigned_download,
+        fleet_portal::auth::login,
+        fleet_portal::auth::refresh,
+        fleet_portal::auth::setup_status,
+        fleet_portal::auth::setup,
+        fleet_portal::data::list_loads,
+        fleet_portal::data::get_load,
+        fleet_portal::data::create_load,
+        fleet_portal::data::update_load,
+        fleet_portal::data::delete_load_handler,
+        fleet_portal::data::invoice_load_handler,
+        fleet_portal::data::cancel_load_handler,
+        fleet_portal::data::settle_load_handler,
+        fleet_portal::data::list_trips,
+        fleet_portal::data::create_trip_handler,
+        fleet_portal::data::get_trip,
+        fleet_portal::data::assign_trip,
+        fleet_portal::data::unassign_trip,
+        fleet_portal::data::dispatch_trip,
+        fleet_portal::data::undispatch_trip,
+        fleet_portal::data::cancel_trip,
+        fleet_portal::data::complete_trip,
+        fleet_portal::data::stop_arrive,
+        fleet_portal::data::stop_depart,
+        fleet_portal::data::stop_late,
+        fleet_portal::data::check_call,
+        fleet_portal::trip_writes::recalculate_miles_handler,
+        fleet_portal::trip_writes::patch_trip_handler,
+        fleet_portal::trip_writes::delete_trip_handler,
+        fleet_portal::data::list_facilities,
+        fleet_portal::data::get_facility,
+        fleet_portal::facility_writes::create_facility_handler,
+        fleet_portal::facility_writes::update_facility_handler,
+        fleet_portal::data::list_drivers,
+        fleet_portal::data::get_driver,
+        fleet_portal::driver_writes::create_driver_handler,
+        fleet_portal::driver_writes::patch_driver_handler,
+        fleet_portal::driver_writes::delete_driver_handler,
+        fleet_portal::driver_writes::set_driver_pin_handler,
+        fleet_portal::driver_writes::attach_equipment_handler,
+        fleet_portal::driver_writes::detach_equipment_handler,
+        fleet_portal::terminal_writes::create_terminal,
+        fleet_portal::terminal_writes::list_terminals,
+        fleet_portal::terminal_writes::get_terminal,
+        fleet_portal::terminal_writes::update_terminal,
+        fleet_portal::terminal_writes::delete_terminal,
+        fleet_portal::data::list_trucks,
+        fleet_portal::data::get_truck,
+        fleet_portal::truck_writes::create_truck_handler,
+        fleet_portal::truck_writes::update_truck_handler,
+        fleet_portal::truck_writes::delete_truck_handler,
+        fleet_portal::data::list_trailers,
+        fleet_portal::data::get_trailer,
+        fleet_portal::trailer_writes::create_trailer_handler,
+        fleet_portal::trailer_writes::update_trailer_handler,
+        fleet_portal::trailer_writes::delete_trailer_handler,
+        fleet_portal::data::list_events,
+        fleet_portal::users::list_users,
+        fleet_portal::users::get_user,
+        fleet_portal::users::create_user,
+        fleet_portal::users::update_user,
+        fleet_portal::users::reset_user_password,
+        fleet_portal::users::delete_user,
+        fleet_portal::blobs::list_blobs,
+        fleet_portal::blobs::upload_blob,
+        fleet_portal::blobs::get_blob,
+        fleet_portal::blobs::update_blob,
+        fleet_portal::blobs::delete_blob,
+        fleet_portal::blobs::query_blob,
+        fleet_portal::blobs::presigned_upload,
+        fleet_portal::blobs::presigned_download,
         driver_portal::data::update_stop_times,
         driver_portal::equipment::get_equipment,
         driver_portal::equipment::update_trailer,
@@ -176,18 +176,18 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             crate::services::trip_lifecycle::StopDepartRequest,
             crate::services::trip_lifecycle::StopLateRequest,
             crate::services::trip_lifecycle::CheckCallRequest,
-            dispatcher_portal::trip_writes::RecalculateMilesBody,
-            dispatcher_portal::trip_writes::PatchTripBody,
-            dispatcher_portal::facility_writes::CreateFacilityBody,
-            dispatcher_portal::facility_writes::PatchFacilityBody,
-            dispatcher_portal::truck_writes::CreateTruckBody,
-            dispatcher_portal::truck_writes::PatchTruckBody,
-            dispatcher_portal::trailer_writes::CreateTrailerBody,
-            dispatcher_portal::trailer_writes::PatchTrailerBody,
-            dispatcher_portal::driver_writes::AttachEquipmentBody,
-            dispatcher_portal::driver_writes::DetachEquipmentBody,
-            dispatcher_portal::driver_writes::DriverEquipmentChange,
-            dispatcher_portal::data::DispatcherTripListItem,
+            fleet_portal::trip_writes::RecalculateMilesBody,
+            fleet_portal::trip_writes::PatchTripBody,
+            fleet_portal::facility_writes::CreateFacilityBody,
+            fleet_portal::facility_writes::PatchFacilityBody,
+            fleet_portal::truck_writes::CreateTruckBody,
+            fleet_portal::truck_writes::PatchTruckBody,
+            fleet_portal::trailer_writes::CreateTrailerBody,
+            fleet_portal::trailer_writes::PatchTrailerBody,
+            fleet_portal::driver_writes::AttachEquipmentBody,
+            fleet_portal::driver_writes::DetachEquipmentBody,
+            fleet_portal::driver_writes::DriverEquipmentChange,
+            fleet_portal::data::FleetTripListItem,
             models::terminal::TerminalRecord,
             models::terminal::TerminalListItem,
             models::terminal::CreateTerminalRequest,
@@ -202,18 +202,18 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             driver_portal::equipment::UpdateTrailerResponse,
             driver_portal::equipment::AvailableTrailerItem,
             driver_portal::equipment::AvailableTrailersResponse,
-            models::DispatcherStatus,
-            models::DispatcherRecord,
+            models::FleetUserStatus,
+            models::FleetUserRecord,
             models::Role,
-            dispatcher_portal::users::CreateUserRequest,
-            dispatcher_portal::users::UpdateUserRequest,
-            dispatcher_portal::users::ResetUserPasswordRequest,
-            dispatcher_portal::users::UserListResponse,
-            dispatcher_portal::auth::LoginRequest,
-            dispatcher_portal::auth::LoginResponse,
-            dispatcher_portal::auth::LockResponse,
-            dispatcher_portal::auth::SetupRequest,
-            dispatcher_portal::auth::SetupStatusResponse,
+            fleet_portal::users::CreateUserRequest,
+            fleet_portal::users::UpdateUserRequest,
+            fleet_portal::users::ResetUserPasswordRequest,
+            fleet_portal::users::UserListResponse,
+            fleet_portal::auth::LoginRequest,
+            fleet_portal::auth::LoginResponse,
+            fleet_portal::auth::LockResponse,
+            fleet_portal::auth::SetupRequest,
+            fleet_portal::auth::SetupStatusResponse,
             version::VersionResponse,
         )
     ),
@@ -227,9 +227,9 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
     tags(
         (name = "meta", description = "Server metadata endpoints (unauthenticated)"),
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
-        (name = "dispatch", description = "Dispatcher portal data API — loads, trips, drivers, trucks, trailers, events"),
-        (name = "dispatch-auth", description = "Dispatcher portal authentication — login and JWT refresh"),
-        (name = "dispatchers", description = "Dispatcher admin CRUD and password management"),
+        (name = "fleet", description = "Fleet portal data API — loads, trips, drivers, trucks, trailers, events"),
+        (name = "fleet-auth", description = "Fleet portal authentication — login and JWT refresh"),
+        (name = "fleet_users", description = "Fleet user admin CRUD and password management"),
         (name = "drivers", description = "Driver management with state machine"),
         (name = "events", description = "Append-only event journal (read-only)"),
         (name = "facilities", description = "Freight facility management with geocoding and semantic search"),
@@ -269,34 +269,34 @@ semantic search.
 
 ollie exposes three surfaces. Choose by caller, not by habit:
 
-  Dispatcher MCP    POST /dispatch/mcp     AI agents and tool-using assistants. PREFERRED.
-  Dispatcher REST   /dispatch/api/v1/*     Dispatcher web app and programmatic integrations.
+  Fleet MCP    POST /fleet/mcp     AI agents and tool-using assistants. PREFERRED.
+  Fleet REST   /fleet/api/v1/*     Fleet web app and programmatic integrations.
   Driver portal     /driver/api/v1/*       The driver mobile PWA only.
 
-New automation should target the dispatcher MCP server, falling back to the
-dispatcher REST API where no tool exists for an operation.
+New automation should target the fleet MCP server, falling back to the
+fleet REST API where no tool exists for an operation.
 
 ## Authentication
 
-  Dispatcher MCP / REST   Authorization: Bearer <JWT>          (POST /dispatch/auth/login with email+password, or a dispatcher API key)
+  Fleet MCP / REST        Authorization: Bearer <JWT>          (POST /fleet/auth/login with email+password, or a fleet_user API key)
   Driver portal           Authorization: Bearer <JWT>          (driver passkey or PIN auth)
 
 Public, no auth: GET /version, GET /openapi.json, GET /llms.txt.
-Missing or incorrect credentials return 401. Dispatcher login locks out after 5
+Missing or incorrect credentials return 401. Fleet login locks out after 5
 failed attempts (15 min × 2^(failures-5), capped at 24h; 423 with locked_until).
 
-Dispatcher API keys (for headless/programmatic callers — used in the Authorization
-header just like a JWT) are managed under /dispatch/api-keys (a password/JWT session
+Fleet user API keys (for headless/programmatic callers — used in the Authorization
+header just like a JWT) are managed under /fleet/api-keys (a password/JWT session
 is required; an API-key session cannot mint more keys):
-  POST   /dispatch/api-keys      Create a key. Body: { label (1-64 chars), expires_in_days? (1-365, default 365) }.
-                                 Returns the plaintext `key` exactly once — it is never retrievable again. Max 20 active keys per dispatcher.
-  GET    /dispatch/api-keys      List the caller's active keys (label, key_prefix, created/expires/last_used; no plaintext).
-  DELETE /dispatch/api-keys/:id  Revoke a key.
+  POST   /fleet/api-keys      Create a key. Body: { label (1-64 chars), expires_in_days? (1-365, default 365) }.
+                                 Returns the plaintext `key` exactly once — it is never retrievable again. Max 20 active keys per fleet_user.
+  GET    /fleet/api-keys      List the caller's active keys (label, key_prefix, created/expires/last_used; no plaintext).
+  DELETE /fleet/api-keys/:id  Revoke a key.
 
-## Dispatcher MCP server — POST /dispatch/mcp
+## Fleet MCP server — POST /fleet/mcp
 
 MCP Streamable HTTP transport (protocol 2025-06-18), JSON-RPC 2.0. Requires a
-dispatcher JWT or API key in the Authorization header. Every POST must send
+fleet user JWT or API key in the Authorization header. Every POST must send
 `Accept: application/json, text/event-stream` and `Content-Type: application/json`;
 responses stream back as `text/event-stream`.
 
@@ -335,20 +335,20 @@ Document blobs:
 
 Presigned URLs require OLLIE_PUBLIC_BASE_URL to be configured on the server.
 
-### Presigned blob byte-transfer — /dispatch/blobs/presigned
+### Presigned blob byte-transfer — /fleet/blobs/presigned
 
 The endpoints the blob tools hand out. Token-authenticated via ?token= (no JWT
-header), mounted outside the dispatcher middleware so a credential-less agent can
+header), mounted outside the fleet user middleware so a credential-less agent can
 use a minted URL directly. Each token is bound to one operation (and, for GET, one
 blob id) and expires (default 300s).
 
-  POST /dispatch/blobs/presigned?token=…       Upload raw body bytes (Content-Type header; optional ?name=&tags=). 50 MB limit. Returns the blob record.
-  GET  /dispatch/blobs/presigned/{id}?token=…  Download raw bytes.
+  POST /fleet/blobs/presigned?token=…       Upload raw body bytes (Content-Type header; optional ?name=&tags=). 50 MB limit. Returns the blob record.
+  GET  /fleet/blobs/presigned/{id}?token=…  Download raw bytes.
 
-## Dispatcher REST — /dispatch/api/v1
+## Fleet REST — /fleet/api/v1
 
 JWT auth; same response shapes as the resources above. Use when a needed operation
-has no MCP tool. Auth lives at /dispatch/auth/ (POST /login, POST /refresh — refresh
+has no MCP tool. Auth lives at /fleet/auth/ (POST /login, POST /refresh — refresh
 within the 7-day window).
 
   Loads      GET /loads, GET /loads/:id, POST /loads, PUT /loads/:id, DELETE /loads/:id,
@@ -374,10 +374,10 @@ lifecycle; unknown body fields are rejected. Facility PATCH: setting `address`
 re-queues the geocoder, while explicit lat+lng set geocode_status=ready and reset
 the failure count.
 
-### Fleet users & roles — /dispatch/api/v1/users (requires users:* scopes)
+### Fleet users & roles — /fleet/api/v1/users (requires users:* scopes)
 The Users surface manages fleet user accounts (roles: owner, fleet_manager,
-dispatcher) and per-user extra_scopes. It is gated by `users:*` scopes, which only
-owner and fleet_manager hold — a plain dispatcher is forbidden (403) from every
+fleet_user) and per-user extra_scopes. It is gated by `users:*` scopes, which only
+owner and fleet_manager hold — a plain fleet_user is forbidden (403) from every
 endpoint. Responses expose the user record (id, email, name, status, role,
 extra_scopes, timestamps) and NEVER password hashes. MCP parity tools: list_users,
 get_user, create_user, update_user, reset_user_password, delete_user.
@@ -433,7 +433,7 @@ forbidden (403).
   output. Each upload is processed asynchronously: Ollama generates a text summary and
   a vector embedding (status: pending → processing → ready | failed). Semantic search
   via ?s=<query>. Ask a natural-language question about a ready document via
-  POST /dispatch/api/v1/blobs/:id/query (body: { prompt, model? }).
+  POST /fleet/api/v1/blobs/:id/query (body: { prompt, model? }).
 
 ### List vs. search counts
   GET list endpoints return a `returned` field. Without ?s= it is the total matching
@@ -464,11 +464,11 @@ async fn llms_txt() -> impl IntoResponse {
 }
 
 pub fn router(state: AppState) -> Router {
-    // Dispatcher portal: auth + JWT-protected data endpoints
-    let dispatcher_auth = dispatcher_portal::dispatcher_portal_router(&state);
+    // Fleet portal: auth + JWT-protected data endpoints
+    let fleet_user_auth = fleet_portal::fleet_portal_router(&state);
 
     // Presigned blob byte-transfer routes — token-authenticated, no JWT middleware
-    let dispatcher_public = dispatcher_portal::public_router();
+    let fleet_user_public = fleet_portal::public_router();
 
     // Driver portal: auth endpoints + JWT-protected data endpoints (#51 adds routes)
     let driver_portal = driver_portal::portal_router(&state);
@@ -479,21 +479,21 @@ pub fn router(state: AppState) -> Router {
             "static/driver/index.html",
         ));
 
-    // Static file serving for the dispatcher SPA; SPA fallback to index.html
-    let dispatch_static = tower_http::services::ServeDir::new("static/dispatch")
+    // Static file serving for the fleet SPA; SPA fallback to index.html
+    let fleet_static = tower_http::services::ServeDir::new("static/fleet")
         .fallback(tower_http::services::ServeFile::new(
-            "static/dispatch/index.html",
+            "static/fleet/index.html",
         ));
 
     Router::new()
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .route("/version", get(version::get_version))
-        .merge(dispatcher_auth)
-        .merge(dispatcher_public)
+        .merge(fleet_user_auth)
+        .merge(fleet_user_public)
         .merge(driver_portal)
         .merge(oauth::router())
         .nest_service("/driver", driver_static)
-        .nest_service("/dispatch", dispatch_static)
+        .nest_service("/fleet", fleet_static)
         .with_state(state)
 }

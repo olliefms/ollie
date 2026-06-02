@@ -1,10 +1,10 @@
 // src/db/mod.rs
 pub mod blob_ops;
-pub mod dispatcher_api_key_ops;
+pub mod fleet_user_api_key_ops;
 pub mod oauth_client_ops;
 pub mod refresh_token_ops;
 pub mod authorization_code_ops;
-pub mod dispatcher_ops;
+pub mod fleet_user_ops;
 pub mod driver_credentials_ops;
 pub mod driver_ops;
 pub mod event_ops;
@@ -27,9 +27,9 @@ use std::sync::Arc;
 
 pub struct DbClient {
     pub blob_table: Table,
-    pub dispatcher_table: Table,
-    pub dispatcher_credentials_table: Table,
-    pub dispatcher_api_key_table: Table,
+    pub fleet_user_table: Table,
+    pub fleet_user_credentials_table: Table,
+    pub fleet_user_api_key_table: Table,
     pub refresh_token_table: Table,
     pub oauth_client_table: Table,
     pub authorization_code_table: Table,
@@ -51,6 +51,11 @@ impl DbClient {
         let conn = lancedb::connect(path)
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
+
+        // One-time dispatcher -> fleet-user rename migration. Renames the
+        // `dispatchers*` tables and rewrites `subject_type` on existing installs;
+        // no-op on fresh ones. Must run before the fleet_user tables are opened.
+        migrate_dispatcher_to_fleet_user(&conn).await?;
 
         let blob_table = open_or_create_blob(&conn, embed_dim).await?;
 
@@ -94,20 +99,20 @@ impl DbClient {
             empty_driver_passkey_credentials_batch,
         ).await?;
 
-        let dispatcher_table = open_or_create_dispatcher(&conn).await?;
+        let fleet_user_table = open_or_create_fleet_user(&conn).await?;
 
-        let dispatcher_credentials_table = open_or_create(
+        let fleet_user_credentials_table = open_or_create(
             &conn,
-            "dispatcher_credentials",
-            dispatcher_credentials_schema(),
-            empty_dispatcher_credentials_batch,
+            "fleet_user_credentials",
+            fleet_user_credentials_schema(),
+            empty_fleet_user_credentials_batch,
         ).await?;
 
-        let dispatcher_api_key_table = open_or_create(
+        let fleet_user_api_key_table = open_or_create(
             &conn,
-            "dispatcher_api_keys",
-            dispatcher_api_key_schema(),
-            empty_dispatcher_api_key_batch,
+            "fleet_user_api_keys",
+            fleet_user_api_key_schema(),
+            empty_fleet_user_api_key_batch,
         ).await?;
 
         let refresh_token_table = open_or_create(
@@ -133,9 +138,9 @@ impl DbClient {
 
         let client = Self {
             blob_table,
-            dispatcher_table,
-            dispatcher_credentials_table,
-            dispatcher_api_key_table,
+            fleet_user_table,
+            fleet_user_credentials_table,
+            fleet_user_api_key_table,
             refresh_token_table,
             oauth_client_table,
             authorization_code_table,
@@ -152,7 +157,7 @@ impl DbClient {
             embed_dim,
         };
 
-        // Migration (existing installs): if dispatchers exist but no owner does,
+        // Migration (existing installs): if fleet_users exist but no owner does,
         // promote the oldest. No-op on fresh installs (they use the setup wizard)
         // and idempotent once an owner exists.
         client.reconcile_owner().await?;
@@ -182,14 +187,145 @@ where
     }
 }
 
-async fn open_or_create_dispatcher(conn: &lancedb::Connection) -> Result<Table, AppError> {
-    let schema = dispatcher_schema();
-    match conn.open_table("dispatchers").execute().await {
+/// One-time migration for the dispatcher -> fleet-user rename. Earlier installs
+/// have tables named `dispatchers` / `dispatcher_credentials` / `dispatcher_api_keys`
+/// (with a `dispatcher_id` FK column) and refresh-token / auth-code rows whose
+/// `subject_type` is `"dispatcher"`. Copy each old table into its new-named
+/// counterpart (renaming `dispatcher_id` -> `fleet_user_id`) and rewrite the
+/// subject_type values. No-op on fresh installs and idempotent once migrated.
+/// `rename_table` is unsupported on OSS LanceDB, so this is a read-rewrite-drop.
+/// The `"dispatcher"` *role* value is deliberately untouched.
+async fn migrate_dispatcher_to_fleet_user(conn: &lancedb::Connection) -> Result<(), AppError> {
+    let names = conn.table_names().execute().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let has = |n: &str| names.iter().any(|t| t.as_str() == n);
+
+    if has("dispatchers") && !has("fleet_users") {
+        tracing::info!("migrating dispatchers -> fleet_users");
+        rewrite_table_renamed(conn, "dispatchers", "fleet_users", None).await?;
+    }
+    if has("dispatcher_credentials") && !has("fleet_user_credentials") {
+        tracing::info!("migrating dispatcher_credentials -> fleet_user_credentials");
+        rewrite_table_renamed(conn, "dispatcher_credentials", "fleet_user_credentials",
+            Some(("dispatcher_id", "fleet_user_id"))).await?;
+    }
+    if has("dispatcher_api_keys") && !has("fleet_user_api_keys") {
+        tracing::info!("migrating dispatcher_api_keys -> fleet_user_api_keys");
+        rewrite_table_renamed(conn, "dispatcher_api_keys", "fleet_user_api_keys",
+            Some(("dispatcher_id", "fleet_user_id"))).await?;
+    }
+    if has("refresh_tokens") {
+        rewrite_subject_type(conn, "refresh_tokens", "id").await?;
+    }
+    if has("authorization_codes") {
+        rewrite_subject_type(conn, "authorization_codes", "code_hash").await?;
+    }
+    Ok(())
+}
+
+/// Copy `old` into a new table `new`, optionally renaming one column, then drop
+/// `old`. Caller guarantees `new` does not yet exist.
+async fn rewrite_table_renamed(
+    conn: &lancedb::Connection,
+    old: &str,
+    new: &str,
+    rename_col: Option<(&str, &str)>,
+) -> Result<(), AppError> {
+    use futures::TryStreamExt;
+    use lancedb::query::ExecutableQuery;
+
+    let table = conn.open_table(old).execute().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let old_schema = table.schema().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let batches: Vec<RecordBatch> = table.query().execute().await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .try_collect().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let new_fields: Vec<Arc<Field>> = old_schema.fields().iter().map(|f| {
+        match rename_col {
+            Some((from, to)) if f.name() == from =>
+                Arc::new(Field::new(to, f.data_type().clone(), f.is_nullable())),
+            _ => f.clone(),
+        }
+    }).collect();
+    let new_schema = Arc::new(Schema::new(new_fields));
+
+    let mapped: Vec<RecordBatch> = batches.iter()
+        .map(|b| RecordBatch::try_new(new_schema.clone(), b.columns().to_vec()))
+        .collect::<Result<_, _>>()
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let iter = RecordBatchIterator::new(mapped.into_iter().map(Ok), new_schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    conn.create_table(new, reader).execute().await
+        .map_err(|e| AppError::Internal(format!("migrate create {new}: {e}")))?;
+    conn.drop_table(old, &[]).await
+        .map_err(|e| AppError::Internal(format!("migrate drop {old}: {e}")))?;
+    Ok(())
+}
+
+/// Rewrite `subject_type` values of `"dispatcher"` to `"fleet_user"` in `name`,
+/// preserving all other rows (e.g. driver tokens). No-op if no such rows exist.
+/// Uses an atomic `merge_insert` keyed on `key` (the table's primary key) rather
+/// than drop-then-create, so a crash mid-migration cannot lose the table.
+async fn rewrite_subject_type(conn: &lancedb::Connection, name: &str, key: &str) -> Result<(), AppError> {
+    use arrow_array::Array;
+    use futures::TryStreamExt;
+    use lancedb::query::ExecutableQuery;
+
+    let table = conn.open_table(name).execute().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let schema = table.schema().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+    let idx = match schema.index_of("subject_type") {
+        Ok(i) => i,
+        Err(_) => return Ok(()),
+    };
+    let batches: Vec<RecordBatch> = table.query().execute().await
+        .map_err(|e| AppError::Internal(e.to_string()))?
+        .try_collect().await
+        .map_err(|e| AppError::Internal(e.to_string()))?;
+
+    let mut changed = false;
+    let mut mapped: Vec<RecordBatch> = Vec::with_capacity(batches.len());
+    for b in &batches {
+        let col = b.column(idx).as_any().downcast_ref::<StringArray>()
+            .ok_or_else(|| AppError::Internal(format!("{name}.subject_type is not a string column")))?;
+        let new_vals: StringArray = col.iter().map(|v| match v {
+            Some("dispatcher") => { changed = true; Some("fleet_user") }
+            other => other,
+        }).collect();
+        let mut cols = b.columns().to_vec();
+        cols[idx] = Arc::new(new_vals);
+        mapped.push(RecordBatch::try_new(schema.clone(), cols)
+            .map_err(|e| AppError::Internal(e.to_string()))?);
+    }
+    if !changed {
+        return Ok(());
+    }
+    tracing::info!("migrating {name}: subject_type dispatcher -> fleet_user");
+    // Atomic upsert: every row matches on its PK and is rewritten in place
+    // (driver rows re-written to identical values). No drop window.
+    let iter = RecordBatchIterator::new(mapped.into_iter().map(Ok), schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    let mut op = table.merge_insert(&[key]);
+    op.when_matched_update_all(None).when_not_matched_insert_all();
+    op.execute(reader).await
+        .map(|_| ())
+        .map_err(|e| AppError::Internal(format!("migrate {name} subject_type: {e}")))?;
+    Ok(())
+}
+
+async fn open_or_create_fleet_user(conn: &lancedb::Connection) -> Result<Table, AppError> {
+    let schema = fleet_user_schema();
+    match conn.open_table("fleet_users").execute().await {
         Err(_) => {
-            let batch = empty_dispatcher_batch(schema.clone())?;
+            let batch = empty_fleet_user_batch(schema.clone())?;
             let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
             let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
-            conn.create_table("dispatchers", reader).execute().await
+            conn.create_table("fleet_users", reader).execute().await
                 .map_err(|e| AppError::Internal(e.to_string()))
         }
         Ok(table) => {
@@ -203,9 +339,9 @@ async fn open_or_create_dispatcher(conn: &lancedb::Connection) -> Result<Table, 
                 transforms.push(("extra_scopes".into(), "CAST('[]' AS string)".into()));
             }
             if !transforms.is_empty() {
-                tracing::info!("migrating dispatchers table: adding {} column(s)", transforms.len());
+                tracing::info!("migrating fleet_users table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
-                    .map_err(|e| AppError::Internal(format!("dispatcher schema migration failed: {e}")))?;
+                    .map_err(|e| AppError::Internal(format!("fleet_user schema migration failed: {e}")))?;
             }
             Ok(table)
         }
@@ -1054,7 +1190,7 @@ fn empty_driver_passkey_credentials_batch(schema: Arc<Schema>) -> Result<RecordB
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-pub fn dispatcher_schema() -> Arc<Schema> {
+pub fn fleet_user_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
         Field::new("email", DataType::Utf8, false),
@@ -1067,7 +1203,7 @@ pub fn dispatcher_schema() -> Arc<Schema> {
     ]))
 }
 
-fn empty_dispatcher_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+fn empty_fleet_user_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
     RecordBatch::try_new(schema, vec![
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
@@ -1080,9 +1216,9 @@ fn empty_dispatcher_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> 
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-pub fn dispatcher_credentials_schema() -> Arc<Schema> {
+pub fn fleet_user_credentials_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
-        Field::new("dispatcher_id", DataType::Utf8, false),
+        Field::new("fleet_user_id", DataType::Utf8, false),
         Field::new("password_hash", DataType::Utf8, false),
         Field::new("token_version", DataType::Int64, false),
         Field::new("failed_attempts", DataType::Int32, false),
@@ -1091,7 +1227,7 @@ pub fn dispatcher_credentials_schema() -> Arc<Schema> {
     ]))
 }
 
-fn empty_dispatcher_credentials_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+fn empty_fleet_user_credentials_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
     RecordBatch::try_new(schema, vec![
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
@@ -1102,10 +1238,10 @@ fn empty_dispatcher_credentials_batch(schema: Arc<Schema>) -> Result<RecordBatch
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-pub fn dispatcher_api_key_schema() -> Arc<Schema> {
+pub fn fleet_user_api_key_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
         Field::new("id", DataType::Utf8, false),
-        Field::new("dispatcher_id", DataType::Utf8, false),
+        Field::new("fleet_user_id", DataType::Utf8, false),
         Field::new("label", DataType::Utf8, false),
         Field::new("key_hash", DataType::Utf8, false),
         Field::new("key_prefix", DataType::Utf8, false),
@@ -1116,7 +1252,7 @@ pub fn dispatcher_api_key_schema() -> Arc<Schema> {
     ]))
 }
 
-fn empty_dispatcher_api_key_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
+fn empty_fleet_user_api_key_batch(schema: Arc<Schema>) -> Result<RecordBatch, AppError> {
     RecordBatch::try_new(schema, vec![
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
@@ -1276,15 +1412,15 @@ mod tests {
         let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
         assert_eq!(client.driver_credentials_table.count_rows(None).await.unwrap(), 0);
         assert_eq!(client.driver_passkey_credentials_table.count_rows(None).await.unwrap(), 0);
-        assert_eq!(client.dispatcher_table.count_rows(None).await.unwrap(), 0);
-        assert_eq!(client.dispatcher_credentials_table.count_rows(None).await.unwrap(), 0);
+        assert_eq!(client.fleet_user_table.count_rows(None).await.unwrap(), 0);
+        assert_eq!(client.fleet_user_credentials_table.count_rows(None).await.unwrap(), 0);
     }
 
     #[tokio::test]
-    async fn test_db_client_has_dispatcher_api_key_table() {
+    async fn test_db_client_has_fleet_user_api_key_table() {
         let dir = TempDir::new().unwrap();
         let client = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
-        assert_eq!(client.dispatcher_api_key_table.count_rows(None).await.unwrap(), 0);
+        assert_eq!(client.fleet_user_api_key_table.count_rows(None).await.unwrap(), 0);
     }
 
     // Guards against the recurring failure documented in AGENTS.md: writing an

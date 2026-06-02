@@ -25,7 +25,7 @@ pub struct ListTripsQuery {
     pub offset: Option<usize>,
 }
 
-/// Shared trip-creation writer — used by the admin handler, the dispatcher HTTP
+/// Shared trip-creation writer — used by the admin handler, the fleet_user HTTP
 /// handler, and the MCP `create_trip` tool. Performs all derivation (stops,
 /// mileage, embedding), inserts the trip, and RETURNS the created `TripRecord`
 /// so callers don't have to re-fetch (which races under concurrent creates).

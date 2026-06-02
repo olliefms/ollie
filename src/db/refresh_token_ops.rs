@@ -163,7 +163,7 @@ mod tests {
         RefreshToken {
             id: Uuid::new_v4(),
             token_hash: hash.into(),
-            subject_type: "dispatcher".into(),
+            subject_type: "fleet_user".into(),
             subject_id: Uuid::new_v4(),
             client_id: None,
             family_id,

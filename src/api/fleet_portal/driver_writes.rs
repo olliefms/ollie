@@ -1,11 +1,11 @@
-// src/api/dispatcher_portal/driver_writes.rs
+// src/api/fleet_portal/driver_writes.rs
 //
-// Dispatcher-portal driver equipment write endpoints (#181):
-//   - POST /dispatch/api/v1/drivers/{id}/attach-equipment
-//   - POST /dispatch/api/v1/drivers/{id}/detach-equipment
+// Fleet-portal driver equipment write endpoints (#181):
+//   - POST /fleet/api/v1/drivers/{id}/attach-equipment
+//   - POST /fleet/api/v1/drivers/{id}/detach-equipment
 //
-// Dispatcher-facing equipment management the driver portal does not cover: a
-// dispatcher can seat a driver on a truck and/or add trailers (attach), or
+// Fleet-facing equipment management the driver portal does not cover: a
+// fleet_user can seat a driver on a truck and/or add trailers (attach), or
 // un-seat the truck and drop trailers (detach), releasing them back to
 // `Available`. These are pure equipment events — they never transition trip
 // status. When the driver has an active (Dispatched/InTransit) trip, the
@@ -24,7 +24,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -76,7 +76,7 @@ pub struct DriverEquipmentChange {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/drivers/{id}/attach-equipment",
+    path = "/fleet/api/v1/drivers/{id}/attach-equipment",
     params(("id" = Uuid, Path, description = "Driver UUID")),
     request_body(content = AttachEquipmentBody, description = "Truck and/or trailers to attach"),
     responses(
@@ -87,11 +87,11 @@ pub struct DriverEquipmentChange {
         (status = 409, description = "Conflict — driver inactive or equipment on another active trip"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn attach_equipment_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -102,7 +102,7 @@ pub async fn attach_equipment_handler(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/drivers/{id}/detach-equipment",
+    path = "/fleet/api/v1/drivers/{id}/detach-equipment",
     params(("id" = Uuid, Path, description = "Driver UUID")),
     request_body(content = DetachEquipmentBody, description = "Truck and/or trailers to detach"),
     responses(
@@ -113,11 +113,11 @@ pub async fn attach_equipment_handler(
         (status = 409, description = "Conflict — driver inactive"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn detach_equipment_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -419,7 +419,7 @@ pub async fn apply_detach_equipment(
     })
 }
 
-// --- Driver create / patch (dispatcher portal) ---
+// --- Driver create / patch (fleet portal) ---
 
 /// Shared driver-create writer. Defaults terminal_id to the default terminal
 /// when the request omits it. Used by the HTTP handler (and optionally MCP).
@@ -529,7 +529,7 @@ pub async fn apply_driver_patch(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/drivers",
+    path = "/fleet/api/v1/drivers",
     request_body(content = CreateDriverRequest, description = "Driver to create"),
     responses(
         (status = 201, description = "Created driver record", body = DriverRecord),
@@ -538,11 +538,11 @@ pub async fn apply_driver_patch(
         (status = 404, description = "Terminal not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_driver_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<CreateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:write")?;
@@ -552,7 +552,7 @@ pub async fn create_driver_handler(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/drivers/{id}",
+    path = "/fleet/api/v1/drivers/{id}",
     params(("id" = Uuid, Path, description = "Driver UUID")),
     request_body(content = UpdateDriverRequest, description = "Fields to update"),
     responses(
@@ -562,11 +562,11 @@ pub async fn create_driver_handler(
         (status = 404, description = "Driver or terminal not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn patch_driver_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateDriverRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -577,7 +577,7 @@ pub async fn patch_driver_handler(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/drivers/{id}",
+    path = "/fleet/api/v1/drivers/{id}",
     params(("id" = Uuid, Path, description = "Driver UUID")),
     responses(
         (status = 204, description = "Soft-deleted (status set to inactive); outstanding JWTs invalidated"),
@@ -585,11 +585,11 @@ pub async fn patch_driver_handler(
         (status = 404, description = "Driver not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_driver_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:delete")?;
@@ -614,7 +614,7 @@ pub(crate) async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<()
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/drivers/{id}/pin",
+    path = "/fleet/api/v1/drivers/{id}/pin",
     params(("id" = Uuid, Path, description = "Driver UUID")),
     request_body(content = SetDriverPinRequest, description = "PIN (4–6 numeric digits)"),
     responses(
@@ -624,11 +624,11 @@ pub(crate) async fn apply_driver_delete(state: &AppState, id: Uuid) -> Result<()
         (status = 422, description = "Invalid PIN format"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn set_driver_pin_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<SetDriverPinRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -680,7 +680,7 @@ pub async fn apply_set_driver_pin(
     };
 
     state.db.upsert_driver_credentials(&credentials).await?;
-    tracing::info!(driver_id = %id, "dispatcher set PIN for driver");
+    tracing::info!(driver_id = %id, "fleet_user set PIN for driver");
     Ok(())
 }
 

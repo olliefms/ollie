@@ -75,7 +75,7 @@ fn check_scheduled_windows(load: &LoadRecord, report: &mut DoctorReport) {
                 severity: Severity::Error,
                 description: format!(
                     "stop[{}] has scheduled_arrive_end ({end}) before scheduled_arrive ({}). \
-                     The window is malformed; the dispatcher likely flipped open/close times.",
+                     The window is malformed; the fleet_user likely flipped open/close times.",
                     s.sequence, s.scheduled_arrive,
                 ),
                 fix: None,
@@ -93,7 +93,7 @@ fn check_actual_order(load: &LoadRecord, report: &mut DoctorReport) {
                 severity: Severity::Error,
                 description: format!(
                     "stop[{}] actual_depart ({d}) is not after actual_arrive ({a}). \
-                     Driver/dispatcher likely transposed the two when recording.",
+                     Driver/fleet_user likely transposed the two when recording.",
                     s.sequence,
                 ),
                 fix: None,

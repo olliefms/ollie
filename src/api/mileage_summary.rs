@@ -1,6 +1,6 @@
 // src/api/mileage_summary.rs
 //
-// Builds the unified MileageSummary block surfaced on driver + dispatcher trip detail
+// Builds the unified MileageSummary block surfaced on driver + fleet_user trip detail
 // responses. Resolves deadhead-origin facility metadata and zips per-leg miles with
 // stop names.
 

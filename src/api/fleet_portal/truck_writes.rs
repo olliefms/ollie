@@ -1,11 +1,11 @@
-// src/api/dispatcher_portal/truck_writes.rs
+// src/api/fleet_portal/truck_writes.rs
 //
-// Dispatcher-portal truck write endpoints (#269):
-//   - POST  /dispatch/api/v1/trucks
-//   - PATCH /dispatch/api/v1/trucks/{id}
+// Fleet-portal truck write endpoints (#269):
+//   - POST  /fleet/api/v1/trucks
+//   - PATCH /fleet/api/v1/trucks/{id}
 //
 // Mirrors the admin behaviour in `src/api/trucks.rs` but exposes it under the
-// dispatcher JWT. The `apply_*` helpers are shared with the MCP tools so HTTP
+// fleet user JWT. The `apply_*` helpers are shared with the MCP tools so HTTP
 // and MCP enforce the same validation and embedding-refresh behaviour.
 // `status` is not exposed through these endpoints — trucks transition to
 // `assigned`/`dispatched` only via the trip lifecycle.
@@ -16,7 +16,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
@@ -77,7 +77,7 @@ pub struct PatchTruckBody {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trucks",
+    path = "/fleet/api/v1/trucks",
     request_body(content = CreateTruckBody, description = "Truck to create"),
     responses(
         (status = 201, description = "Created truck record", body = TruckRecord),
@@ -85,11 +85,11 @@ pub struct PatchTruckBody {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_truck_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trucks:write")?;
@@ -99,7 +99,7 @@ pub async fn create_truck_handler(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/trucks/{id}",
+    path = "/fleet/api/v1/trucks/{id}",
     params(("id" = Uuid, Path, description = "Truck UUID")),
     request_body(content = PatchTruckBody, description = "Fields to update — all optional"),
     responses(
@@ -109,11 +109,11 @@ pub async fn create_truck_handler(
         (status = 404, description = "Truck not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn update_truck_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -124,7 +124,7 @@ pub async fn update_truck_handler(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/trucks/{id}",
+    path = "/fleet/api/v1/trucks/{id}",
     params(("id" = Uuid, Path, description = "Truck UUID")),
     responses(
         (status = 204, description = "Soft-deleted (status set to inactive)"),
@@ -132,11 +132,11 @@ pub async fn update_truck_handler(
         (status = 404, description = "Truck not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_truck_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trucks:delete")?;

@@ -1,12 +1,12 @@
-// src/models/dispatcher_api_key.rs
+// src/models/fleet_user_api_key.rs
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DispatcherApiKey {
+pub struct FleetUserApiKey {
     pub id: Uuid,
-    pub dispatcher_id: Uuid,
+    pub fleet_user_id: Uuid,
     pub label: String,
     pub key_hash: String,
     pub key_prefix: String,
@@ -21,11 +21,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_dispatcher_api_key_clone() {
+    fn test_fleet_user_api_key_clone() {
         let now = Utc::now();
-        let key = DispatcherApiKey {
+        let key = FleetUserApiKey {
             id: Uuid::new_v4(),
-            dispatcher_id: Uuid::new_v4(),
+            fleet_user_id: Uuid::new_v4(),
             label: "test".into(),
             key_hash: "abc".into(),
             key_prefix: "olld_a1b2c3".into(),

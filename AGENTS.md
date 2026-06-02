@@ -6,7 +6,7 @@ This file is for AI coding agents working on this codebase. Read it before makin
 
 ollie is a self-hosted freight **Transportation Management System (TMS)** written in Rust. It manages the operational core of a trucking dispatch operation — loads, trips, drivers, trucks, trailers, and facilities — alongside an AI-enabled document store (the original "blob store": files content-addressed on disk, summarized and embedded by Ollama, indexed in LanceDB for semantic search).
 
-The domain is exposed through three API surfaces: a dispatcher **MCP** server (`POST /dispatch/mcp`, preferred for AI agents), a dispatcher **REST** API (`/dispatch/api/v1`), and a **driver portal** (`/driver/api/v1`, JWT via passkey/PIN). Two static web apps ship with it: a dispatcher SPA at `/dispatch` and a driver PWA at `/driver`. `GET /llms.txt` is the hand-written, agent-oriented tour of every surface and is the best high-level map of the running system.
+The domain is exposed through three API surfaces: a **Fleet MCP** server (`POST /fleet/mcp`, preferred for AI agents), a **Fleet REST** API (`/fleet/api/v1`), and a **driver portal** (`/driver/api/v1`, JWT via passkey/PIN). Two static web apps ship with it: a fleet SPA at `/fleet` and a driver PWA at `/driver`. `GET /llms.txt` is the hand-written, agent-oriented tour of every surface and is the best high-level map of the running system.
 
 **Stack:** Axum 0.8, LanceDB 0.29, Arrow 58, async-channel 2, reqwest 0.12, pdf-extract 0.7, jsonwebtoken 10, webauthn-rs 0.5, utoipa 4. Facility geocoding uses the US Census geocoder; trip/load mileage uses OpenRouteService (HGV).
 
@@ -21,7 +21,7 @@ src/
   config.rs       — Config::from_env()
   error.rs        — AppError enum + IntoResponse impl
   models/         — one module per resource: blob, facility, load, trip, driver, truck, trailer,
-                    dispatcher(+credentials/api_key), event, oauth_client, authorization_code, refresh_token
+                    fleet_user(+credentials/api_key), event, oauth_client, authorization_code, refresh_token
   storage/        — BlobStore (content-addressed sharding), extract_store
   db/             — DbClient + one *_ops.rs per resource; merge_insert upsert pattern (see below)
   ai/             — OllamaClient: embed(), generate(); extract.rs, embed.rs, summarize.rs
@@ -32,13 +32,13 @@ src/
   services/       — trip_stops, doctors/ (trip, load, facility data-integrity repair)
   api/
     mod.rs              — router() wiring all surfaces; ApiDoc (utoipa) + LLMS_TXT
-    blobs.rs / blob.rs  — shared blob DTOs + ingest_blob() helper (used by dispatcher blob handlers)
+    blobs.rs / blob.rs  — shared blob DTOs + ingest_blob() helper (used by fleet portal blob handlers)
     facilities.rs, loads.rs, trips.rs, drivers.rs, trucks.rs, trailers.rs,
       mileage_summary.rs, version.rs — shared list-query DTOs + cross-surface helpers
       (resolve_stops_pub, apply_trip_create, compute_and_persist_mileage,
-      build_mileage_summary, resolve_or_create_facility) used by the dispatcher/driver surfaces
+      build_mileage_summary, resolve_or_create_facility) used by the fleet/driver surfaces
     oauth/              — OAuth 2.1 (authorize, token, register, metadata) for MCP
-    dispatcher_portal/  — JWT auth, data (read) + *_writes handlers, mcp.rs (MCP server), blobs + presigned, api_keys
+    fleet_portal/  — JWT auth, data (read) + *_writes handlers, mcp.rs (MCP server), blobs + presigned, api_keys
     driver_portal/      — passkey/PIN auth (jwt.rs, middleware.rs), data, equipment, documents
 ```
 
@@ -199,11 +199,11 @@ The API is documented via `utoipa` (v4). Two unauthenticated endpoints serve the
 
 Auth depends on the surface (see `/llms.txt` for the authoritative description):
 
-- **Dispatcher MCP/REST** (`/dispatch/*`) — `Authorization: Bearer <JWT>` from `POST /dispatch/auth/login` (email+password), or a dispatcher API key. JWTs are signed with `DISPATCHER_JWT_SECRET`.
+- **Fleet MCP/REST** (`/fleet/*`) — `Authorization: Bearer <JWT>` from `POST /fleet/auth/login` (email+password), or a fleet user API key. JWTs are signed with `FLEET_JWT_SECRET`.
 - **Driver portal** (`/driver/api/v1/*`) — `Authorization: Bearer <JWT>` from passkey/PIN auth. JWTs are signed with `DRIVER_JWT_SECRET`.
 - **Public, no auth:** `GET /version`, `GET /openapi.json`, `GET /llms.txt`.
 
-Missing or wrong credentials → 401. Both secrets (`DRIVER_JWT_SECRET`, `DISPATCHER_JWT_SECRET`) are required at startup — the server refuses to boot without them.
+Missing or wrong credentials → 401. Both secrets (`DRIVER_JWT_SECRET`, `FLEET_JWT_SECRET`) are required at startup — the server refuses to boot without them.
 
 ## Deduplication Logic
 
@@ -217,7 +217,7 @@ Both paths write to the DB. The filesystem file is only written once per unique 
 
 Facility addresses are geocoded asynchronously after create or address-change update — the API returns immediately with `geocode_status: pending` and a background worker fills `lat`/`lng`/`normalized_address`. On failure, `geocode_status` transitions to `failed` (and after 3 attempts, `permanently_failed`).
 
-**Manual override:** `POST /dispatch/api/v1/facilities` and `PATCH /dispatch/api/v1/facilities/{id}` both accept optional `lat` + `lng`. When both are supplied, the geocoder is skipped, coords are persisted as-is, `geocode_status` is set to `ready`, and `geocode_failure_count` resets to `0`. On UPDATE, explicit coords win even when `address` is also being changed. Partial coords or out-of-range values (lat ∉ [-90, 90], lng ∉ [-180, 180]) → 422. This is the supported repair path for facilities the geocoder can't resolve (e.g. industrial warehouses with BOL-derived addresses).
+**Manual override:** `POST /fleet/api/v1/facilities` and `PATCH /fleet/api/v1/facilities/{id}` both accept optional `lat` + `lng`. When both are supplied, the geocoder is skipped, coords are persisted as-is, `geocode_status` is set to `ready`, and `geocode_failure_count` resets to `0`. On UPDATE, explicit coords win even when `address` is also being changed. Partial coords or out-of-range values (lat ∉ [-90, 90], lng ∉ [-180, 180]) → 422. This is the supported repair path for facilities the geocoder can't resolve (e.g. industrial warehouses with BOL-derived addresses).
 
 ## Content Extraction
 
@@ -234,7 +234,7 @@ PDFs use `pdf_extract::extract_text_from_mem()`. If it can't extract ≥50 words
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `DRIVER_JWT_SECRET` | Yes | — | Signing secret for driver-portal JWTs. Min 32 bytes |
-| `DISPATCHER_JWT_SECRET` | Yes | — | Signing secret for dispatcher JWTs and API keys. Min 32 bytes |
+| `FLEET_JWT_SECRET` | Yes | — | Signing secret for fleet user JWTs and API keys. Min 32 bytes |
 | `DRIVER_RP_ID` | Yes | — | WebAuthn relying-party ID for driver passkeys (e.g. `localhost`) |
 | `DRIVER_RP_ORIGIN` | Yes | — | WebAuthn relying-party origin (e.g. `http://localhost:3000`) |
 | `ORS_API_KEY` | No | `` (empty) | OpenRouteService key for trip/load mileage. Empty disables mileage calc |
@@ -249,8 +249,8 @@ PDFs use `pdf_extract::extract_text_from_mem()`. If it can't extract ≥50 words
 | `PIPELINE_WORKERS` | No | `1` | Concurrent pipeline workers |
 | `TERMINAL_TIMEZONE` | No (deprecated) | America/New_York | **Seed-only.** First-boot timezone for the Default terminal row. No longer read by `Config`; terminals own timezone (#185). |
 | `OLLIE_FREE_DWELL_MINUTES` | No (deprecated) | `120` | **Seed-only.** First-boot free-dwell for the Default terminal row. No longer read by `Config`; terminals own free-dwell (#185, #258). |
-| `OLLIE_PUBLIC_BASE_URL` | No | `` (empty) | Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`. Used to build absolute presigned blob upload/download URLs for the dispatcher MCP blob tools. When empty, the presigned-URL tools error; inline `create_blob` still works (#277). |
-| `OLLIE_MCP_INLINE_BLOB_MAX_BYTES` | No | `262144` | Max decoded size for the inline-base64 `create_blob` MCP tool. Larger files must use a presigned upload URL. Also sizes the `/dispatch/mcp` request body limit (#277). |
+| `OLLIE_PUBLIC_BASE_URL` | No | `` (empty) | Externally-reachable base URL (no trailing slash), e.g. `https://ollie.example.com`. Used to build absolute presigned blob upload/download URLs for the Fleet MCP blob tools. When empty, the presigned-URL tools error; inline `create_blob` still works (#277). |
+| `OLLIE_MCP_INLINE_BLOB_MAX_BYTES` | No | `262144` | Max decoded size for the inline-base64 `create_blob` MCP tool. Larger files must use a presigned upload URL. Also sizes the `/fleet/mcp` request body limit (#277). |
 | `OLLIE_BLOB_PRESIGN_TTL_SECS` | No | `300` | Default TTL (seconds) for presigned blob URLs when the caller omits `expires_in_seconds` (#277). |
 | `OLLIE_BLOB_PRESIGN_MAX_TTL_SECS` | No | `3600` | Hard cap (seconds) on presigned blob URL TTL (#277). |
 
@@ -282,7 +282,7 @@ After any change: run `cargo test`, `cargo clippy`, `cargo build` before committ
 
 ## UI / Frontend
 
-UI changes to `static/driver/` or `static/dispatch/` must be consistent with the design system defined in [`docs/DESIGN.md`](docs/DESIGN.md). Reuse the existing CSS tokens in `static/driver/css/base.css`; add a new token there (and document it in `DESIGN.md`) rather than inlining hex values or one-off styles.
+UI changes to `static/driver/` or `static/fleet/` must be consistent with the design system defined in [`docs/DESIGN.md`](docs/DESIGN.md). Reuse the existing CSS tokens in `static/driver/css/base.css`; add a new token there (and document it in `DESIGN.md`) rather than inlining hex values or one-off styles.
 
 ## Shippability Bar
 
@@ -335,18 +335,18 @@ Trunk-based. Three skills cover the workflow:
 - **`next_stop_name` means "not yet arrived", not "not yet departed".** The correct predicate is `actual_arrive.is_none()` — the first stop the driver hasn't reached yet. `actual_depart.is_none()` returns the stop they're currently at (arrived but not left), which is the current stop, not the next one.
 - **Opus non-blocking findings go to the backlog, not the floor.** Any non-critical finding from an Opus review that doesn't need to be fixed before merge should be filed as a GitHub issue immediately. Don't let them get lost in session transcripts.
 - **Two parallel execution tracks sharing one test file will conflict at merge.** When two orchestrator sessions both add tests to `tests/integration_test.rs`, the merge will conflict at the same insertion point. Resolve by keeping both blocks in full; don't drop either track's tests.
-- **Dispatcher JWT secret is a required production env var.** `DISPATCHER_JWT_SECRET` (min 32 bytes) must be set on the server before deploying any release that includes the dispatcher portal. Include this in release notes whenever the dispatcher feature ships for the first time.
+- **Fleet JWT secret is a required production env var.** `FLEET_JWT_SECRET` (min 32 bytes) must be set on the server before deploying any release that includes the fleet portal. Include this in release notes whenever the fleet portal feature ships for the first time.
 - **WebAuthn challenge response must include driver_id.** The passkey auth finish endpoint (`POST /auth/verify`) requires a `driver_id` to look up the stored challenge. Return `{ driver_id, challenge }` from the challenge endpoint so the frontend can pass it back — without it, the finish call has no way to identify which driver is authenticating.
 - **CSS polish passes need a hex-value scan.** After any CSS edit session, grep for raw hex literals (`#[0-9a-fA-F]`). Two Opus BLOCK findings in v1.5.0 were raw hex values (`#fff`, `#f59e0b` as a fallback) that should have been design tokens. The ban on inline hex applies to every property — color, background, border, box-shadow, etc.
 - **Check ALL instances of a UI pattern when polishing.** When migrating a CSS pattern (e.g. back buttons to `.btn-ghost-back`), grep for every selector variant before closing the task. The login "← Different number" button used a different class name than the trip/stop detail back buttons and was missed in the initial pass — Opus caught it as a BLOCK finding.
 - **`transition_trip_status` enforces the state machine at the DB layer — verify before adding handler guards.** `trip_ops.rs::transition_trip_status` checks `can_transition_to` and returns `AppError::Conflict` for any illegal transition. Handlers only need explicit status checks for cases the machine intentionally allows but business rules forbid (e.g. blocking dispatch when the driver is already dispatched on another trip). When Opus flags a missing guard, check the transition table first — the BLOCK may be a false positive.
 - **Batch-fetch-then-resolve is the correct N+1 fix for list endpoints.** Collect all foreign-key IDs across the page into a `HashSet`, call `batch_get_*(&ids) -> HashMap<Uuid, Record>` once, then resolve names synchronously from the map. Using `join_all` for N individual fetches is still O(N) round-trips even if parallelized. Add `batch_get_*` methods to `DbClient` for every entity type that appears in list views.
 - **Frontend stop-name fallbacks must never expose UUIDs to users.** The pattern `stop.facility_name || stop.facility_id || '—'` leaks a raw UUID when the name is absent. Always prefer `stop.facility_name || stop.name || '—'` — or just `'—'`. Audit every `|| uuid` and `|| shortId(uuid)` chain in list and detail views after a UUID-display audit pass.
-- **Dispatcher DTO enrichment belongs in a single `enrich_trip` async fn.** When a response type needs denormalized fields (driver_name, truck_unit, trailer_units), put all async resolution in one `enrich_trip(&state, item) -> Result<EnrichedItem>` helper. Scattering individual `get_driver / get_truck / get_trailer` calls across handlers is hard to maintain and hard to audit for N+1 regressions.
-- **Mirror-API handlers inherit OpenAPI security schemes from the existing API, not a new name.** When creating dispatcher portal handlers that mirror admin blob handlers, use `security(("BearerAuth" = []))` — the scheme registered in `SecurityAddon`. Using an unregistered name like `"DispatcherJwt"` produces a spec that references an undefined scheme, breaking validators and tooling even though runtime behavior is unaffected. Always verify the registered scheme name in `src/api/mod.rs::SecurityAddon` before writing utoipa annotations.
+- **Fleet DTO enrichment belongs in a single `enrich_trip` async fn.** When a response type needs denormalized fields (driver_name, truck_unit, trailer_units), put all async resolution in one `enrich_trip(&state, item) -> Result<EnrichedItem>` helper. Scattering individual `get_driver / get_truck / get_trailer` calls across handlers is hard to maintain and hard to audit for N+1 regressions.
+- **Mirror-API handlers inherit OpenAPI security schemes from the existing API, not a new name.** When creating fleet portal handlers that mirror admin blob handlers, use `security(("BearerAuth" = []))` — the scheme registered in `SecurityAddon`. Using an unregistered name like `"DispatcherJwt"` produces a spec that references an undefined scheme, breaking validators and tooling even though runtime behavior is unaffected. Always verify the registered scheme name in `src/api/mod.rs::SecurityAddon` before writing utoipa annotations.
 - **Escape server-controlled string data before injecting into innerHTML in the SPA.** Blob names, tags, and AI-generated summaries are the most likely fields to carry adversary-influenced content. Use `escHtml(s)` on every field that flows from API responses into template literals. Add the utility once (already present as `escHtml` in `app.js`) and apply it wherever blob data appears — both in list views and in per-record detail panels.
 - **Pre-validate all resources in a multi-step assign handler before any DB mutation.** Fetch and check ALL trailers (or any other multi-item list) in a loop before calling `transition_trip_status` or any other mutation. A validation failure after mutations leave the system in an inconsistent state that requires manual correction. Collect validated records into a `Vec` and reuse them in the mutation loop — this also eliminates redundant DB round-trips.
-- **Use `API_BASE` for all apiFetch calls in the SPA; never hard-code path prefixes.** Hard-coded `/dispatch/api/v1/...` paths diverge silently when `API_BASE` changes. Every `apiFetch` call must use the `API_BASE` constant: `apiFetch(\`\${API_BASE}/blobs?...\`)`. Check for bare `/dispatch/api/v1` strings after every frontend feature addition.
+- **Use `API_BASE` for all apiFetch calls in the SPA; never hard-code path prefixes.** Hard-coded `/fleet/api/v1/...` paths diverge silently when `API_BASE` changes. Every `apiFetch` call must use the `API_BASE` constant: `apiFetch(\`\${API_BASE}/blobs?...\`)`. Check for bare `/fleet/api/v1` strings after every frontend feature addition.
 - **Fetch a shared resource once and reuse across multiple derivations in the same handler.** When a handler needs a record for both stop derivation AND computed fields (e.g. loaded_miles, load_number), fetch it once at the top and pass it by reference to helpers. The v1.8.0 `create_trip` rewrite eliminated a redundant `get_load_by_id` call that previously happened inside the stops block.
 - **Enrich denormalized fields at write time, not read time.** Fields like `stop.address`, `trip.load_number`, and `trip.previous_trip_id` are resolved once at creation and stored. This keeps read paths fast and avoids N+1 lookups in list views — even though it means the denormalized value may drift from source if the source changes. Use this pattern for data that won't change often and is expensive to recompute on every read.
 - **Header injection from user-controlled strings is a real risk in Rust HTTP handlers.** Any field written into a header value (e.g., `Content-Disposition: attachment; filename="..."`) must be sanitized before use. Strip `\r` and `\n` at minimum — a blob name with a newline can inject additional HTTP headers. Do not assume the DB layer validates this.
@@ -379,7 +379,7 @@ Trunk-based. Three skills cover the workflow:
 
 - **Hardcoded version strings in the SPA drift on every release — fetch from `GET /version` instead.** v1.13.1 shipped with the driver Account page still showing `v1.13.0` because `static/driver/pages/account.js` carried a hand-maintained `APP_VERSION` constant disconnected from `Cargo.toml`. v1.13.2 added an unauthenticated `GET /version` endpoint returning `{"version": CARGO_PKG_VERSION}` and a small `utils/version.js` helper that fetches it once per session. — Why: every patch release will silently drift unless the version is sourced from `env!("CARGO_PKG_VERSION")` at runtime. The release checklist is too easy to forget for a non-functional constant. — How to apply: when adding any new "what version am I running" UI affordance, build it on `/version` (or extend `/version` if more build metadata is needed). Never reintroduce a hardcoded version constant in the SPA.
 
-- **`iframe.src=` cannot carry an `Authorization` header — `fetch` + `URL.createObjectURL` is the JWT-friendly preview pattern.** The driver doc preview always returned 401 because the iframe could not authenticate (#202). The fix: `fetch()` the content with the Bearer header, build a blob URL via `URL.createObjectURL`, and assign it to an `<img>` (images) or sandboxed `<iframe>` (PDFs). Always call `URL.revokeObjectURL` on close to avoid leaks. (Earlier guidance said iframes loading `blob:` URLs must carry `iframe.sandbox = ''`; this was superseded in v1.14.x — see the MIME-branch lesson above. Sandboxing the iframe breaks PDF rendering in current Chrome.) — Why: this is the same fundamental constraint that defeated the dispatcher preview in #184; Brave's blob-PDF bug is a separate problem still tracked there. — How to apply: any JWT-protected binary endpoint that needs in-page preview must fetch with the header and convert to a blob URL — never set `iframe.src` directly to the API URL.
+- **`iframe.src=` cannot carry an `Authorization` header — `fetch` + `URL.createObjectURL` is the JWT-friendly preview pattern.** The driver doc preview always returned 401 because the iframe could not authenticate (#202). The fix: `fetch()` the content with the Bearer header, build a blob URL via `URL.createObjectURL`, and assign it to an `<img>` (images) or sandboxed `<iframe>` (PDFs). Always call `URL.revokeObjectURL` on close to avoid leaks. (Earlier guidance said iframes loading `blob:` URLs must carry `iframe.sandbox = ''`; this was superseded in v1.14.x — see the MIME-branch lesson above. Sandboxing the iframe breaks PDF rendering in current Chrome.) — Why: this is the same fundamental constraint that defeated the fleet portal preview in #184; Brave's blob-PDF bug is a separate problem still tracked there. — How to apply: any JWT-protected binary endpoint that needs in-page preview must fetch with the header and convert to a blob URL — never set `iframe.src` directly to the API URL.
 
 - **Appending children directly to a `.app-bar` with `justify-content: space-between` pushes the right slot to center.** v1.13.1's trip-detail header passed a Back button via `renderAppBar({ right: backBtn })`, then appended a status badge directly to the bar afterward with `appBar.appendChild(badge)`. The result: three flex children spaced apart — title left, badge center, Back right — making Back look like a centered control (#197). Always insert additional elements into the existing `.app-bar__right` slot via `appBar.querySelector('.app-bar__right')`, never directly on the bar. — Why: mixing slotted and freely-appended children in the same flex container produces ad-hoc layouts that break on small screens. — How to apply: when adding a badge or any control to an app-bar after the initial render, target the right slot and `insertBefore` to keep the trailing control (typically Back) on the far right.
 

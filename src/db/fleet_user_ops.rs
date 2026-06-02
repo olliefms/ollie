@@ -1,8 +1,8 @@
-// src/db/dispatcher_ops.rs
+// src/db/fleet_user_ops.rs
 use crate::{
-    db::{dispatcher_credentials_schema, dispatcher_schema, DbClient},
+    db::{fleet_user_credentials_schema, fleet_user_schema, DbClient},
     error::AppError,
-    models::{DispatcherCredentials, DispatcherRecord},
+    models::{FleetUserCredentials, FleetUserRecord},
 };
 use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray};
 use futures::TryStreamExt;
@@ -11,58 +11,58 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 impl DbClient {
-    pub async fn insert_dispatcher(&self, record: &DispatcherRecord) -> Result<(), AppError> {
-        let batch = dispatcher_to_batch(record)?;
-        let schema = dispatcher_schema();
+    pub async fn insert_fleet_user(&self, record: &FleetUserRecord) -> Result<(), AppError> {
+        let batch = fleet_user_to_batch(record)?;
+        let schema = fleet_user_schema();
         let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
-        self.dispatcher_table.add(reader).execute().await
+        self.fleet_user_table.add(reader).execute().await
             .map(|_| ())
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    pub async fn get_dispatcher_by_id(&self, id: Uuid) -> Result<DispatcherRecord, AppError> {
+    pub async fn get_fleet_user_by_id(&self, id: Uuid) -> Result<FleetUserRecord, AppError> {
         let id_str = id.to_string();
-        let stream = self.dispatcher_table.query()
+        let stream = self.fleet_user_table.query()
             .only_if(format!("id = '{id_str}'"))
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        batches_to_dispatchers(collect_stream(stream).await?)?
+        batches_to_fleet_users(collect_stream(stream).await?)?
             .into_iter().next()
             .ok_or(AppError::NotFound)
     }
 
-    pub async fn get_dispatcher_by_email(&self, email: &str) -> Result<Option<DispatcherRecord>, AppError> {
+    pub async fn get_fleet_user_by_email(&self, email: &str) -> Result<Option<FleetUserRecord>, AppError> {
         let escaped = email.replace('\'', "''");
-        let stream = self.dispatcher_table.query()
+        let stream = self.fleet_user_table.query()
             .only_if(format!("email = '{escaped}'"))
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let records = batches_to_dispatchers(collect_stream(stream).await?)?;
+        let records = batches_to_fleet_users(collect_stream(stream).await?)?;
         Ok(records.into_iter().next())
     }
 
-    pub async fn list_dispatchers(&self) -> Result<Vec<DispatcherRecord>, AppError> {
-        let stream = self.dispatcher_table.query()
+    pub async fn list_fleet_users(&self) -> Result<Vec<FleetUserRecord>, AppError> {
+        let stream = self.fleet_user_table.query()
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        batches_to_dispatchers(collect_stream(stream).await?)
+        batches_to_fleet_users(collect_stream(stream).await?)
     }
 
-    /// Number of rows in the dispatcher (== user) table. Used by the first-run
+    /// Number of rows in the fleet_user (== user) table. Used by the first-run
     /// setup wizard guard (`needs_setup == count == 0`).
-    pub async fn count_dispatchers(&self) -> Result<usize, AppError> {
-        self.dispatcher_table.count_rows(None).await
+    pub async fn count_fleet_users(&self) -> Result<usize, AppError> {
+        self.fleet_user_table.count_rows(None).await
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    /// One-time reconcile run at startup: if there is at least one dispatcher
-    /// but no owner, promote the oldest dispatcher (lowest `created_at`) to
+    /// One-time reconcile run at startup: if there is at least one fleet_user
+    /// but no owner, promote the oldest fleet_user (lowest `created_at`) to
     /// `role=owner`. Idempotent — once any owner exists it is a no-op. Fresh
-    /// installs (zero dispatchers) are untouched; they use the setup wizard.
+    /// installs (zero fleet_users) are untouched; they use the setup wizard.
     pub async fn reconcile_owner(&self) -> Result<(), AppError> {
         use crate::models::Role;
-        let users = self.list_dispatchers().await?;
+        let users = self.list_fleet_users().await?;
         if users.is_empty() {
             return Ok(());
         }
@@ -75,44 +75,44 @@ impl DbClient {
         let mut promoted = oldest.clone();
         promoted.role = Role::Owner;
         promoted.updated_at = chrono::Utc::now();
-        self.upsert_dispatcher(&promoted).await?;
+        self.upsert_fleet_user(&promoted).await?;
         tracing::info!(
-            dispatcher_id = %promoted.id,
+            fleet_user_id = %promoted.id,
             email = %promoted.email,
-            "auto-promoted oldest dispatcher to owner (migration: no owner existed)"
+            "auto-promoted oldest fleet_user to owner (migration: no owner existed)"
         );
         Ok(())
     }
 
-    pub async fn upsert_dispatcher(&self, record: &DispatcherRecord) -> Result<(), AppError> {
-        let batch = dispatcher_to_batch(record)?;
-        let schema = dispatcher_schema();
+    pub async fn upsert_fleet_user(&self, record: &FleetUserRecord) -> Result<(), AppError> {
+        let batch = fleet_user_to_batch(record)?;
+        let schema = fleet_user_schema();
         let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
-        let mut op = self.dispatcher_table.merge_insert(&["id"]);
+        let mut op = self.fleet_user_table.merge_insert(&["id"]);
         op.when_matched_update_all(None).when_not_matched_insert_all();
         op.execute(reader).await
             .map(|_| ())
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    pub async fn get_dispatcher_credentials(&self, id: Uuid) -> Result<Option<DispatcherCredentials>, AppError> {
+    pub async fn get_fleet_user_credentials(&self, id: Uuid) -> Result<Option<FleetUserCredentials>, AppError> {
         let id_str = id.to_string();
-        let stream = self.dispatcher_credentials_table.query()
-            .only_if(format!("dispatcher_id = '{id_str}'"))
+        let stream = self.fleet_user_credentials_table.query()
+            .only_if(format!("fleet_user_id = '{id_str}'"))
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let batches = collect_stream(stream).await?;
-        let mut records = batches_to_dispatcher_credentials(batches)?;
+        let mut records = batches_to_fleet_user_credentials(batches)?;
         Ok(records.pop())
     }
 
-    pub async fn upsert_dispatcher_credentials(&self, record: &DispatcherCredentials) -> Result<(), AppError> {
-        let batch = dispatcher_credentials_to_batch(record)?;
-        let schema = dispatcher_credentials_schema();
+    pub async fn upsert_fleet_user_credentials(&self, record: &FleetUserCredentials) -> Result<(), AppError> {
+        let batch = fleet_user_credentials_to_batch(record)?;
+        let schema = fleet_user_credentials_schema();
         let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
         let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
-        let mut op = self.dispatcher_credentials_table.merge_insert(&["dispatcher_id"]);
+        let mut op = self.fleet_user_credentials_table.merge_insert(&["fleet_user_id"]);
         op.when_matched_update_all(None).when_not_matched_insert_all();
         op.execute(reader).await
             .map(|_| ())
@@ -122,8 +122,8 @@ impl DbClient {
 
 // --- Batch helpers ---
 
-fn dispatcher_to_batch(record: &DispatcherRecord) -> Result<RecordBatch, AppError> {
-    let schema = dispatcher_schema();
+fn fleet_user_to_batch(record: &FleetUserRecord) -> Result<RecordBatch, AppError> {
+    let schema = fleet_user_schema();
     let id_str = record.id.to_string();
     let role_str = record.role.as_str();
     let extra_scopes_str = serde_json::to_string(&record.extra_scopes)
@@ -143,14 +143,14 @@ fn dispatcher_to_batch(record: &DispatcherRecord) -> Result<RecordBatch, AppErro
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-fn dispatcher_credentials_to_batch(record: &DispatcherCredentials) -> Result<RecordBatch, AppError> {
-    let schema = dispatcher_credentials_schema();
-    let dispatcher_id_str = record.dispatcher_id.to_string();
+fn fleet_user_credentials_to_batch(record: &FleetUserCredentials) -> Result<RecordBatch, AppError> {
+    let schema = fleet_user_credentials_schema();
+    let fleet_user_id_str = record.fleet_user_id.to_string();
     let updated_str = record.updated_at.to_rfc3339();
     let locked_str = record.locked_until.as_ref().map(|dt| dt.to_rfc3339());
 
     RecordBatch::try_new(schema, vec![
-        Arc::new(StringArray::from(vec![dispatcher_id_str.as_str()])),
+        Arc::new(StringArray::from(vec![fleet_user_id_str.as_str()])),
         Arc::new(StringArray::from(vec![record.password_hash.as_str()])),
         Arc::new(Int64Array::from(vec![record.token_version])),
         Arc::new(Int32Array::from(vec![record.failed_attempts])),
@@ -159,17 +159,17 @@ fn dispatcher_credentials_to_batch(record: &DispatcherCredentials) -> Result<Rec
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
-fn batches_to_dispatchers(batches: Vec<RecordBatch>) -> Result<Vec<DispatcherRecord>, AppError> {
+fn batches_to_fleet_users(batches: Vec<RecordBatch>) -> Result<Vec<FleetUserRecord>, AppError> {
     let mut out = Vec::new();
     for batch in &batches {
         for i in 0..batch.num_rows() {
-            out.push(row_to_dispatcher(batch, i)?);
+            out.push(row_to_fleet_user(batch, i)?);
         }
     }
     Ok(out)
 }
 
-fn row_to_dispatcher(batch: &RecordBatch, i: usize) -> Result<DispatcherRecord, AppError> {
+fn row_to_fleet_user(batch: &RecordBatch, i: usize) -> Result<FleetUserRecord, AppError> {
     let str_col = |name: &str| -> String {
         batch.column_by_name(name)
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
@@ -187,7 +187,7 @@ fn row_to_dispatcher(batch: &RecordBatch, i: usize) -> Result<DispatcherRecord, 
         serde_json::from_str(&extra_scopes_raw).unwrap_or_default()
     };
 
-    Ok(DispatcherRecord {
+    Ok(FleetUserRecord {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         email: str_col("email"),
         name: str_col("name"),
@@ -201,17 +201,17 @@ fn row_to_dispatcher(batch: &RecordBatch, i: usize) -> Result<DispatcherRecord, 
     })
 }
 
-fn batches_to_dispatcher_credentials(batches: Vec<RecordBatch>) -> Result<Vec<DispatcherCredentials>, AppError> {
+fn batches_to_fleet_user_credentials(batches: Vec<RecordBatch>) -> Result<Vec<FleetUserCredentials>, AppError> {
     let mut out = Vec::new();
     for batch in &batches {
         for i in 0..batch.num_rows() {
-            out.push(row_to_dispatcher_credentials(batch, i)?);
+            out.push(row_to_fleet_user_credentials(batch, i)?);
         }
     }
     Ok(out)
 }
 
-fn row_to_dispatcher_credentials(batch: &RecordBatch, i: usize) -> Result<DispatcherCredentials, AppError> {
+fn row_to_fleet_user_credentials(batch: &RecordBatch, i: usize) -> Result<FleetUserCredentials, AppError> {
     let str_col = |name: &str| -> String {
         batch.column_by_name(name)
             .and_then(|c| c.as_any().downcast_ref::<StringArray>())
@@ -241,8 +241,8 @@ fn row_to_dispatcher_credentials(batch: &RecordBatch, i: usize) -> Result<Dispat
         .transpose()
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
-    Ok(DispatcherCredentials {
-        dispatcher_id: str_col("dispatcher_id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
+    Ok(FleetUserCredentials {
+        fleet_user_id: str_col("fleet_user_id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         password_hash: str_col("password_hash"),
         token_version: i64_col("token_version"),
         failed_attempts: i32_col("failed_attempts"),
@@ -261,7 +261,7 @@ async fn collect_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::DispatcherStatus;
+    use crate::models::FleetUserStatus;
     use chrono::Utc;
     use tempfile::TempDir;
 
@@ -271,13 +271,13 @@ mod tests {
         (db, dir)
     }
 
-    fn sample_dispatcher() -> DispatcherRecord {
+    fn sample_fleet_user() -> FleetUserRecord {
         let now = Utc::now();
-        DispatcherRecord {
+        FleetUserRecord {
             id: Uuid::new_v4(),
             email: "dispatch@example.com".into(),
             name: "Jane Dispatcher".into(),
-            status: DispatcherStatus::Active,
+            status: FleetUserStatus::Active,
             role: crate::models::Role::Dispatcher,
             extra_scopes: Vec::new(),
             created_at: now,
@@ -286,82 +286,82 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_insert_and_get_dispatcher() {
+    async fn test_insert_and_get_fleet_user() {
         let (db, _dir) = test_db().await;
-        let d = sample_dispatcher();
-        db.insert_dispatcher(&d).await.unwrap();
-        let fetched = db.get_dispatcher_by_id(d.id).await.unwrap();
+        let d = sample_fleet_user();
+        db.insert_fleet_user(&d).await.unwrap();
+        let fetched = db.get_fleet_user_by_id(d.id).await.unwrap();
         assert_eq!(fetched.id, d.id);
         assert_eq!(fetched.email, "dispatch@example.com");
-        assert_eq!(fetched.status, DispatcherStatus::Active);
+        assert_eq!(fetched.status, FleetUserStatus::Active);
     }
 
     #[tokio::test]
-    async fn test_get_dispatcher_not_found() {
+    async fn test_get_fleet_user_not_found() {
         let (db, _dir) = test_db().await;
-        assert!(matches!(db.get_dispatcher_by_id(Uuid::new_v4()).await, Err(AppError::NotFound)));
+        assert!(matches!(db.get_fleet_user_by_id(Uuid::new_v4()).await, Err(AppError::NotFound)));
     }
 
     #[tokio::test]
-    async fn test_get_dispatcher_by_email() {
+    async fn test_get_fleet_user_by_email() {
         let (db, _dir) = test_db().await;
-        let d = sample_dispatcher();
-        db.insert_dispatcher(&d).await.unwrap();
-        let found = db.get_dispatcher_by_email("dispatch@example.com").await.unwrap();
+        let d = sample_fleet_user();
+        db.insert_fleet_user(&d).await.unwrap();
+        let found = db.get_fleet_user_by_email("dispatch@example.com").await.unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().id, d.id);
 
-        let not_found = db.get_dispatcher_by_email("other@example.com").await.unwrap();
+        let not_found = db.get_fleet_user_by_email("other@example.com").await.unwrap();
         assert!(not_found.is_none());
     }
 
     #[tokio::test]
-    async fn test_list_dispatchers() {
+    async fn test_list_fleet_users() {
         let (db, _dir) = test_db().await;
-        let d1 = sample_dispatcher();
-        let d2 = DispatcherRecord {
+        let d1 = sample_fleet_user();
+        let d2 = FleetUserRecord {
             id: Uuid::new_v4(),
             email: "other@example.com".into(),
             name: "Other Dispatcher".into(),
-            status: DispatcherStatus::Inactive,
+            status: FleetUserStatus::Inactive,
             role: crate::models::Role::FleetManager,
             extra_scopes: vec!["loads:settle".into()],
             created_at: Utc::now(),
             updated_at: Utc::now(),
         };
-        db.insert_dispatcher(&d1).await.unwrap();
-        db.insert_dispatcher(&d2).await.unwrap();
-        let list = db.list_dispatchers().await.unwrap();
+        db.insert_fleet_user(&d1).await.unwrap();
+        db.insert_fleet_user(&d2).await.unwrap();
+        let list = db.list_fleet_users().await.unwrap();
         assert_eq!(list.len(), 2);
     }
 
     #[tokio::test]
-    async fn test_upsert_dispatcher() {
+    async fn test_upsert_fleet_user() {
         let (db, _dir) = test_db().await;
-        let mut d = sample_dispatcher();
-        db.insert_dispatcher(&d).await.unwrap();
+        let mut d = sample_fleet_user();
+        db.insert_fleet_user(&d).await.unwrap();
         d.name = "Updated Name".into();
         d.updated_at = Utc::now();
-        db.upsert_dispatcher(&d).await.unwrap();
-        let fetched = db.get_dispatcher_by_id(d.id).await.unwrap();
+        db.upsert_fleet_user(&d).await.unwrap();
+        let fetched = db.get_fleet_user_by_id(d.id).await.unwrap();
         assert_eq!(fetched.name, "Updated Name");
     }
 
     #[tokio::test]
-    async fn test_upsert_and_get_dispatcher_credentials() {
+    async fn test_upsert_and_get_fleet_user_credentials() {
         let (db, _dir) = test_db().await;
-        let dispatcher_id = Uuid::new_v4();
-        let creds = DispatcherCredentials {
-            dispatcher_id,
+        let fleet_user_id = Uuid::new_v4();
+        let creds = FleetUserCredentials {
+            fleet_user_id,
             password_hash: "$2b$12$hashedpassword".into(),
             token_version: 1,
             failed_attempts: 0,
             locked_until: None,
             updated_at: Utc::now(),
         };
-        db.upsert_dispatcher_credentials(&creds).await.unwrap();
-        let fetched = db.get_dispatcher_credentials(dispatcher_id).await.unwrap().unwrap();
-        assert_eq!(fetched.dispatcher_id, dispatcher_id);
+        db.upsert_fleet_user_credentials(&creds).await.unwrap();
+        let fetched = db.get_fleet_user_credentials(fleet_user_id).await.unwrap().unwrap();
+        assert_eq!(fetched.fleet_user_id, fleet_user_id);
         assert_eq!(fetched.password_hash, "$2b$12$hashedpassword");
         assert_eq!(fetched.token_version, 1);
         assert_eq!(fetched.failed_attempts, 0);
@@ -369,28 +369,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_dispatcher_credentials_update_via_upsert() {
+    async fn test_fleet_user_credentials_update_via_upsert() {
         let (db, _dir) = test_db().await;
-        let dispatcher_id = Uuid::new_v4();
-        let creds = DispatcherCredentials {
-            dispatcher_id,
+        let fleet_user_id = Uuid::new_v4();
+        let creds = FleetUserCredentials {
+            fleet_user_id,
             password_hash: "$2b$12$original".into(),
             token_version: 1,
             failed_attempts: 0,
             locked_until: None,
             updated_at: Utc::now(),
         };
-        db.upsert_dispatcher_credentials(&creds).await.unwrap();
+        db.upsert_fleet_user_credentials(&creds).await.unwrap();
 
-        let updated = DispatcherCredentials {
+        let updated = FleetUserCredentials {
             password_hash: "$2b$12$updated".into(),
             token_version: 2,
             failed_attempts: 1,
             ..creds
         };
-        db.upsert_dispatcher_credentials(&updated).await.unwrap();
+        db.upsert_fleet_user_credentials(&updated).await.unwrap();
 
-        let fetched = db.get_dispatcher_credentials(dispatcher_id).await.unwrap().unwrap();
+        let fetched = db.get_fleet_user_credentials(fleet_user_id).await.unwrap().unwrap();
         assert_eq!(fetched.token_version, 2);
         assert_eq!(fetched.failed_attempts, 1);
         assert_eq!(fetched.password_hash, "$2b$12$updated");

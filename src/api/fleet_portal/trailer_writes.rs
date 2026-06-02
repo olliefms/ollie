@@ -1,14 +1,14 @@
-// src/api/dispatcher_portal/trailer_writes.rs
+// src/api/fleet_portal/trailer_writes.rs
 //
-// Dispatcher-portal trailer write endpoints (#269):
-//   - POST  /dispatch/api/v1/trailers
-//   - PATCH /dispatch/api/v1/trailers/{id}
+// Fleet-portal trailer write endpoints (#269):
+//   - POST  /fleet/api/v1/trailers
+//   - PATCH /fleet/api/v1/trailers/{id}
 //
 // Mirrors the admin behaviour in `src/api/trailers.rs` but exposes it under
-// the dispatcher JWT instead of the admin Bearer key. The `apply_*` helpers
+// the fleet user JWT instead of the admin Bearer key. The `apply_*` helpers
 // are shared with the MCP tools so validation and side effects (embedding
 // refresh) stay in one place. `status` cannot be set on create or via PATCH
-// through these endpoints — the dispatcher cannot manually transition a
+// through these endpoints — the fleet_user cannot manually transition a
 // trailer to `assigned`/`dispatched`; those are owned by the trip lifecycle.
 
 use axum::{
@@ -17,7 +17,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use chrono::Utc;
 use serde::Deserialize;
 use serde_json::Value;
@@ -31,7 +31,7 @@ use crate::{
     AppState,
 };
 
-/// Strict create body — rejects unknown fields so dispatcher agents can't
+/// Strict create body — rejects unknown fields so fleet_user agents can't
 /// accidentally pass admin-only or stale fields (e.g. `status`, `embedding`,
 /// `owner_id`) and have them silently ignored.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -62,7 +62,7 @@ pub struct CreateTrailerBody {
 }
 
 /// Strict patch body — rejects unknown fields. All fields optional; omitted
-/// fields are left unchanged. `status` is intentionally omitted: dispatcher
+/// fields are left unchanged. `status` is intentionally omitted: fleet_user
 /// agents cannot manually change a trailer's lifecycle status.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -95,7 +95,7 @@ pub struct PatchTrailerBody {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trailers",
+    path = "/fleet/api/v1/trailers",
     request_body(content = CreateTrailerBody, description = "Trailer to create"),
     responses(
         (status = 201, description = "Created trailer record", body = TrailerRecord),
@@ -103,11 +103,11 @@ pub struct PatchTrailerBody {
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn create_trailer_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trailers:write")?;
@@ -117,7 +117,7 @@ pub async fn create_trailer_handler(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/trailers/{id}",
+    path = "/fleet/api/v1/trailers/{id}",
     params(("id" = Uuid, Path, description = "Trailer UUID")),
     request_body(content = PatchTrailerBody, description = "Fields to update — all optional"),
     responses(
@@ -127,11 +127,11 @@ pub async fn create_trailer_handler(
         (status = 404, description = "Trailer not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn update_trailer_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -142,7 +142,7 @@ pub async fn update_trailer_handler(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/trailers/{id}",
+    path = "/fleet/api/v1/trailers/{id}",
     params(("id" = Uuid, Path, description = "Trailer UUID")),
     responses(
         (status = 204, description = "Soft-deleted (status set to inactive)"),
@@ -150,11 +150,11 @@ pub async fn update_trailer_handler(
         (status = 404, description = "Trailer not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_trailer_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trailers:delete")?;
