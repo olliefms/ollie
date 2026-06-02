@@ -2,12 +2,18 @@
 # Build and publish the Ollie container image to GitHub Container Registry (GHCR).
 # - version tags (v*) -> semver tags (e.g. 2.0.0, 2.0, 2) + latest
 # - pushes to main    -> edge
+# - manual dispatch   -> (re)build an existing tag and publish its semver tags
 name: Docker
 
 on:
   push:
     branches: [main]
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to build and publish (e.g. v2.0.0). Publishes version, major.minor, major, and latest."
+        required: true
 
 permissions:
   contents: read
@@ -21,7 +27,20 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     steps:
+      - name: Validate dispatch tag
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          # Only allow well-formed version tags as the checkout ref.
+          echo "$TAG" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$' || {
+            echo "::error::tag '$TAG' is not a valid version tag (expected vX.Y.Z)"; exit 1; }
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # On manual dispatch, build the requested tag; otherwise the triggering ref.
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
+          fetch-depth: 0
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -33,8 +52,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Push-triggered builds derive tags + labels from the git ref.
       - name: Docker metadata
         id: meta
+        if: github.event_name != 'workflow_dispatch'
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -46,13 +67,33 @@ jobs:
             type=semver,pattern={{major}}
             type=edge,branch=main
 
+      # Manual dispatch: derive the same semver tag set from the input.
+      - name: Compute tags (manual dispatch)
+        id: manual
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ inputs.tag }}
+          IMG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          V="${TAG#v}"            # 2.0.0
+          MAJOR="${V%%.*}"        # 2
+          MINOR="${V%.*}"         # 2.0
+          {
+            echo "tags<<EOF"
+            echo "$IMG:$V"
+            echo "$IMG:$MINOR"
+            echo "$IMG:$MAJOR"
+            echo "$IMG:latest"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags || steps.manual.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
