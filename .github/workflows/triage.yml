@@ -38,7 +38,7 @@ jobs:
       # ── 2. Checkout (sparse — only trust-list) ──────────────────────────────
       - name: Checkout
         if: steps.circuit_breaker.outputs.paused != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           sparse-checkout: .github/trust-list.yml
           sparse-checkout-cone-mode: false
@@ -103,7 +103,7 @@ jobs:
         if: |
           steps.circuit_breaker.outputs.paused != 'true' &&
           steps.trust.outputs.tier != 'blocked'
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@787c5a0ce96a9a6cfb050ea0c8f4c05f2447c251 # v1
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
