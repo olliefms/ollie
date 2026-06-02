@@ -62,7 +62,7 @@ ollama pull moondream          # vision (images, scanned PDFs)
 ## Quick start with Docker Compose
 
 ```bash
-git clone https://github.com/ergofobe/ollie.git
+git clone https://github.com/olliefms/ollie.git
 cd ollie
 
 # Copy the example env and fill in the required secrets
@@ -78,7 +78,7 @@ Ollama container and pulls the required models on first boot.
 ## Building from source
 
 ```bash
-git clone https://github.com/ergofobe/ollie.git
+git clone https://github.com/olliefms/ollie.git
 cd ollie
 
 cp .env.example .env
