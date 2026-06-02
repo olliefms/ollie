@@ -1,5 +1,9 @@
 /target
 .env
+*.pem
+*.key
+*.p12
+*.pfx
 data/
 .superpowers/
 .worktrees/
