@@ -25,15 +25,14 @@ feature-complete **and** dispatcher-account provisioning has a non-admin home.
 
 This spec covers **B only**.
 
-## FOSS / commercial boundary (hard constraint)
+## Scope boundary (hard constraint)
 
-Per #233, the dividing line between the FOSS edition and the future commercial product is
-**multi-tenancy itself**. Multi-tenant org/account code must NOT live in this repo.
+This design targets **single-fleet scope**. Multi-tenancy is intentionally out of scope for
+this repository; per-tenant/org concerns are handled outside it.
 
 Therefore everything here is **single-fleet**: users and roles exist within one implicit
-fleet. There is **no `fleet` entity, no `fleet_id`, no tenancy plumbing**. The commercial
-SaaS layers tenancy on top out-of-repo. "Fleet owner" here means "the root user of this
-single-fleet instance," not "tenant."
+fleet. There is **no `fleet` entity, no `fleet_id`, no tenancy plumbing**. "Fleet owner"
+here means "the root user of this single-fleet instance," not "tenant."
 
 ## Goals
 
@@ -48,7 +47,7 @@ single-fleet instance," not "tenant."
 
 ## Non-goals (explicitly out of scope for B)
 
-- Multi-tenancy / `fleet_id` of any kind (FOSS/commercial boundary).
+- Multi-tenancy / `fleet_id` of any kind (out of scope for this repository).
 - The `/dispatch`→`/fleet` and `dispatcher`→`user` **rename** — a large mechanical rename with
   zero behavior change; its own issue.
 - **Per-API-key scope assignment UI (#243)** — B ships the scope primitive and enforcement and

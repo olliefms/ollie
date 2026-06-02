@@ -1,7 +1,7 @@
 # Agent Automation Architecture
 
 **Status:** Design — pre-implementation
-**Scope:** Ollie repository (initial), Spanish Academy Live (second deployment), generalizable to SMB fractional CTO engagements
+**Scope:** Ollie repository (generalizable to other projects)
 **Author:** Jim (ergophobe)
 **Last revised:** May 2026
 
@@ -11,7 +11,7 @@
 
 This document specifies the architecture for an automated issue-to-PR workflow driven by Claude Code agents, deployed initially to the Ollie repository. The goal is to compress the solo developer's workflow from a multi-session `/sprint-plan` → `/sprint-execute` → `/sprint-finalize` loop into an event-driven pipeline where agents handle triage, implementation, and review, with human-in-the-loop checkpoints calibrated to risk.
 
-The architecture is intentionally portable. Patterns codified here are intended to be reused — under different billing and identity contexts — when deployed to client repositories as part of fractional CTO engagements.
+The architecture is intentionally portable. Patterns codified here are intended to be reused across other repositories.
 
 ---
 
@@ -66,18 +66,16 @@ Decision: Use `anthropics/claude-code-action@v1` triggered by GitHub Actions, au
 
 **Why not Claude Code Routines:**
 
-- 15 runs/day cap on Max would be exhausted by a single active day on Ollie alone, before scaling to multiple projects or clients.
+- 15 runs/day cap on Max would be exhausted by a single active day on Ollie alone.
 - Research-preview status means features can be restructured without notice — wrong foundation for production.
 - Identity blur: routine actions appear under the personal account, breaking attribution for audit purposes.
 - No retry semantics; "green" status indicates infrastructure success only, not task success.
-- Individual-account-bound; cannot legitimately be used to run automation on a client's behalf.
+- Individual-account-bound; cannot be legitimately used to run automation across multiple repositories.
 
 **Why not API key:**
 
 - Max OAuth is functionally identical for single-user workloads and uses already-paid subscription quota.
 - Switching between OAuth and direct API key is one line of YAML, so this is not a lock-in decision.
-
-**Portability note:** For client deployments, this workflow architecture is identical; only the secret name and identity change. Clients deploy with their own API key on their own GitHub org with their own GitHub App identity for the bot.
 
 **Bot identity:** A dedicated GitHub App (e.g., `ollie-agent[bot]`) is created so agent commits and comments are visibly attributable to the automation rather than the human operator. This is essential for audit clarity and is solved structurally by GHA in a way that Routines cannot match.
 
@@ -221,16 +219,15 @@ These are the deliverables of the next implementation session.
 
 ## 14. Portability Notes
 
-This architecture is designed to be reused across SMB fractional CTO engagements. When deployed to a client repo:
+This architecture is designed to be reusable across other repositories. When porting to a new repo:
 
-- **Execution layer:** Identical GHA workflows, with `anthropic_api_key` replacing `claude_code_oauth_token`. Client pays for and owns their inference billing.
-- **Identity:** A new GitHub App is provisioned within the client's GitHub org, named for their context. All agent actions appear under the client's bot identity, not the operator's.
-- **Trust list:** Initialized with the client's maintainers; tier definitions ported as-is.
+- **Execution layer:** Identical GHA workflows, with `anthropic_api_key` replacing `claude_code_oauth_token` depending on auth preference.
+- **Identity:** A new GitHub App is provisioned within the target GitHub org. All agent actions appear under that bot identity.
+- **Trust list:** Initialized with the repo's maintainers; tier definitions ported as-is.
 - **AGENTS.md:** Shippability principles port verbatim; project-specific specifics layered on top.
-- **Project board:** Template structure ported; populated with client's labels and milestones.
-- **Operator role:** Configuration, calibration, periodic audit of metrics, evolution of the shippability bar. The operator does not run the client's automation; the client's infrastructure does.
+- **Project board:** Template structure ported; populated with the repo's labels and milestones.
 
-The repeatable artifacts are this design document, the workflow YAML templates, the `AGENTS.md` template, the trust-list schema, and the Project board template. These constitute the fractional CTO playbook.
+The reusable artifacts are this design document, the workflow YAML templates, the `AGENTS.md` template, the trust-list schema, and the Project board template.
 
 ---
 

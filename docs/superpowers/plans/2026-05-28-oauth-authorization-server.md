@@ -477,7 +477,7 @@ use axum::{routing::{get, post}, Router};
 
 pub const DISPATCH_MCP_PATH: &str = "/dispatch/mcp";
 
-/// Absolute issuer/base URL from config (e.g. https://ollie.oberonlogistics.com).
+/// Absolute issuer/base URL from config (e.g. https://your-ollie-instance.example.com).
 pub fn issuer(state: &AppState) -> String {
     state.config.public_base_url.trim_end_matches('/').to_string()
 }

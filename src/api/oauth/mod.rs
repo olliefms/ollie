@@ -12,7 +12,7 @@ use axum::{routing::{get, post}, Router};
 
 pub const FLEET_MCP_PATH: &str = "/fleet/mcp";
 
-/// Absolute issuer/base URL from config (e.g. https://ollie.oberonlogistics.com).
+/// Absolute issuer/base URL from config (e.g. https://your-ollie-instance.example.com).
 pub fn issuer(state: &AppState) -> String {
     state.config.public_base_url.trim_end_matches('/').to_string()
 }
