@@ -1,12 +1,12 @@
-// src/api/dispatcher_portal/users.rs
+// src/api/fleet_portal/users.rs
 //
-// Fleet users management surface (#331), on the dispatcher portal — HTTP + MCP.
-// This replaces the admin `/api/v1/dispatchers*` provisioning path with a
-// dispatcher-portal surface gated by `users:*` scopes (owner + fleet_manager
+// Fleet users management surface (#331), on the fleet portal — HTTP + MCP.
+// This replaces the admin `/api/v1/fleet_users*` provisioning path with a
+// fleet_user-portal surface gated by `users:*` scopes (owner + fleet_manager
 // only) and layered with owner-protection rules.
 //
-// The underlying model is still the existing `DispatcherRecord` (users ==
-// dispatchers-with-roles). The dispatcher→user rename is a separate future
+// The underlying model is still the existing `FleetUserRecord` (users ==
+// fleet_users-with-roles). The fleet_user→user rename is a separate future
 // issue; here we keep the record/table name and expose it as "users".
 //
 // Business logic lives in the `apply_*` shared fns so the MCP tools in mcp.rs
@@ -17,7 +17,7 @@
 use crate::{
     error::AppError,
     models::{
-        permission::Role, DispatcherCredentials, DispatcherRecord, DispatcherStatus,
+        permission::Role, FleetUserCredentials, FleetUserRecord, FleetUserStatus,
     },
     AppState,
 };
@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 
 fn normalize_email(email: &str) -> String {
     email.trim().to_lowercase()
@@ -53,7 +53,7 @@ pub struct UpdateUserRequest {
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
-    pub status: Option<DispatcherStatus>,
+    pub status: Option<FleetUserStatus>,
     #[serde(default)]
     pub role: Option<Role>,
     #[serde(default)]
@@ -67,7 +67,7 @@ pub struct ResetUserPasswordRequest {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UserListResponse {
-    pub users: Vec<DispatcherRecord>,
+    pub users: Vec<FleetUserRecord>,
     pub returned: usize,
 }
 
@@ -102,7 +102,7 @@ fn validate_grantable_scopes(
     Ok(())
 }
 
-/// bcrypt(12) a password off the async runtime, mirroring admin create_dispatcher.
+/// bcrypt(12) a password off the async runtime, mirroring admin create_fleet_user.
 async fn hash_password(password: String) -> Result<String, AppError> {
     tokio::task::spawn_blocking(move || bcrypt::hash(&password, 12u32))
         .await
@@ -114,12 +114,12 @@ async fn hash_password(password: String) -> Result<String, AppError> {
 // Shared apply_* logic (HTTP handlers + MCP tools both call these)
 // ---------------------------------------------------------------------------
 
-pub async fn apply_list_users(state: &AppState) -> Result<Vec<DispatcherRecord>, AppError> {
-    state.db.list_dispatchers().await
+pub async fn apply_list_users(state: &AppState) -> Result<Vec<FleetUserRecord>, AppError> {
+    state.db.list_fleet_users().await
 }
 
-pub async fn apply_get_user(state: &AppState, id: Uuid) -> Result<DispatcherRecord, AppError> {
-    state.db.get_dispatcher_by_id(id).await
+pub async fn apply_get_user(state: &AppState, id: Uuid) -> Result<FleetUserRecord, AppError> {
+    state.db.get_fleet_user_by_id(id).await
 }
 
 /// Create a user. `role=owner` is rejected — the owner is established by
@@ -129,7 +129,7 @@ pub async fn apply_create_user(
     caller_effective: &[String],
     caller_role: Role,
     req: CreateUserRequest,
-) -> Result<DispatcherRecord, AppError> {
+) -> Result<FleetUserRecord, AppError> {
     if req.role == Role::Owner {
         return Err(AppError::Forbidden(
             "cannot create a user with role=owner; ownership is established by bootstrap or transfer".into(),
@@ -141,34 +141,34 @@ pub async fn apply_create_user(
     }
 
     let email = normalize_email(&req.email);
-    if state.db.get_dispatcher_by_email(&email).await?.is_some() {
+    if state.db.get_fleet_user_by_email(&email).await?.is_some() {
         return Err(AppError::Conflict("email already in use".into()));
     }
 
     let now = Utc::now();
     let id = Uuid::new_v4();
-    let record = DispatcherRecord {
+    let record = FleetUserRecord {
         id,
         email,
         name: req.name,
-        status: DispatcherStatus::Active,
+        status: FleetUserStatus::Active,
         role: req.role,
         extra_scopes: req.extra_scopes.unwrap_or_default(),
         created_at: now,
         updated_at: now,
     };
-    state.db.insert_dispatcher(&record).await?;
+    state.db.insert_fleet_user(&record).await?;
 
     let password_hash = hash_password(req.password).await?;
-    let creds = DispatcherCredentials {
-        dispatcher_id: id,
+    let creds = FleetUserCredentials {
+        fleet_user_id: id,
         password_hash,
         token_version: 0,
         failed_attempts: 0,
         locked_until: None,
         updated_at: now,
     };
-    state.db.upsert_dispatcher_credentials(&creds).await?;
+    state.db.upsert_fleet_user_credentials(&creds).await?;
 
     Ok(record)
 }
@@ -186,12 +186,12 @@ pub async fn apply_update_user(
     caller_role: Role,
     id: Uuid,
     req: UpdateUserRequest,
-) -> Result<DispatcherRecord, AppError> {
+) -> Result<FleetUserRecord, AppError> {
     if let Some(extra) = &req.extra_scopes {
         validate_grantable_scopes(caller_effective, caller_role, extra)?;
     }
 
-    let mut record = state.db.get_dispatcher_by_id(id).await?;
+    let mut record = state.db.get_fleet_user_by_id(id).await?;
     let was_owner = record.role == Role::Owner;
 
     // Ownership transfer: a PATCH setting role=owner on a DIFFERENT user.
@@ -207,7 +207,7 @@ pub async fn apply_update_user(
     // Guard against demoting or deactivating the owner.
     if was_owner {
         let demoting = matches!(req.role, Some(r) if r != Role::Owner);
-        let deactivating = req.status == Some(DispatcherStatus::Inactive);
+        let deactivating = req.status == Some(FleetUserStatus::Inactive);
         if demoting || deactivating {
             // Only an ownership transfer can change who the owner is; a plain
             // update never demotes/deactivates an owner — not even by an owner,
@@ -231,7 +231,7 @@ pub async fn apply_update_user(
         record.extra_scopes = extra_scopes;
     }
     record.updated_at = Utc::now();
-    state.db.upsert_dispatcher(&record).await?;
+    state.db.upsert_fleet_user(&record).await?;
     Ok(record)
 }
 
@@ -244,7 +244,7 @@ async fn apply_ownership_transfer(
     caller_id: Option<Uuid>,
     target_id: Uuid,
     req: UpdateUserRequest,
-) -> Result<DispatcherRecord, AppError> {
+) -> Result<FleetUserRecord, AppError> {
     let caller_id = caller_id.ok_or_else(|| {
         AppError::Forbidden("ownership transfer requires an identified owner caller".into())
     })?;
@@ -256,8 +256,8 @@ async fn apply_ownership_transfer(
         ));
     }
 
-    let mut target = state.db.get_dispatcher_by_id(target_id).await?;
-    let mut caller = state.db.get_dispatcher_by_id(caller_id).await?;
+    let mut target = state.db.get_fleet_user_by_id(target_id).await?;
+    let mut caller = state.db.get_fleet_user_by_id(caller_id).await?;
     if caller.role != Role::Owner {
         return Err(AppError::Forbidden(
             "only the current owner can transfer ownership".into(),
@@ -276,12 +276,12 @@ async fn apply_ownership_transfer(
     }
     target.role = Role::Owner;
     target.updated_at = Utc::now();
-    state.db.upsert_dispatcher(&target).await?;
+    state.db.upsert_fleet_user(&target).await?;
 
     // Demote the prior owner to fleet_manager.
     caller.role = Role::FleetManager;
     caller.updated_at = Utc::now();
-    state.db.upsert_dispatcher(&caller).await?;
+    state.db.upsert_fleet_user(&caller).await?;
 
     Ok(target)
 }
@@ -293,7 +293,7 @@ pub async fn apply_reset_password(
     id: Uuid,
     password: String,
 ) -> Result<(), AppError> {
-    let target = state.db.get_dispatcher_by_id(id).await?;
+    let target = state.db.get_fleet_user_by_id(id).await?;
 
     // Only the current owner may reset the owner's password — otherwise a
     // fleet_manager (who holds users:write) could take over the owner account.
@@ -305,19 +305,19 @@ pub async fn apply_reset_password(
 
     let password_hash = hash_password(password).await?;
     let now = Utc::now();
-    let new_token_version = match state.db.get_dispatcher_credentials(id).await? {
+    let new_token_version = match state.db.get_fleet_user_credentials(id).await? {
         Some(existing) => existing.token_version + 1,
         None => 0,
     };
-    let creds = DispatcherCredentials {
-        dispatcher_id: id,
+    let creds = FleetUserCredentials {
+        fleet_user_id: id,
         password_hash,
         token_version: new_token_version,
         failed_attempts: 0,
         locked_until: None,
         updated_at: now,
     };
-    state.db.upsert_dispatcher_credentials(&creds).await?;
+    state.db.upsert_fleet_user_credentials(&creds).await?;
     Ok(())
 }
 
@@ -327,7 +327,7 @@ pub async fn apply_reset_password(
 /// immutable except via ownership transfer, which demotes the prior owner to
 /// fleet_manager; only then can that (now non-owner) account be deactivated.
 pub async fn apply_delete_user(state: &AppState, id: Uuid) -> Result<(), AppError> {
-    let mut record = state.db.get_dispatcher_by_id(id).await?;
+    let mut record = state.db.get_fleet_user_by_id(id).await?;
 
     if record.role == Role::Owner {
         return Err(AppError::Forbidden(
@@ -335,33 +335,33 @@ pub async fn apply_delete_user(state: &AppState, id: Uuid) -> Result<(), AppErro
         ));
     }
 
-    if record.status != DispatcherStatus::Inactive {
-        record.status = DispatcherStatus::Inactive;
+    if record.status != FleetUserStatus::Inactive {
+        record.status = FleetUserStatus::Inactive;
         record.updated_at = Utc::now();
-        state.db.upsert_dispatcher(&record).await?;
+        state.db.upsert_fleet_user(&record).await?;
     }
 
     // Invalidate outstanding JWTs by bumping the credential token_version.
-    if let Some(mut creds) = state.db.get_dispatcher_credentials(id).await? {
+    if let Some(mut creds) = state.db.get_fleet_user_credentials(id).await? {
         creds.token_version += 1;
         creds.updated_at = Utc::now();
-        state.db.upsert_dispatcher_credentials(&creds).await?;
+        state.db.upsert_fleet_user_credentials(&creds).await?;
     }
     Ok(())
 }
 
 /// Resolve the caller's identity + current role from their claims, for
-/// owner-protection/transfer checks. The caller's `dispatcher_id` (absent on an
+/// owner-protection/transfer checks. The caller's `fleet_user_id` (absent on an
 /// API-key principal with no parseable id) is looked up to read `role` fresh
 /// from the DB; failures fall back to the least-privileged `Dispatcher`.
 pub async fn caller_identity(
     state: &AppState,
-    claims: &DispatcherClaims,
+    claims: &FleetUserClaims,
 ) -> (Option<Uuid>, Role) {
-    let Ok(id) = claims.dispatcher_id.parse::<Uuid>() else {
+    let Ok(id) = claims.fleet_user_id.parse::<Uuid>() else {
         return (None, Role::Dispatcher);
     };
-    match state.db.get_dispatcher_by_id(id).await {
+    match state.db.get_fleet_user_by_id(id).await {
         Ok(record) => (Some(id), record.role),
         Err(_) => (Some(id), Role::Dispatcher),
     }
@@ -373,7 +373,7 @@ pub async fn caller_identity(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/users",
+    path = "/fleet/api/v1/users",
     responses(
         (status = 200, description = "List of fleet users", body = UserListResponse),
         (status = 401, description = "Unauthorized"),
@@ -384,7 +384,7 @@ pub async fn caller_identity(
 )]
 pub async fn list_users(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("users:read")?;
     let users = apply_list_users(&state).await?;
@@ -394,10 +394,10 @@ pub async fn list_users(
 
 #[utoipa::path(
     get,
-    path = "/dispatch/api/v1/users/{id}",
+    path = "/fleet/api/v1/users/{id}",
     params(("id" = Uuid, Path, description = "User UUID")),
     responses(
-        (status = 200, description = "User record", body = DispatcherRecord),
+        (status = 200, description = "User record", body = FleetUserRecord),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — missing users:read"),
         (status = 404, description = "Not found"),
@@ -407,7 +407,7 @@ pub async fn list_users(
 )]
 pub async fn get_user(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("users:read")?;
@@ -417,10 +417,10 @@ pub async fn get_user(
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/users",
+    path = "/fleet/api/v1/users",
     request_body(content = CreateUserRequest, description = "User to create"),
     responses(
-        (status = 201, description = "Created user record", body = DispatcherRecord),
+        (status = 201, description = "Created user record", body = FleetUserRecord),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — missing users:write, or role=owner"),
@@ -431,7 +431,7 @@ pub async fn get_user(
 )]
 pub async fn create_user(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Json(body): Json<CreateUserRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("users:write")?;
@@ -443,11 +443,11 @@ pub async fn create_user(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/users/{id}",
+    path = "/fleet/api/v1/users/{id}",
     params(("id" = Uuid, Path, description = "User UUID")),
     request_body(content = UpdateUserRequest, description = "Fields to update — all optional"),
     responses(
-        (status = 200, description = "Updated user record", body = DispatcherRecord),
+        (status = 200, description = "Updated user record", body = FleetUserRecord),
         (status = 401, description = "Unauthorized"),
         (status = 403, description = "Forbidden — missing users:write or owner-protection"),
         (status = 404, description = "Not found"),
@@ -457,7 +457,7 @@ pub async fn create_user(
 )]
 pub async fn update_user(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateUserRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -477,7 +477,7 @@ pub async fn update_user(
 
 #[utoipa::path(
     put,
-    path = "/dispatch/api/v1/users/{id}/password",
+    path = "/fleet/api/v1/users/{id}/password",
     params(("id" = Uuid, Path, description = "User UUID")),
     request_body(content = ResetUserPasswordRequest, description = "New password"),
     responses(
@@ -491,7 +491,7 @@ pub async fn update_user(
 )]
 pub async fn reset_user_password(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<ResetUserPasswordRequest>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -503,7 +503,7 @@ pub async fn reset_user_password(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/users/{id}",
+    path = "/fleet/api/v1/users/{id}",
     params(("id" = Uuid, Path, description = "User UUID")),
     responses(
         (status = 204, description = "Deactivated (status → inactive); outstanding JWTs invalidated"),
@@ -516,7 +516,7 @@ pub async fn reset_user_password(
 )]
 pub async fn delete_user(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("users:delete")?;
@@ -527,13 +527,13 @@ pub async fn delete_user(
 pub fn router() -> Router<AppState> {
     use axum::routing::{get, put};
     Router::new()
-        .route("/dispatch/api/v1/users", get(list_users).post(create_user))
+        .route("/fleet/api/v1/users", get(list_users).post(create_user))
         .route(
-            "/dispatch/api/v1/users/{id}",
+            "/fleet/api/v1/users/{id}",
             get(get_user).patch(update_user).delete(delete_user),
         )
         .route(
-            "/dispatch/api/v1/users/{id}/password",
+            "/fleet/api/v1/users/{id}/password",
             put(reset_user_password),
         )
 }

@@ -1,10 +1,10 @@
-// src/api/dispatcher_portal/trip_writes.rs
+// src/api/fleet_portal/trip_writes.rs
 //
-// Dispatcher-portal trip write endpoints (#259, #262):
-//   - POST /dispatch/api/v1/trips/{id}/recalculate-miles
-//   - PATCH /dispatch/api/v1/trips/{id}
+// Fleet-portal trip write endpoints (#259, #262):
+//   - POST /fleet/api/v1/trips/{id}/recalculate-miles
+//   - PATCH /fleet/api/v1/trips/{id}
 //
-// Both endpoints share the same auth middleware as the rest of dispatcher_portal.
+// Both endpoints share the same auth middleware as the rest of fleet_portal.
 // Mileage (deadhead_miles / loaded_miles / total_miles / segment_miles) is NEVER
 // directly settable through these endpoints — only ORS persists those values via
 // `compute_and_persist_mileage`.
@@ -15,7 +15,7 @@ use axum::{
     response::IntoResponse,
     Extension, Json,
 };
-use super::jwt::DispatcherClaims;
+use super::jwt::FleetUserClaims;
 use serde::Deserialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -26,7 +26,7 @@ use crate::{
     error::AppError,
 };
 
-use super::data::{build_trip_detail, DispatcherTripListItem};
+use super::data::{build_trip_detail, FleetTripListItem};
 
 /// Result of applying a trip patch — the up-to-date detail plus an optional
 /// warning when a side-effect (e.g. mileage recompute) failed *after* the
@@ -35,7 +35,7 @@ use super::data::{build_trip_detail, DispatcherTripListItem};
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct PatchTripResult {
     #[serde(flatten)]
-    pub detail: DispatcherTripListItem,
+    pub detail: FleetTripListItem,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mileage_recompute_warning: Option<String>,
 }
@@ -83,7 +83,7 @@ pub struct PatchTripBody {
 
 #[utoipa::path(
     post,
-    path = "/dispatch/api/v1/trips/{id}/recalculate-miles",
+    path = "/fleet/api/v1/trips/{id}/recalculate-miles",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = RecalculateMilesBody, description = "Optional { force: bool }"),
     responses(
@@ -93,11 +93,11 @@ pub struct PatchTripBody {
         (status = 409, description = "ORS unavailable or facility coordinates missing"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn recalculate_miles_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     body: Option<Json<RecalculateMilesBody>>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -123,7 +123,7 @@ pub async fn recalculate_miles_handler(
 
 #[utoipa::path(
     patch,
-    path = "/dispatch/api/v1/trips/{id}",
+    path = "/fleet/api/v1/trips/{id}",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = PatchTripBody, description = "Allowed fields: notes, previous_trip_id"),
     responses(
@@ -134,11 +134,11 @@ pub async fn recalculate_miles_handler(
         (status = 404, description = "Trip not found"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn patch_trip_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
     Json(body): Json<serde_json::Value>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -244,7 +244,7 @@ pub async fn apply_trip_patch(
     if !was_settled && parsed.settlement_ref.is_some() {
         let live = state.db.get_trip(id).await?;
         let snapshot =
-            crate::api::dispatcher_portal::data::driver_pay_for_record(state, &live).await;
+            crate::api::fleet_portal::data::driver_pay_for_record(state, &live).await;
         state.db.update_trip_settlement(
             id,
             parsed.settlement_ref.clone(),
@@ -269,7 +269,7 @@ pub async fn apply_trip_patch(
 
 #[utoipa::path(
     delete,
-    path = "/dispatch/api/v1/trips/{id}",
+    path = "/fleet/api/v1/trips/{id}",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
         (status = 204, description = "Deleted (soft-cancelled if active; hard-deleted if already cancelled)"),
@@ -278,11 +278,11 @@ pub async fn apply_trip_patch(
         (status = 409, description = "Cannot delete a trip that is in_transit, delivered, or completed"),
     ),
     security(("BearerAuth" = [])),
-    tag = "dispatch"
+    tag = "fleet"
 )]
 pub async fn delete_trip_handler(
     State(state): State<AppState>,
-    Extension(claims): Extension<DispatcherClaims>,
+    Extension(claims): Extension<FleetUserClaims>,
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:delete")?;

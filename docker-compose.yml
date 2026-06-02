@@ -7,7 +7,7 @@ services:
     environment:
       ADMIN_API_KEY: ${ADMIN_API_KEY:?ADMIN_API_KEY is required}
       DRIVER_JWT_SECRET: ${DRIVER_JWT_SECRET:?DRIVER_JWT_SECRET is required (min 32 bytes)}
-      DISPATCHER_JWT_SECRET: ${DISPATCHER_JWT_SECRET:?DISPATCHER_JWT_SECRET is required (min 32 bytes)}
+      FLEET_JWT_SECRET: ${FLEET_JWT_SECRET:?FLEET_JWT_SECRET is required (min 32 bytes)}
       DRIVER_RP_ID: ${DRIVER_RP_ID:-localhost}
       DRIVER_RP_ORIGIN: ${DRIVER_RP_ORIGIN:-http://localhost:3000}
       OLLIE_PUBLIC_BASE_URL: ${OLLIE_PUBLIC_BASE_URL:-}

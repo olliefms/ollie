@@ -320,7 +320,7 @@ pub async fn list_available_trailers(
 /// self-recorded equipment.
 ///
 /// `Planned` is included because a trip can be created with driver/truck/trailer
-/// already attached (the dispatcher fills equipment at creation time) and never
+/// already attached (the fleet_user fills equipment at creation time) and never
 /// pass through the explicit `/assign` step — those trips show on the driver's
 /// "Upcoming" tab, so their equipment must surface here too. Without it the
 /// Equipment tab renders empty for any driver whose only assignment is a freshly

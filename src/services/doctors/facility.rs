@@ -10,7 +10,7 @@
 //! - `facility.geocode_retry` — when geocode_status=PermanentlyFailed AND the
 //!   address is non-empty AND no manual coords have been set, reset failure
 //!   state to Pending and push to the geocoding worker. Never overwrites
-//!   existing data. Setting manual coordinates remains a deliberate dispatcher
+//!   existing data. Setting manual coordinates remains a deliberate fleet_user
 //!   action via `update_facility` — the doctor does not invent coordinates.
 
 use uuid::Uuid;
@@ -25,7 +25,7 @@ use super::{DoctorReport, Finding, ProposedFix, Severity};
 
 // Continental-US bounding box (deliberately loose to allow AK/HI outliers as
 // warnings rather than hard errors). Tightening this would require a per-
-// region config the dispatcher doesn't have today.
+// region config the fleet_user doesn't have today.
 const US_LAT_MIN: f64 = 24.0;
 const US_LAT_MAX: f64 = 50.0;
 const US_LNG_MIN: f64 = -125.0;
@@ -63,7 +63,7 @@ fn check_coords_present(fac: &FacilityRecord, report: &mut DoctorReport) {
     if fac.lat.is_some() && fac.lng.is_some() { return; }
     let status = format!("{:?}", fac.geocode_status);
     let hint = match fac.geocode_status {
-        GeocodeStatus::Failed => "geocoder rejected the address; consider setting manual coordinates via PATCH /dispatch/api/v1/facilities/:id with lat+lng",
+        GeocodeStatus::Failed => "geocoder rejected the address; consider setting manual coordinates via PATCH /fleet/api/v1/facilities/:id with lat+lng",
         GeocodeStatus::Pending => "geocode is still pending; check the geocoding worker",
         _ => "facility has no coordinates",
     };

@@ -1,5 +1,5 @@
 // src/api/oauth/authorize.rs
-use crate::{models::{AuthorizationCode, DispatcherStatus}, AppState};
+use crate::{models::{AuthorizationCode, FleetUserStatus}, AppState};
 use axum::{
     extract::{Query, State},
     http::{header::LOCATION, StatusCode},
@@ -82,7 +82,7 @@ pub async fn authorize_page(
 input[type=email],input[type=password]{{display:block;width:100%;padding:.5rem;margin:.4rem 0;box-sizing:border-box}}
 button{{padding:.6rem 1rem;margin-right:.5rem}}</style></head>
 <body><h1>Connect to Ollie</h1>
-<p><strong>{client}</strong> wants to access your Ollie dispatcher account.</p>
+<p><strong>{client}</strong> wants to access your Ollie fleet account.</p>
 <form method="post" action="/oauth/authorize">
 {p_rt}{p_cid}{p_ru}{p_cc}{p_ccm}{p_state}{p_scope}{p_res}
 <label>Email<input type="email" name="email" required autofocus></label>
@@ -125,27 +125,27 @@ pub async fn authorize_decision(
     }
 
     let email = f.email.trim().to_lowercase();
-    let dispatcher = match state.db.get_dispatcher_by_email(&email).await {
+    let fleet_user = match state.db.get_fleet_user_by_email(&email).await {
         Ok(Some(d)) => d,
         _ => {
             // Equalize timing for unknown-email path: run bcrypt against a dummy hash (#107).
             let pw = f.password.clone();
-            let dummy = crate::api::dispatcher_portal::auth::dummy_hash().to_string();
+            let dummy = crate::api::fleet_portal::auth::dummy_hash().to_string();
             let _ = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &dummy)).await;
             return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
         }
     };
 
-    if dispatcher.status == DispatcherStatus::Inactive {
+    if fleet_user.status == FleetUserStatus::Inactive {
         return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
     }
 
-    let mut creds = match state.db.get_dispatcher_credentials(dispatcher.id).await {
+    let mut creds = match state.db.get_fleet_user_credentials(fleet_user.id).await {
         Ok(Some(c)) => c,
         _ => {
             // Equalize timing for missing-credentials path.
             let pw = f.password.clone();
-            let dummy = crate::api::dispatcher_portal::auth::dummy_hash().to_string();
+            let dummy = crate::api::fleet_portal::auth::dummy_hash().to_string();
             let _ = tokio::task::spawn_blocking(move || bcrypt::verify(&pw, &dummy)).await;
             return (StatusCode::UNAUTHORIZED, Html("<h1>Invalid credentials</h1>".to_string())).into_response();
         }
@@ -159,7 +159,7 @@ pub async fn authorize_decision(
 
     // Shared verify + lockout policy — increments failed_attempts / locks the
     // account on failure, so OAuth can't be used to bypass the login lockout.
-    let ok = match crate::api::dispatcher_portal::auth::verify_dispatcher_password(&state, &mut creds, &f.password).await {
+    let ok = match crate::api::fleet_portal::auth::verify_fleet_user_password(&state, &mut creds, &f.password).await {
         Ok(v) => v,
         Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Html("<h1>Server error</h1>".to_string())).into_response(),
     };
@@ -182,8 +182,8 @@ pub async fn authorize_decision(
         client_id: client.id,
         redirect_uri: f.redirect_uri.clone(),
         code_challenge: f.code_challenge.clone(),
-        subject_type: "dispatcher".into(),
-        subject_id: dispatcher.id,
+        subject_type: "fleet_user".into(),
+        subject_id: fleet_user.id,
         resource,
         scope: if f.scope.as_deref().unwrap_or("").is_empty() { None } else { f.scope.clone() },
         created_at: Utc::now(),

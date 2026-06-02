@@ -60,7 +60,7 @@ fn check_stops_facility_id(trip: &TripRecord, report: &mut DoctorReport) {
         severity: Severity::Error,
         description: format!(
             "{} stop(s) have no facility_id (sequences: {:?}). Mileage routing \
-             will silently no-op and the dispatcher UI cannot render the stop.",
+             will silently no-op and the fleet_user UI cannot render the stop.",
             missing.len(), missing,
         ),
         // No deterministic fix — facility selection requires human input.
@@ -115,7 +115,7 @@ fn check_status_actuals(trip: &TripRecord, report: &mut DoctorReport) {
                         severity: Severity::Warning,
                         description: format!(
                             "trip is in_transit but stop {} is missing actual_arrive \
-                             ({:?}) or actual_depart ({:?}). Driver/dispatcher likely \
+                             ({:?}) or actual_depart ({:?}). Driver/fleet_user likely \
                              advanced status without recording stop times.",
                             s.sequence, s.actual_arrive, s.actual_depart,
                         ),

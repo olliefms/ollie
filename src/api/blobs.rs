@@ -49,8 +49,8 @@ pub struct BlobUploadRequest {
 pub(crate) const PRESIGNED_UPLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
 
 /// Shared blob ingest: content-addressed dedup, storage write, DB insert, and
-/// pipeline enqueue. Used by the admin multipart upload, the dispatcher multipart
-/// upload, and the dispatcher presigned-URL upload so all three share one code path.
+/// pipeline enqueue. Used by the admin multipart upload, the fleet_user multipart
+/// upload, and the fleet_user presigned-URL upload so all three share one code path.
 ///
 /// Returns `201 Created` when an identical file (same SHA-256) was already stored
 /// (AI output copied from the existing record), or `202 Accepted` for a new file

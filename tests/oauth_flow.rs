@@ -12,7 +12,7 @@ use ollie::{
     api,
     config::Config,
     db::DbClient,
-    models::{DispatcherApiKey, DispatcherCredentials, DispatcherRecord, DispatcherStatus},
+    models::{FleetUserApiKey, FleetUserCredentials, FleetUserRecord, FleetUserStatus},
     storage::BlobStore,
     AppState,
 };
@@ -36,7 +36,7 @@ async fn build_app() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     std::env::set_var("DRIVER_JWT_SECRET",       "test-driver-jwt-secret-that-is-long-enough");
     std::env::set_var("DRIVER_RP_ID",            "localhost");
     std::env::set_var("DRIVER_RP_ORIGIN",        "http://localhost:3000");
-    std::env::set_var("DISPATCHER_JWT_SECRET",   "test-dispatcher-secret-must-be-32b");
+    std::env::set_var("FLEET_JWT_SECRET",   "test-fleet_user-secret-must-be-32b");
     std::env::set_var("OLLIE_PUBLIC_BASE_URL",   TEST_BASE_URL);
 
     let config = Arc::new(Config::from_env().unwrap());
@@ -68,22 +68,22 @@ async fn build_app() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     (server, db, blob_dir, db_dir)
 }
 
-async fn seed_dispatcher(db: &DbClient, email: &str, password: &str) -> Uuid {
+async fn seed_fleet_user(db: &DbClient, email: &str, password: &str) -> Uuid {
     let id  = Uuid::new_v4();
     let now = Utc::now();
-    db.upsert_dispatcher(&DispatcherRecord {
+    db.upsert_fleet_user(&FleetUserRecord {
         id,
         email:      email.into(),
         name:       "Test Dispatcher".into(),
-        status:     DispatcherStatus::Active,
+        status:     FleetUserStatus::Active,
         role:       Default::default(),
         extra_scopes: Vec::new(),
         created_at: now,
         updated_at: now,
     }).await.unwrap();
     let hash = bcrypt::hash(password, 4).unwrap();
-    db.upsert_dispatcher_credentials(&DispatcherCredentials {
-        dispatcher_id:   id,
+    db.upsert_fleet_user_credentials(&FleetUserCredentials {
+        fleet_user_id:   id,
         password_hash:   hash,
         token_version:   0,
         failed_attempts: 0,
@@ -103,13 +103,13 @@ fn pkce_challenge(verifier: &str) -> String {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// 1. POST /dispatch/mcp with no auth → 401 with WWW-Authenticate containing
+/// 1. POST /fleet/mcp with no auth → 401 with WWW-Authenticate containing
 ///    resource_metadata pointing at the PRM URL.
 #[tokio::test]
 async fn mcp_401_has_www_authenticate() {
     let (server, _db, _b, _d) = build_app().await;
 
-    let resp = server.post("/dispatch/mcp")
+    let resp = server.post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
@@ -129,18 +129,18 @@ async fn mcp_401_has_www_authenticate() {
 
     assert!(www_auth.contains("resource_metadata="), "header must contain resource_metadata");
     assert!(
-        www_auth.contains("/.well-known/oauth-protected-resource/dispatch/mcp"),
+        www_auth.contains("/.well-known/oauth-protected-resource/fleet/mcp"),
         "header must reference the PRM URL; got: {www_auth}",
     );
 }
 
-/// 2. GET /dispatch/api/v1/loads with no auth → 401 with NO WWW-Authenticate.
+/// 2. GET /fleet/api/v1/loads with no auth → 401 with NO WWW-Authenticate.
 ///    REST endpoints must keep bare 401s.
 #[tokio::test]
 async fn rest_401_has_no_www_authenticate() {
     let (server, _db, _b, _d) = build_app().await;
 
-    let resp = server.get("/dispatch/api/v1/loads").await;
+    let resp = server.get("/fleet/api/v1/loads").await;
 
     assert_eq!(resp.status_code(), 401, "unauthenticated REST must be 401");
     assert!(
@@ -170,7 +170,7 @@ async fn metadata_endpoints() {
     assert!(token_endpoint.ends_with("/oauth/token"), "token_endpoint must end with /oauth/token; got {token_endpoint}");
 
     // Protected-resource metadata
-    let prm_resp = server.get("/.well-known/oauth-protected-resource/dispatch/mcp").await;
+    let prm_resp = server.get("/.well-known/oauth-protected-resource/fleet/mcp").await;
     assert_eq!(prm_resp.status_code(), 200, "PRM endpoint must be 200");
     let prm_body = prm_resp.json::<serde_json::Value>();
 
@@ -187,7 +187,7 @@ async fn full_oauth_dance() {
 
     let email    = "oauth_dance@example.com";
     let password = "hunter2_long_enough_password";
-    seed_dispatcher(&db, email, password).await;
+    seed_fleet_user(&db, email, password).await;
 
     // 4a. Register client
     let reg_resp = server.post("/oauth/register")
@@ -260,8 +260,8 @@ async fn full_oauth_dance() {
     assert_eq!(token_body["token_type"].as_str(), Some("Bearer"), "token_type must be Bearer");
     assert_eq!(token_body["expires_in"].as_i64(), Some(28800), "expires_in must be 28800");
 
-    // 4d. Use access_token at /dispatch/mcp — should NOT be 401
-    let mcp_resp = server.post("/dispatch/mcp")
+    // 4d. Use access_token at /fleet/mcp — should NOT be 401
+    let mcp_resp = server.post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {access_token}"))
         .json(&serde_json::json!({
@@ -320,7 +320,7 @@ async fn full_oauth_dance() {
     );
 }
 
-/// 5b. Static olld_ API key authenticates /dispatch/mcp after mcp_router extraction.
+/// 5b. Static olld_ API key authenticates /fleet/mcp after mcp_router extraction.
 ///     Regression guard for the headless/scripting auth path.
 #[tokio::test]
 async fn olld_api_key_authenticates_mcp() {
@@ -328,16 +328,16 @@ async fn olld_api_key_authenticates_mcp() {
 
     let email    = "apikey_mcp@example.com";
     let password = "hunter2_long_enough_password";
-    let dispatcher_id = seed_dispatcher(&db, email, password).await;
+    let fleet_user_id = seed_fleet_user(&db, email, password).await;
 
     let plaintext  = format!("olld_{}", "s3cr3tSuffix1234567890abcdef");
     let key_hash   = hex::encode(Sha256::digest(plaintext.as_bytes()));
     let key_prefix = plaintext.chars().take(12).collect::<String>();
     let now        = Utc::now();
 
-    db.insert_dispatcher_api_key(&DispatcherApiKey {
+    db.insert_fleet_user_api_key(&FleetUserApiKey {
         id:           Uuid::new_v4(),
-        dispatcher_id,
+        fleet_user_id,
         label:        "test".into(),
         key_hash,
         key_prefix,
@@ -347,7 +347,7 @@ async fn olld_api_key_authenticates_mcp() {
         last_used_at: None,
     }).await.unwrap();
 
-    let mcp_resp = server.post("/dispatch/mcp")
+    let mcp_resp = server.post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
         .add_header(header::AUTHORIZATION, format!("Bearer {plaintext}"))
         .json(&serde_json::json!({
@@ -365,7 +365,7 @@ async fn olld_api_key_authenticates_mcp() {
     assert_eq!(
         mcp_resp.status_code(),
         200,
-        "olld_ API key must authenticate /dispatch/mcp; status={}, body={:?}",
+        "olld_ API key must authenticate /fleet/mcp; status={}, body={:?}",
         mcp_resp.status_code(),
         mcp_resp.text(),
     );
@@ -378,7 +378,7 @@ async fn token_rejects_bad_pkce() {
 
     let email    = "bad_pkce@example.com";
     let password = "hunter2_long_enough_password";
-    seed_dispatcher(&db, email, password).await;
+    seed_fleet_user(&db, email, password).await;
 
     // Register
     let reg_resp = server.post("/oauth/register")

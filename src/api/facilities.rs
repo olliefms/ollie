@@ -92,7 +92,7 @@ mod tests {
         let blob_dir = TempDir::new().unwrap();
         let db_dir = TempDir::new().unwrap();
         std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
-        std::env::set_var("DISPATCHER_JWT_SECRET", "test-dispatcher-jwt-secret-that-is-long-enough");
+        std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-jwt-secret-that-is-long-enough");
         std::env::set_var("DRIVER_RP_ID", "localhost");
         std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
         let config = Arc::new(Config::from_env().unwrap());
