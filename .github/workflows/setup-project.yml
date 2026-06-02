@@ -28,8 +28,8 @@ jobs:
       - name: Create project and configure fields
         env:
           GH_TOKEN: ${{ secrets.GH_PROJECT_TOKEN }}
-          OWNER: ergofobe
-          REPO: ergofobe/ollie
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.repository }}
           PROJECT_TITLE: Ollie
         run: |
           # ── Check if project already exists ──────────────────────────────────

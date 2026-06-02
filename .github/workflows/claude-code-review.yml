@@ -242,7 +242,7 @@ jobs:
                review checkpoint; do NOT use `git rev-parse HEAD` (that resolves
                to the ephemeral merge commit).
             2. Read your prior review state:
-               `gh pr view ${{ github.event.pull_request.number }} --repo ergofobe/ollie --json comments`
+               `gh pr view ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --json comments`
                Find the most recent `🤖 [agent:review]` comment and parse its
                AGENT_META for `reviewed_sha` and `iteration`. If none exists, this
                is iteration 1.
@@ -250,7 +250,7 @@ jobs:
                DB patterns, test patterns, OpenAPI requirements, etc.).
             4. Choose the diff scope per the Convergence rules:
                - First review, or prior `reviewed_sha` not an ancestor of HEAD_SHA:
-                 full diff via `gh pr diff ${{ github.event.pull_request.number }} --repo ergofobe/ollie`.
+                 full diff via `gh pr diff ${{ github.event.pull_request.number }} --repo ${{ github.repository }}`.
                - Re-review with a valid prior `reviewed_sha` (confirm with
                  `git merge-base --is-ancestor <reviewed_sha> HEAD_SHA`): incremental
                  diff via `git diff <reviewed_sha>..HEAD_SHA`. Carry prior findings
@@ -262,8 +262,8 @@ jobs:
                re-review is preserved as its own entry in the thread. Do NOT
                use `--edit-last`. Set `reviewed_sha` to HEAD_SHA and
                `iteration` per the convergence rules:
-               `gh pr comment ${{ github.event.pull_request.number }} --body "..." --repo ergofobe/ollie`
+               `gh pr comment ${{ github.event.pull_request.number }} --body "..." --repo ${{ github.repository }}`
             7. Apply the label:
-               `gh pr edit ${{ github.event.pull_request.number }} --add-label "review:DECISION" --repo ergofobe/ollie`
+               `gh pr edit ${{ github.event.pull_request.number }} --add-label "review:DECISION" --repo ${{ github.repository }}`
 
             Now perform the review.
