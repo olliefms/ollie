@@ -21,6 +21,9 @@ name: Setup Project
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   setup-project:
     runs-on: ubuntu-latest
