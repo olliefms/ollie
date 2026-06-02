@@ -396,6 +396,7 @@ Trunk-based. Three skills cover the workflow:
 ## Commit Style
 
 - Use `feat:`, `fix:`, `refactor:`, `test:`, `chore:` prefixes
+- **Sign off every commit** with `git commit -s` — this repo enforces DCO; a CI check blocks merge for any commit lacking a valid `Signed-off-by` trailer matching the commit author.
 - Co-author with the current model name:
   ```
   Co-Authored-By: Claude with <model-name>

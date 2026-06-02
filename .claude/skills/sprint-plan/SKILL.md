@@ -47,6 +47,8 @@ Read the project guide (`AGENTS.md` / `CLAUDE.md` / `GEMINI.md`) for the Shippab
 
 9. **Open one PR** to `main`, title `<slug>: <headline>`, body summarizing each in-scope issue, a **Why batched** section naming the dependency, and `Closes #…` for every issue.
 
+- Sign off every commit with `git commit -s` (DCO is enforced; unsigned commits block the merge).
+
 10. **Self-merge if clean** — same gate as `/work-issue` (blockers 0, significants 0 and addressed, CI green, tests green). Squash-merge, exit the worktree, close each issue with a verification comment. Closing the issues drops their locks. If the gate fails, leave the PR open, swap every in-scope issue's lock to `work:ready-for-review`, and tell the user — and on any abort, release the locks across the whole batch (`work:blocked` if escalating, remove if abandoned). Never leave a half-claimed sprint behind.
 
 11. **Release decision.** Tell the user the sprint is merged and ask whether to `/cut-release` now or accumulate more first.
