@@ -4,8 +4,8 @@ A self-hosted freight **Transportation Management System (TMS)** written in Rust
 
 ollie runs the operational core of a trucking dispatch operation — loads, trips,
 drivers, trucks, trailers, and facilities — and pairs it with an AI-enabled
-document store. It exposes four API surfaces (an MCP server for AI agents, a
-Fleet REST API, a driver mobile portal, and a legacy admin API) plus two
+document store. It exposes three API surfaces (an MCP server for AI agents, a
+Fleet REST API, and a driver mobile portal) plus two
 bundled web apps: a Fleet SPA and a driver PWA.
 
 Uploaded documents (rate cons, BOLs, PODs, photos) are stored content-addressed
@@ -27,14 +27,13 @@ vision model. Vector search is powered by LanceDB.
 
 ## API surfaces
 
-ollie exposes the same domain through four surfaces — pick by caller:
+ollie exposes the same domain through three surfaces — pick by caller:
 
 | Surface | Path | Auth | Use |
 |---|---|---|---|
 | **Fleet MCP** | `POST /fleet/mcp` | Fleet user JWT or API key | AI agents and tool-using assistants. **Preferred.** |
 | **Fleet REST** | `/fleet/api/v1/*` | Fleet user JWT or API key | Fleet web app and programmatic integrations. |
 | **Driver portal** | `/driver/api/v1/*` | Driver JWT (passkey or PIN) | The driver mobile PWA only. |
-| **Admin REST** | `/api/v1/*` | `ADMIN_API_KEY` bearer | **Deprecated** — backward compatibility only. |
 
 Three endpoints are public (no auth): `GET /version`, `GET /openapi.json`, and
 `GET /llms.txt`. Start with `GET /llms.txt` — it's a hand-written, agent-oriented
@@ -97,7 +96,6 @@ All configuration is via environment variables (or a `.env` file).
 
 | Variable | Description |
 |---|---|
-| `ADMIN_API_KEY` | Bearer token for the deprecated admin REST API. Any non-empty string. |
 | `DRIVER_JWT_SECRET` | Signing secret for driver-portal JWTs. **Min 32 bytes.** |
 | `FLEET_JWT_SECRET` | Signing secret for fleet user JWTs and API keys. **Min 32 bytes.** |
 | `DRIVER_RP_ID` | WebAuthn relying-party ID for driver passkeys (e.g. `localhost`). |
@@ -154,7 +152,7 @@ curl -X POST http://localhost:3000/fleet/auth/login \
 
 # Use the returned token against MCP or REST
 curl -X POST http://localhost:3000/fleet/mcp \
-  -H "Authorization: Bearer <JWT>" \
+  -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
