@@ -8272,3 +8272,54 @@ async fn test_setup_status_false_once_user_exists() {
         .await;
     assert_eq!(attempt.status_code(), 409);
 }
+
+// Reads a driver's stored loaded_rate_per_mile override (null when inherited).
+async fn driver_loaded_rate(server: &axum_test::TestServer, token: &str, id: &str) -> serde_json::Value {
+    server.get(&format!("/fleet/api/v1/drivers/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>()["loaded_rate_per_mile"].clone()
+}
+
+#[tokio::test]
+async fn test_driver_rate_override_set_then_clear() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let driver_id = create_test_driver(&server).await;
+
+    // Set an override.
+    let set = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 0.75 }))
+        .await;
+    assert_eq!(set.status_code(), 200);
+    assert_eq!(driver_loaded_rate(&server, &owner_token, &driver_id).await, serde_json::json!(0.75));
+
+    // Clear it with an explicit null → back to inherited (null).
+    let clear = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": null }))
+        .await;
+    assert_eq!(clear.status_code(), 200);
+    assert!(driver_loaded_rate(&server, &owner_token, &driver_id).await.is_null());
+}
+
+#[tokio::test]
+async fn test_driver_rate_override_absent_field_leaves_others_unchanged() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let driver_id = create_test_driver(&server).await;
+
+    // Set loaded rate.
+    server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 0.75 }))
+        .await;
+    // Patch a *different* rate without mentioning loaded → loaded must survive.
+    server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "deadhead_rate_per_mile": 0.40 }))
+        .await;
+
+    assert_eq!(driver_loaded_rate(&server, &owner_token, &driver_id).await, serde_json::json!(0.75));
+}
