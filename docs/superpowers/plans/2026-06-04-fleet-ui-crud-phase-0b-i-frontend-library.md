@@ -51,7 +51,7 @@ All `static/fleet/` modules use `export function` (matching `static/driver/utils
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:driver": "node --test tests/driver/"
+    "test:driver": "node --test tests/driver/*.test.js"
   },
   "devDependencies": {
     "happy-dom": "^15.11.0",
