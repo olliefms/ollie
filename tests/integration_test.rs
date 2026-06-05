@@ -5962,14 +5962,37 @@ async fn test_driver_equipment_update_trailer_by_unit_number_lookup() {
 }
 
 #[tokio::test]
-async fn test_driver_equipment_update_unknown_unit_returns_404() {
+async fn test_driver_equipment_hook_unknown_unit_creates_trailer() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let (_did, token) = create_driver_with_jwt(&server, &state).await;
+    let (did, token) = create_driver_with_jwt(&server, &state).await;
+
+    // Hooking a unit number that isn't a known trailer creates it (owner: fleet,
+    // flagged for dispatch review) and hooks the driver to it.
     let resp = server.put("/driver/api/v1/equipment/trailer")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
-        .json(&serde_json::json!({ "trailer_unit_numbers": ["DOES-NOT-EXIST"] }))
+        .json(&serde_json::json!({ "trailer_unit_numbers": ["NEW-HOOK-001"] }))
         .await;
-    assert_eq!(resp.status_code(), 404);
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["trailers"][0]["unit_number"], "NEW-HOOK-001");
+    assert_eq!(body["trailers"][0]["owner"], "fleet");
+    let new_id = body["trailers"][0]["id"].as_str().unwrap().parse::<uuid::Uuid>().unwrap();
+
+    // The trailer was actually persisted and the driver is hooked to it.
+    let created = state.db.get_trailer_by_id(new_id).await.unwrap();
+    assert_eq!(created.unit_number, "NEW-HOOK-001");
+    assert!(created.notes.as_deref().unwrap_or("").to_lowercase().contains("driver-created"));
+    let d = state.db.get_driver_by_id(did).await.unwrap();
+    assert_eq!(d.current_trailer_ids, vec![new_id]);
+
+    // Hooking the same unit again reuses the existing trailer (no duplicate).
+    let resp2 = server.put("/driver/api/v1/equipment/trailer")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "trailer_unit_numbers": ["NEW-HOOK-001"] }))
+        .await;
+    assert_eq!(resp2.status_code(), 200);
+    let body2: serde_json::Value = resp2.json();
+    assert_eq!(body2["trailers"][0]["id"], new_id.to_string());
 }
 
 #[tokio::test]

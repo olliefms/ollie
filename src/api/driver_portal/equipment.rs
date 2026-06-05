@@ -150,8 +150,13 @@ pub async fn update_trailer(
     } else if let Some(units) = req.trailer_unit_numbers {
         let mut out = Vec::with_capacity(units.len());
         for unit in units {
-            let t = state.db.get_trailer_by_unit_number(&unit).await?
-                .ok_or(AppError::NotFound)?;
+            // A driver hooking a unit number we don't know about means a real
+            // trailer is physically on the truck — create it so the hook is
+            // recorded, flagged for dispatch to fill in details later.
+            let t = match state.db.get_trailer_by_unit_number(&unit).await? {
+                Some(t) => t,
+                None => create_hooked_trailer(&state, &unit).await?,
+            };
             if matches!(t.status, TrailerStatus::Inactive | TrailerStatus::OutOfService) {
                 return Err(AppError::UnprocessableEntity(format!(
                     "trailer {} is {}",
@@ -345,6 +350,22 @@ async fn active_trip_for_driver(
             .then(b.created_at.cmp(&a.created_at))
     });
     Ok(trips.into_iter().next())
+}
+
+/// Create a trailer on the fly when a driver hooks a unit number we don't yet
+/// know. Owned by the fleet with a note flagging it for dispatch review, since
+/// the driver only supplies the unit number. Reuses the fleet create writer so
+/// embedding generation and the `Available` starting status stay consistent.
+async fn create_hooked_trailer(
+    state: &AppState,
+    unit: &str,
+) -> Result<crate::models::TrailerRecord, AppError> {
+    let body = serde_json::json!({
+        "unit_number": unit,
+        "owner": "fleet",
+        "notes": "Driver-created on hook — pending dispatch review",
+    });
+    crate::api::fleet_portal::trailer_writes::apply_trailer_create(state, body).await
 }
 
 fn trailer_summary(t: &crate::models::TrailerRecord) -> EquipmentTrailerSummary {
