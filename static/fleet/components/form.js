@@ -45,14 +45,27 @@ function fieldControl(f, value) {
     return `<input class="form-checkbox" type="checkbox" data-field="${key}" ${value ? 'checked' : ''}>`;
   }
   if (f.type === 'select') {
-    const opts = (f.options || []).map(o =>
-      `<option value="${escHtml(o)}" ${o === value ? 'selected' : ''}>${escHtml(o)}</option>`).join('');
+    const cur = value == null ? '' : String(value);
+    const opts = (f.options || []).map((o) => {
+      const ov = typeof o === 'object' ? String(o.value) : String(o);
+      const ol = typeof o === 'object' ? String(o.label) : String(o);
+      return `<option value="${escHtml(ov)}" ${ov === cur ? 'selected' : ''}>${escHtml(ol)}</option>`;
+    }).join('');
     return `<select class="form-input" data-field="${key}"><option value=""></option>${opts}</select>`;
   }
+  if (f.type === 'date') {
+    return `<input class="form-input" type="date" data-field="${key}" value="${escHtml(String(val))}">`;
+  }
   if (f.type === 'inheritable') {
-    const ph = f.inheritedValue != null ? `Inherited: ${f.inheritedValue} (${escHtml(f.inheritedFrom || '')})` : '';
-    return `<input class="form-input" type="number" step="any" data-field="${key}"
-      value="${value != null ? escHtml(String(value)) : ''}" placeholder="${escHtml(ph)}">`;
+    const hasOverride = value != null && value !== '';
+    const ph = f.inheritedValue != null
+      ? `Inherited: ${f.inheritedValue}${f.inheritedFrom ? ` (${f.inheritedFrom})` : ''}`
+      : '';
+    return `<div class="inheritable-field">
+      <input class="form-input" type="number" step="any" data-field="${key}"
+        value="${hasOverride ? escHtml(String(value)) : ''}" placeholder="${escHtml(ph)}">
+      <button type="button" class="btn-link" data-revert="${key}" ${hasOverride ? '' : 'hidden'}>Revert to inherited</button>
+    </div>`;
   }
   const inputType = (f.type === 'number' || f.type === 'int') ? 'number' : 'text';
   const step = f.type === 'number' ? ' step="any"' : '';
@@ -83,6 +96,30 @@ export function renderForm(container, { title, fields, values = {}, submitLabel 
   const errEl = container.querySelector('[data-form-error]');
   const submitBtn = container.querySelector('[data-form-submit]');
 
+  // Inheritable "Revert to inherited" affordance: clicking clears the input and
+  // marks the field reverted (→ explicit null in the payload). Typing a value
+  // again un-reverts it. buildPayload reads this set as its third argument.
+  const reverted = new Set();
+  container.querySelectorAll('[data-revert]').forEach((btn) => {
+    const key = btn.getAttribute('data-revert');
+    btn.addEventListener('click', () => {
+      const input = container.querySelector(`[data-field="${key}"]`);
+      if (input) input.value = '';
+      reverted.add(key);
+      btn.hidden = true;
+    });
+  });
+  container.querySelectorAll('.inheritable-field [data-field]').forEach((input) => {
+    const key = input.getAttribute('data-field');
+    input.addEventListener('input', () => {
+      if (input.value !== '') {
+        reverted.delete(key);
+        const btn = container.querySelector(`[data-revert="${key}"]`);
+        if (btn) btn.hidden = false;
+      }
+    });
+  });
+
   function readRaw() {
     const raw = {};
     for (const f of fields) {
@@ -94,10 +131,7 @@ export function renderForm(container, { title, fields, values = {}, submitLabel 
   }
 
   submitBtn.addEventListener('click', async () => {
-    // The "revert to inherited" set is intentionally empty here — the revert UI
-    // control lands with the first real inheritable form (Drivers, Phase 2).
-    // buildPayload already supports it via its third argument.
-    const { payload, errors } = buildPayload(fields, readRaw());
+    const { payload, errors } = buildPayload(fields, readRaw(), reverted);
     if (errors.length) {
       errEl.textContent = errors.join(' ');
       errEl.hidden = false;

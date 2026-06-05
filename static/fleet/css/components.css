@@ -681,3 +681,28 @@
   width: 16px;
   height: 16px;
 }
+
+.inheritable-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inheritable-field .form-input {
+  flex: 1;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+  white-space: nowrap;
+}
+
+.btn-link:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}

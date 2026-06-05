@@ -43,4 +43,10 @@ describe('matchRoute', () => {
     expect(matchRoute('/fleet/trailers/xy-9/edit')).toEqual({ name: 'trailer-edit', params: { id: 'xy-9' } });
     expect(matchRoute('/fleet/trailers/xy-9')).toEqual({ name: 'trailer-detail', params: { id: 'xy-9' } });
   });
+
+  it('matches driver new/edit/detail in the right precedence', () => {
+    expect(matchRoute('/fleet/drivers/new')).toEqual({ name: 'driver-new', params: {} });
+    expect(matchRoute('/fleet/drivers/d-1/edit')).toEqual({ name: 'driver-edit', params: { id: 'd-1' } });
+    expect(matchRoute('/fleet/drivers/d-1')).toEqual({ name: 'driver-detail', params: { id: 'd-1' } });
+  });
 });

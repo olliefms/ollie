@@ -3,8 +3,8 @@
    ES-module entry. Shared logic lives in utils/ + components/.
    Read-only views (home, events, documents, account, login) and
    the navigation/DOM helpers live in pages/ + utils/. The entity
-   views below (loads/trips/drivers/terminals) are still inline and
-   migrate to pages/ + CRUD in their own phases.
+   views below (loads/trips) are still inline and migrate to
+   pages/ + CRUD in their own phases.
    ============================================================ */
 
 import { isAuthenticated, clearToken } from './utils/auth.js';
@@ -40,6 +40,9 @@ import { renderTruckForm } from './pages/truck-form.js';
 import { renderTrailersView } from './pages/trailers.js';
 import { renderTrailerDetail } from './pages/trailer-detail.js';
 import { renderTrailerForm } from './pages/trailer-form.js';
+import { renderDriversView } from './pages/drivers.js';
+import { renderDriverDetail } from './pages/driver-detail.js';
+import { renderDriverForm } from './pages/driver-form.js';
 
 // ─── Navigation ──────────────────────────────────────────────
 
@@ -48,7 +51,9 @@ const VIEW_TITLES = {
   loads: 'Loads',
   'load-detail': 'Load Detail',
   drivers: 'Drivers',
-  'driver-detail': 'Driver Detail',
+  'driver-new': 'New Driver',
+  'driver-detail': 'Driver',
+  'driver-edit': 'Edit Driver',
   trips: 'Trips',
   'trip-detail': 'Trip Detail',
   events: 'Events',
@@ -111,7 +116,9 @@ function renderRoute({ name, params }) {
     case 'loads': renderLoadsView(params); break;
     case 'load-detail': renderLoadDetailView(params.id); break;
     case 'drivers': renderDriversView(); break;
-    case 'driver-detail': renderDriverDetailView(params.id); break;
+    case 'driver-new': renderDriverForm(null); break;
+    case 'driver-detail': renderDriverDetail(params.id); break;
+    case 'driver-edit': renderDriverForm(params.id); break;
     case 'trips': renderTripsView(params); break;
     case 'trip-detail': renderTripDetailView(params.id); break;
     case 'events': renderEventsView(); break;
@@ -516,65 +523,6 @@ async function renderLoadDetailView(id) {
   }
 }
 
-// ─── Drivers view ─────────────────────────────────────────────
-
-async function renderDriversView() {
-  setContent('<div class="state-loading"><div class="spinner"></div></div>');
-
-  try {
-    const res = await apiFetch(`${API_BASE}/drivers`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const drivers = data.drivers || data.items || (Array.isArray(data) ? data : []);
-
-    let rows = '';
-    if (drivers.length === 0) {
-      rows = `<tr><td colspan="3" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No drivers found</td></tr>`;
-    } else {
-      rows = drivers.map(driver => {
-        const isAvailable = driver.status === 'available';
-        const rowClass = isAvailable ? 'row--available' : '';
-        return `
-          <tr${rowClass ? ` class="${rowClass}"` : ''} data-driver-id="${driver.id}" style="cursor:pointer;">
-            <td>${escHtml(driver.name || '—')}</td>
-            <td>${badge(driver.status)}</td>
-            <td>${escHtml(driver.phone || '—')}</td>
-          </tr>
-        `;
-      }).join('');
-    }
-
-    const html = `
-      <div class="page-header">
-        <h1 class="page-title">Drivers</h1>
-      </div>
-      <div class="table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Status</th>
-              <th>Phone</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows}
-          </tbody>
-        </table>
-      </div>
-    `;
-
-    setContent(html);
-
-    document.querySelectorAll('tr[data-driver-id]').forEach(row => {
-      row.addEventListener('click', () => navigate('driver-detail', { id: row.dataset.driverId }));
-    });
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load data: ${err.message}</div>`);
-    }
-  }
-}
 
 // ─── Trips view ──────────────────────────────────────────────
 
@@ -729,64 +677,6 @@ async function renderTripDetailView(id) {
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load trip: ${err.message}</div>`);
-    }
-  }
-}
-
-// ─── Driver detail view ───────────────────────────────────────
-
-async function renderDriverDetailView(id) {
-  const topbarTitle = document.getElementById('topbar-title');
-  if (topbarTitle) topbarTitle.textContent = 'Driver Detail';
-  setContent('<div class="state-loading"><div class="spinner"></div></div>');
-  try {
-    const [driverRes, tripsRes] = await Promise.all([
-      apiFetch(`${API_BASE}/drivers/${id}`),
-      apiFetch(`${API_BASE}/trips?driver_id=${id}`),
-    ]);
-    if (!driverRes.ok) throw new Error(`Driver fetch HTTP ${driverRes.status}`);
-    const driver = await driverRes.json();
-    let trips = [];
-    if (tripsRes.ok) {
-      const tripsData = await tripsRes.json();
-      trips = tripsData.items || tripsData.trips || (Array.isArray(tripsData) ? tripsData : []);
-    }
-
-    const tripRows = trips.map(trip => `
-      <tr data-trip-id="${trip.id}" style="cursor:pointer;">
-        <td style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || shortId(trip.id))}</td>
-        <td>${badge(trip.status)}</td>
-        <td>${fmtArrivalWindow(trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive : null, trip.stops && trip.stops[0] ? trip.stops[0].scheduled_arrive_end : null)}</td>
-      </tr>
-    `).join('');
-
-    setContent(`
-      <button class="back-link" id="back-to-drivers">← Back to Drivers</button>
-      <div class="detail-card">
-        <div class="detail-card__title">${escHtml(driver.name || '—')}</div>
-        <div class="detail-grid">
-          <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(driver.status)}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Phone</div><div class="detail-item__value">${escHtml(driver.phone || '—')}</div></div>
-        </div>
-      </div>
-      <div class="detail-card">
-        <div class="detail-card__title">Trips</div>
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead><tr><th>Trip #</th><th>Status</th><th>First Stop Scheduled</th></tr></thead>
-            <tbody id="driver-trips-tbody">${tripRows || '<tr><td colspan="3" style="text-align:center; padding: var(--space-4); color: var(--color-text-muted);">No trips</td></tr>'}</tbody>
-          </table>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('back-to-drivers').addEventListener('click', goBack);
-    document.querySelectorAll('#driver-trips-tbody tr[data-trip-id]').forEach(row => {
-      row.addEventListener('click', () => navigate('trip-detail', { id: row.dataset.tripId }));
-    });
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load driver: ${err.message}</div>`);
     }
   }
 }

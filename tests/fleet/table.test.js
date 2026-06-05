@@ -14,6 +14,15 @@ describe('renderTable', () => {
     expect(container.querySelector('tbody tr td').innerHTML).toBe('&lt;b&gt;A&lt;/b&gt;');
   });
 
+  it('trusts cell output as HTML when the column sets html: true', () => {
+    const container = document.createElement('div');
+    renderTable(container, {
+      columns: [{ header: 'Status', cell: () => '<span class="badge">ok</span>', html: true }],
+      rows: [{ id: '1' }],
+    });
+    expect(container.querySelector('tbody td .badge')).not.toBe(null);
+  });
+
   it('invokes onRowClick with the row id', () => {
     const container = document.createElement('div');
     const onRowClick = vi.fn();
