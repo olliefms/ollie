@@ -1,0 +1,14 @@
+{
+  "name": "ollie-fleet-ui",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:driver": "node --test tests/driver/"
+  },
+  "devDependencies": {
+    "happy-dom": "^15.11.0",
+    "vitest": "^2.1.8"
+  }
+}
