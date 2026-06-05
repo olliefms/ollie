@@ -1,76 +1,36 @@
 /* ============================================================
    Ollie Fleet — SPA
    ES-module entry. Shared logic lives in utils/ + components/.
+   Read-only views (home, events, documents, account, login) and
+   the navigation/DOM helpers live in pages/ + utils/. The entity
+   views below (loads/trips/drivers/terminals) are still inline and
+   migrate to pages/ + CRUD in their own phases.
    ============================================================ */
 
-import { getToken, saveToken, clearToken, isAuthenticated } from './utils/auth.js';
+import { isAuthenticated, clearToken } from './utils/auth.js';
 import {
-  apiFetch, tryRefresh, API_BASE, AUTH_BASE,
+  apiFetch, tryRefresh, API_BASE,
   loadMe, clearMe, setOnUnauthorized,
 } from './utils/api.js';
 import {
   escHtml, badge, shortId, fmtDate, fmtArrivalWindow,
-  fmtBytes, fmtUSD, fmtMiles, humanizeEventType,
+  fmtBytes, fmtUSD, fmtMiles,
 } from './utils/format.js';
 import {
-  matchRoute, navigate as routerNavigate, replaceNavigate, startRouter,
+  matchRoute, replaceNavigate, startRouter,
 } from './router.js';
+import {
+  setContent, setRefreshIndicator, navigate, goBack,
+} from './utils/dom.js';
 import { renderPlaceholder } from './pages/placeholder.js';
-
-// ─── Constants ──────────────────────────────────────────────
-const API_KEYS_BASE = '/fleet/api-keys';
-
-// ─── State ──────────────────────────────────────────────────
-let currentView = 'loads';
-let currentParams = {};
-let navHistory = [];
-let eventsRefreshTimer = null;
-
-// Auth helpers (getToken/saveToken/clearToken/isAuthenticated), tryRefresh, and
-// apiFetch now live in utils/auth.js + utils/api.js and are imported above.
-
-// ─── View/Auth toggle ────────────────────────────────────────
-
-function showLogin() {
-  document.getElementById('login-view').hidden = false;
-  document.getElementById('app-shell').hidden = true;
-  // Default to the sign-in pane; boot() flips to setup if needed.
-  const loginPane = document.getElementById('login-pane');
-  const setupPane = document.getElementById('setup-pane');
-  if (loginPane) loginPane.hidden = false;
-  if (setupPane) setupPane.hidden = true;
-  clearEventsRefresh();
-}
-
-function showSetup() {
-  document.getElementById('login-view').hidden = false;
-  document.getElementById('app-shell').hidden = true;
-  const loginPane = document.getElementById('login-pane');
-  const setupPane = document.getElementById('setup-pane');
-  if (loginPane) loginPane.hidden = true;
-  if (setupPane) setupPane.hidden = false;
-  clearEventsRefresh();
-}
-
-// Show the setup pane when no users exist yet, otherwise the sign-in pane.
-async function showLoginOrSetup() {
-  try {
-    const res = await fetch(`${API_BASE}/setup/status`);
-    if (res.ok) {
-      const data = await res.json();
-      if (data.needs_setup) {
-        showSetup();
-        return;
-      }
-    }
-  } catch (_) { /* fall through to login */ }
-  showLogin();
-}
-
-function showApp() {
-  document.getElementById('login-view').hidden = true;
-  document.getElementById('app-shell').hidden = false;
-}
+import { renderHomeView } from './pages/home.js';
+import { renderEventsView, clearEventsRefresh } from './pages/events.js';
+import { renderDocumentsView } from './pages/documents.js';
+import { renderDocumentDetailView, revokeActiveObjectUrl } from './pages/document-detail.js';
+import { renderAccountView } from './pages/account.js';
+import {
+  showLogin, showLoginOrSetup, initLoginForm, initSetupForm,
+} from './pages/login.js';
 
 // ─── Navigation ──────────────────────────────────────────────
 
@@ -94,34 +54,7 @@ const VIEW_TITLES = {
 
 // ─── pushState routing ───────────────────────────────────────
 
-let activeObjectUrl = null;
 let routerStarted = false;
-
-// Map a legacy view name (+ params) to a /fleet path, so the legacy view code
-// can keep calling navigate('load-detail', { id }) unchanged.
-const VIEW_PATHS = {
-  home: () => '/fleet/home',
-  loads: () => '/fleet/loads',
-  'load-detail': (p) => `/fleet/loads/${p.id}`,
-  drivers: () => '/fleet/drivers',
-  'driver-detail': (p) => `/fleet/drivers/${p.id}`,
-  trips: () => '/fleet/trips',
-  'trip-detail': (p) => `/fleet/trips/${p.id}`,
-  events: () => '/fleet/events',
-  documents: () => '/fleet/documents',
-  document: (p) => `/fleet/documents/${p.id}`,
-  terminals: () => '/fleet/terminals',
-  account: () => '/fleet/account',
-};
-
-function navigate(view, params = {}) {
-  const fn = VIEW_PATHS[view];
-  routerNavigate(fn ? fn(params) : '/fleet/home');
-}
-
-function goBack() {
-  history.back();
-}
 
 // Show the app shell and (idempotently) start the router. After the first call,
 // re-render the current route instead of re-wiring popstate/click listeners.
@@ -135,12 +68,14 @@ function enterApp() {
   }
 }
 
+function showApp() {
+  document.getElementById('login-view').hidden = true;
+  document.getElementById('app-shell').hidden = false;
+}
+
 function renderRoute({ name, params }) {
   clearEventsRefresh();
-  if (activeObjectUrl) {
-    URL.revokeObjectURL(activeObjectUrl);
-    activeObjectUrl = null;
-  }
+  revokeActiveObjectUrl();
 
   // Active sidebar link by current path.
   document.querySelectorAll('.sidebar__link[href]').forEach((a) => {
@@ -171,66 +106,6 @@ function renderRoute({ name, params }) {
     case 'account': renderAccountView(); break;
     default: replaceNavigate('/fleet/home');
   }
-}
-
-// badge/shortId/fmtDate/fmtArrivalWindow/fmtBytes/fmtUSD/fmtMiles/escHtml/
-// humanizeEventType now live in utils/format.js and are imported above.
-
-const BLOB_NOISE_EVENTS = new Set([
-  'processing_started', 'processing_completed', 'processing_failed',
-]);
-
-// ─── Utility: set main content ───────────────────────────────
-
-function setContent(html) {
-  document.getElementById('main-content').innerHTML = html;
-}
-
-// ─── Utility: refresh indicator ──────────────────────────────
-
-function setRefreshIndicator(msg) {
-  const el = document.getElementById('refresh-indicator');
-  if (el) el.textContent = msg;
-}
-
-// ─── Home view ───────────────────────────────────────────────
-
-async function renderHomeView() {
-  const kpis = [
-    { label: 'Open Loads',        endpoint: `${API_BASE}/loads/count`,   view: 'loads'     },
-    { label: 'Active Drivers',    endpoint: `${API_BASE}/drivers/count`, view: 'drivers'   },
-    { label: 'Pending Documents', endpoint: `${API_BASE}/blobs/count`,   view: 'documents' },
-    { label: 'Events Today',      endpoint: `${API_BASE}/events/count`,  view: 'events'    },
-  ];
-
-  setContent(`
-    <div class="home-view">
-      <div class="kpi-row" id="kpi-row">
-        ${kpis.map((_, i) => `
-          <div class="kpi-tile" id="kpi-tile-${i}">
-            <div class="kpi-tile__count">—</div>
-            <div class="kpi-tile__label">${escHtml(_.label)}</div>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-  `);
-
-  kpis.forEach(async (kpi, i) => {
-    try {
-      const res = await apiFetch(kpi.endpoint);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const tile = document.getElementById(`kpi-tile-${i}`);
-      if (tile) {
-        tile.querySelector('.kpi-tile__count').textContent = data.count ?? '—';
-        tile.style.cursor = 'pointer';
-        tile.addEventListener('click', () => navigate(kpi.view));
-      }
-    } catch (err) {
-      console.error(`KPI fetch failed for ${kpi.label}:`, err);
-    }
-  });
 }
 
 // ─── Loads view ──────────────────────────────────────────────
@@ -889,228 +764,6 @@ async function renderDriverDetailView(id) {
   }
 }
 
-// ─── Events view ─────────────────────────────────────────────
-
-function clearEventsRefresh() {
-  if (eventsRefreshTimer !== null) {
-    clearInterval(eventsRefreshTimer);
-    eventsRefreshTimer = null;
-  }
-}
-
-async function fetchAndRenderEvents() {
-  try {
-    const res = await apiFetch(`${API_BASE}/events`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const events = data.events || data.items || (Array.isArray(data) ? data : []);
-
-    const filtered = events.filter(ev => !BLOB_NOISE_EVENTS.has(ev.event_type));
-
-    // Most recent first, using occurred_at
-    const sorted = [...filtered].sort((a, b) =>
-      new Date(b.occurred_at || 0).getTime() - new Date(a.occurred_at || 0).getTime()
-    );
-
-    setRefreshIndicator(`Updated ${new Date().toLocaleTimeString()}`);
-
-    if (sorted.length === 0) {
-      const listEl = document.getElementById('events-list');
-      if (listEl) {
-        listEl.innerHTML = '<div class="state-empty" style="min-height:120px;">No events found</div>';
-      }
-      return;
-    }
-
-    const items = sorted.map(ev => {
-      const entityType = (ev.entity_type || '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
-      const entityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
-
-      let payload = {};
-      try {
-        payload = typeof ev.payload === 'string' ? JSON.parse(ev.payload) : (ev.payload || {});
-      } catch (_) {}
-      const stopName = payload.facility_name || payload.stop_name ||
-        (payload.sequence != null ? `Stop ${payload.sequence}` : null);
-      const stopSuffix = stopName ? ` · ${escHtml(stopName)}` : '';
-
-      const badgeHtml = entityType
-        ? `<span class="badge badge--${entityType}">${escHtml(entityLabel)}</span> `
-        : '';
-
-      return `
-      <div class="event-item">
-        ${badgeHtml}<span class="event-item__type">${escHtml(humanizeEventType(ev.event_type || ''))}</span>${stopSuffix}
-        <span class="event-item__time">${fmtDate(ev.occurred_at)}</span>
-      </div>
-    `;
-    }).join('');
-
-    const listEl = document.getElementById('events-list');
-    if (listEl) {
-      listEl.innerHTML = items;
-    }
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      const listEl = document.getElementById('events-list');
-      if (listEl) {
-        listEl.innerHTML = `<div class="state-error" style="min-height:80px;">Failed to load events: ${err.message}</div>`;
-      }
-      setRefreshIndicator('Error');
-    }
-  }
-}
-
-async function renderEventsView() {
-  // Initial skeleton so the list element exists before fetch
-  setContent(`
-    <div class="page-header">
-      <h1 class="page-title">Events</h1>
-      <span style="font-size: 0.8125rem; color: var(--color-text-subtle);">Auto-refreshes every 30s</span>
-    </div>
-    <div class="events-list" id="events-list">
-      <div class="state-loading"><div class="spinner"></div></div>
-    </div>
-  `);
-
-  await fetchAndRenderEvents();
-
-  // Auto-refresh every 30s
-  eventsRefreshTimer = setInterval(fetchAndRenderEvents, 30_000);
-}
-
-// ─── Documents view ──────────────────────────────────────────
-
-async function renderDocumentsView(params = {}) {
-  setContent('<div class="state-loading"><div class="spinner"></div></div>');
-
-  const offset = params.offset || 0;
-  const filterName = params.name || '';
-
-  try {
-    const qs = new URLSearchParams({ limit: 20, offset });
-    if (filterName) qs.set('name', filterName);
-
-    const resp = await apiFetch(`${API_BASE}/blobs?${qs}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    const blobs = data.items || [];
-
-    const filterHtml = `
-      <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3);align-items:center;flex-wrap:wrap;">
-        <input class="form-input" id="doc-filter-name" type="text"
-          placeholder="Filter by name…" value="${escHtml(filterName)}" style="max-width:240px;">
-        <button class="btn btn--secondary" id="doc-filter-apply">Search</button>
-        <span style="flex:1;"></span>
-        <input type="file" id="doc-upload-file" style="display:none;">
-        <label style="display:flex;gap:var(--space-1);align-items:center;font-size:var(--text-sm);">
-          <input type="checkbox" id="doc-upload-visible-driver"> Visible to driver
-        </label>
-        <button class="btn btn--primary" id="doc-upload-btn">+ Upload</button>
-      </div>
-      <div id="doc-upload-status" class="alert" hidden style="margin-bottom:var(--space-3);"></div>
-    `;
-
-    let tableHtml = '';
-    if (blobs.length === 0 && offset === 0) {
-      tableHtml = '<div class="state-empty">No documents found</div>';
-    } else {
-      const rows = blobs.map(b => `
-        <tr class="doc-row" data-blob-id="${b.id}" style="cursor:pointer;">
-          <td>${escHtml(b.name) || '—'}</td>
-          <td style="font-size:var(--text-sm);color:var(--color-text-muted);">${escHtml((b.mime_type || '').split('/').pop())}</td>
-          <td>${fmtBytes(b.size)}</td>
-          <td>${badge(b.status)}</td>
-          <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(b.summary) || '—'}</td>
-          <td>${fmtDate(b.created_at)}</td>
-        </tr>
-      `).join('');
-
-      tableHtml = `
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Type</th>
-                <th>Size</th>
-                <th>Status</th>
-                <th>Summary</th>
-                <th>Uploaded</th>
-              </tr>
-            </thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-        ${blobs.length === 20 ? `
-          <div style="text-align:center;margin-top:var(--space-3);">
-            <button class="btn btn--secondary" id="doc-load-more">Load more</button>
-          </div>` : ''}
-      `;
-    }
-
-    setContent(filterHtml + tableHtml);
-
-    document.getElementById('doc-filter-apply')?.addEventListener('click', () => {
-      const name = document.getElementById('doc-filter-name').value.trim();
-      navigate('documents', { name });
-    });
-    document.getElementById('doc-filter-name')?.addEventListener('keydown', e => {
-      if (e.key === 'Enter') navigate('documents', { name: e.target.value.trim() });
-    });
-    document.getElementById('doc-load-more')?.addEventListener('click', () => {
-      navigate('documents', { name: filterName, offset: offset + 20 });
-    });
-
-    document.querySelectorAll('.doc-row').forEach(row => {
-      row.addEventListener('click', () => {
-        navigate('document', { id: row.dataset.blobId });
-      });
-    });
-
-    const fileInput = document.getElementById('doc-upload-file');
-    const uploadBtn = document.getElementById('doc-upload-btn');
-    const statusEl = document.getElementById('doc-upload-status');
-
-    uploadBtn?.addEventListener('click', () => fileInput?.click());
-
-    fileInput?.addEventListener('change', async () => {
-      const file = fileInput.files && fileInput.files[0];
-      if (!file) return;
-
-      const visibleToDriver = document.getElementById('doc-upload-visible-driver')?.checked;
-      const fd = new FormData();
-      fd.append('file', file);
-      if (visibleToDriver) fd.append('visibility', 'driver');
-
-      statusEl.hidden = false;
-      statusEl.className = 'alert';
-      statusEl.textContent = `Uploading ${file.name}…`;
-      uploadBtn.disabled = true;
-
-      try {
-        const res = await apiFetch(`${API_BASE}/blobs`, { method: 'POST', body: fd });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        statusEl.className = 'alert alert--info';
-        statusEl.textContent = `Uploaded ${file.name}.`;
-        navigate('documents', { name: filterName });
-      } catch (err) {
-        if (err.message !== 'Unauthorized — please sign in again.') {
-          statusEl.className = 'alert alert--error';
-          statusEl.textContent = `Upload failed: ${err.message}`;
-        }
-      } finally {
-        uploadBtn.disabled = false;
-        fileInput.value = '';
-      }
-    });
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load documents: ${err.message}</div>`);
-    }
-  }
-}
-
 // ─── Terminals view ──────────────────────────────────────────
 
 async function renderTerminalsView() {
@@ -1329,385 +982,6 @@ async function renderTerminalsView() {
   }
 }
 
-// ─── Account view ────────────────────────────────────────────
-
-async function renderAccountView() {
-  setContent('<div class="state-loading"><div class="spinner"></div></div>');
-  try {
-    const res = await apiFetch(API_KEYS_BASE);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const keys = data.keys || [];
-
-    const createHtml = `
-      <div style="margin-bottom:var(--space-4);padding:var(--space-3);background:var(--color-surface-2);border-radius:var(--radius-sm);">
-        <h3 style="margin-top:0;">Create API key</h3>
-        <div style="display:flex;gap:var(--space-2);align-items:flex-end;flex-wrap:wrap;">
-          <div class="form-group" style="margin:0;">
-            <label class="form-label" for="ak-label">Label</label>
-            <input class="form-input" id="ak-label" type="text" maxlength="64" placeholder="e.g. Claude MCP connector" style="max-width:260px;">
-          </div>
-          <div class="form-group" style="margin:0;">
-            <label class="form-label" for="ak-expires">Expires in (days, 1–365)</label>
-            <input class="form-input" id="ak-expires" type="number" min="1" max="365" value="365" style="max-width:160px;">
-          </div>
-          <button class="btn btn--primary" id="ak-create-btn">Create key</button>
-        </div>
-        <div id="ak-create-status" class="alert" hidden style="margin-top:var(--space-3);"></div>
-      </div>
-    `;
-
-    let listHtml;
-    if (keys.length === 0) {
-      listHtml = `
-        <div class="state-empty">
-          No API keys yet. Create one above to connect Claude's remote MCP connector.
-          <pre style="text-align:left;overflow:auto;margin-top:var(--space-3);padding:var(--space-2);background:var(--color-surface-2);border-radius:var(--radius-sm);">{
-  "mcpServers": {
-    "ollie": {
-      "url": "https://YOUR_HOST/fleet/mcp",
-      "headers": { "Authorization": "Bearer YOUR_API_KEY" }
-    }
-  }
-}</pre>
-        </div>`;
-    } else {
-      const rows = keys.map(k => `
-        <tr>
-          <td>${escHtml(k.label)}</td>
-          <td style="font-family:monospace;">${escHtml(k.key_prefix)}…</td>
-          <td>${fmtDate(k.created_at)}</td>
-          <td>${fmtDate(k.expires_at)}</td>
-          <td>${k.last_used_at ? fmtDate(k.last_used_at) : '—'}</td>
-          <td><button class="btn btn--secondary ak-revoke" data-key-id="${k.id}">Revoke</button></td>
-        </tr>
-      `).join('');
-      listHtml = `
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead><tr><th>Label</th><th>Prefix</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>`;
-    }
-
-    setContent(createHtml + listHtml);
-
-    document.getElementById('ak-create-btn')?.addEventListener('click', async () => {
-      const label = document.getElementById('ak-label').value.trim();
-      const expires = parseInt(document.getElementById('ak-expires').value, 10);
-      const statusEl = document.getElementById('ak-create-status');
-      if (!label) {
-        statusEl.hidden = false;
-        statusEl.className = 'alert alert--error';
-        statusEl.textContent = 'Label is required.';
-        return;
-      }
-      try {
-        const r = await apiFetch(API_KEYS_BASE, {
-          method: 'POST',
-          body: JSON.stringify({ label, expires_in_days: expires }),
-        });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const created = await r.json();
-        statusEl.hidden = false;
-        statusEl.className = 'alert alert--info';
-        statusEl.innerHTML = `Key created. Copy it now — it cannot be shown again:<br>
-          <code style="word-break:break-all;">${escHtml(created.key)}</code>
-          <button class="btn btn--secondary" id="ak-copy-btn" style="margin-top:var(--space-2);">Copy</button>`;
-        document.getElementById('ak-copy-btn')?.addEventListener('click', () => {
-          navigator.clipboard?.writeText(created.key);
-        });
-      } catch (err) {
-        if (err.message !== 'Unauthorized — please sign in again.') {
-          statusEl.hidden = false;
-          statusEl.className = 'alert alert--error';
-          statusEl.textContent = `Create failed: ${err.message}`;
-        }
-      }
-    });
-
-    document.querySelectorAll('.ak-revoke').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        if (!confirm('Revoke this API key? Integrations using it will stop working immediately.')) return;
-        try {
-          const r = await apiFetch(`${API_KEYS_BASE}/${btn.dataset.keyId}`, { method: 'DELETE' });
-          if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
-          navigate('account');
-        } catch (err) {
-          if (err.message !== 'Unauthorized — please sign in again.') {
-            alert(`Revoke failed: ${err.message}`);
-          }
-        }
-      });
-    });
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load API keys: ${err.message}</div>`);
-    }
-  }
-}
-
-// ─── Document detail view ────────────────────────────────────
-
-async function renderDocumentDetailView(id) {
-  setContent('<div class="state-loading"><div class="spinner"></div></div>');
-
-  try {
-    const metaRes = await apiFetch(`${API_BASE}/blob/${id}`, {
-      headers: { Accept: 'application/json' },
-    });
-    if (!metaRes.ok) throw new Error(`HTTP ${metaRes.status}`);
-    const doc = await metaRes.json();
-
-    const tags = (doc.tags || []).map(t => escHtml(t)).join(', ') || '—';
-    const errorRow = doc.status === 'failed' && doc.error
-      ? `<div class="detail-item" style="grid-column: 1 / -1;">
-           <div class="detail-item__label">Error</div>
-           <div class="detail-item__value" style="color:var(--color-danger);">${escHtml(doc.error)}</div>
-         </div>`
-      : '';
-
-    const html = `
-      <button class="back-link" id="doc-back">&#x2190; Back</button>
-
-      <div class="detail-card">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-4);padding-bottom:var(--space-3);border-bottom:1px solid var(--color-border);">
-          <div style="font-size:1rem;font-weight:700;color:var(--color-text);">${escHtml(doc.name || 'Document')}</div>
-          <button class="btn btn--secondary" id="doc-download">Download</button>
-        </div>
-        <div class="detail-grid">
-          <div class="detail-item">
-            <div class="detail-item__label">Type</div>
-            <div class="detail-item__value">${escHtml(doc.mime_type || '—')}</div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-item__label">Size</div>
-            <div class="detail-item__value">${fmtBytes(doc.size)}</div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-item__label">Status</div>
-            <div class="detail-item__value">${badge(doc.status)}</div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-item__label">Uploaded</div>
-            <div class="detail-item__value">${fmtDate(doc.created_at)}</div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-item__label">Updated</div>
-            <div class="detail-item__value">${fmtDate(doc.updated_at)}</div>
-          </div>
-          <div class="detail-item">
-            <div class="detail-item__label">Tags</div>
-            <div class="detail-item__value">${tags}</div>
-          </div>
-          ${doc.summary ? `
-          <div class="detail-item" style="grid-column: 1 / -1;">
-            <div class="detail-item__label">Summary</div>
-            <div class="detail-item__value">${escHtml(doc.summary)}</div>
-          </div>` : ''}
-          ${errorRow}
-        </div>
-      </div>
-
-      <div class="detail-card">
-        <div class="detail-card__title">Preview</div>
-        <div id="doc-viewer"><div class="state-loading"><div class="spinner"></div></div></div>
-      </div>
-    `;
-
-    setContent(html);
-
-    document.getElementById('doc-back').addEventListener('click', goBack);
-
-    document.getElementById('doc-download').addEventListener('click', async () => {
-      try {
-        const fileResp = await apiFetch(`${API_BASE}/blob/${id}`);
-        if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
-        const blob = await fileResp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = doc.name || 'document';
-        a.click();
-        URL.revokeObjectURL(url);
-      } catch (err) {
-        if (err.message !== 'Unauthorized — please sign in again.') {
-          alert(`Download failed: ${err.message}`);
-        }
-      }
-    });
-
-    const viewerEl = document.getElementById('doc-viewer');
-    const mt = doc.mime_type || '';
-    const isPdf = mt === 'application/pdf';
-    const isImage = mt.startsWith('image/');
-    const isPlainText = mt === 'text/plain';
-    const canPreview = isPdf || isImage || isPlainText;
-
-    if (!canPreview) {
-      const msg = document.createElement('div');
-      msg.className = 'state-empty';
-      msg.style.minHeight = '80px';
-      msg.textContent = "This document type can't be previewed — use the Download button above.";
-      viewerEl.textContent = '';
-      viewerEl.appendChild(msg);
-    } else {
-      try {
-        const fileResp = await apiFetch(`${API_BASE}/blob/${id}`);
-        if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
-        const blob = await fileResp.blob();
-        viewerEl.textContent = '';
-        if (isPdf) {
-          const url = URL.createObjectURL(blob);
-          activeObjectUrl = url;
-          const iframe = document.createElement('iframe');
-          iframe.src = url;
-          iframe.style.cssText = 'width:100%;height:600px;border:none;';
-          iframe.title = doc.name || 'preview';
-          viewerEl.appendChild(iframe);
-        } else if (isImage) {
-          const url = URL.createObjectURL(blob);
-          activeObjectUrl = url;
-          const img = document.createElement('img');
-          img.src = url;
-          img.alt = doc.name || 'preview';
-          img.style.cssText = 'max-width:100%;height:auto;display:block;';
-          viewerEl.appendChild(img);
-        } else if (isPlainText) {
-          const text = await blob.text();
-          const pre = document.createElement('pre');
-          pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;max-height:600px;overflow:auto;margin:0;padding:12px;background:var(--color-surface-2);border-radius:4px;';
-          pre.textContent = text;
-          viewerEl.appendChild(pre);
-        }
-      } catch (err) {
-        if (err.message !== 'Unauthorized — please sign in again.') {
-          viewerEl.textContent = `Preview failed: ${err.message}`;
-        }
-      }
-    }
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent('<div class="state-error">Failed to load document.</div>');
-    }
-  }
-}
-
-// ─── Login form ──────────────────────────────────────────────
-
-function initLoginForm() {
-  const form = document.getElementById('login-form');
-  if (!form) return;
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    const alertEl = document.getElementById('login-alert');
-    const submitBtn = document.getElementById('login-submit');
-    const email = document.getElementById('login-email').value.trim();
-    const password = document.getElementById('login-password').value;
-
-    alertEl.hidden = true;
-    alertEl.className = 'alert';
-    alertEl.textContent = '';
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Signing in…';
-
-    try {
-      const res = await fetch(`${AUTH_BASE}/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        saveToken(data.token || data.access_token);
-        await loadMe();
-        enterApp();
-        return;
-      }
-
-      if (res.status === 423) {
-        const data = await res.json().catch(() => ({}));
-        const until = data.locked_until ? ` Account locked until ${fmtDate(data.locked_until)}.` : '';
-        showAlert(alertEl, 'alert--warning', `Account is locked.${until}`);
-        return;
-      }
-
-      if (res.status === 401) {
-        showAlert(alertEl, 'alert--error', 'Invalid credentials. Please try again.');
-        return;
-      }
-
-      showAlert(alertEl, 'alert--error', `Login failed (HTTP ${res.status}). Please try again.`);
-    } catch (err) {
-      showAlert(alertEl, 'alert--error', `Network error: ${err.message}`);
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Sign in';
-    }
-  });
-}
-
-function initSetupForm() {
-  const form = document.getElementById('setup-form');
-  if (!form) return;
-
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-
-    const alertEl = document.getElementById('setup-alert');
-    const submitBtn = document.getElementById('setup-submit');
-    const name = document.getElementById('setup-name').value.trim();
-    const email = document.getElementById('setup-email').value.trim();
-    const password = document.getElementById('setup-password').value;
-
-    alertEl.hidden = true;
-    alertEl.className = 'alert';
-    alertEl.textContent = '';
-    submitBtn.disabled = true;
-    submitBtn.textContent = 'Creating…';
-
-    try {
-      const res = await fetch('/fleet/setup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ name, email, password }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        saveToken(data.token || data.access_token);
-        await loadMe();
-        enterApp();
-        return;
-      }
-
-      if (res.status === 409 || res.status === 410) {
-        showAlert(alertEl, 'alert--warning', 'Setup has already been completed. Please sign in.');
-        showLogin();
-        return;
-      }
-
-      showAlert(alertEl, 'alert--error', `Setup failed (HTTP ${res.status}). Please try again.`);
-    } catch (err) {
-      showAlert(alertEl, 'alert--error', `Network error: ${err.message}`);
-    } finally {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Create owner account';
-    }
-  });
-}
-
-function showAlert(el, cls, msg) {
-  el.className = `alert ${cls}`;
-  el.textContent = msg;
-  el.hidden = false;
-}
-
 // ─── Sidebar & logout ────────────────────────────────────────
 
 function initSidebar() {
@@ -1715,7 +989,7 @@ function initSidebar() {
   const logoutBtn = document.getElementById('logout-btn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', async () => {
-      await fetch(`${AUTH_BASE}/logout`, {
+      await fetch('/fleet/auth/logout', {
         method: 'POST',
         credentials: 'same-origin',
       }).catch(() => {});
@@ -1730,8 +1004,8 @@ function initSidebar() {
 // ─── Boot ────────────────────────────────────────────────────
 
 async function boot() {
-  initLoginForm();
-  initSetupForm();
+  initLoginForm(enterApp);
+  initSetupForm(enterApp);
   initSidebar();
 
   // A 401 from any apiFetch (after a failed refresh) drops back to the login pane.
