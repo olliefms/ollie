@@ -4,7 +4,10 @@
    ============================================================ */
 
 import { getToken, saveToken, clearToken, isAuthenticated } from './utils/auth.js';
-import { apiFetch, tryRefresh, API_BASE, AUTH_BASE } from './utils/api.js';
+import {
+  apiFetch, tryRefresh, API_BASE, AUTH_BASE,
+  loadMe, clearMe, setOnUnauthorized,
+} from './utils/api.js';
 import {
   escHtml, badge, shortId, fmtDate, fmtArrivalWindow,
   fmtBytes, fmtUSD, fmtMiles, humanizeEventType,
@@ -1621,6 +1624,7 @@ function initLoginForm() {
       if (res.ok) {
         const data = await res.json();
         saveToken(data.token || data.access_token);
+        await loadMe();
         enterApp();
         return;
       }
@@ -1677,6 +1681,7 @@ function initSetupForm() {
       if (res.ok) {
         const data = await res.json();
         saveToken(data.token || data.access_token);
+        await loadMe();
         enterApp();
         return;
       }
@@ -1715,6 +1720,7 @@ function initSidebar() {
         credentials: 'same-origin',
       }).catch(() => {});
       clearToken();
+      clearMe();
       clearEventsRefresh();
       showLogin();
     });
@@ -1728,11 +1734,27 @@ async function boot() {
   initSetupForm();
   initSidebar();
 
+  // A 401 from any apiFetch (after a failed refresh) drops back to the login pane.
+  setOnUnauthorized(() => {
+    clearMe();
+    showLogin();
+  });
+
+  // Keep effective scopes fresh while the tab is open: reload /me when the tab
+  // regains visibility (token refresh already reloads scopes via login flow).
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && isAuthenticated()) {
+      loadMe();
+    }
+  });
+
   if (isAuthenticated()) {
+    await loadMe();
     enterApp();
   } else {
     const refreshed = await tryRefresh();
     if (refreshed) {
+      await loadMe();
       enterApp();
     } else {
       await showLoginOrSetup();
