@@ -24,4 +24,23 @@ describe('matchRoute', () => {
   it('ignores a trailing query string', () => {
     expect(matchRoute('/fleet/loads?status=planned')).toEqual({ name: 'loads', params: { query: 'status=planned' } });
   });
+
+  it('matches terminal new/edit/detail in the right precedence', () => {
+    expect(matchRoute('/fleet/terminals')).toEqual({ name: 'terminals', params: {} });
+    expect(matchRoute('/fleet/terminals/new')).toEqual({ name: 'terminal-new', params: {} });
+    expect(matchRoute('/fleet/terminals/t-1/edit')).toEqual({ name: 'terminal-edit', params: { id: 't-1' } });
+    expect(matchRoute('/fleet/terminals/t-1')).toEqual({ name: 'terminal-detail', params: { id: 't-1' } });
+  });
+
+  it('matches truck new/edit/detail in the right precedence', () => {
+    expect(matchRoute('/fleet/trucks/new')).toEqual({ name: 'truck-new', params: {} });
+    expect(matchRoute('/fleet/trucks/abc/edit')).toEqual({ name: 'truck-edit', params: { id: 'abc' } });
+    expect(matchRoute('/fleet/trucks/abc')).toEqual({ name: 'truck-detail', params: { id: 'abc' } });
+  });
+
+  it('matches trailer new/edit/detail in the right precedence', () => {
+    expect(matchRoute('/fleet/trailers/new')).toEqual({ name: 'trailer-new', params: {} });
+    expect(matchRoute('/fleet/trailers/xy-9/edit')).toEqual({ name: 'trailer-edit', params: { id: 'xy-9' } });
+    expect(matchRoute('/fleet/trailers/xy-9')).toEqual({ name: 'trailer-detail', params: { id: 'xy-9' } });
+  });
 });
