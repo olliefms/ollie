@@ -34,6 +34,10 @@ real URLs.
   terminal) are *displayed* but never *saved* as an override unless the user
   changes them intentionally — and existing overrides can be reverted to
   inherited.
+- **Two-tier delete**: everyday "Delete" is a reversible soft delete (archive/
+  inactive) and is the preferred path; a separate, deliberately difficult
+  permanent hard delete is refused (with an enumerated explanation) whenever
+  anything references the object.
 - A real **JS test toolchain** (Vitest + happy-dom) for the growing frontend
   logic, plus Playwright for E2E.
 
@@ -47,13 +51,15 @@ real URLs.
 | Topic | Decision |
 |---|---|
 | Entities in scope | Drivers, Trucks, Trailers, Loads, Trips, Facilities — full CRUD incl. create |
-| Facilities | Brought in-scope (was the one referenced-but-unmanaged entity); needs a new backend soft-delete endpoint |
+| Facilities | Brought in-scope (was the one referenced-but-unmanaged entity); needs new backend delete routes (soft archive + guarded permanent) and an `archived` flag |
 | Work structure | One spec, phased implementation plan |
 | Form pattern | Inline panel (list swaps to form in `#main-content`) |
 | Routing | pushState path routing; URLs reflect entity + item; all entities incl. Terminals |
 | Terminals | Gains a detail page for consistency (was inline-edit-only) |
 | Sidebar | New "Equipment" heading grouping Trucks + Trailers |
-| Delete | Soft delete (server-side) + native `confirm()`; trust backend constraints |
+| Delete (default) | **Soft delete** = archive / mark `Inactive`. The preferred, everyday action: reversible (reactivate), preserves references, hides from active lists. Existing `Inactive` status where present; new `archived` flag for facilities + terminals |
+| Hard delete | A separate, deliberately **difficult** permanent purge. Refused with `409` + **enumerated referrers** if **any** reference exists (active or historical) — clear the chain leaf-first. Extra confirmation (type the name/number) in the UI |
+| Referential integrity | The **hard-delete** guard: every permanent-delete handler runs a referrer check across the reference graph and refuses (409, naming the referrers) if anything points at the object. Composes with existing status guards |
 | Authority | New `GET /fleet/api/v1/me`; UI gates controls by effective scopes |
 | Scope freshness | Refresh `/me` on boot, browser refresh, token refresh, window focus, and any 403 |
 | Code org | Full modular rewrite mirroring the driver portal |
@@ -199,11 +205,13 @@ call it to decide whether to render Create/Edit/Delete/lifecycle controls.
 ### `components/confirm.js`
 
 Thin wrapper over native `confirm()` with a standard destructive-action
-message; returns bool. Used for all deletes (which are soft server-side).
+message; returns bool. Used for all deletes. When the backend refuses a delete
+with `409`, the enumerated referrer message is surfaced in a follow-up
+`alert--error` (see Delete policy).
 
 ## Backend changes
 
-The frontend rewrite needs three backend additions.
+The frontend rewrite needs four backend additions.
 
 ### 1. `GET /fleet/api/v1/me`
 
@@ -233,21 +241,86 @@ Applies to `UpdateDriverRequest` and `UpdateTripRequest` rate fields and their
 gate triggers on *presence* (`is_some()`), so a clear is treated as a change.
 Setting one rate must not clobber the others.
 
-### 3. Facility soft-delete endpoint
+### 3. Soft delete (default) + reactivate
 
-Facilities currently have `GET` list/detail, `POST` create, and `PATCH` update
-(scope `facilities:write`) but no delete route. Add
-`DELETE /fleet/api/v1/facilities/{id}` behind a new `facilities:delete` scope,
-performing a **soft delete** (mark inactive/archived) consistent with
-trucks/trailers/drivers. Because facilities are referenced by historical load
-stops, the soft delete must preserve those references and only hide the
-facility from active lists and the stop typeahead. Add a `soft_delete_facility`
-db op + the route wiring in `fleet_portal/mod.rs`.
+The everyday "Delete" is a reversible soft delete that hides the record from
+active lists/pickers while preserving it as a reference target:
+
+- **Drivers / Trucks / Trailers** — set `status = Inactive` (the existing
+  `soft_delete_*` ops already do this). The current `DELETE` handlers already
+  call these, so this tier mostly stays as-is.
+- **Facilities / Terminals** — have no status enum; add a lightweight
+  `archived: bool` field. Add `DELETE /fleet/api/v1/facilities/{id}` (new
+  `facilities:delete` scope) and reuse terminal delete to set `archived`.
+- **Loads / Trips** — the existing `cancel` / `Cancelled` lifecycle is the soft
+  archive; no new soft path needed.
+
+All soft deletes are **reversible** via a reactivate/unarchive action
+(`POST .../{id}/reactivate`), gated by the entity's `:write` scope. Soft delete
+does **not** run a referrer check — it's always safe because the row persists.
+
+### 4. Hard delete (permanent) with referential-integrity guard
+
+A separate, deliberately difficult permanent purge — exposed as a distinct
+route (e.g. `DELETE .../{id}/permanent` or `?permanent=true`, gated by a
+stricter `:delete` scope) and requiring extra confirmation in the UI. The
+handler:
+
+1. Runs a **referrer check** across the reference graph (matrix in Delete
+   policy below). If any referrer exists — active *or* historical — returns
+   `AppError::Conflict` (HTTP `409`) with a message that **enumerates the
+   referrers** (type + count, ids where cheap, e.g. `"cannot permanently
+   delete: referenced by 3 trips (#1024, #1025, #1031)"`).
+2. Composes with existing **status guards** (e.g. an in-transit/delivered/
+   completed trip cannot be deleted regardless of references).
+3. Only if **unreferenced** and status-eligible, removes the row (the codebase
+   already has `hard_delete_trip` and the `AppError::Conflict` → 409 precedent
+   in blob/trip/load deletes).
+
+Implementation: a `count_referrers` / `find_referrers` db op per entity.
+
+## Delete policy (soft + hard)
+
+Two tiers, surfaced on each entity's detail page.
+
+**Tier 1 — Delete (soft, default, preferred).** Archives / marks the record
+`Inactive`. Reversible via **Reactivate**. Preserves all references; just hides
+the record from active lists and pickers. Single native `confirm()`. This is
+the button users reach for normally.
+
+**Tier 2 — Permanently delete (hard, deliberately difficult).** Reached from a
+secondary/advanced control (typically only on an already-archived record),
+behind a stronger confirmation (type the entity's name/number). The backend
+refuses with `409` + an **enumerated referrer list** if anything points at the
+object; the UI surfaces that message and the user must delete the referrers
+first (leaf-first down the chain).
+
+**Reference graph** (what blocks a permanent delete):
+
+| Permanently deleting… | …is blocked by referrers |
+|---|---|
+| Driver | Trips (`driver_id`); equipment it currently holds (`current_truck_id`/`current_trailer_ids` — detach first) |
+| Truck | Trips (`truck_id`); Drivers holding it (`current_truck_id`) |
+| Trailer | Trips (`trailer_ids`); Drivers holding it (`current_trailer_ids`) |
+| Facility | Load stops (`facility_id`) |
+| Terminal | Drivers (`terminal_id`) |
+| Load | Trips (`load_id`) |
+| Trip | Other trips (`previous_trip_id`); pay records |
+
+The 409 message names the referrer types and counts (and ids where cheap) so
+the user knows exactly what to clear. Status guards still apply on top (e.g. an
+in-transit trip is undeletable regardless of references).
+
+**Scope mapping:** soft delete / reactivate require the entity's `:write`
+scope (it's a reversible state change); permanent hard delete requires the
+stricter `:delete` scope (reserved for the irreversible purge). This re-homes
+the existing `:delete` scope onto the permanent path.
 
 ## Per-entity field specs
 
 Create forms **omit `status`** (backend defaults it); edit forms add a status
-`select`. All deletes are soft + native confirm.
+`select`. Each detail page exposes **Delete** (soft) + **Reactivate** and, on
+archived records, **Permanently delete** (hard, guarded).
 
 ### Trucks (`trucks:write` / `trucks:delete`)
 
@@ -349,6 +422,9 @@ view so controls appear/disappear without a manual reload.
 - **403 / insufficient scope** → trigger `/me` refresh + re-gate (above);
   friendly inline message if still denied.
 - **422 validation** → surfaced inline.
+- **409 on permanent delete** → the enumerated referrer message is shown in the
+  delete dialog's `alert--error`; the record is not deleted and the user is
+  pointed at the referrers to clear.
 - **Facility resolution** → inline disambiguation step, not an error.
 - Mutations re-fetch on success (no optimistic UI).
 
@@ -361,9 +437,13 @@ view so controls appear/disappear without a manual reload.
 - Three-state `Option<Option<f64>>` semantics for driver + trip rates: absent =
   leave, `null` = clear, value = set — including that setting one rate doesn't
   clobber the others, and that a clear triggers the rate-update path.
-- Facility soft-delete: `DELETE` marks the facility inactive, removes it from
-  active lists/typeahead, preserves historical stop references, and is gated by
-  `facilities:delete`.
+- Soft delete + reactivate per entity: archives/marks `Inactive` (or sets
+  `archived`), drops out of active lists/pickers, preserves references, and is
+  reversible. Facilities/terminals gain the `archived` flag.
+- Permanent-delete referrer guard per entity: returns `409` with an enumerated
+  referrer message when any referrer exists (active or historical), composes
+  with status guards, and only removes the row when fully unreferenced. One
+  end-to-end "clear the chain leaf-first, then purge" test.
 
 ### Frontend (Vitest + happy-dom for units; Playwright for E2E)
 
@@ -377,29 +457,33 @@ logic:
 - `scope-gate.js` matching: exact, `resource:*`, global `*`, denial.
 
 Playwright E2E covers representative flows per entity: create→detail,
-edit→persist, delete→gone, scope-gated controls hidden, and the inherited-rate
+edit→persist, soft delete→archived→reactivate, blocked permanent-delete
+(referrer message shown), scope-gated controls hidden, and the inherited-rate
 "ghost placeholder, not saved unless changed" behavior end-to-end.
 
 ## Phasing (one spec → phased implementation plan)
 
 - **Phase 0 — Foundation:** backend `/me` + `Option<Option>` clear support
-  (driver+trip) with tests; JS toolchain (`package.json`, Vitest, happy-dom,
-  CI job); UI scaffold (`utils/`, `components/{form,scope-gate,confirm,table}.js`),
-  pushState router + login gate in `app.js`; migrate the read-only views (home,
-  events, documents, account, login) onto the new router so the shell fully
-  works.
+  (driver+trip) with tests; the **delete framework** — soft-delete/reactivate
+  convention + the `count_referrers`/permanent-delete guard pattern + the
+  `archived` flag for facilities/terminals — established as shared helpers so
+  each entity phase just wires its own reference checks; JS toolchain
+  (`package.json`, Vitest, happy-dom, CI job); UI scaffold (`utils/`,
+  `components/{form,scope-gate,confirm,table}.js`), pushState router + login
+  gate in `app.js`; migrate the read-only views (home, events, documents,
+  account, login) onto the new router so the shell fully works.
 - **Phase 1 — Terminals + Equipment:** migrate Terminals to modules + detail
   page + routing (proof-of-pattern), then add Trucks & Trailers
   (list/detail/CRUD) + the Equipment sidebar group.
 - **Phase 2 — Drivers:** driver pages + CRUD, inheritable rate-override fields,
   set-PIN, attach/detach equipment.
-- **Phase 3 — Facilities:** backend soft-delete endpoint + `facilities:delete`
-  scope; facility pages + CRUD (repeatable contacts, geocode-status display).
-  Lands before Loads so the load stop form has a real facilities data source +
-  management surface.
+- **Phase 3 — Facilities:** `archived` flag + delete routes (`facilities:write`
+  soft / `facilities:delete` permanent); facility pages + CRUD (repeatable
+  contacts, geocode-status display). Lands before Loads so the load stop form
+  has a real facilities data source + management surface.
 - **Phase 4 — Loads:** `load-form` (stops w/ facility typeahead +
   disambiguation, rate items) + detail lifecycle actions
-  (cancel/invoice/settle/delete).
+  (cancel/invoice/settle) + soft/permanent delete.
 - **Phase 5 — Trips:** `trip-form` (load-linked + free-standing) w/ inheritable
   rate overrides + detail lifecycle actions + stop events.
 
