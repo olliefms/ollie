@@ -8229,6 +8229,34 @@ async fn test_setup_wizard_full_flow() {
 }
 
 #[tokio::test]
+async fn test_me_returns_owner_identity_and_scopes() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+
+    let resp = server.get("/fleet/api/v1/me")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["email"], OWNER_EMAIL);
+    assert_eq!(body["role"], "owner");
+    // Owner role bundle is the global superuser scope.
+    let scopes: Vec<String> = body["effective_scopes"]
+        .as_array().unwrap().iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(scopes.contains(&"*".to_string()), "owner should have * scope, got {scopes:?}");
+}
+
+#[tokio::test]
+async fn test_me_without_auth_returns_401() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.get("/fleet/api/v1/me").await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
 async fn test_setup_status_false_once_user_exists() {
     let (server, _b, _d, _rx) = test_server().await;
     // Provision the first user via first-run setup; status must then report false.
