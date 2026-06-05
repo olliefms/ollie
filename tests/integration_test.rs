@@ -8311,15 +8311,17 @@ async fn test_driver_rate_override_absent_field_leaves_others_unchanged() {
     let driver_id = create_test_driver(&server).await;
 
     // Set loaded rate.
-    server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+    let set = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "loaded_rate_per_mile": 0.75 }))
         .await;
+    assert_eq!(set.status_code(), 200);
     // Patch a *different* rate without mentioning loaded → loaded must survive.
-    server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+    let other = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "deadhead_rate_per_mile": 0.40 }))
         .await;
+    assert_eq!(other.status_code(), 200);
 
     assert_eq!(driver_loaded_rate(&server, &owner_token, &driver_id).await, serde_json::json!(0.75));
 }
