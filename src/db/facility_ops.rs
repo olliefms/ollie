@@ -5,7 +5,7 @@ use crate::{
     models::{FacilityListItem, FacilityRecord, GeocodeStatus},
 };
 use arrow_array::{
-    Array, FixedSizeListArray, Float32Array, Float64Array, Int64Array,
+    Array, BooleanArray, FixedSizeListArray, Float32Array, Float64Array, Int64Array,
     RecordBatch, RecordBatchIterator, RecordBatchReader, StringArray,
 };
 use chrono::Utc;
@@ -129,6 +129,18 @@ impl DbClient {
         record.embedding = Some(embedding);
         record.updated_at = Utc::now();
         self.upsert_facility(&record).await
+    }
+
+    /// Soft archive / reactivate. Sets the `archived` flag and returns the
+    /// updated record. Reversible — the row persists either way.
+    pub async fn set_facility_archived(
+        &self, id: Uuid, archived: bool,
+    ) -> Result<FacilityRecord, AppError> {
+        let mut record = self.get_facility_by_id(id).await?;
+        record.archived = archived;
+        record.updated_at = Utc::now();
+        self.upsert_facility(&record).await?;
+        Ok(record)
     }
 
     async fn upsert_facility(&self, record: &FacilityRecord) -> Result<(), AppError> {
@@ -288,6 +300,7 @@ fn facility_to_batch(record: &FacilityRecord, embed_dim: usize) -> Result<Record
         embedding_col,
         Arc::new(StringArray::from(vec![record.created_at.to_rfc3339().as_str()])),
         Arc::new(StringArray::from(vec![record.updated_at.to_rfc3339().as_str()])),
+        Arc::new(BooleanArray::from(vec![record.archived])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -323,6 +336,12 @@ fn row_to_facility(batch: &RecordBatch, i: usize) -> Result<FacilityRecord, AppE
             .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
             .and_then(|a| if a.is_null(i) { None } else { Some(a.value(i)) })
     };
+    let bool_col = |name: &str| -> bool {
+        batch.column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<BooleanArray>())
+            .map(|a| !a.is_null(i) && a.value(i))
+            .unwrap_or(false)
+    };
 
     let contacts: Vec<crate::models::FacilityContact> =
         serde_json::from_str(&str_col("contacts")).unwrap_or_default();
@@ -353,6 +372,7 @@ fn row_to_facility(batch: &RecordBatch, i: usize) -> Result<FacilityRecord, AppE
         contacts, notes: opt_str("notes"), tags, blob_ids,
         avg_dwell_minutes: opt_f64("avg_dwell_minutes"),
         dwell_sample_count: i64_col("dwell_sample_count"),
+        archived: bool_col("archived"),
         geocode_failure_count: i64_col("geocode_failure_count") as u32,
         embedding,
         created_at: str_col("created_at").parse()
@@ -363,7 +383,9 @@ fn row_to_facility(batch: &RecordBatch, i: usize) -> Result<FacilityRecord, AppE
 }
 
 fn build_facility_filter(name: Option<&str>, tags: &[String]) -> Option<String> {
-    let mut parts: Vec<String> = Vec::new();
+    // Archived facilities drop out of active lists and the stop typeahead (both
+    // go through this filter). They remain fetchable by id (detail/reactivate).
+    let mut parts: Vec<String> = vec!["(archived = false OR archived IS NULL)".into()];
     // Escape single quotes to prevent SQL injection in LanceDB filter strings
     if let Some(n) = name {
         let n = n.replace('\'', "''");
@@ -373,7 +395,7 @@ fn build_facility_filter(name: Option<&str>, tags: &[String]) -> Option<String> 
         let tag = tag.replace('\'', "''");
         parts.push(format!("tags LIKE '%\"{tag}\"%'"));
     }
-    if parts.is_empty() { None } else { Some(parts.join(" AND ")) }
+    Some(parts.join(" AND "))
 }
 
 async fn collect_stream(
@@ -403,7 +425,7 @@ mod tests {
             geocode_status: GeocodeStatus::Pending, geocode_failure_count: 0,
             contacts: vec![], notes: None, tags: vec!["cold".into()],
             blob_ids: vec![], avg_dwell_minutes: None, dwell_sample_count: 0,
-            embedding: None, created_at: now, updated_at: now,
+            archived: false, embedding: None, created_at: now, updated_at: now,
         }
     }
 

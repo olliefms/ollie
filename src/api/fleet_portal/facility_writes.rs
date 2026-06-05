@@ -24,6 +24,7 @@ use uuid::Uuid;
 
 use crate::{
     ai::embed::embed_text,
+    api::utils::referrer_conflict_message,
     error::AppError,
     models::{
         validate_coords, FacilityContact, FacilityRecord, GeocodeStatus,
@@ -161,6 +162,7 @@ pub async fn apply_facility_create(
         blob_ids: parsed.blob_ids,
         avg_dwell_minutes: None,
         dwell_sample_count: 0,
+        archived: false,
         embedding,
         created_at: now,
         updated_at: now,
@@ -212,4 +214,89 @@ pub async fn apply_facility_patch(
     }
 
     Ok(updated)
+}
+
+// --- Delete tiers (soft archive / reactivate / permanent) ---
+
+#[utoipa::path(
+    delete,
+    path = "/fleet/api/v1/facilities/{id}",
+    params(("id" = Uuid, Path, description = "Facility UUID")),
+    responses(
+        (status = 204, description = "Facility archived (soft delete)"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Facility not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+/// Tier 1 — the everyday "Delete": a reversible soft archive (`facilities:write`).
+/// The row persists as a reference target; it just drops out of active lists and
+/// the stop typeahead. No referrer check needed (it's always safe).
+pub async fn archive_facility_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("facilities:write")?;
+    state.db.set_facility_archived(id, true).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    post,
+    path = "/fleet/api/v1/facilities/{id}/reactivate",
+    params(("id" = Uuid, Path, description = "Facility UUID")),
+    responses(
+        (status = 200, description = "Reactivated facility record", body = FacilityRecord),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Facility not found"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+/// Reverse of the soft archive (`facilities:write`).
+pub async fn reactivate_facility_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("facilities:write")?;
+    let record = state.db.set_facility_archived(id, false).await?;
+    Ok(Json(record))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/fleet/api/v1/facilities/{id}/permanent",
+    params(("id" = Uuid, Path, description = "Facility UUID")),
+    responses(
+        (status = 204, description = "Facility permanently deleted"),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Facility not found"),
+        (status = 409, description = "Conflict — referenced by load stops"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+/// Tier 2 — the deliberately difficult permanent purge (`facilities:delete`).
+/// Refused with 409 + an enumerated referrer list when any load stop references
+/// the facility; the user must clear the referrers first.
+pub async fn permanent_delete_facility_handler(
+    State(state): State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("facilities:delete")?;
+    // 404 early if it doesn't exist.
+    state.db.get_facility_by_id(id).await?;
+    let loads = state.db.count_loads_referencing_facility(id).await?;
+    if loads > 0 {
+        return Err(AppError::Conflict(referrer_conflict_message(
+            "facility",
+            &[("loads", loads)],
+        )));
+    }
+    state.db.delete_facility_by_id(id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

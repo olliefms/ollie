@@ -63,6 +63,10 @@ pub struct FacilityRecord {
     pub blob_ids: Vec<Uuid>,
     pub avg_dwell_minutes: Option<f64>,
     pub dwell_sample_count: i64,
+    /// Soft-archive flag. Archived facilities drop out of active lists and the
+    /// stop typeahead but persist as reference targets; reversible via reactivate.
+    #[serde(default)]
+    pub archived: bool,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -171,6 +175,7 @@ pub struct FacilityListItem {
     pub tags: Vec<String>,
     pub blob_ids: Vec<Uuid>,
     pub avg_dwell_minutes: Option<f64>,
+    pub archived: bool,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
@@ -185,6 +190,7 @@ impl From<FacilityRecord> for FacilityListItem {
             geocode_failure_count: r.geocode_failure_count,
             contacts: r.contacts, notes: r.notes, tags: r.tags,
             blob_ids: r.blob_ids, avg_dwell_minutes: r.avg_dwell_minutes,
+            archived: r.archived,
             created_at: r.created_at, score: None,
         }
     }
@@ -234,7 +240,7 @@ mod tests {
             geocode_status: GeocodeStatus::Pending, geocode_failure_count: 0,
             contacts: vec![], notes: None, tags: vec![],
             blob_ids: vec![], avg_dwell_minutes: None,
-            dwell_sample_count: 0, embedding: Some(vec![0.1, 0.2]),
+            dwell_sample_count: 0, archived: false, embedding: Some(vec![0.1, 0.2]),
             created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
         };
         let json = serde_json::to_value(&r).unwrap();
@@ -255,7 +261,7 @@ mod tests {
             }],
             notes: Some("call ahead".into()), tags: vec!["cold".into()],
             blob_ids: vec![], avg_dwell_minutes: None, dwell_sample_count: 0,
-            embedding: None,
+            archived: false, embedding: None,
             created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
         };
         let text = r.embedding_text();

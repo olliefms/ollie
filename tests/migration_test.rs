@@ -835,3 +835,116 @@ async fn migration_renames_dispatcher_tables_to_fleet_user() {
     assert_eq!(subs, vec!["driver".to_string(), "fleet_user".to_string()],
         "dispatcher subject_type -> fleet_user; driver row untouched");
 }
+
+// --- Facilities `archived` soft-delete column migration (Phase 3) ---
+
+/// Pre-archived facilities schema: the current `facility_schema` minus the
+/// `archived` column appended at the end.
+fn facility_schema_pre_archived(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("address", DataType::Utf8, false),
+        Field::new("normalized_address", DataType::Utf8, true),
+        Field::new("lat", DataType::Float64, true),
+        Field::new("lng", DataType::Float64, true),
+        Field::new("geocode_status", DataType::Utf8, false),
+        Field::new("contacts", DataType::Utf8, false),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("tags", DataType::Utf8, false),
+        Field::new("blob_ids", DataType::Utf8, false),
+        Field::new("avg_dwell_minutes", DataType::Float64, true),
+        Field::new("dwell_sample_count", DataType::Int64, false),
+        Field::new("geocode_failure_count", DataType::Int64, false),
+        Field::new(
+            "embedding",
+            DataType::FixedSizeList(
+                Arc::new(Field::new("item", DataType::Float32, true)),
+                embed_dim as i32,
+            ),
+            true,
+        ),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+async fn seed_pre_archived_facilities(path: &str) {
+    let conn = lancedb::connect(path).execute().await.unwrap();
+    let schema = facility_schema_pre_archived(EMBED_DIM);
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![None];
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(StringArray::from(vec![Some(id.as_str())])),
+            Arc::new(Int64Array::from(vec![0_i64])),
+            Arc::new(StringArray::from(vec![Some("Legacy Facility")])),
+            Arc::new(StringArray::from(vec![Some("Memphis, TN")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(Float64Array::from(vec![None::<f64>])),
+            Arc::new(Float64Array::from(vec![None::<f64>])),
+            Arc::new(StringArray::from(vec![Some("pending")])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(Float64Array::from(vec![None::<f64>])),
+            Arc::new(Int64Array::from(vec![0_i64])),
+            Arc::new(Int64Array::from(vec![0_i64])),
+            Arc::new(
+                FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+                    nulls,
+                    EMBED_DIM as i32,
+                ),
+            ),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        ],
+    )
+    .unwrap();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    conn.create_table("facilities", reader).execute().await.unwrap();
+}
+
+#[tokio::test]
+async fn migration_opens_pre_archived_facilities_table_and_adds_archived_column() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    seed_pre_archived_facilities(path).await;
+
+    let client = DbClient::new(path, EMBED_DIM).await.expect(
+        "DbClient::new must migrate a pre-archived facilities table without erroring",
+    );
+
+    let schema = client.facility_table.schema().await.unwrap();
+    assert!(
+        schema.field_with_name("archived").is_ok(),
+        "post-migration facilities schema missing archived"
+    );
+    assert_eq!(client.facility_table.count_rows(None).await.unwrap(), 1);
+
+    // Pre-existing row defaults to archived = false and stays in active lists.
+    let (total, items) = client.list_facilities(None, &[], 10, 0).await.unwrap();
+    assert_eq!(total, 1);
+    let id = items[0].id;
+    let fac = client.get_facility_by_id(id).await.unwrap();
+    assert!(!fac.archived, "migrated row must default to archived = false");
+
+    // Soft archive round-trips and drops the row from the active list.
+    let archived = client.set_facility_archived(id, true).await.unwrap();
+    assert!(archived.archived);
+    let (active_total, _) = client.list_facilities(None, &[], 10, 0).await.unwrap();
+    assert_eq!(active_total, 0, "archived facility must drop out of active list");
+    // Still fetchable by id (for detail / reactivate).
+    assert!(client.get_facility_by_id(id).await.unwrap().archived);
+
+    // Reactivate brings it back.
+    client.set_facility_archived(id, false).await.unwrap();
+    let (back, _) = client.list_facilities(None, &[], 10, 0).await.unwrap();
+    assert_eq!(back, 1, "reactivated facility must return to the active list");
+}

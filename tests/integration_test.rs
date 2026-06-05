@@ -5748,7 +5748,7 @@ async fn test_fleet_user_facility_patch_address_requeues_geocode() {
         geocode_failure_count: 0,
         contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
         avg_dwell_minutes: None, dwell_sample_count: 0,
-        embedding: None, created_at: now, updated_at: now,
+        archived: false, embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
     let resp = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
@@ -5780,7 +5780,7 @@ async fn test_fleet_user_facility_patch_explicit_coords_repair_failed_geocode() 
         geocode_failure_count: 3,
         contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
         avg_dwell_minutes: None, dwell_sample_count: 0,
-        embedding: None, created_at: now, updated_at: now,
+        archived: false, embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
     let resp = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
@@ -5864,7 +5864,7 @@ async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
         geocode_failure_count: 3,
         contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
         avg_dwell_minutes: None, dwell_sample_count: 0,
-        embedding: None, created_at: now, updated_at: now,
+        archived: false, embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
     let report = mcp_call(&server, &token, "facility_doctor", serde_json::json!({
@@ -8324,4 +8324,105 @@ async fn test_driver_rate_override_absent_field_leaves_others_unchanged() {
     assert_eq!(other.status_code(), 200);
 
     assert_eq!(driver_loaded_rate(&server, &owner_token, &driver_id).await, serde_json::json!(0.75));
+}
+
+// --- Facilities two-tier delete (Phase 3) ---
+
+#[tokio::test]
+async fn test_facility_soft_archive_reactivate_and_active_list_filter() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Archive Me", "address": "Memphis, TN" }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // It appears in the active list.
+    let list = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    let items = list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(items.iter().any(|f| f["id"] == id), "new facility should be listed");
+
+    // Soft delete (archive) → 204.
+    let del = server.delete(&format!("/fleet/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del.status_code(), 204);
+
+    // It drops out of the active list...
+    let list2 = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    let items2 = list2.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(!items2.iter().any(|f| f["id"] == id), "archived facility must drop from active list");
+
+    // ...but is still fetchable by id, flagged archived.
+    let got = server.get(&format!("/fleet/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(got.status_code(), 200);
+    assert_eq!(got.json::<serde_json::Value>()["archived"], true);
+
+    // Reactivate → 200, archived false, back in the list.
+    let react = server.post(&format!("/fleet/api/v1/facilities/{id}/reactivate"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(react.status_code(), 200);
+    assert_eq!(react.json::<serde_json::Value>()["archived"], false);
+    let list3 = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    let items3 = list3.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(items3.iter().any(|f| f["id"] == id), "reactivated facility must return to active list");
+}
+
+#[tokio::test]
+async fn test_facility_permanent_delete_guarded_by_load_stop_referrer() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility, then a load whose stop references it.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Referenced", "address": "Dallas, TX" }))
+        .await;
+    let fac_id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let load = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [{
+                "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                "timezone": "America/Chicago"
+            }],
+            "rate_items": []
+        }))
+        .await;
+    assert_eq!(load.status_code(), 201, "load create failed: {:?}", load.text());
+    let load_id = load.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Permanent delete is refused with 409 + an enumerated referrer message.
+    let blocked = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(blocked.status_code(), 409);
+    let err = blocked.json::<serde_json::Value>()["error"].as_str().unwrap().to_string();
+    assert!(err.contains("1 loads"), "expected referrer count in message, got: {err}");
+
+    // Clear the referrer (delete the load), then the purge succeeds.
+    let del_load = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert!(del_load.status_code() == 204 || del_load.status_code() == 200,
+        "load delete failed: {}", del_load.status_code());
+
+    let purge = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(purge.status_code(), 204, "purge should succeed once unreferenced: {:?}", purge.text());
+
+    // Gone entirely.
+    let got = server.get(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(got.status_code(), 404);
 }
