@@ -18,6 +18,13 @@ pub fn referrer_conflict_message(entity: &str, referrers: &[(&str, usize)]) -> S
         .filter(|(_, n)| *n > 0)
         .map(|(kind, n)| format!("{n} {kind}"))
         .collect();
+    // Contract: only call this when there is at least one referrer. An empty
+    // `parts` would yield a dangling "...referenced by " — catch caller misuse
+    // (e.g. a forgotten count check) during development.
+    debug_assert!(
+        !parts.is_empty(),
+        "referrer_conflict_message called with no non-zero referrers"
+    );
     format!(
         "cannot permanently delete {entity}: referenced by {}",
         parts.join(", ")
