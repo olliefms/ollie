@@ -9,3 +9,4 @@ data/
 .worktrees/
 .claude/worktrees/
 node_modules/
+.playwright-mcp/

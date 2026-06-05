@@ -65,12 +65,12 @@
 }
 
 .sidebar__group-label {
-  padding: var(--space-4) var(--space-4) var(--space-2);
-  font-size: 0.6875rem;
+  padding: var(--space-4) var(--space-4) var(--space-1);
+  font-size: 0.75rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  color: var(--color-text-subtle);
 }
 
 .sidebar__link--active {
