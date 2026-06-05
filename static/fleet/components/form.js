@@ -17,37 +17,46 @@ export function buildPayload(fields, raw, reverted = new Set()) {
     if (f.type === 'inheritable') {
       if (reverted.has(f.key)) { payload[f.key] = null; continue; }   // explicit clear
       if (v === '' || v === undefined || v === null) continue;        // inherited stays
-      payload[f.key] = parseFloat(v);                                 // intentional override
+      const n = parseFloat(v);
+      if (Number.isNaN(n)) continue;                                  // garbage → never override
+      payload[f.key] = n;                                             // intentional override
       continue;
     }
     const blank = v === '' || v === undefined || v === null;
     if (f.required && blank) { errors.push(`${f.label} is required.`); continue; }
     if (blank) continue;                                              // omit → "leave unchanged"
-    if (f.type === 'number') payload[f.key] = parseFloat(v);
-    else if (f.type === 'int') payload[f.key] = parseInt(v, 10);
-    else payload[f.key] = v;                                          // text / select
+    if (f.type === 'number') {
+      const n = parseFloat(v);
+      if (!Number.isNaN(n)) payload[f.key] = n;
+    } else if (f.type === 'int') {
+      const n = parseInt(v, 10);
+      if (!Number.isNaN(n)) payload[f.key] = n;
+    } else {
+      payload[f.key] = v;                                             // text / select
+    }
   }
   return { payload, errors };
 }
 
 function fieldControl(f, value) {
   const val = value === undefined || value === null ? '' : value;
+  const key = escHtml(f.key);
   if (f.type === 'checkbox') {
-    return `<input class="form-checkbox" type="checkbox" data-field="${f.key}" ${value ? 'checked' : ''}>`;
+    return `<input class="form-checkbox" type="checkbox" data-field="${key}" ${value ? 'checked' : ''}>`;
   }
   if (f.type === 'select') {
     const opts = (f.options || []).map(o =>
       `<option value="${escHtml(o)}" ${o === value ? 'selected' : ''}>${escHtml(o)}</option>`).join('');
-    return `<select class="form-input" data-field="${f.key}"><option value=""></option>${opts}</select>`;
+    return `<select class="form-input" data-field="${key}"><option value=""></option>${opts}</select>`;
   }
   if (f.type === 'inheritable') {
     const ph = f.inheritedValue != null ? `Inherited: ${f.inheritedValue} (${escHtml(f.inheritedFrom || '')})` : '';
-    return `<input class="form-input" type="number" step="any" data-field="${f.key}"
-      value="${value != null ? value : ''}" placeholder="${escHtml(ph)}">`;
+    return `<input class="form-input" type="number" step="any" data-field="${key}"
+      value="${value != null ? escHtml(String(value)) : ''}" placeholder="${escHtml(ph)}">`;
   }
   const inputType = (f.type === 'number' || f.type === 'int') ? 'number' : 'text';
   const step = f.type === 'number' ? ' step="any"' : '';
-  return `<input class="form-input" type="${inputType}"${step} data-field="${f.key}" value="${escHtml(String(val))}">`;
+  return `<input class="form-input" type="${inputType}"${step} data-field="${key}" value="${escHtml(String(val))}">`;
 }
 
 /**
@@ -85,6 +94,9 @@ export function renderForm(container, { title, fields, values = {}, submitLabel 
   }
 
   submitBtn.addEventListener('click', async () => {
+    // The "revert to inherited" set is intentionally empty here — the revert UI
+    // control lands with the first real inheritable form (Drivers, Phase 2).
+    // buildPayload already supports it via its third argument.
     const { payload, errors } = buildPayload(fields, readRaw());
     if (errors.length) {
       errEl.textContent = errors.join(' ');

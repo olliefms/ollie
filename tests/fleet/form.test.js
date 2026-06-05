@@ -42,6 +42,14 @@ describe('buildPayload inherited-value rule', () => {
     const { payload } = buildPayload(FIELDS, { name: 'x', loaded_rate_per_mile: '0.80' }, new Set(['loaded_rate_per_mile']));
     expect(payload.loaded_rate_per_mile).toBe(null);
   });
+  it('inherited + value 0 → sent as 0 override (0 is meaningful, not blank)', () => {
+    const { payload } = buildPayload(FIELDS, { name: 'x', loaded_rate_per_mile: '0' }, new Set());
+    expect(payload.loaded_rate_per_mile).toBe(0);
+  });
+  it('inherited + non-numeric garbage → omitted (NaN never sent as override)', () => {
+    const { payload } = buildPayload(FIELDS, { name: 'x', loaded_rate_per_mile: 'abc' }, new Set());
+    expect('loaded_rate_per_mile' in payload).toBe(false);
+  });
 });
 
 describe('renderForm', () => {
