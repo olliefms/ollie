@@ -49,4 +49,10 @@ describe('matchRoute', () => {
     expect(matchRoute('/fleet/drivers/d-1/edit')).toEqual({ name: 'driver-edit', params: { id: 'd-1' } });
     expect(matchRoute('/fleet/drivers/d-1')).toEqual({ name: 'driver-detail', params: { id: 'd-1' } });
   });
+
+  it('matches facility new/edit/detail in the right precedence', () => {
+    expect(matchRoute('/fleet/facilities/new')).toEqual({ name: 'facility-new', params: {} });
+    expect(matchRoute('/fleet/facilities/f-7/edit')).toEqual({ name: 'facility-edit', params: { id: 'f-7' } });
+    expect(matchRoute('/fleet/facilities/f-7')).toEqual({ name: 'facility-detail', params: { id: 'f-7' } });
+  });
 });

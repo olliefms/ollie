@@ -15,7 +15,9 @@ export const VIEW_PATHS = {
   loads: () => '/fleet/loads',
   'load-detail': (p) => `/fleet/loads/${p.id}`,
   drivers: () => '/fleet/drivers',
+  'driver-new': () => '/fleet/drivers/new',
   'driver-detail': (p) => `/fleet/drivers/${p.id}`,
+  'driver-edit': (p) => `/fleet/drivers/${p.id}/edit`,
   trips: () => '/fleet/trips',
   'trip-detail': (p) => `/fleet/trips/${p.id}`,
   events: () => '/fleet/events',
@@ -33,6 +35,10 @@ export const VIEW_PATHS = {
   'trailer-new': () => '/fleet/trailers/new',
   'trailer-detail': (p) => `/fleet/trailers/${p.id}`,
   'trailer-edit': (p) => `/fleet/trailers/${p.id}/edit`,
+  facilities: () => '/fleet/facilities',
+  'facility-new': () => '/fleet/facilities/new',
+  'facility-detail': (p) => `/fleet/facilities/${p.id}`,
+  'facility-edit': (p) => `/fleet/facilities/${p.id}/edit`,
   account: () => '/fleet/account',
 };
 

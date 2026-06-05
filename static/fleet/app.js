@@ -22,7 +22,6 @@ import {
 import {
   setContent, setRefreshIndicator, navigate, goBack,
 } from './utils/dom.js';
-import { renderPlaceholder } from './pages/placeholder.js';
 import { renderHomeView } from './pages/home.js';
 import { renderEventsView, clearEventsRefresh } from './pages/events.js';
 import { renderDocumentsView } from './pages/documents.js';
@@ -43,6 +42,9 @@ import { renderTrailerForm } from './pages/trailer-form.js';
 import { renderDriversView } from './pages/drivers.js';
 import { renderDriverDetail } from './pages/driver-detail.js';
 import { renderDriverForm } from './pages/driver-form.js';
+import { renderFacilitiesView } from './pages/facilities.js';
+import { renderFacilityDetail } from './pages/facility-detail.js';
+import { renderFacilityForm } from './pages/facility-form.js';
 
 // ─── Navigation ──────────────────────────────────────────────
 
@@ -72,6 +74,9 @@ const VIEW_TITLES = {
   'trailer-detail': 'Trailer',
   'trailer-edit': 'Edit Trailer',
   facilities: 'Facilities',
+  'facility-new': 'New Facility',
+  'facility-detail': 'Facility',
+  'facility-edit': 'Edit Facility',
   account: 'Account',
 };
 
@@ -109,8 +114,6 @@ function renderRoute({ name, params }) {
   if (topbarTitle) topbarTitle.textContent = VIEW_TITLES[name] || name;
   setRefreshIndicator('');
 
-  const main = document.getElementById('main-content');
-
   switch (name) {
     case 'home': renderHomeView(); break;
     case 'loads': renderLoadsView(params); break;
@@ -136,7 +139,10 @@ function renderRoute({ name, params }) {
     case 'trailer-new': renderTrailerForm(null); break;
     case 'trailer-detail': renderTrailerDetail(params.id); break;
     case 'trailer-edit': renderTrailerForm(params.id); break;
-    case 'facilities': renderPlaceholder(main, 'Facilities'); break;
+    case 'facilities': renderFacilitiesView(); break;
+    case 'facility-new': renderFacilityForm(null); break;
+    case 'facility-detail': renderFacilityDetail(params.id); break;
+    case 'facility-edit': renderFacilityForm(params.id); break;
     case 'account': renderAccountView(); break;
     default: replaceNavigate('/fleet/home');
   }
