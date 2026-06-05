@@ -43,3 +43,120 @@ Moved every read-only view out of the 1765-line `app.js` into `static/fleet/page
 `c495563664f1b71af66722dc5498b016b4367410` (before this progress-doc commit).
 
 ## Stopped after Phase 1 as instructed. Did not start Phase 2+. No pushes, no merges.
+
+---
+
+# Overnight progress — Phases 2 & 3 (Drivers + Facilities)
+
+Run date: 2026-06-05 (second unattended run). Branch: `claude/thirsty-black-57145e`.
+Resumed from HEAD `78f3e30` (after Phase 1). Stopped after Phase 3 as instructed.
+
+## Phase 2 — Drivers (frontend only; backend driver CRUD already existed)
+- Replaced the legacy inline drivers view with `pages/drivers.js` (list),
+  `pages/driver-detail.js`, `pages/driver-form.js`. Routes
+  `/fleet/drivers/{new,{id},{id}/edit}` wired; legacy
+  `renderDriversView`/`renderDriverDetailView` removed from `app.js`.
+- `components/form.js` extended: **inheritable "Revert to inherited" affordance**
+  (clears the input + sends explicit `null` via `buildPayload`'s reverted set),
+  a **`date`** field type, and **object-valued `select` options** (`{value,label}`)
+  for the terminal picker.
+- `components/table.js`: opt-in **`html: true`** column flag (for status badges).
+- Driver form: name*, phone, email, license #/state/expiry(date), notes,
+  terminal select, and the 5 **inheritable** rate overrides whose ghost
+  placeholder shows the selected terminal's floor and **updates live** on
+  terminal change.
+- Driver detail: effective-rate display (override vs inherited), gated **Set PIN**
+  (prompt → POST /pin), **Manage Equipment** inline panel (attach/detach
+  truck+trailers via the existing endpoints), soft **Delete**.
+- Tests: object-select, date input, revert affordance, table html flag, driver
+  route precedence.
+
+### Phase 2 decisions / morning review
+- **Driver form omits `status`** — `UpdateDriverRequest` has no `status` field
+  (drivers transition via the trip lifecycle / soft delete). Same spec↔backend
+  discrepancy already flagged for trucks/trailers in Phase 1. Status is shown
+  read-only (badge) on the detail page.
+- **No driver Reactivate** — there is no driver reactivate route and PATCH can't
+  set status, so soft Delete is one-way in the UI (matches trucks/trailers).
+- **Driver detail dropped the legacy "Trips" sub-table** (the old inline view
+  listed the driver's trips). Not in the spec's driver-detail field list; trips
+  remain viewable from `/fleet/trips`. Minor regression — restore if desired.
+- **Rate-overrides group is not collapsible** (spec says "collapsible"); rendered
+  inline. `form.js` has no group/collapse primitive yet.
+- Equipment attach/detach uses single-select truck + single trailer per action
+  (additive); detach offers "Detach truck" / "Detach all trailers".
+
+## Phase 3 — Facilities (BACKEND + FRONTEND)
+### Backend (carefully review the migration)
+- Added `archived: bool` to `FacilityRecord`/`FacilityListItem`; persisted in
+  `facility_ops` (schema column, `facility_to_batch`, `row_to_facility`,
+  `empty_facility_batch`) with an `open_or_create_facility` migration adding the
+  column via **`CAST(false AS boolean)`** (SQL keyword, not Arrow `Boolean`).
+- `build_facility_filter` now excludes archived rows → archived facilities drop
+  out of active lists **and the stop typeahead** (both go through it), while
+  staying fetchable by id (detail/reactivate) and as reference targets.
+- New `set_facility_archived` db op; `count_loads_referencing_facility` in
+  `load_ops` backs the referrer guard.
+- Routes: `DELETE /facilities/{id}` = soft archive (`facilities:write`);
+  `POST /facilities/{id}/reactivate` (`facilities:write`);
+  `DELETE /facilities/{id}/permanent` = guarded hard delete (`facilities:delete`),
+  refused **409 + `referrer_conflict_message("facility", &[("loads", n)])`** when
+  any load stop references it. Registered all three in the OpenAPI `paths()`.
+- **NOTE / deviation:** the task text said "a permanent `DELETE /facilities/{id}`
+  route", but the spec's two-tier model makes the *default* delete a soft
+  archive. I followed the **spec**: `DELETE /{id}` = soft, `DELETE /{id}/permanent`
+  = hard. Flagging in case the literal task wording was intended.
+- Tests: migration round-trip (pre-archived fixture → column added, defaults
+  false, archive drops from active list, reactivate restores); integration
+  soft-archive/reactivate + active-list filter; permanent-delete 409 referrer
+  guard then leaf-first purge once unreferenced.
+
+### Frontend
+- `pages/facilities.js` (list + geocode badge), `facility-detail.js`
+  (geocode_status, normalized_address, coords, avg dwell, contacts; two-tier
+  delete actions gated by state), `facility-form.js` (name*, address*, notes,
+  tags, optional lat/lng with paired-coords validation, **repeatable contacts**
+  sub-section). Routes wired; placeholder removed.
+
+### Phase 3 decisions / morning review
+- **tags is a comma-separated text input**, not a chip UI (spec says "chip
+  input"). Functional; upgrade later.
+- Repeatable **contacts** built bespoke in `facility-form.js` (the general
+  repeatable primitive lands with Loads in Phase 4, per the spec).
+- Permanent-delete confirmation requires typing the facility name (UI guard) on
+  top of the backend 409 referrer check.
+
+## Cross-cutting FIX (caught by browser verification)
+- `utils/dom.js` `VIEW_PATHS` was **missing** `driver-new`, `driver-edit`, and
+  ALL facility entries, so `navigate()` silently fell through to `/fleet/home` —
+  this broke driver create/edit (Phase 2) and every facility navigation. Added
+  the entries (commit `1e50a8f`). Verified the fix via a cache-busted module
+  import returning the correct paths.
+
+## Verification
+- `cargo clippy`: clean. `cargo test`: **lib 293**, **migration 9**,
+  **integration 237** — all pass. `npm test`: **72** pass.
+- **Browser-verified** (Playwright, local `cargo run`, owner `owner@dev.local`):
+  - Facilities list renders with geocode badge; **create form** renders with the
+    repeatable contacts section; **create persisted** tags `["dock","reefer"]`
+    + contact "Sam Receiver" (confirmed via API).
+  - Facility **detail** renders all derived fields + contacts; **active** state
+    shows Edit/Delete; after archiving, **archived** state shows
+    Edit/Reactivate/Permanently delete (all scope-gated).
+  - Driver **create form** renders; terminal select populated; the 5 inheritable
+    rate inputs show ghost placeholders from the Default terminal
+    (`Inherited: 120 (Terminal: Default)` etc.). No console errors.
+  - **Caveat:** live click-through navigation could not be exercised in the
+    browser because the dev server sends **no `Cache-Control`** and the
+    pre-edit `dom.js` was heuristically disk-cached (its on-disk last-modified
+    predated the edit). `browser_close` does not clear that cache. The
+    VIEW_PATHS fix is correct (proven via fresh import) and matches the
+    already-working Terminals/Trucks pattern; it will work on any cold client /
+    after a release `?v=` bump. **Worth a quick human click-through after a hard
+    refresh.**
+
+## HEAD
+`1e50a8fc383247d92837acb89d6cdc32235f40d9`
+
+## Stopped after Phase 3 as instructed. Did NOT start Phase 4 (Loads) or Phase 5
+(Trips). No pushes, no merges, no version/`?v=` bumps.
