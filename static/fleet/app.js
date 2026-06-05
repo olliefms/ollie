@@ -1,12 +1,16 @@
 /* ============================================================
    Ollie Fleet — SPA
-   Single-file vanilla JS, no framework, no build step.
+   ES-module entry. Shared logic lives in utils/ + components/.
    ============================================================ */
 
+import { getToken, saveToken, clearToken, isAuthenticated } from './utils/auth.js';
+import { apiFetch, tryRefresh, API_BASE, AUTH_BASE } from './utils/api.js';
+import {
+  escHtml, badge, shortId, fmtDate, fmtArrivalWindow,
+  fmtBytes, fmtUSD, fmtMiles, humanizeEventType,
+} from './utils/format.js';
+
 // ─── Constants ──────────────────────────────────────────────
-const TOKEN_KEY = 'dispatch_token';
-const API_BASE = '/fleet/api/v1';
-const AUTH_BASE = '/fleet/auth';
 const API_KEYS_BASE = '/fleet/api-keys';
 
 // ─── State ──────────────────────────────────────────────────
@@ -15,104 +19,8 @@ let currentParams = {};
 let navHistory = [];
 let eventsRefreshTimer = null;
 
-// ─── Auth helpers ────────────────────────────────────────────
-
-function getToken() {
-  return localStorage.getItem(TOKEN_KEY);
-}
-
-function saveToken(token) {
-  localStorage.setItem(TOKEN_KEY, token);
-}
-
-function clearToken() {
-  localStorage.removeItem(TOKEN_KEY);
-}
-
-/**
- * Decode a JWT payload (base64url → JSON) without verifying the signature.
- * Used only for checking `exp` for UX purposes.
- */
-function decodeJwtPayload(token) {
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const json = atob(payload);
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-function isTokenExpired(token) {
-  const payload = decodeJwtPayload(token);
-  if (!payload || !payload.exp) return true;
-  // exp is in seconds; Date.now() is in ms
-  return payload.exp * 1000 < Date.now();
-}
-
-function isAuthenticated() {
-  const token = getToken();
-  if (!token) return false;
-  if (isTokenExpired(token)) {
-    clearToken();
-    return false;
-  }
-  return true;
-}
-
-// ─── Token refresh ───────────────────────────────────────────
-
-async function tryRefresh() {
-  try {
-    const res = await fetch(`${AUTH_BASE}/refresh`, {
-      method: 'POST',
-      credentials: 'same-origin',
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    const token = data.token || data.access_token;
-    if (!token) return false;
-    saveToken(token);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// ─── API fetch wrapper ───────────────────────────────────────
-
-async function apiFetch(path, options = {}) {
-  const token = getToken();
-  const isFormData = options.body instanceof FormData;
-  const headers = {
-    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...(options.headers || {}),
-  };
-
-  const res = await fetch(path, { ...options, headers });
-
-  if (res.status === 401) {
-    const refreshed = await tryRefresh();
-    if (refreshed) {
-      const newToken = getToken();
-      const retryHeaders = {
-        ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        ...(newToken ? { Authorization: `Bearer ${newToken}` } : {}),
-        ...(options.headers || {}),
-      };
-      const retry = await fetch(path, { ...options, headers: retryHeaders });
-      if (retry.status !== 401) return retry;
-    }
-    clearToken();
-    showLogin();
-    throw new Error('Unauthorized — please sign in again.');
-  }
-
-  return res;
-}
+// Auth helpers (getToken/saveToken/clearToken/isAuthenticated), tryRefresh, and
+// apiFetch now live in utils/auth.js + utils/api.js and are imported above.
 
 // ─── View/Auth toggle ────────────────────────────────────────
 
@@ -281,100 +189,12 @@ function _renderView(view, params) {
   }
 }
 
-// ─── Utility: badge ──────────────────────────────────────────
-
-function badge(status) {
-  if (!status) return '';
-  const slug = status.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-  return `<span class="badge badge--${slug}">${escHtml(status)}</span>`;
-}
-
-// ─── Utility: short id ───────────────────────────────────────
-
-function shortId(id) {
-  if (!id) return '—';
-  return id.slice(0, 8);
-}
-
-// ─── Utility: local date ─────────────────────────────────────
-
-function fmtDate(isoStr) {
-  if (!isoStr) return '—';
-  try {
-    return new Date(isoStr).toLocaleString();
-  } catch {
-    return isoStr;
-  }
-}
-
-function fmtArrivalWindow(start, end) {
-  if (!start) return '—';
-  if (!end) {
-    try { return new Date(start).toLocaleString(); } catch { return start; }
-  }
-  try {
-    const s = new Date(start);
-    const e = new Date(end);
-    const sameDay = s.toDateString() === e.toDateString();
-    if (sameDay) {
-      const sStr = s.toLocaleString();
-      const eStr = e.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-      return `${sStr}–${eStr}`;
-    }
-    return `${s.toLocaleString()} – ${e.toLocaleString()}`;
-  } catch {
-    return start;
-  }
-}
-
-function fmtBytes(n) {
-  if (!n) return '—';
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function fmtUSD(n) {
-  if (n === null || n === undefined) return '—';
-  const sign = n < 0 ? '-' : '';
-  const abs = Math.abs(n);
-  return `${sign}$${abs.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function fmtMiles(n) {
-  if (n === null || n === undefined) return '—';
-  return `${n.toFixed(1)} mi`;
-}
-
-function escHtml(s) {
-  if (!s) return '';
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
+// badge/shortId/fmtDate/fmtArrivalWindow/fmtBytes/fmtUSD/fmtMiles/escHtml/
+// humanizeEventType now live in utils/format.js and are imported above.
 
 const BLOB_NOISE_EVENTS = new Set([
   'processing_started', 'processing_completed', 'processing_failed',
 ]);
-
-function humanizeEventType(type) {
-  const map = {
-    'trip.assigned':     'Trip Assigned',
-    'trip.unassigned':   'Trip Unassigned',
-    'trip.dispatched':   'Trip Dispatched',
-    'trip.undispatched': 'Trip Undispatched',
-    'trip.in_transit':   'Trip In Transit',
-    'trip.delivered':    'Trip Delivered',
-    'trip_completed':    'Trip Completed',
-    'trip.cancelled':    'Trip Cancelled',
-    'stop.arrived':      'Stop Arrived',
-    'stop.departed':     'Stop Departed',
-    'stop.late':         'Stop Late',
-    'check_call':        'Check Call',
-    'driver_available':  'Driver Available',
-    'truck_available':   'Truck Available',
-    'trailer_available': 'Trailer Available',
-  };
-  return map[type] || String(type).replace(/[_.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
 
 // ─── Utility: set main content ───────────────────────────────
 
