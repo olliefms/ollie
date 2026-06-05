@@ -64,6 +64,15 @@
   color: var(--color-text);
 }
 
+.sidebar__group-label {
+  padding: var(--space-4) var(--space-4) var(--space-2);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
 .sidebar__link--active {
   background: var(--color-surface-2);
   color: var(--color-primary-dark);

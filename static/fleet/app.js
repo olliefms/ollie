@@ -9,6 +9,10 @@ import {
   escHtml, badge, shortId, fmtDate, fmtArrivalWindow,
   fmtBytes, fmtUSD, fmtMiles, humanizeEventType,
 } from './utils/format.js';
+import {
+  matchRoute, navigate as routerNavigate, replaceNavigate, startRouter,
+} from './router.js';
+import { renderPlaceholder } from './pages/placeholder.js';
 
 // ─── Constants ──────────────────────────────────────────────
 const API_KEYS_BASE = '/fleet/api-keys';
@@ -77,115 +81,92 @@ const VIEW_TITLES = {
   'trip-detail': 'Trip Detail',
   events: 'Events',
   documents: 'Documents',
-  document: 'Document',
+  'document-detail': 'Document',
   terminals: 'Terminals',
+  trucks: 'Trucks',
+  trailers: 'Trailers',
+  facilities: 'Facilities',
   account: 'Account',
 };
 
-// ─── Hash routing ────────────────────────────────────────────
+// ─── pushState routing ───────────────────────────────────────
 
 let activeObjectUrl = null;
+let routerStarted = false;
 
-function encodeViewHash(view, params) {
-  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== '');
-  const qs = entries.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
-  return qs ? `#${view}?${qs}` : `#${view}`;
-}
+// Map a legacy view name (+ params) to a /fleet path, so the legacy view code
+// can keep calling navigate('load-detail', { id }) unchanged.
+const VIEW_PATHS = {
+  home: () => '/fleet/home',
+  loads: () => '/fleet/loads',
+  'load-detail': (p) => `/fleet/loads/${p.id}`,
+  drivers: () => '/fleet/drivers',
+  'driver-detail': (p) => `/fleet/drivers/${p.id}`,
+  trips: () => '/fleet/trips',
+  'trip-detail': (p) => `/fleet/trips/${p.id}`,
+  events: () => '/fleet/events',
+  documents: () => '/fleet/documents',
+  document: (p) => `/fleet/documents/${p.id}`,
+  terminals: () => '/fleet/terminals',
+  account: () => '/fleet/account',
+};
 
-function decodeViewHash(hash) {
-  if (!hash || hash === '#' || hash === '') return { view: 'home', params: {} };
-  const noHash = hash.startsWith('#') ? hash.slice(1) : hash;
-  const qMark = noHash.indexOf('?');
-  const view = qMark === -1 ? noHash : noHash.slice(0, qMark);
-  const params = {};
-  if (qMark !== -1) {
-    new URLSearchParams(noHash.slice(qMark + 1)).forEach((v, k) => { params[k] = v; });
-  }
-  return { view: view || 'home', params };
+function navigate(view, params = {}) {
+  const fn = VIEW_PATHS[view];
+  routerNavigate(fn ? fn(params) : '/fleet/home');
 }
 
 function goBack() {
-  clearEventsRefresh();
-  const prev = navHistory.pop();
-  if (prev) {
-    _renderView(prev.view, prev.params);
+  history.back();
+}
+
+// Show the app shell and (idempotently) start the router. After the first call,
+// re-render the current route instead of re-wiring popstate/click listeners.
+function enterApp() {
+  showApp();
+  if (!routerStarted) {
+    routerStarted = true;
+    startRouter(renderRoute);
   } else {
-    _renderView('home', {});
+    renderRoute(matchRoute(window.location.pathname + window.location.search));
   }
 }
 
-function navigate(view, params = {}) {
+function renderRoute({ name, params }) {
   clearEventsRefresh();
-  navHistory.push({ view: currentView, params: currentParams });
-  _renderView(view, params);
-}
-
-function _renderView(view, params) {
-  currentView = view;
-  currentParams = params;
-
-  const hash = encodeViewHash(view, params);
-  if (window.location.hash !== hash) {
-    history.replaceState(null, '', hash);
-  }
   if (activeObjectUrl) {
     URL.revokeObjectURL(activeObjectUrl);
     activeObjectUrl = null;
   }
 
-  // Update sidebar active state
-  document.querySelectorAll('.sidebar__link').forEach(btn => {
-    const isActive = btn.dataset.view === view;
-    btn.classList.toggle('sidebar__link--active', isActive);
+  // Active sidebar link by current path.
+  document.querySelectorAll('.sidebar__link[href]').forEach((a) => {
+    a.classList.toggle('sidebar__link--active', a.getAttribute('href') === window.location.pathname);
   });
 
-  // Update top-bar title
-  const title = VIEW_TITLES[view] || view;
   const topbarTitle = document.getElementById('topbar-title');
-  if (topbarTitle) topbarTitle.textContent = title;
-
-  // Clear refresh indicator
+  if (topbarTitle) topbarTitle.textContent = VIEW_TITLES[name] || name;
   setRefreshIndicator('');
 
-  switch (view) {
-    case 'home':
-      renderHomeView();
-      break;
-    case 'loads':
-      renderLoadsView(params);
-      break;
-    case 'load-detail':
-      renderLoadDetailView(params.id);
-      break;
-    case 'drivers':
-      renderDriversView();
-      break;
-    case 'driver-detail':
-      renderDriverDetailView(params.id);
-      break;
-    case 'trips':
-      renderTripsView(params);
-      break;
-    case 'trip-detail':
-      renderTripDetailView(params.id);
-      break;
-    case 'events':
-      renderEventsView();
-      break;
-    case 'documents':
-      renderDocumentsView(params);
-      break;
-    case 'document':
-      renderDocumentDetailView(params.id);
-      break;
-    case 'terminals':
-      renderTerminalsView();
-      break;
-    case 'account':
-      renderAccountView();
-      break;
-    default:
-      renderLoadsView({});
+  const main = document.getElementById('main-content');
+
+  switch (name) {
+    case 'home': renderHomeView(); break;
+    case 'loads': renderLoadsView(params); break;
+    case 'load-detail': renderLoadDetailView(params.id); break;
+    case 'drivers': renderDriversView(); break;
+    case 'driver-detail': renderDriverDetailView(params.id); break;
+    case 'trips': renderTripsView(params); break;
+    case 'trip-detail': renderTripDetailView(params.id); break;
+    case 'events': renderEventsView(); break;
+    case 'documents': renderDocumentsView(params); break;
+    case 'document-detail': renderDocumentDetailView(params.id); break;
+    case 'terminals': renderTerminalsView(); break;
+    case 'trucks': renderPlaceholder(main, 'Trucks'); break;
+    case 'trailers': renderPlaceholder(main, 'Trailers'); break;
+    case 'facilities': renderPlaceholder(main, 'Facilities'); break;
+    case 'account': renderAccountView(); break;
+    default: replaceNavigate('/fleet/home');
   }
 }
 
@@ -1640,8 +1621,7 @@ function initLoginForm() {
       if (res.ok) {
         const data = await res.json();
         saveToken(data.token || data.access_token);
-        showApp();
-        navigate('home');
+        enterApp();
         return;
       }
 
@@ -1697,8 +1677,7 @@ function initSetupForm() {
       if (res.ok) {
         const data = await res.json();
         saveToken(data.token || data.access_token);
-        showApp();
-        navigate('home');
+        enterApp();
         return;
       }
 
@@ -1727,12 +1706,7 @@ function showAlert(el, cls, msg) {
 // ─── Sidebar & logout ────────────────────────────────────────
 
 function initSidebar() {
-  document.querySelectorAll('.sidebar__link[data-view]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      navigate(btn.dataset.view);
-    });
-  });
-
+  // Sidebar items are <a data-link href> — the router intercepts their clicks.
   const logoutBtn = document.getElementById('logout-btn');
   if (logoutBtn) {
     logoutBtn.addEventListener('click', async () => {
@@ -1755,15 +1729,11 @@ async function boot() {
   initSidebar();
 
   if (isAuthenticated()) {
-    showApp();
-    const { view, params } = decodeViewHash(window.location.hash);
-    _renderView(view, params);
+    enterApp();
   } else {
     const refreshed = await tryRefresh();
     if (refreshed) {
-      showApp();
-      const { view, params } = decodeViewHash(window.location.hash);
-      _renderView(view, params);
+      enterApp();
     } else {
       await showLoginOrSetup();
     }
