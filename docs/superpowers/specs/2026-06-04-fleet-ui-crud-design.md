@@ -14,15 +14,16 @@ Only three things have write functionality wired up today:
 - **Documents** — upload
 - **Account** — API key create/delete
 
-Everything else (Loads, Trips, Drivers, and Trucks/Trailers — which have no
-views at all) is view-only. This project closes the gap: full create/update/
-delete in the fleet UI for Drivers, Trucks, Trailers, Loads, and Trips, plus a
-structural rewrite of the fleet frontend into modules and real URLs.
+Everything else (Loads, Trips, Drivers, and Trucks/Trailers/Facilities — which
+have no views at all) is view-only. This project closes the gap: full create/
+update/delete in the fleet UI for Drivers, Trucks, Trailers, Loads, Trips, and
+Facilities, plus a structural rewrite of the fleet frontend into modules and
+real URLs.
 
 ## Goals
 
-- Full CRUD in the UI for **Drivers, Trucks, Trailers, Loads, Trips** —
-  including create forms (not just edit/lifecycle).
+- Full CRUD in the UI for **Drivers, Trucks, Trailers, Loads, Trips,
+  Facilities** — including create forms (not just edit/lifecycle).
 - A **modular rewrite** of the fleet SPA mirroring the driver portal's
   `pages/` / `components/` / `utils/` layout.
 - **Path-based (pushState) routing** so URLs reflect the entity and item being
@@ -38,9 +39,6 @@ structural rewrite of the fleet frontend into modules and real URLs.
 
 ## Non-goals
 
-- A standalone Facilities CRUD view. Facilities are entered inline in load
-  stops (name+address, with backend resolution); a dedicated Facilities
-  management screen is out of scope.
 - Optimistic UI. Mutations re-fetch on success, matching current behavior.
 - Migrating the driver portal or any non-fleet surface.
 
@@ -48,7 +46,8 @@ structural rewrite of the fleet frontend into modules and real URLs.
 
 | Topic | Decision |
 |---|---|
-| Entities in scope | Drivers, Trucks, Trailers, Loads, Trips — full CRUD incl. create |
+| Entities in scope | Drivers, Trucks, Trailers, Loads, Trips, Facilities — full CRUD incl. create |
+| Facilities | Brought in-scope (was the one referenced-but-unmanaged entity); needs a new backend soft-delete endpoint |
 | Work structure | One spec, phased implementation plan |
 | Form pattern | Inline panel (list swaps to form in `#main-content`) |
 | Routing | pushState path routing; URLs reflect entity + item; all entities incl. Terminals |
@@ -92,6 +91,7 @@ static/fleet/
     drivers.js  driver-detail.js  driver-form.js
     trucks.js  truck-detail.js  truck-form.js
     trailers.js  trailer-detail.js  trailer-form.js
+    facilities.js  facility-detail.js  facility-form.js
     terminals.js  terminal-detail.js  terminal-form.js
     events.js  documents.js  document-detail.js  account.js  login.js
 ```
@@ -116,6 +116,7 @@ remembers the target path to redirect back after sign-in.
 | Drivers | `/fleet/drivers` | `/fleet/drivers/new` | `/fleet/drivers/{id}` | `/fleet/drivers/{id}/edit` |
 | Trucks | `/fleet/trucks` | `/fleet/trucks/new` | `/fleet/trucks/{id}` | `/fleet/trucks/{id}/edit` |
 | Trailers | `/fleet/trailers` | `/fleet/trailers/new` | `/fleet/trailers/{id}` | `/fleet/trailers/{id}/edit` |
+| Facilities | `/fleet/facilities` | `/fleet/facilities/new` | `/fleet/facilities/{id}` | `/fleet/facilities/{id}/edit` |
 | Terminals | `/fleet/terminals` | `/fleet/terminals/new` | `/fleet/terminals/{id}` | `/fleet/terminals/{id}/edit` |
 
 Plus `/fleet/home`, `/fleet/events`, `/fleet/documents`,
@@ -124,9 +125,9 @@ Plus `/fleet/home`, `/fleet/events`, `/fleet/documents`,
 
 ### Sidebar
 
-Existing flat links (Home, Loads, Trips, Drivers, Events, Documents, Terminals,
-Account) plus a new non-clickable **Equipment** heading nesting **Trucks** and
-**Trailers**.
+Existing flat links (Home, Loads, Trips, Drivers, Facilities, Events,
+Documents, Terminals, Account) plus a new non-clickable **Equipment** heading
+nesting **Trucks** and **Trailers**.
 
 ## Components
 
@@ -202,7 +203,7 @@ message; returns bool. Used for all deletes (which are soft server-side).
 
 ## Backend changes
 
-The frontend rewrite needs only two backend additions.
+The frontend rewrite needs three backend additions.
 
 ### 1. `GET /fleet/api/v1/me`
 
@@ -232,6 +233,17 @@ Applies to `UpdateDriverRequest` and `UpdateTripRequest` rate fields and their
 gate triggers on *presence* (`is_some()`), so a clear is treated as a change.
 Setting one rate must not clobber the others.
 
+### 3. Facility soft-delete endpoint
+
+Facilities currently have `GET` list/detail, `POST` create, and `PATCH` update
+(scope `facilities:write`) but no delete route. Add
+`DELETE /fleet/api/v1/facilities/{id}` behind a new `facilities:delete` scope,
+performing a **soft delete** (mark inactive/archived) consistent with
+trucks/trailers/drivers. Because facilities are referenced by historical load
+stops, the soft delete must preserve those references and only hide the
+facility from active lists and the stop typeahead. Add a `soft_delete_facility`
+db op + the route wiring in `fleet_portal/mod.rs`.
+
 ## Per-entity field specs
 
 Create forms **omit `status`** (backend defaults it); edit forms add a status
@@ -259,6 +271,20 @@ edit adds `status`.
 
 Driver **detail page** carries gated action buttons: **Set PIN**,
 **Attach/Detach equipment** (truck + trailers).
+
+### Facilities (`facilities:write` / `facilities:delete`)
+
+`name`*, `address`*, `notes`, `tags` (chip input), optional `lat`/`lng`
+(advanced/optional — normally left blank for the backend to geocode), and a
+repeatable **contacts** section (`name`*, `title`, `phone`, `email`, `notes`)
+using the same repeatable primitive as load rate items. Update uses `PATCH`
+(`UpdateFacilityRequest`, optional fields).
+
+The **detail page** additionally surfaces read-only/derived fields:
+`geocode_status` (+ `normalized_address`, geocode failure count),
+`avg_dwell_minutes`, and `dwell_sample_count`. Creating/editing only sends the
+editable fields; geocoding happens asynchronously server-side after save, so
+the detail view should reflect a pending/failed/succeeded geocode state.
 
 ### Loads
 
@@ -335,13 +361,17 @@ view so controls appear/disappear without a manual reload.
 - Three-state `Option<Option<f64>>` semantics for driver + trip rates: absent =
   leave, `null` = clear, value = set — including that setting one rate doesn't
   clobber the others, and that a clear triggers the rate-update path.
+- Facility soft-delete: `DELETE` marks the facility inactive, removes it from
+  active lists/typeahead, preserves historical stop references, and is gated by
+  `facilities:delete`.
 
 ### Frontend (Vitest + happy-dom for units; Playwright for E2E)
 
 New `package.json` (dev-only) + a CI job. Unit tests target the bug-prone pure
 logic:
 
-- `form.js` payload builder: coercion, blank-omission, required validation.
+- `form.js` payload builder: coercion, blank-omission, required validation,
+  and repeatable sub-sections (contacts, rate items, stops).
 - Inherited-value submit rule (the table above) — each starting-state ×
   user-action combination.
 - `scope-gate.js` matching: exact, `resource:*`, global `*`, denial.
@@ -363,10 +393,14 @@ edit→persist, delete→gone, scope-gated controls hidden, and the inherited-ra
   (list/detail/CRUD) + the Equipment sidebar group.
 - **Phase 2 — Drivers:** driver pages + CRUD, inheritable rate-override fields,
   set-PIN, attach/detach equipment.
-- **Phase 3 — Loads:** `load-form` (stops w/ facility typeahead +
+- **Phase 3 — Facilities:** backend soft-delete endpoint + `facilities:delete`
+  scope; facility pages + CRUD (repeatable contacts, geocode-status display).
+  Lands before Loads so the load stop form has a real facilities data source +
+  management surface.
+- **Phase 4 — Loads:** `load-form` (stops w/ facility typeahead +
   disambiguation, rate items) + detail lifecycle actions
   (cancel/invoice/settle/delete).
-- **Phase 4 — Trips:** `trip-form` (load-linked + free-standing) w/ inheritable
+- **Phase 5 — Trips:** `trip-form` (load-linked + free-standing) w/ inheritable
   rate overrides + detail lifecycle actions + stop events.
 
 Each phase ships independently behind the same unified design.
