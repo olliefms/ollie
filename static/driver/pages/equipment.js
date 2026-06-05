@@ -43,8 +43,8 @@ export async function renderEquipment(container) {
 
   main.replaceChildren();
   main.appendChild(buildTruckCard(equipment.truck));
-  main.appendChild(buildTrailerSection(equipment.trailers, trailers.items, async (selectedIds) => {
-    return await submitTrailerChange(main, selectedIds);
+  main.appendChild(buildTrailerSection(equipment.trailers, trailers.items, async (body) => {
+    return await submitTrailerChange(body);
   }));
 }
 
@@ -143,19 +143,63 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
   picker.appendChild(listWrap);
 
   const selectedSet = new Set(current.map(t => t.id));
+  // Unit numbers the driver typed that aren't known trailers yet — created on
+  // submit. Tracked separately because they have no id until the server makes one.
+  const pendingNewUnits = new Set();
+  const unitById = new Map([...current, ...allTrailers].map(t => [t.id, t.unit_number]));
 
   const renderList = () => {
     listWrap.replaceChildren();
+
+    // Queued new trailers show as checked rows; unchecking removes them.
+    pendingNewUnits.forEach(unit => {
+      const row = document.createElement('label');
+      row.className = 'equipment-pick-row';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      cb.addEventListener('change', () => {
+        pendingNewUnits.delete(unit);
+        renderList();
+      });
+      const text = document.createElement('span');
+      const u = document.createElement('strong');
+      u.textContent = unit;
+      const m = document.createElement('span');
+      m.className = 'muted';
+      m.textContent = ' · new trailer';
+      text.appendChild(u);
+      text.appendChild(m);
+      row.appendChild(cb);
+      row.appendChild(text);
+      listWrap.appendChild(row);
+    });
+
     const q = filter.value.trim().toLowerCase();
     const filtered = allTrailers.filter(t =>
       !q || t.unit_number.toLowerCase().includes(q)
         || (t.owner_name && t.owner_name.toLowerCase().includes(q))
     );
     if (filtered.length === 0) {
-      const empty = document.createElement('div');
-      empty.className = 'muted';
-      empty.textContent = 'No trailers match.';
-      listWrap.appendChild(empty);
+      const raw = filter.value.trim();
+      if (raw && !pendingNewUnits.has(raw)) {
+        // No known trailer matches — let the driver hook a brand-new one.
+        const add = document.createElement('button');
+        add.type = 'button';
+        add.className = 'btn btn-secondary';
+        add.textContent = `Hook new trailer “${raw}”`;
+        add.addEventListener('click', () => {
+          pendingNewUnits.add(raw);
+          filter.value = '';
+          renderList();
+        });
+        listWrap.appendChild(add);
+      } else {
+        const empty = document.createElement('div');
+        empty.className = 'muted';
+        empty.textContent = 'No trailers match.';
+        listWrap.appendChild(empty);
+      }
       return;
     }
     filtered.slice(0, 50).forEach(t => {
@@ -204,11 +248,24 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
     status.textContent = 'Updating…';
     status.className = 'equipment-status muted';
     try {
-      const result = await onSubmit(Array.from(selectedSet));
+      const newUnits = Array.from(pendingNewUnits);
+      const body = newUnits.length
+        ? { trailer_unit_numbers: [
+            ...Array.from(selectedSet).map(id => unitById.get(id)).filter(Boolean),
+            ...newUnits,
+          ] }
+        : { trailer_ids: Array.from(selectedSet) };
+      const result = await onSubmit(body);
       const updatedTrailers = result.trailers || [];
+      // Surface any freshly created trailers in the picker so they stay visible.
+      updatedTrailers.forEach(t => {
+        if (!allTrailers.some(a => a.id === t.id)) allTrailers.push(t);
+        unitById.set(t.id, t.unit_number);
+      });
       renderCurrentList(updatedTrailers);
       selectedSet.clear();
       updatedTrailers.forEach(t => selectedSet.add(t.id));
+      pendingNewUnits.clear();
       renderList();
       status.className = 'equipment-status success';
       status.textContent = result.trip_cascade
@@ -226,10 +283,10 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
   return card;
 }
 
-async function submitTrailerChange(main, trailerIds) {
+async function submitTrailerChange(body) {
   const result = await apiFetch('/equipment/trailer', {
     method: 'PUT',
-    body: { trailer_ids: trailerIds },
+    body,
   });
   return result;
 }
