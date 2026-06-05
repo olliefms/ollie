@@ -445,16 +445,26 @@ pub async fn me(
     State(state): State<AppState>,
     Extension(claims): Extension<FleetUserClaims>,
 ) -> Result<impl IntoResponse, AppError> {
-    let (id, role) = caller_identity(&state, &claims).await;
-    let (name, email) = match id {
-        Some(uid) => match state.db.get_fleet_user_by_id(uid).await {
-            Ok(u) => (Some(u.name), Some(u.email)),
-            Err(_) => (None, None),
-        },
-        None => (None, None),
+    // Identity comes solely from the validated JWT claims; an API-key principal
+    // with no parseable fleet_user id gets a minimal identity.
+    let Ok(id) = claims.fleet_user_id.parse::<Uuid>() else {
+        return Ok(Json(MeResponse {
+            fleet_user_id: None,
+            name: None,
+            email: None,
+            role: Role::Dispatcher.as_str().to_string(),
+            effective_scopes: claims.effective_scopes.clone(),
+        }));
+    };
+    let (name, email, role) = match state.db.get_fleet_user_by_id(id).await {
+        Ok(u) => (Some(u.name), Some(u.email), u.role),
+        Err(e) => {
+            tracing::warn!(fleet_user_id = %id, error = %e, "GET /me: fleet_user lookup failed; returning minimal identity");
+            (None, None, Role::Dispatcher)
+        }
     };
     Ok(Json(MeResponse {
-        fleet_user_id: id,
+        fleet_user_id: Some(id),
         name,
         email,
         role: role.as_str().to_string(),
