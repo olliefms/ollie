@@ -42,6 +42,36 @@ describe('apiFetch', () => {
     const [, opts] = fetchMock.mock.calls[0];
     expect(opts.headers['Content-Type']).toBeUndefined();
   });
+
+  it('on 401, refreshes the token and retries the request', async () => {
+    saveToken('stale');
+    // 1) original → 401, 2) /refresh → 200 {token}, 3) retry → 200
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({ token: 'fresh' }, 200))
+      .mockResolvedValueOnce(jsonResponse({ ok: true }, 200));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = await apiFetch(`${API_BASE}/loads`);
+
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    // retry carried the refreshed bearer token
+    const [, retryOpts] = fetchMock.mock.calls[2];
+    expect(retryOpts.headers.Authorization).toBe('Bearer fresh');
+  });
+
+  it('on 401 with a failed refresh, clears the token and throws Unauthorized', async () => {
+    saveToken('stale');
+    // 1) original → 401, 2) /refresh → 401 (refresh fails)
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse({}, 401));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiFetch(`${API_BASE}/loads`)).rejects.toThrow('Unauthorized — please sign in again.');
+    expect(localStorage.getItem('dispatch_token')).toBe(null); // token cleared
+  });
 });
 
 describe('scope store', () => {

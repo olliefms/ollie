@@ -3,6 +3,10 @@ import { escHtml } from '../utils/format.js';
 /**
  * Render a clickable list table into `container`.
  * opts: { columns: [{header, cell(row)->string}], rows: [{id, ...}], onRowClick(id) }
+ *
+ * NOTE: `cell(row)` must return PLAIN TEXT — its output is HTML-escaped. To put
+ * rich content (e.g. a status badge) in a cell, extend this with an opt-in
+ * `html: true` column flag when that need first arises (Phase 0b-ii migration).
  */
 export function renderTable(container, { columns, rows, onRowClick }) {
   const head = columns.map(c => `<th>${escHtml(c.header)}</th>`).join('');
