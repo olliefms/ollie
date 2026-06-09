@@ -233,6 +233,25 @@ export async function renderLoadDetail(id) {
             <div class="detail-item__label">Updated</div>
             <div class="detail-item__value">${fmtDate(load.updated_at)}</div>
           </div>
+          ${load.customer_ref ? `
+          <div class="detail-item">
+            <div class="detail-item__label">Customer Ref</div>
+            <div class="detail-item__value">${escHtml(load.customer_ref)}</div>
+          </div>` : ''}
+          ${load.commodity ? `
+          <div class="detail-item">
+            <div class="detail-item__label">Commodity</div>
+            <div class="detail-item__value">${escHtml(load.commodity)}</div>
+          </div>` : ''}
+          ${load.weight_lbs != null ? `
+          <div class="detail-item">
+            <div class="detail-item__label">Weight</div>
+            <div class="detail-item__value">${Number(load.weight_lbs).toLocaleString()} lbs</div>
+          </div>` : ''}
+          <div class="detail-item">
+            <div class="detail-item__label">Miles</div>
+            <div class="detail-item__value">${load.mileage_summary ? fmtMiles(load.mileage_summary.total_miles) : '—'}</div>
+          </div>
           ${load.invoice_number ? `
           <div class="detail-item">
             <div class="detail-item__label">Invoice #</div>
@@ -242,6 +261,16 @@ export async function renderLoadDetail(id) {
           <div class="detail-item">
             <div class="detail-item__label">Cancel Reason</div>
             <div class="detail-item__value">${escHtml(load.cancel_reason)}</div>
+          </div>` : ''}
+          ${load.notes ? `
+          <div class="detail-item">
+            <div class="detail-item__label">Notes</div>
+            <div class="detail-item__value">${escHtml(load.notes)}</div>
+          </div>` : ''}
+          ${load.tags && load.tags.length > 0 ? `
+          <div class="detail-item">
+            <div class="detail-item__label">Tags</div>
+            <div class="detail-item__value">${load.tags.map(t => escHtml(t)).join(', ')}</div>
           </div>` : ''}
         </div>
         ${actionBtns ? `<div class="form-panel__actions">${actionBtns}</div>` : ''}

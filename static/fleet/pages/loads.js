@@ -49,8 +49,8 @@ export async function renderLoadsView(params = {}) {
       rows = sorted.map(load => {
         const stops = load.stops || [];
         const last = stops.length - 1;
-        const origin = stops[0]?.name || '—';
-        const dest = stops[last]?.name || '—';
+        const origin = stops[0]?.facility_name || '—';
+        const dest = stops[last]?.facility_name || '—';
         return `
         <tr data-load-id="${load.id}">
           <td style="font-variant-numeric: tabular-nums;">${escHtml(load.load_number || shortId(load.id))}</td>
