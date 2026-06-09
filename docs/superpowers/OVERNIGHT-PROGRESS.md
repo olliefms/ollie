@@ -218,9 +218,20 @@ Full Loads CRUD, migrating the legacy inline list/detail out of `app.js`:
   `2026-06-15T10:30`, tz Central). Only benign console errors (favicon 404, pre-login refresh 401).
 - **API-verified** the form's exact payload shapes: create-with-`facility_id` (auto `LD-2026-0001`,
   `total_rate_usd` computed), cancel (`planned`→`cancelled`, reason persisted), delete (204).
-- **Not reproduced in-env:** the name+address → fuzzy-candidate **disambiguation** branch needs Ollama
-  embeddings (not running here → 500 on that path). The frontend's 200-resolution + 409 handling was
-  code-reviewed; the backend referrer-guard has integration coverage. Worth a human pass once Ollama is up.
+- **Facility dedup / disambiguation — investigated, partially reproduced:** the embed model
+  (`nomic-embed-text`, dim 768) was not pulled initially → `/api/embeddings` 404 → 500 on the
+  name+address path. After `ollama pull nomic-embed-text`, embeddings work and the **dedup auto-use
+  path is verified end-to-end** (an exact name+address re-entry resolved to the *existing* facility_id,
+  proving embed→vector-search→score→threshold). The **HTTP-200 candidate picker** specifically did not
+  trigger locally: (1) `nomic-embed-text` scores are near-binary for these short facility strings
+  (exact≈1.0 → auto-use ≥0.92; paraphrases fall well below `FACILITY_DEDUP_LOW_THRESHOLD` 0.75 →
+  auto-create), so the 0.75–0.92 band is rarely hit; and (2) the facility **vector index isn't built on
+  a near-empty DB** (startup "KMeans cannot train … 0 vectors"), so sub-threshold candidate retrieval is
+  unreliable until enough facilities accumulate. NOTE: standalone `POST /facilities` embeds only via the
+  geocoding pipeline, which **embeds after a successful geocode** (`geocoding.rs:96-108`) — so without an
+  `ORS_API_KEY`, CRUD-created facilities have no embedding; only the load-stop `create_new_facility`
+  (`facilities.rs:65`) embeds at creation. The frontend picker (200-resolution branch + `applyResolutionChoices`)
+  is code-reviewed and unit-tested; worth a human pass on a populated DB to see the picker render.
 
 ## HEAD
 `683a648` (before this progress-doc commit).
