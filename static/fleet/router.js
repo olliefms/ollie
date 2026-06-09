@@ -3,6 +3,8 @@
 export const ROUTES = [
   { name: 'home',            re: /^\/fleet\/home$/ },
   { name: 'loads',           re: /^\/fleet\/loads$/ },
+  { name: 'load-new',        re: /^\/fleet\/loads\/new$/ },
+  { name: 'load-edit',       re: /^\/fleet\/loads\/([^/]+)\/edit$/, id: true },
   { name: 'load-detail',     re: /^\/fleet\/loads\/([^/]+)$/, id: true },
   { name: 'trips',           re: /^\/fleet\/trips$/ },
   { name: 'trip-detail',     re: /^\/fleet\/trips\/([^/]+)$/, id: true },

@@ -45,12 +45,15 @@ import { renderDriverForm } from './pages/driver-form.js';
 import { renderFacilitiesView } from './pages/facilities.js';
 import { renderFacilityDetail } from './pages/facility-detail.js';
 import { renderFacilityForm } from './pages/facility-form.js';
+import { renderLoadForm } from './pages/load-form.js';
 
 // ─── Navigation ──────────────────────────────────────────────
 
 const VIEW_TITLES = {
   home: 'Home',
   loads: 'Loads',
+  'load-new': 'New Load',
+  'load-edit': 'Edit Load',
   'load-detail': 'Load Detail',
   drivers: 'Drivers',
   'driver-new': 'New Driver',
@@ -117,6 +120,8 @@ function renderRoute({ name, params }) {
   switch (name) {
     case 'home': renderHomeView(); break;
     case 'loads': renderLoadsView(params); break;
+    case 'load-new': renderLoadForm(null); break;
+    case 'load-edit': renderLoadForm(params.id); break;
     case 'load-detail': renderLoadDetailView(params.id); break;
     case 'drivers': renderDriversView(); break;
     case 'driver-new': renderDriverForm(null); break;

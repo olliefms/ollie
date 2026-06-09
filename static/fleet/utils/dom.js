@@ -13,6 +13,8 @@ import { navigate as routerNavigate } from '../router.js';
 export const VIEW_PATHS = {
   home: () => '/fleet/home',
   loads: () => '/fleet/loads',
+  'load-new': () => '/fleet/loads/new',
+  'load-edit': (p) => `/fleet/loads/${p.id}/edit`,
   'load-detail': (p) => `/fleet/loads/${p.id}`,
   drivers: () => '/fleet/drivers',
   'driver-new': () => '/fleet/drivers/new',
