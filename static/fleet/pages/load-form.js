@@ -1,7 +1,7 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
 import { escHtml } from '../utils/format.js';
 import { setContent, navigate, goBack } from '../utils/dom.js';
-import { buildLoadPayload, serviceTypesFor } from './load-form-payload.js';
+import { buildLoadPayload, serviceTypesFor, applyResolutionChoices } from './load-form-payload.js';
 
 const TIMEZONES = [
   { label: 'Eastern',  value: 'America/New_York' },
@@ -198,13 +198,6 @@ function computeTotal(rateHost) {
   return total;
 }
 
-// TODO(Task 5): replace stub with candidate picker
-function handleFacilityResolution(body, payload) {
-  const errEl = document.querySelector('[data-form-error]');
-  errEl.textContent = 'One or more stops matched existing facilities. Disambiguation step coming next.';
-  errEl.hidden = false;
-}
-
 export async function renderLoadForm(id) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
 
@@ -294,10 +287,8 @@ export async function renderLoadForm(id) {
 
   document.getElementById('form-back').addEventListener('click', goBack);
 
-  const errEl = document.querySelector('[data-form-error]');
   const stopsHost = document.getElementById('stops-host');
   const rateHost = document.getElementById('rate-host');
-  const submitBtn = document.querySelector('[data-form-submit]');
   const rateTotalEl = document.getElementById('rate-total');
 
   function updateRemoveButtons() {
@@ -354,8 +345,119 @@ export async function renderLoadForm(id) {
   document.getElementById('add-stop').addEventListener('click', () => addStopRow());
   document.getElementById('add-rate').addEventListener('click', () => addRateRow());
 
-  submitBtn.addEventListener('click', async () => {
-    errEl.hidden = true;
+  async function submitPayload(payload) {
+    const errEl = document.querySelector('[data-form-error]');
+    const submitBtn = document.querySelector('[data-form-submit]');
+    if (errEl) errEl.hidden = true;
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+      const url = id
+        ? `${API_BASE}/loads/${encodeURIComponent(id)}`
+        : `${API_BASE}/loads`;
+      const res = await apiFetch(url, {
+        method: id ? 'PUT' : 'POST',
+        body: JSON.stringify(payload),
+      });
+      const body = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        if (errEl) {
+          errEl.textContent = body.error || `HTTP ${res.status}`;
+          errEl.hidden = false;
+        }
+        return;
+      }
+
+      // Backend may return another resolution array for remaining ambiguous stops
+      if (Array.isArray(body) && body.some(r => r && r.facility_resolution_required)) {
+        handleFacilityResolution(body, payload);
+        return;
+      }
+
+      navigate('load-detail', { id: body.id });
+    } catch (err) {
+      if (err.message !== 'Unauthorized — please sign in again.') {
+        if (errEl) {
+          errEl.textContent = `Save failed: ${err.message}`;
+          errEl.hidden = false;
+        }
+      }
+    } finally {
+      if (submitBtn) submitBtn.disabled = false;
+    }
+  }
+
+  function handleFacilityResolution(resolutions, payload) {
+    const container = document.querySelector('.form-panel');
+    if (!container) return;
+
+    const stopSections = resolutions
+      .filter(r => r && r.facility_resolution_required)
+      .map(r => {
+        const stopIdx = r.stop_index;
+        const stop = payload.stops[stopIdx] || {};
+        const context = [stop.facility_name, stop.address].filter(Boolean).join(', ');
+        const contextHtml = context
+          ? `<p class="form-label" style="margin-bottom:0.5rem;">You entered: <em>${escHtml(context)}</em></p>`
+          : '';
+
+        const candidateOptions = (r.candidates || []).map((c, ci) => {
+          const pct = Math.round((c.score || 0) * 100);
+          const label = `${escHtml(c.name)} — ${escHtml(c.address)} (${pct}% match)`;
+          return `<label style="display:block;margin-bottom:0.4rem;">
+            <input type="radio" name="resolution-${stopIdx}" value="${escHtml(c.id)}"${ci === 0 ? ' checked' : ''}>
+            ${label}
+          </label>`;
+        }).join('');
+
+        return `<div data-resolution-stop="${stopIdx}" style="margin-bottom:1.5rem;">
+          <p class="form-label" style="font-weight:600;">Stop ${stopIdx + 1}</p>
+          ${contextHtml}
+          <div style="margin-left:0.5rem;">
+            ${candidateOptions}
+            <label style="display:block;margin-top:0.4rem;">
+              <input type="radio" name="resolution-${stopIdx}" value="__force_new__">
+              Create new facility
+            </label>
+          </div>
+        </div>`;
+      }).join('');
+
+    container.innerHTML = `
+      <h2 class="form-panel__title">Confirm facility</h2>
+      <p style="margin-bottom:1rem;">One or more stops matched existing facilities. Choose a match or create a new one.</p>
+      <div class="alert alert--error" data-form-error hidden></div>
+      ${stopSections}
+      <div class="form-panel__actions">
+        <button class="btn btn--primary" data-form-submit id="resolution-confirm">Confirm &amp; continue</button>
+        <button class="btn btn--secondary" id="resolution-back" style="margin-left:0.75rem;">Back to form</button>
+      </div>
+    `;
+
+    document.getElementById('resolution-back').addEventListener('click', () => {
+      renderLoadForm(id);
+    });
+
+    document.getElementById('resolution-confirm').addEventListener('click', async () => {
+      const choices = {};
+      for (const r of resolutions.filter(r => r && r.facility_resolution_required)) {
+        const stopIdx = r.stop_index;
+        const selected = container.querySelector(`input[name="resolution-${stopIdx}"]:checked`);
+        if (!selected) continue;
+        if (selected.value === '__force_new__') {
+          choices[stopIdx] = { force_new: true };
+        } else {
+          choices[stopIdx] = { facility_id: selected.value };
+        }
+      }
+      const resolved = applyResolutionChoices(payload, choices);
+      await submitPayload(resolved);
+    });
+  }
+
+  document.querySelector('[data-form-submit]').addEventListener('click', async () => {
+    const errEl = document.querySelector('[data-form-error]');
+    if (errEl) errEl.hidden = true;
 
     const get = (k) => document.querySelector(`[data-field="${k}"]`).value.trim();
     const tagsRaw = get('tags');
@@ -376,41 +478,13 @@ export async function renderLoadForm(id) {
     const { payload, errors } = buildLoadPayload({ top, stops: stopData, rateItems: rateData });
 
     if (errors.length) {
-      errEl.textContent = errors.join(' · ');
-      errEl.hidden = false;
+      if (errEl) {
+        errEl.textContent = errors.join(' · ');
+        errEl.hidden = false;
+      }
       return;
     }
 
-    submitBtn.disabled = true;
-    try {
-      const url = id
-        ? `${API_BASE}/loads/${encodeURIComponent(id)}`
-        : `${API_BASE}/loads`;
-      const res = await apiFetch(url, {
-        method: id ? 'PUT' : 'POST',
-        body: JSON.stringify(payload),
-      });
-      const body = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        errEl.textContent = body.error || `HTTP ${res.status}`;
-        errEl.hidden = false;
-        return;
-      }
-
-      if (Array.isArray(body) && body.some(r => r && r.facility_resolution_required)) {
-        handleFacilityResolution(body, payload);
-        return;
-      }
-
-      navigate('load-detail', { id: body.id });
-    } catch (err) {
-      if (err.message !== 'Unauthorized — please sign in again.') {
-        errEl.textContent = `Save failed: ${err.message}`;
-        errEl.hidden = false;
-      }
-    } finally {
-      submitBtn.disabled = false;
-    }
+    await submitPayload(payload);
   });
 }
