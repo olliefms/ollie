@@ -227,11 +227,12 @@ Full Loads CRUD, migrating the legacy inline list/detail out of `app.js`:
   (exact≈1.0 → auto-use ≥0.92; paraphrases fall well below `FACILITY_DEDUP_LOW_THRESHOLD` 0.75 →
   auto-create), so the 0.75–0.92 band is rarely hit; and (2) the facility **vector index isn't built on
   a near-empty DB** (startup "KMeans cannot train … 0 vectors"), so sub-threshold candidate retrieval is
-  unreliable until enough facilities accumulate. NOTE: standalone `POST /facilities` embeds only via the
-  geocoding pipeline, which **embeds after a successful geocode** (`geocoding.rs:96-108`) — so without an
-  `ORS_API_KEY`, CRUD-created facilities have no embedding; only the load-stop `create_new_facility`
-  (`facilities.rs:65`) embeds at creation. The frontend picker (200-resolution branch + `applyResolutionChoices`)
-  is code-reviewed and unit-tested; worth a human pass on a populated DB to see the picker render.
+  unreliable until enough facilities accumulate. Both create paths DO embed best-effort at creation
+  (`facility_writes.rs:146`, `facilities.rs:66`) — there is NO POST-vs-`create_new_facility` asymmetry
+  (an earlier note wrongly claimed one). The real backend-dedup reliability defects (silent `embedding:
+  None` with no backfill; IVF-PQ index unbuilt on small tables) are filed as **olliefms/ollie#346**.
+  The frontend picker (200-resolution branch + `applyResolutionChoices`) is code-reviewed and
+  unit-tested; worth a human pass on a populated DB to see the picker render.
 
 ## HEAD
 `683a648` (before this progress-doc commit).
