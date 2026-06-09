@@ -160,3 +160,69 @@ Resumed from HEAD `78f3e30` (after Phase 1). Stopped after Phase 3 as instructed
 
 ## Stopped after Phase 3 as instructed. Did NOT start Phase 4 (Loads) or Phase 5
 (Trips). No pushes, no merges, no version/`?v=` bumps.
+
+---
+
+# Progress — Phase 4 (Loads)
+
+Run date: 2026-06-09 (supervised). Branch: `claude/thirsty-black-57145e`.
+Resumed from HEAD `f04fde9` (after Phase 3). Executed subagent-driven (fresh
+implementer + spec review + code-quality review per task). Scoped after a
+backend scout. Stopped after Phase 4; did NOT start Phase 5 (Trips).
+
+## What was completed
+Full Loads CRUD, migrating the legacy inline list/detail out of `app.js`:
+- **`pages/load-form-payload.js`** (new, pure + Vitest-tested, 13 tests): `buildLoadPayload`
+  (coercion, blank-omission, required validation, 1-based stop sequencing, naive-datetime
+  normalization, rate-item filtering), `applyResolutionChoices` (facility-resolution merge),
+  `serviceTypesFor`, `toNaiveDateTime`.
+- **`pages/loads.js`** (new): list migrated verbatim (status filter, `LOAD_SCAN_CAP=2000`
+  notice, sort, row→detail, states) + scope-gated **+ New Load** (`loads:write`).
+- **`pages/load-form.js`** (new, bespoke): top fields + repeatable **stops** (≥1; `stop_type`-driven
+  `service_type` options that repopulate on change; facility `<select>` from `/facilities` with
+  a "— Facility not listed —" option revealing name+address; `datetime-local` arrivals; **timezone
+  select with alias labels / IANA values**, default Central; detention fields) + repeatable
+  **rate items** with a live running total. Submit funnels through a single `submitPayload` that
+  also handles the **inline facility-disambiguation picker** (HTTP-200 candidate response →
+  per-`stop_index` radio of candidates + "Create new facility" → `applyResolutionChoices` → resubmit;
+  staged multi-stop re-resolution supported).
+- **`pages/load-detail.js`** (new): detail migrated verbatim (Load Details grid, Rate table,
+  Stops table, Trips sub-table, Documents) + gated action bar — **Edit** (`loads:write`),
+  **Cancel** (`loads:write`, pre-delivery only), **Invoice** (`loads:invoice`, status `delivered`
+  only), **Settle** (`loads:settle`, status `invoiced` only), **Delete** (`loads:delete`, permanent,
+  409 surfaced in-page). Non-delete actions re-fetch/re-render.
+- Routing/nav: `load-new` (registered before `load-detail`) + `load-edit` in `router.js`,
+  `VIEW_PATHS`, `app.js` titles/cases; inline `renderLoadsView`/`renderLoadDetailView` removed.
+
+## Backend reality that shaped the build (verified, differs from spec)
+- **No `deny_unknown_fields`** on load structs (so the trucks/drivers status-field pain doesn't apply).
+- **Facility disambiguation = HTTP 200** with a per-stop candidate array, not a 409.
+- **Delete = single hard delete** (409 if active trips). No soft-delete/reactivate for loads →
+  the spec's two-tier delete UI does NOT apply here.
+- Stop `scheduled_arrive` is **naive local** (Z/offset rejected); `sequence` is required (set by row order);
+  `timezone` required IANA. `service_type` validity: Pickup→{pre_loaded,live_load,relay},
+  Delivery→{live_unload,drop_and_hook,relay}. Invoice requires status `delivered`; settle requires `invoiced`.
+
+## Verification
+- `npm test`: **86 pass** (10 files) — was 72; +13 payload, +1 router precedence. `cargo build`: clean (no Rust changed).
+- Every task passed independent **spec-compliance** + **code-quality** review; real bugs caught & fixed:
+  stale `errEl`/`submitBtn` after the picker innerHTML swap (→ live DOM lookup); settle reusing the
+  soft-delete confirm copy (→ native confirm); Invoice/Settle missing status gates (→ added).
+- **Browser-verified** (Playwright) against an **isolated fresh instance** (`PORT=3100`, temp
+  LanceDB; owner `owner@dev.local`): loads list (filter + gated Create + empty state); create form
+  renders all fields; `stop_type` Pickup↔Delivery **repopulates** service types; tz alias dropdown
+  (Central default); facility dropdown populated from API; **rate running total** updates live
+  ($1500.00); **create persisted → detail** `LD-2026-0001` (status planned); detail correctly shows
+  Edit/Cancel/Delete and **hides Invoice/Settle on a planned load** (status gating works); **edit
+  prefill** round-trips customer/load#/tags and the stop (facility selected, datetime trimmed to
+  `2026-06-15T10:30`, tz Central). Only benign console errors (favicon 404, pre-login refresh 401).
+- **API-verified** the form's exact payload shapes: create-with-`facility_id` (auto `LD-2026-0001`,
+  `total_rate_usd` computed), cancel (`planned`→`cancelled`, reason persisted), delete (204).
+- **Not reproduced in-env:** the name+address → fuzzy-candidate **disambiguation** branch needs Ollama
+  embeddings (not running here → 500 on that path). The frontend's 200-resolution + 409 handling was
+  code-reviewed; the backend referrer-guard has integration coverage. Worth a human pass once Ollama is up.
+
+## HEAD
+`683a648` (before this progress-doc commit).
+
+## Stopped after Phase 4. Did NOT start Phase 5 (Trips). No pushes, no merges, no version/`?v=` bumps.
