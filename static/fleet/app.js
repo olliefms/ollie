@@ -46,6 +46,7 @@ import { renderFacilitiesView } from './pages/facilities.js';
 import { renderFacilityDetail } from './pages/facility-detail.js';
 import { renderFacilityForm } from './pages/facility-form.js';
 import { renderLoadForm } from './pages/load-form.js';
+import { renderLoadsView } from './pages/loads.js';
 
 // ─── Navigation ──────────────────────────────────────────────
 
@@ -151,130 +152,6 @@ function renderRoute({ name, params }) {
     case 'account': renderAccountView(); break;
     default: replaceNavigate('/fleet/home');
   }
-}
-
-// ─── Loads view ──────────────────────────────────────────────
-
-async function renderLoadsView(params = {}) {
-  setContent('<div class="state-loading"><div class="spinner"></div></div>');
-
-  let filterStatus = params.status || '';
-
-  const buildContent = (loads, filterStatus, capTotal = null) => {
-    const capBanner = capTotal !== null
-      ? `<div style="background:var(--color-warning-soft);border:1px solid var(--color-warning);border-radius:var(--radius);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text);">
-           Showing the most recent ${escHtml(String(loads.length))} of ${escHtml(String(capTotal))} loads. Use the status filter to narrow results.
-         </div>`
-      : '';
-
-    const statusOptions = [
-      '', 'planned', 'assigned', 'dispatched', 'in_transit',
-      'delivered', 'invoiced', 'settled', 'cancelled',
-    ];
-
-    const selectHtml = `
-      <select class="form-select" id="status-filter">
-        ${statusOptions.map(s =>
-          `<option value="${s}" ${s === filterStatus ? 'selected' : ''}>${s || 'All Statuses'}</option>`
-        ).join('')}
-      </select>
-    `;
-
-    const sorted = [...loads].sort((a, b) => {
-      const ta = a.stops && a.stops[0] ? new Date(a.stops[0].scheduled_arrive || 0).getTime() : 0;
-      const tb = b.stops && b.stops[0] ? new Date(b.stops[0].scheduled_arrive || 0).getTime() : 0;
-      if (ta === 0 && tb === 0) return 0;
-      if (ta === 0) return 1;
-      if (tb === 0) return -1;
-      return tb - ta;
-    });
-
-    let rows = '';
-    if (sorted.length === 0) {
-      rows = `<tr><td colspan="6" style="text-align:center; padding: var(--space-5); color: var(--color-text-muted);">No loads found</td></tr>`;
-    } else {
-      rows = sorted.map(load => {
-        const stops = load.stops || [];
-        const last = stops.length - 1;
-        const origin = stops[0]?.name || '—';
-        const dest = stops[last]?.name || '—';
-        return `
-        <tr data-load-id="${load.id}">
-          <td style="font-variant-numeric: tabular-nums;">${escHtml(load.load_number || shortId(load.id))}</td>
-          <td>${badge(load.status)}</td>
-          <td>${escHtml(load.customer_name || '—')}</td>
-          <td>${escHtml(origin)} → ${escHtml(dest)}</td>
-          <td>${fmtArrivalWindow(stops[0]?.scheduled_arrive, stops[0]?.scheduled_arrive_end)}</td>
-          <td>${fmtArrivalWindow(stops[last]?.scheduled_arrive, stops[last]?.scheduled_arrive_end)}</td>
-        </tr>
-      `;
-      }).join('');
-    }
-
-    return `
-      ${capBanner}<div class="page-header">
-        <h1 class="page-title">Loads</h1>
-        <div class="page-controls">
-          ${selectHtml}
-        </div>
-      </div>
-      <div class="table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>Load #</th>
-              <th>Status</th>
-              <th>Customer</th>
-              <th>Route</th>
-              <th>Pickup</th>
-              <th>Delivery</th>
-            </tr>
-          </thead>
-          <tbody id="loads-tbody">
-            ${rows}
-          </tbody>
-        </table>
-      </div>
-    `;
-  };
-
-  const fetchAndRender = async (status) => {
-    try {
-      const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-      const res = await apiFetch(`${API_BASE}/loads${qs}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const loads = data.loads || data.items || (Array.isArray(data) ? data : []);
-      const returned = typeof data.returned === 'number' ? data.returned : null;
-      // The server caps scans at LOAD_SCAN_CAP (2000). Only show the cap
-      // banner when we're actually at that ceiling — otherwise it fires on
-      // every normal paginated result where total exceeds page size.
-      const LOAD_SCAN_CAP = 2000;
-      const capTotal = returned !== null && returned >= LOAD_SCAN_CAP ? returned : null;
-      setContent(buildContent(loads, status, capTotal));
-
-      // Bind filter change
-      const filterEl = document.getElementById('status-filter');
-      if (filterEl) {
-        filterEl.addEventListener('change', () => {
-          navigate('loads', { status: filterEl.value });
-        });
-      }
-
-      // Bind row clicks
-      document.querySelectorAll('#loads-tbody tr[data-load-id]').forEach(row => {
-        row.addEventListener('click', () => {
-          navigate('load-detail', { id: row.dataset.loadId });
-        });
-      });
-    } catch (err) {
-      if (err.message !== 'Unauthorized — please sign in again.') {
-        setContent(`<div class="state-error">Failed to load data: ${err.message}</div>`);
-      }
-    }
-  };
-
-  await fetchAndRender(filterStatus);
 }
 
 // ─── Load detail view ─────────────────────────────────────────
