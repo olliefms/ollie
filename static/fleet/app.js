@@ -1,10 +1,8 @@
 /* ============================================================
    Ollie Fleet — SPA
-   ES-module entry. Shared logic lives in utils/ + components/.
-   Read-only views (home, events, documents, account, login) and
-   the navigation/DOM helpers live in pages/ + utils/. The entity
-   views below (loads/trips) are still inline and migrate to
-   pages/ + CRUD in their own phases.
+   ES-module entry. Shell + router + boot only: every view lives in
+   pages/, shared logic in utils/ + components/. This file wires the
+   route table to the page modules and owns the login gate.
    ============================================================ */
 
 import { isAuthenticated, clearToken } from './utils/auth.js';
