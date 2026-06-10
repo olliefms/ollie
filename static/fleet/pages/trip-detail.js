@@ -20,6 +20,11 @@ function nowNaive() {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
+// Pad a naive datetime to seconds (YYYY-MM-DDTHH:MM → YYYY-MM-DDTHH:MM:SS).
+function padSeconds(t) {
+  return /T\d{2}:\d{2}$/.test(t) ? `${t}:00` : t;
+}
+
 // Browser datetime-local prompt → naive string. Returns null if cancelled.
 function promptNaiveDatetime(label) {
   const def = nowNaive().slice(0, 16); // YYYY-MM-DDTHH:MM for the prompt default
@@ -27,8 +32,7 @@ function promptNaiveDatetime(label) {
   if (v === null) return null;
   const trimmed = v.trim();
   if (!trimmed) return null;
-  // Pad to seconds if the user left them off.
-  return /T\d{2}:\d{2}$/.test(trimmed) ? `${trimmed}:00` : trimmed;
+  return padSeconds(trimmed);
 }
 
 export async function renderTripDetail(id) {
@@ -222,7 +226,7 @@ async function simpleAction(statusEl, id, pathSuffix, label) {
 async function assignTrip(statusEl, id) {
   try {
     const [drivers, trucks, trailers] = await Promise.all([
-      fetchList('drivers', ['drivers', 'items']),
+      fetchList('drivers', ['items']),
       fetchList('trucks', ['items']),
       fetchList('trailers', ['items']),
     ]);
@@ -305,10 +309,7 @@ async function stopLate(statusEl, id, seq) {
   const notes = window.prompt('Notes (optional):', '');
   if (notes === null) return;
   const body = {};
-  if (eta.trim()) {
-    const t = eta.trim();
-    body.eta = /T\d{2}:\d{2}$/.test(t) ? `${t}:00` : t;
-  }
+  if (eta.trim()) body.eta = padSeconds(eta.trim());
   if (notes.trim()) body.notes = notes.trim();
   try {
     const res = await apiFetch(`${API_BASE}/trips/${id}/stops/${seq}/late`, {
@@ -333,10 +334,7 @@ async function checkCall(statusEl, id) {
   if (eta === null) return;
   const body = { location: location.trim() };
   if (notes.trim()) body.notes = notes.trim();
-  if (eta.trim()) {
-    const t = eta.trim();
-    body.eta_next_stop = /T\d{2}:\d{2}$/.test(t) ? `${t}:00` : t;
-  }
+  if (eta.trim()) body.eta_next_stop = padSeconds(eta.trim());
   try {
     const res = await apiFetch(`${API_BASE}/trips/${id}/check-call`, {
       method: 'POST',
@@ -356,16 +354,7 @@ async function recalcMiles(statusEl, id) {
       method: 'POST',
       body: JSON.stringify({ force: true }),
     });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      showError(statusEl, body.error || `Recalculate failed (HTTP ${res.status}).`);
-      return;
-    }
-    await renderTripDetail(id);
-    if (body && body.mileage_recompute_warning) {
-      const el = document.getElementById('trip-action-status');
-      if (el) showWarning(el, body.mileage_recompute_warning);
-    }
+    await afterAction(statusEl, id, res);
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') showError(statusEl, `Recalculate failed: ${err.message}`);
   }
