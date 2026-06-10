@@ -54,7 +54,9 @@ pub struct PatchTripBody {
     pub notes: Option<String>,
     /// `Some(uuid)` sets the link; omitted = no change.
     /// Note: clearing previous_trip_id to null is not currently supported via this
-    /// endpoint (would require a `double_option` serde pattern); see follow-up.
+    /// endpoint — it lacks the `double_option` pattern the rate overrides below use
+    /// to distinguish omitted from explicit null. This is the one remaining field
+    /// without null-to-clear support.
     #[serde(default)]
     pub previous_trip_id: Option<Uuid>,
     /// Document blobs to attach to this trip (BOLs, PODs, lumper receipts, scale

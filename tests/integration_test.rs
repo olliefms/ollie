@@ -5042,10 +5042,11 @@ async fn test_patch_trip_omitted_rate_field_leaves_override_unchanged() {
     let tid: uuid::Uuid = trip_id.parse().unwrap();
 
     // Seed an override.
-    server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+    let seed = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
         .await;
+    assert_eq!(seed.status_code(), 200, "seeding the override should succeed");
 
     // PATCH that omits the rate field (touches only notes) must leave it as-is.
     let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))

@@ -703,5 +703,37 @@ mod tests {
         ).await.unwrap();
         assert_eq!(cleared.loaded_rate_per_mile, None,
             "Some(None) must clear the override");
+
+        // The other four fields share the same code arm; exercise each through
+        // the clear path. First set them all, then clear each via Some(None).
+        let all_set = db.update_trip_rate_overrides(
+            trip.id,
+            None,
+            Some(Some(1.1)),  // deadhead
+            Some(Some(50.0)), // extra_stop
+            Some(Some(75.0)), // detention
+            Some(Some(120)),  // free_dwell
+        ).await.unwrap();
+        assert_eq!(all_set.deadhead_rate_per_mile, Some(1.1));
+        assert_eq!(all_set.extra_stop_fee, Some(50.0));
+        assert_eq!(all_set.detention_rate_per_hour, Some(75.0));
+        assert_eq!(all_set.free_dwell_minutes, Some(120));
+
+        let all_cleared = db.update_trip_rate_overrides(
+            trip.id,
+            None,
+            Some(None), // deadhead
+            Some(None), // extra_stop
+            Some(None), // detention
+            Some(None), // free_dwell
+        ).await.unwrap();
+        assert_eq!(all_cleared.deadhead_rate_per_mile, None,
+            "Some(None) must clear deadhead_rate_per_mile");
+        assert_eq!(all_cleared.extra_stop_fee, None,
+            "Some(None) must clear extra_stop_fee");
+        assert_eq!(all_cleared.detention_rate_per_hour, None,
+            "Some(None) must clear detention_rate_per_hour");
+        assert_eq!(all_cleared.free_dwell_minutes, None,
+            "Some(None) must clear free_dwell_minutes");
     }
 }
