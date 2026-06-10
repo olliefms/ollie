@@ -122,7 +122,7 @@ export async function renderLoadsView(params = {}) {
       });
     } catch (err) {
       if (err.message !== 'Unauthorized — please sign in again.') {
-        setContent(`<div class="state-error">Failed to load data: ${err.message}</div>`);
+        setContent(`<div class="state-error">Failed to load data: ${escHtml(err.message)}</div>`);
       }
     }
   };

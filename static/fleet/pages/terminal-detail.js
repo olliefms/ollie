@@ -1,4 +1,5 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
+import { escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 import { renderDetailPage } from './_detail.js';
 
@@ -30,7 +31,7 @@ export async function renderTerminalDetail(id) {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load terminal: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load terminal: ${escHtml(err.message)}</div>`);
     }
   }
 }

@@ -71,7 +71,7 @@ async function fetchAndRenderEvents() {
     if (err.message !== 'Unauthorized — please sign in again.') {
       const listEl = document.getElementById('events-list');
       if (listEl) {
-        listEl.innerHTML = `<div class="state-error" style="min-height:80px;">Failed to load events: ${err.message}</div>`;
+        listEl.innerHTML = `<div class="state-error" style="min-height:80px;">Failed to load events: ${escHtml(err.message)}</div>`;
       }
       setRefreshIndicator('Error');
     }

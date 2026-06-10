@@ -1,5 +1,5 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
-import { badge } from '../utils/format.js';
+import { badge, escHtml } from '../utils/format.js';
 import { setContent } from '../utils/dom.js';
 import { renderEntityList } from './_list.js';
 
@@ -24,10 +24,11 @@ export async function renderDriversView() {
         { header: 'Phone',  cell: d => d.phone || '—' },
       ],
       rows: items,
+      rowClass: d => d.status === 'available' ? 'row--available' : '',
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load drivers: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load drivers: ${escHtml(err.message)}</div>`);
     }
   }
 }

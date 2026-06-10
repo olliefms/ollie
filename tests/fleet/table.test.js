@@ -34,4 +34,19 @@ describe('renderTable', () => {
     container.querySelector('tbody tr').click();
     expect(onRowClick).toHaveBeenCalledWith('abc');
   });
+
+  it('applies rowClass to matching rows and leaves others unclassed', () => {
+    const container = document.createElement('div');
+    renderTable(container, {
+      columns: [{ header: 'Status', cell: r => r.status }],
+      rows: [
+        { id: '1', status: 'available' },
+        { id: '2', status: 'inactive' },
+      ],
+      rowClass: r => r.status === 'available' ? 'row--available' : '',
+    });
+    const trs = container.querySelectorAll('tbody tr');
+    expect(trs[0].className).toBe('row--available');
+    expect(trs[1].className).toBe('');
+  });
 });

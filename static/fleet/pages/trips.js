@@ -67,7 +67,7 @@ export async function renderTripsView(params = {}) {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load trips: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load trips: ${escHtml(err.message)}</div>`);
     }
   }
 }

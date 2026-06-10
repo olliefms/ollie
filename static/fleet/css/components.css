@@ -321,7 +321,8 @@
   vertical-align: middle;
 }
 
-.data-table tbody tr.row--available {
+.data-table tbody tr.row--available,
+.table tbody tr.row--available {
   border-left: 3px solid var(--color-success);
 }
 

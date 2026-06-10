@@ -52,7 +52,7 @@ export async function renderFacilityDetail(id) {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load facility: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load facility: ${escHtml(err.message)}</div>`);
     }
   }
 }

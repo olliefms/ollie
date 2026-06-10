@@ -1,5 +1,5 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
-import { badge } from '../utils/format.js';
+import { badge, escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 import { renderDetailPage } from './_detail.js';
 import { confirmDelete } from '../components/confirm.js';
@@ -31,7 +31,7 @@ export async function renderTruckDetail(id) {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load truck: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load truck: ${escHtml(err.message)}</div>`);
     }
   }
 }

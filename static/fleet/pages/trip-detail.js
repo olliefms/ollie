@@ -165,7 +165,7 @@ export async function renderTripDetail(id) {
     document.getElementById('trip-action-complete')?.addEventListener('click', () => simpleAction(statusEl, id, `${id}/complete`, 'Complete'));
     document.getElementById('trip-action-check-call')?.addEventListener('click', () => checkCall(statusEl, id));
     document.getElementById('trip-action-recalc')?.addEventListener('click', () => recalcMiles(statusEl, id));
-    document.getElementById('trip-action-delete')?.addEventListener('click', () => deleteTrip(statusEl, id));
+    document.getElementById('trip-action-delete')?.addEventListener('click', () => deleteTrip(statusEl, id, trip.status, trip.trip_number));
 
     document.querySelectorAll('[data-stop-arrive]').forEach((el) => {
       el.addEventListener('click', () => stopTime(statusEl, id, el.dataset.stopArrive, 'arrive', 'actual_arrive', 'Arrival time'));
@@ -178,7 +178,7 @@ export async function renderTripDetail(id) {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load trip: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load trip: ${escHtml(err.message)}</div>`);
     }
   }
 }
@@ -360,11 +360,26 @@ async function recalcMiles(statusEl, id) {
   }
 }
 
-async function deleteTrip(statusEl, id) {
-  if (!confirm('Delete this trip? Planned/assigned/dispatched trips are cancelled; an already-cancelled trip is permanently deleted. This cannot be undone.')) return;
+async function deleteTrip(statusEl, id, status, tripNumber) {
+  if (status === 'cancelled') {
+    const label = tripNumber || 'DELETE';
+    const prompt = tripNumber
+      ? `Permanently delete trip "${tripNumber}"? This cannot be undone.\nType the trip number to confirm:`
+      : 'Permanently delete this trip? This cannot be undone.\nType DELETE to confirm:';
+    const typed = window.prompt(prompt);
+    if (typed === null) return;
+    if (typed !== label) { showError(statusEl, 'Trip number did not match — delete cancelled.'); return; }
+  } else {
+    if (!confirm('Cancel this trip? It can be permanently deleted afterwards once cancelled.')) return;
+  }
   try {
     const res = await apiFetch(`${API_BASE}/trips/${id}`, { method: 'DELETE' });
-    if (res.status === 204 || res.ok) { navigate('trips'); return; }
+    if (res.status === 204 || res.ok) {
+      // A cancel keeps the record: stay on the page so the cancelled state
+      // (and the permanent-delete action) is visible. A purge removes it.
+      if (status === 'cancelled') { navigate('trips'); } else { await renderTripDetail(id); }
+      return;
+    }
     const data = await res.json().catch(() => ({}));
     showError(statusEl, data.error || `Delete failed (HTTP ${res.status}).`);
   } catch (err) {

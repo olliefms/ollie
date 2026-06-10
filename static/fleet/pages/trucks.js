@@ -1,4 +1,5 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
+import { escHtml } from '../utils/format.js';
 import { setContent } from '../utils/dom.js';
 import { renderEntityList } from './_list.js';
 
@@ -28,7 +29,7 @@ export async function renderTrucksView() {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load trucks: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load trucks: ${escHtml(err.message)}</div>`);
     }
   }
 }

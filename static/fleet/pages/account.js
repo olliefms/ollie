@@ -116,7 +116,7 @@ export async function renderAccountView() {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load API keys: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load API keys: ${escHtml(err.message)}</div>`);
     }
   }
 }

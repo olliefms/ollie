@@ -169,7 +169,7 @@ export async function renderLoadDetail(id) {
     const rateItems = load.rate_items || [];
     if (rateItems.length > 0) {
       const rateRows = rateItems.map(r => {
-        const amountStyle = `text-align:right; font-variant-numeric: tabular-nums;${r.amount_usd < 0 ? ' color: var(--color-danger, #b91c1c);' : ''}`;
+        const amountStyle = `text-align:right; font-variant-numeric: tabular-nums;${r.amount_usd < 0 ? ' color: var(--color-danger);' : ''}`;
         return `
           <tr>
             <td>${escHtml(r.description || '—')}</td>
@@ -317,11 +317,11 @@ export async function renderLoadDetail(id) {
     });
 
     document.getElementById('load-action-delete')?.addEventListener('click', () => {
-      deleteLoad(statusEl, id);
+      deleteLoad(statusEl, id, load.load_number);
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load data: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load data: ${escHtml(err.message)}</div>`);
     }
   }
 }
@@ -378,8 +378,14 @@ async function settleLoad(statusEl, id) {
   }
 }
 
-async function deleteLoad(statusEl, id) {
-  if (!confirm('Permanently delete this load? This cannot be undone.')) return;
+async function deleteLoad(statusEl, id, loadNumber) {
+  const label = loadNumber || 'DELETE';
+  const prompt = loadNumber
+    ? `Permanently delete load "${loadNumber}"? This cannot be undone.\nType the load number to confirm:`
+    : 'Permanently delete this load? This cannot be undone.\nType DELETE to confirm:';
+  const typed = window.prompt(prompt);
+  if (typed === null) return;
+  if (typed !== label) { showError(statusEl, 'Load number did not match — delete cancelled.'); return; }
   try {
     const res = await apiFetch(`${API_BASE}/loads/${id}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('loads'); return; }

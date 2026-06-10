@@ -60,7 +60,7 @@ export async function renderDriverDetail(id) {
     });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load driver: ${err.message}</div>`);
+      setContent(`<div class="state-error">Failed to load driver: ${escHtml(err.message)}</div>`);
     }
   }
 }
@@ -134,10 +134,10 @@ async function manageEquipment(statusEl, id, driver) {
     .map(t => `<option value="${escHtml(t.id)}">${escHtml(t.unit_number || t.id)}</option>`).join('');
 
   const curTruck = driver.current_truck_id
-    ? (trucks.find(t => t.id === driver.current_truck_id) || {}).unit_number || driver.current_truck_id
+    ? (trucks.find(t => t.id === driver.current_truck_id) || {}).unit_number || '(unknown unit)'
     : '—';
   const curTrailers = (driver.current_trailer_ids || []).length
-    ? driver.current_trailer_ids.map(tid => (trailers.find(t => t.id === tid) || {}).unit_number || tid).join(', ')
+    ? driver.current_trailer_ids.map(tid => (trailers.find(t => t.id === tid) || {}).unit_number || '(unknown unit)').join(', ')
     : '—';
 
   statusEl.innerHTML = `
