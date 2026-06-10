@@ -715,12 +715,18 @@ async fn open_or_create_facility(conn: &lancedb::Connection, embed_dim: usize) -
             let existing_schema = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
             let needs_geocode_failure_count = existing_schema.field_with_name("geocode_failure_count").is_err();
             let needs_geocode_status = existing_schema.field_with_name("geocode_status").is_err();
+            let needs_archived = existing_schema.field_with_name("archived").is_err();
             let mut transforms: Vec<(String, String)> = Vec::new();
             if needs_geocode_failure_count {
                 transforms.push(("geocode_failure_count".into(), "CAST(0 AS BIGINT)".into()));
             }
             if needs_geocode_status {
                 transforms.push(("geocode_status".into(), "'pending'".into()));
+            }
+            // Soft-archive flag (#265 follow-on). SQL keyword `boolean`, not the
+            // Arrow `Boolean` name (DataFusion CAST uses SQL type keywords).
+            if needs_archived {
+                transforms.push(("archived".into(), "CAST(false AS boolean)".into()));
             }
             if !transforms.is_empty() {
                 tracing::info!("migrating facilities table: adding {} column(s)", transforms.len());
@@ -830,6 +836,7 @@ pub fn facility_schema(embed_dim: usize) -> Arc<Schema> {
         ), true),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("archived", DataType::Boolean, false),
     ]))
 }
 
@@ -967,6 +974,7 @@ fn empty_facility_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordB
         >(nulls, embed_dim as i32)),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(BooleanArray::from(Vec::<bool>::new())),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

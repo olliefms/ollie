@@ -4,16 +4,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-/// serde helper for PATCH bodies: distinguishes an omitted field (`None`) from
-/// an explicit JSON `null` (`Some(None)`), so a nullable field can be cleared.
-/// Pair with `#[serde(default, deserialize_with = "double_option")]`.
-fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    serde::Deserialize::deserialize(de).map(Some)
-}
+use super::double_option;
 
 /// A terminal (yard/HQ). Anchors pay-period timezone and the mandatory rate floor.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]

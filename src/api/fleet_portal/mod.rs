@@ -130,7 +130,17 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         )
         .route(
             "/fleet/api/v1/facilities/{id}",
-            get(data::get_facility).patch(facility_writes::update_facility_handler),
+            get(data::get_facility)
+                .patch(facility_writes::update_facility_handler)
+                .delete(facility_writes::archive_facility_handler),
+        )
+        .route(
+            "/fleet/api/v1/facilities/{id}/reactivate",
+            post(facility_writes::reactivate_facility_handler),
+        )
+        .route(
+            "/fleet/api/v1/facilities/{id}/permanent",
+            delete(facility_writes::permanent_delete_facility_handler),
         )
         // Terminals
         .route(

@@ -592,7 +592,7 @@ async fn completion_values(
         // facility search argument is named `q` (see list_facilities/get_facility).
         "q" => state
             .db
-            .list_facilities(None, &[], 500, 0)
+            .list_facilities(None, &[], 500, 0, false)
             .await
             .map_err(internal)?
             .1
@@ -2339,7 +2339,7 @@ async fn tool_list_facilities(state: &AppState, args: &Value) -> Result<Value, S
     let q = args["q"].as_str().map(|s| s.to_string());
     let offset = cursor_offset(args)?;
 
-    let (_total, items) = state.db.list_facilities(None, &[], 1000, 0)
+    let (_total, items) = state.db.list_facilities(None, &[], 1000, 0, false)
         .await.map_err(|e| e.to_string())?;
 
     // `q` filtering happens after the DB fetch, so paginate the filtered set in
@@ -2644,8 +2644,13 @@ async fn tool_delete_trailer(state: &AppState, args: &Value) -> Result<Value, St
 async fn tool_delete_facility(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "facility_id")?;
     state.db.get_facility_by_id(id).await.map_err(|e| e.to_string())?;
-    if state.db.any_load_references_facility(id).await.map_err(|e| e.to_string())? {
-        return Err("facility is referenced by one or more loads and cannot be deleted".to_string());
+    let loads = state.db.count_loads_referencing_facility(id).await.map_err(|e| e.to_string())?;
+    let trips = state.db.count_trips_referencing_facility(id).await.map_err(|e| e.to_string())?;
+    if loads + trips > 0 {
+        return Err(crate::api::utils::referrer_conflict_message(
+            "facility",
+            &[("loads", loads), ("trips", trips)],
+        ));
     }
     state.db.delete_facility_by_id(id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "deleted": true })))

@@ -24,6 +24,7 @@ use crate::{
     AppState,
     api::trips::compute_and_persist_mileage,
     error::AppError,
+    models::double_option,
 };
 
 use super::data::{build_trip_detail, FleetTripListItem};
@@ -53,7 +54,9 @@ pub struct PatchTripBody {
     pub notes: Option<String>,
     /// `Some(uuid)` sets the link; omitted = no change.
     /// Note: clearing previous_trip_id to null is not currently supported via this
-    /// endpoint (would require a `double_option` serde pattern); see follow-up.
+    /// endpoint — it lacks the `double_option` pattern the rate overrides below use
+    /// to distinguish omitted from explicit null. This is the one remaining field
+    /// without null-to-clear support.
     #[serde(default)]
     pub previous_trip_id: Option<Uuid>,
     /// Document blobs to attach to this trip (BOLs, PODs, lumper receipts, scale
@@ -68,17 +71,24 @@ pub struct PatchTripBody {
     pub pay_period_start: Option<String>,
     #[serde(default)]
     pub pay_period_end: Option<String>,
-    // Trip-level rate overrides (frozen once settled).
-    #[serde(default)]
-    pub loaded_rate_per_mile: Option<f64>,
-    #[serde(default)]
-    pub deadhead_rate_per_mile: Option<f64>,
-    #[serde(default)]
-    pub extra_stop_fee: Option<f64>,
-    #[serde(default)]
-    pub detention_rate_per_hour: Option<f64>,
-    #[serde(default)]
-    pub free_dwell_minutes: Option<u32>,
+    // Trip-level rate overrides (frozen once settled). `double_option` lets a
+    // PATCH distinguish an omitted field (no change) from an explicit JSON `null`
+    // (clear the override back to inherited / `None`) from a value (set).
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub loaded_rate_per_mile: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub deadhead_rate_per_mile: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub extra_stop_fee: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub detention_rate_per_hour: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<u32>)]
+    pub free_dwell_minutes: Option<Option<u32>>,
 }
 
 #[utoipa::path(
@@ -288,4 +298,33 @@ pub async fn delete_trip_handler(
     claims.require_scope("trips:delete")?;
     state.db.delete_trip(id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PatchTripBody;
+
+    // An omitted rate field deserializes to outer `None` ("no change").
+    #[test]
+    fn omitted_rate_field_is_outer_none() {
+        let body: PatchTripBody = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(body.loaded_rate_per_mile, None);
+        assert_eq!(body.free_dwell_minutes, None);
+    }
+
+    // An explicit JSON null deserializes to `Some(None)` ("clear to inherited").
+    #[test]
+    fn null_rate_field_is_some_none() {
+        let body: PatchTripBody =
+            serde_json::from_value(serde_json::json!({ "loaded_rate_per_mile": null })).unwrap();
+        assert_eq!(body.loaded_rate_per_mile, Some(None));
+    }
+
+    // A value deserializes to `Some(Some(v))` ("set the override").
+    #[test]
+    fn value_rate_field_is_some_some() {
+        let body: PatchTripBody =
+            serde_json::from_value(serde_json::json!({ "loaded_rate_per_mile": 2.5 })).unwrap();
+        assert_eq!(body.loaded_rate_per_mile, Some(Some(2.5)));
+    }
 }

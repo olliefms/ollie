@@ -215,6 +215,14 @@ impl DbClient {
         Ok(count > 0)
     }
 
+    /// Number of loads whose stops reference `facility_id`. Backs the permanent-
+    /// delete referrer guard (409 + enumerated referrers).
+    pub async fn count_loads_referencing_facility(&self, facility_id: Uuid) -> Result<usize, AppError> {
+        self.load_table
+            .count_rows(Some(format!("stops LIKE '%\"{}\"%'", facility_id)))
+            .await.map_err(|e| AppError::Internal(e.to_string()))
+    }
+
     pub async fn any_load_references_blob(&self, blob_id: Uuid) -> Result<bool, AppError> {
         let id_str = blob_id.to_string();
         // Use JSON string boundaries to avoid false positives from UUID substrings

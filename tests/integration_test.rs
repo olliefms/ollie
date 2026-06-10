@@ -25,7 +25,9 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
     let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
     let ai = Arc::new(OllamaClient::new(
-        "http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream",
+        // Deliberately unreachable: integration tests must not depend on a live
+        // Ollama (a real one on :11434 feeds wrong-dim embeddings into the test schema).
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
     ));
     let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
     let ors = Arc::new(ollie::routing::RoutingClient::new(""));
@@ -65,7 +67,9 @@ async fn test_server_with_state() -> (TestServer, TempDir, TempDir, async_channe
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
     let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
     let ai = Arc::new(OllamaClient::new(
-        "http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream",
+        // Deliberately unreachable: integration tests must not depend on a live
+        // Ollama (a real one on :11434 feeds wrong-dim embeddings into the test schema).
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
     ));
     let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
     let ors = Arc::new(ollie::routing::RoutingClient::new(""));
@@ -4992,6 +4996,103 @@ async fn test_patch_trip_previous_trip_id_commits_even_when_recompute_fails() {
         Some(other_trip_id.as_str()));
 }
 
+#[tokio::test]
+async fn test_patch_trip_sets_rate_override() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate1@example.com", "password-patchrate1").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    let rec = state.db.get_trip(trip_id.parse().unwrap()).await.unwrap();
+    assert_eq!(rec.loaded_rate_per_mile, Some(2.5),
+        "value present should set the override");
+}
+
+#[tokio::test]
+async fn test_patch_trip_clears_rate_override_with_null() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate2@example.com", "password-patchrate2").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let tid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Seed an override first.
+    let set = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+    assert_eq!(set.status_code(), 200);
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, Some(2.5));
+
+    // Explicit null clears it back to inherited (None).
+    let clear = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": null }))
+        .await;
+    assert_eq!(clear.status_code(), 200);
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, None,
+        "explicit null should clear the override to inherited");
+}
+
+#[tokio::test]
+async fn test_patch_trip_omitted_rate_field_leaves_override_unchanged() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate3@example.com", "password-patchrate3").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let tid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Seed an override.
+    let seed = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+    assert_eq!(seed.status_code(), 200, "seeding the override should succeed");
+
+    // PATCH that omits the rate field (touches only notes) must leave it as-is.
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "notes": "unrelated" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, Some(2.5),
+        "omitted rate field must not change the override");
+}
+
+#[tokio::test]
+async fn test_patch_trip_clear_rate_on_settled_trip_409s() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate4@example.com", "password-patchrate4").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let tid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Seed an override, then settle the trip (freezes pay-affecting fields).
+    server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+    let settle = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "settlement_ref": "SETTLE-1" }))
+        .await;
+    assert_eq!(settle.status_code(), 200, "settling the trip should succeed");
+
+    // Clearing a rate override via null on a settled trip must 409, exactly like
+    // setting a value would — Some(None) is pay-affecting too.
+    let clear = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": null }))
+        .await;
+    assert_eq!(clear.status_code(), 409,
+        "clearing a rate override on a settled trip is frozen");
+
+    // And the override is untouched.
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, Some(2.5));
+}
+
 // ── Doctors (trip / load / facility) — v1.17.1 ─────────────────────────────
 
 #[tokio::test]
@@ -5748,7 +5849,7 @@ async fn test_fleet_user_facility_patch_address_requeues_geocode() {
         geocode_failure_count: 0,
         contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
         avg_dwell_minutes: None, dwell_sample_count: 0,
-        embedding: None, created_at: now, updated_at: now,
+        archived: false, embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
     let resp = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
@@ -5780,7 +5881,7 @@ async fn test_fleet_user_facility_patch_explicit_coords_repair_failed_geocode() 
         geocode_failure_count: 3,
         contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
         avg_dwell_minutes: None, dwell_sample_count: 0,
-        embedding: None, created_at: now, updated_at: now,
+        archived: false, embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
     let resp = server.patch(&format!("/fleet/api/v1/facilities/{id}"))
@@ -5864,7 +5965,7 @@ async fn test_facility_doctor_apply_retries_permanently_failed_geocode() {
         geocode_failure_count: 3,
         contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
         avg_dwell_minutes: None, dwell_sample_count: 0,
-        embedding: None, created_at: now, updated_at: now,
+        archived: false, embedding: None, created_at: now, updated_at: now,
     }).await.unwrap();
 
     let report = mcp_call(&server, &token, "facility_doctor", serde_json::json!({
@@ -8229,6 +8330,34 @@ async fn test_setup_wizard_full_flow() {
 }
 
 #[tokio::test]
+async fn test_me_returns_owner_identity_and_scopes() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+
+    let resp = server.get("/fleet/api/v1/me")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["email"], OWNER_EMAIL);
+    assert_eq!(body["role"], "owner");
+    // Owner role bundle is the global superuser scope.
+    let scopes: Vec<String> = body["effective_scopes"]
+        .as_array().unwrap().iter()
+        .map(|s| s.as_str().unwrap().to_string())
+        .collect();
+    assert!(scopes.contains(&"*".to_string()), "owner should have * scope, got {scopes:?}");
+}
+
+#[tokio::test]
+async fn test_me_without_auth_returns_401() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let resp = server.get("/fleet/api/v1/me").await;
+    assert_eq!(resp.status_code(), 401);
+}
+
+#[tokio::test]
 async fn test_setup_status_false_once_user_exists() {
     let (server, _b, _d, _rx) = test_server().await;
     // Provision the first user via first-run setup; status must then report false.
@@ -8243,4 +8372,252 @@ async fn test_setup_status_false_once_user_exists() {
         }))
         .await;
     assert_eq!(attempt.status_code(), 409);
+}
+
+// Reads a driver's stored loaded_rate_per_mile override (null when inherited).
+async fn driver_loaded_rate(server: &axum_test::TestServer, token: &str, id: &str) -> serde_json::Value {
+    server.get(&format!("/fleet/api/v1/drivers/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await
+        .json::<serde_json::Value>()["loaded_rate_per_mile"].clone()
+}
+
+#[tokio::test]
+async fn test_driver_rate_override_set_then_clear() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let driver_id = create_test_driver(&server).await;
+
+    // Set an override.
+    let set = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 0.75 }))
+        .await;
+    assert_eq!(set.status_code(), 200);
+    assert_eq!(driver_loaded_rate(&server, &owner_token, &driver_id).await, serde_json::json!(0.75));
+
+    // Clear it with an explicit null → back to inherited (null).
+    let clear = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": null }))
+        .await;
+    assert_eq!(clear.status_code(), 200);
+    assert!(driver_loaded_rate(&server, &owner_token, &driver_id).await.is_null());
+}
+
+#[tokio::test]
+async fn test_driver_rate_override_absent_field_leaves_others_unchanged() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let driver_id = create_test_driver(&server).await;
+
+    // Set loaded rate.
+    let set = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 0.75 }))
+        .await;
+    assert_eq!(set.status_code(), 200);
+    // Patch a *different* rate without mentioning loaded → loaded must survive.
+    let other = server.patch(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "deadhead_rate_per_mile": 0.40 }))
+        .await;
+    assert_eq!(other.status_code(), 200);
+
+    assert_eq!(driver_loaded_rate(&server, &owner_token, &driver_id).await, serde_json::json!(0.75));
+}
+
+// --- Facilities two-tier delete (Phase 3) ---
+
+#[tokio::test]
+async fn test_facility_soft_archive_reactivate_and_active_list_filter() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Archive Me", "address": "Memphis, TN" }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // It appears in the active list.
+    let list = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    let items = list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(items.iter().any(|f| f["id"] == id), "new facility should be listed");
+
+    // Soft delete (archive) → 204.
+    let del = server.delete(&format!("/fleet/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(del.status_code(), 204);
+
+    // It drops out of the active list...
+    let list2 = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    let items2 = list2.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(!items2.iter().any(|f| f["id"] == id), "archived facility must drop from active list");
+
+    // ...but is still fetchable by id, flagged archived.
+    let got = server.get(&format!("/fleet/api/v1/facilities/{id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(got.status_code(), 200);
+    assert_eq!(got.json::<serde_json::Value>()["archived"], true);
+
+    // Reactivate → 200, archived false, back in the list.
+    let react = server.post(&format!("/fleet/api/v1/facilities/{id}/reactivate"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(react.status_code(), 200);
+    assert_eq!(react.json::<serde_json::Value>()["archived"], false);
+    let list3 = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    let items3 = list3.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(items3.iter().any(|f| f["id"] == id), "reactivated facility must return to active list");
+}
+
+#[tokio::test]
+async fn test_facility_permanent_delete_guarded_by_load_stop_referrer() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility, then a load whose stop references it.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Referenced", "address": "Dallas, TX" }))
+        .await;
+    let fac_id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let load = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "customer_name": "ACME",
+            "stops": [{
+                "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                "facility_id": fac_id, "scheduled_arrive": "2026-05-10T08:00:00",
+                "timezone": "America/Chicago"
+            }],
+            "rate_items": []
+        }))
+        .await;
+    assert_eq!(load.status_code(), 201, "load create failed: {:?}", load.text());
+    let load_id = load.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Permanent delete is refused with 409 + an enumerated referrer message.
+    let blocked = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(blocked.status_code(), 409);
+    let err = blocked.json::<serde_json::Value>()["error"].as_str().unwrap().to_string();
+    assert!(err.contains("1 loads"), "expected referrer count in message, got: {err}");
+
+    // Clear the referrer (delete the load), then the purge succeeds.
+    let del_load = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert!(del_load.status_code() == 204 || del_load.status_code() == 200,
+        "load delete failed: {}", del_load.status_code());
+
+    let purge = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(purge.status_code(), 204, "purge should succeed once unreferenced: {:?}", purge.text());
+
+    // Gone entirely.
+    let got = server.get(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(got.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_facility_permanent_delete_guarded_by_trip_stop_referrer() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Trip Referenced", "address": "Houston, TX" }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let fac_id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Archive the facility first (soft delete) — still referenced after archive.
+    let arch = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(arch.status_code(), 204);
+
+    // Create a free-standing trip (no load) with a stop referencing the facility.
+    let trip = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "stops": [{
+                "sequence": 1,
+                "stop_type": "pickup",
+                "facility_id": fac_id
+            }]
+        }))
+        .await;
+    assert_eq!(trip.status_code(), 201, "trip create failed: {:?}", trip.text());
+    let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Permanent delete must be refused with 409; body must mention trips.
+    let blocked = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(blocked.status_code(), 409);
+    let err = blocked.json::<serde_json::Value>()["error"].as_str().unwrap().to_string();
+    assert!(err.contains("trips"), "expected 'trips' in referrer message, got: {err}");
+
+    // Remove the referrer (cancel + hard delete the trip via two-step delete).
+    let del1 = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert!(del1.status_code() == 204 || del1.status_code() == 200);
+    let del2 = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert!(del2.status_code() == 204 || del2.status_code() == 200);
+
+    // Now the permanent delete must succeed.
+    let purge = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(purge.status_code(), 204, "purge should succeed once unreferenced: {:?}", purge.text());
+
+    let gone = server.get(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(gone.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_list_facilities_include_archived_query_param() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility then archive it.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Archived Dock", "address": "Phoenix, AZ" }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let fac_id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let arch = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(arch.status_code(), 204);
+
+    // Default list must not include the archived facility.
+    let default_list = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(default_list.status_code(), 200);
+    let default_items = default_list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(!default_items.iter().any(|f| f["id"] == fac_id),
+        "archived facility must not appear in the default list");
+
+    // include_archived=true must include it, with archived=true.
+    let archived_list = server.get("/fleet/api/v1/facilities?include_archived=true")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(archived_list.status_code(), 200);
+    let archived_items = archived_list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    let found = archived_items.iter().find(|f| f["id"] == fac_id);
+    assert!(found.is_some(), "archived facility must appear with include_archived=true");
+    assert_eq!(found.unwrap()["archived"], true);
 }

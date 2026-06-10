@@ -140,25 +140,26 @@ impl DbClient {
     }
 
     /// Patch optional rate-override fields + terminal_id on an existing driver record.
-    /// Only fields with `Some(...)` values are applied; `None` leaves the existing value.
+    /// For rate fields, outer None = absent (leave), outer Some(inner) = present:
+    /// inner Some(v) = set, inner None = clear.
     #[allow(clippy::too_many_arguments)]
     pub async fn update_driver_rate_overrides(
         &self,
         id: Uuid,
         terminal_id: Option<Uuid>,
-        loaded_rate_per_mile: Option<f64>,
-        deadhead_rate_per_mile: Option<f64>,
-        extra_stop_fee: Option<f64>,
-        detention_rate_per_hour: Option<f64>,
-        free_dwell_minutes: Option<u32>,
+        loaded_rate_per_mile: Option<Option<f64>>,
+        deadhead_rate_per_mile: Option<Option<f64>>,
+        extra_stop_fee: Option<Option<f64>>,
+        detention_rate_per_hour: Option<Option<f64>>,
+        free_dwell_minutes: Option<Option<u32>>,
     ) -> Result<DriverRecord, AppError> {
         let mut record = self.get_driver_by_id(id).await?;
         if let Some(v) = terminal_id { record.terminal_id = Some(v); }
-        if let Some(v) = loaded_rate_per_mile { record.loaded_rate_per_mile = Some(v); }
-        if let Some(v) = deadhead_rate_per_mile { record.deadhead_rate_per_mile = Some(v); }
-        if let Some(v) = extra_stop_fee { record.extra_stop_fee = Some(v); }
-        if let Some(v) = detention_rate_per_hour { record.detention_rate_per_hour = Some(v); }
-        if let Some(v) = free_dwell_minutes { record.free_dwell_minutes = Some(v); }
+        if let Some(v) = loaded_rate_per_mile { record.loaded_rate_per_mile = v; }
+        if let Some(v) = deadhead_rate_per_mile { record.deadhead_rate_per_mile = v; }
+        if let Some(v) = extra_stop_fee { record.extra_stop_fee = v; }
+        if let Some(v) = detention_rate_per_hour { record.detention_rate_per_hour = v; }
+        if let Some(v) = free_dwell_minutes { record.free_dwell_minutes = v; }
         record.updated_at = chrono::Utc::now();
         self.upsert_driver(&record).await?;
         Ok(record)
@@ -511,12 +512,12 @@ mod tests {
 
         let updated = db.update_driver_rate_overrides(
             d.id,
-            None,            // keep existing terminal_id
-            Some(0.70),      // loaded_rate_per_mile
-            Some(0.35),      // deadhead_rate_per_mile
-            None,            // extra_stop_fee unchanged
-            Some(28.0),      // detention_rate_per_hour
-            Some(90),        // free_dwell_minutes
+            None,                  // keep existing terminal_id
+            Some(Some(0.70)),      // loaded_rate_per_mile (set)
+            Some(Some(0.35)),      // deadhead_rate_per_mile (set)
+            None,                  // extra_stop_fee absent (unchanged)
+            Some(Some(28.0)),      // detention_rate_per_hour (set)
+            Some(Some(90)),        // free_dwell_minutes (set)
         ).await.unwrap();
 
         assert_eq!(updated.loaded_rate_per_mile, Some(0.70));
@@ -526,5 +527,13 @@ mod tests {
         assert_eq!(updated.free_dwell_minutes, Some(90));
         // terminal_id unchanged
         assert_eq!(updated.terminal_id, Some(default_terminal.id));
+
+        // Clear loaded_rate_per_mile via an explicit inner None.
+        let cleared = db.update_driver_rate_overrides(
+            d.id, None, Some(None), None, None, None, None,
+        ).await.unwrap();
+        assert_eq!(cleared.loaded_rate_per_mile, None);
+        // deadhead untouched (absent) — still set.
+        assert_eq!(cleared.deadhead_rate_per_mile, Some(0.35));
     }
 }

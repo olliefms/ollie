@@ -35,3 +35,17 @@ pub use terminal::*;
 pub use trailer::*;
 pub use trip::*;
 pub use truck::*;
+
+/// Serde deserializer for `Option<Option<T>>` "double option" fields.
+///
+/// Pair with `#[serde(default, deserialize_with = "double_option")]`:
+/// - absent field  → `None`        ("leave unchanged")
+/// - explicit null → `Some(None)`  ("clear")
+/// - a value       → `Some(Some)`  ("set")
+pub(crate) fn double_option<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    serde::Deserialize::deserialize(de).map(Some)
+}
