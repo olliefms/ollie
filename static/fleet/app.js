@@ -9,18 +9,13 @@
 
 import { isAuthenticated, clearToken } from './utils/auth.js';
 import {
-  apiFetch, tryRefresh, API_BASE,
-  loadMe, clearMe, setOnUnauthorized,
+  tryRefresh, loadMe, clearMe, setOnUnauthorized,
 } from './utils/api.js';
-import {
-  escHtml, badge, shortId, fmtDate, fmtArrivalWindow,
-  fmtBytes, fmtUSD, fmtMiles,
-} from './utils/format.js';
 import {
   matchRoute, replaceNavigate, startRouter,
 } from './router.js';
 import {
-  setContent, setRefreshIndicator, navigate, goBack,
+  setRefreshIndicator,
 } from './utils/dom.js';
 import { renderHomeView } from './pages/home.js';
 import { renderEventsView, clearEventsRefresh } from './pages/events.js';
@@ -50,6 +45,7 @@ import { renderTripForm } from './pages/trip-form.js';
 import { renderLoadsView } from './pages/loads.js';
 import { renderLoadDetail } from './pages/load-detail.js';
 import { renderTripsView } from './pages/trips.js';
+import { renderTripDetail } from './pages/trip-detail.js';
 
 // ─── Navigation ──────────────────────────────────────────────
 
@@ -136,7 +132,7 @@ function renderRoute({ name, params }) {
     case 'trips': renderTripsView(params); break;
     case 'trip-new': renderTripForm(null); break;
     case 'trip-edit': renderTripForm(params.id); break;
-    case 'trip-detail': renderTripDetailView(params.id); break;
+    case 'trip-detail': renderTripDetail(params.id); break;
     case 'events': renderEventsView(); break;
     case 'documents': renderDocumentsView(params); break;
     case 'document-detail': renderDocumentDetailView(params.id); break;
@@ -158,97 +154,6 @@ function renderRoute({ name, params }) {
     case 'facility-edit': renderFacilityForm(params.id); break;
     case 'account': renderAccountView(); break;
     default: replaceNavigate('/fleet/home');
-  }
-}
-
-// ─── Trip detail view ─────────────────────────────────────────
-
-async function renderTripDetailView(id) {
-  const topbarTitle = document.getElementById('topbar-title');
-  if (topbarTitle) topbarTitle.textContent = 'Trip Detail';
-  setContent('<div class="state-loading"><div class="spinner"></div></div>');
-  try {
-    const res = await apiFetch(`${API_BASE}/trips/${id}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const trip = await res.json();
-
-    if (topbarTitle) topbarTitle.textContent = `Trip ${trip.trip_number || shortId(id)}`;
-
-    const ms = trip.mileage_summary;
-    const hasOrigin = !!(ms && ms.origin);
-    const legs = (ms && ms.legs) || [];
-
-    // Leg-index contract:
-    //  - origin present: legs[0] is deadhead (origin → stop_1), legs[1+] loaded between stops
-    //    => stop i (1-based) inbound miles = legs[i-1]
-    //  - origin absent: legs[0] is stop_1 → stop_2
-    //    => stop i (1-based, i>1) inbound miles = legs[i-2]; stop 1 has none
-    const milesForStop = (i /* 0-based stop index */) => {
-      if (hasOrigin) {
-        return fmtMiles(legs[i] ? legs[i].miles : null);
-      }
-      if (i === 0) return '—';
-      return fmtMiles(legs[i - 1] ? legs[i - 1].miles : null);
-    };
-
-    const originRow = hasOrigin ? `
-      <tr>
-        <td>0</td>
-        <td>${escHtml(ms.origin.facility_name || '—')}${ms.origin.address ? ` — ${escHtml(ms.origin.address)}` : ''}</td>
-        <td>origin</td>
-        <td>—</td>
-        <td>—</td>
-        <td>—</td>
-        <td style="text-align:right; font-variant-numeric: tabular-nums;">—</td>
-      </tr>
-    ` : '';
-
-    const stopRows = (trip.stops || []).map((stop, i) => `
-      <tr>
-        <td>${i + 1}</td>
-        <td>${escHtml(stop.name || '—')}</td>
-        <td>${escHtml(stop.stop_type || '—')}</td>
-        <td>${fmtArrivalWindow(stop.scheduled_arrive, stop.scheduled_arrive_end)}</td>
-        <td>${fmtDate(stop.actual_arrive)}</td>
-        <td>${fmtDate(stop.actual_depart)}</td>
-        <td style="text-align:right; font-variant-numeric: tabular-nums;">${milesForStop(i)}</td>
-      </tr>
-    `).join('');
-
-    const totalMiles = ms ? fmtMiles(ms.total_miles) : '—';
-    const bodyRows = (originRow + stopRows) || '<tr><td colspan="7" style="text-align:center; padding: var(--space-4); color: var(--color-text-muted);">No stops</td></tr>';
-
-    setContent(`
-      <button class="back-link" id="back-to-trips">← Back to Trips</button>
-      <div class="detail-card">
-        <div class="detail-card__title">Trip ${escHtml(trip.trip_number || shortId(trip.id))}</div>
-        <div class="detail-grid">
-          <div class="detail-item"><div class="detail-item__label">Trip #</div><div class="detail-item__value" style="font-variant-numeric: tabular-nums;">${escHtml(trip.trip_number || '—')}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Status</div><div class="detail-item__value">${badge(trip.status)}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${escHtml(trip.driver_name || '—')}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${escHtml(trip.truck_unit || '—')}</div></div>
-          <div class="detail-item"><div class="detail-item__label">Trailer</div><div class="detail-item__value">${escHtml((trip.trailer_units || []).join(', ') || '—')}</div></div>
-        </div>
-      </div>
-      <div class="detail-card">
-        <div class="detail-card__title">Stops</div>
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead><tr><th>#</th><th>Facility</th><th>Type</th><th>Scheduled Arrive</th><th>Actual Arrive</th><th>Actual Depart</th><th style="text-align:right;">Miles</th></tr></thead>
-            <tbody>${bodyRows}</tbody>
-            <tfoot>
-              <tr><td colspan="6" style="font-weight:600;">Total Miles</td><td style="text-align:right; font-weight:600; font-variant-numeric: tabular-nums;">${totalMiles}</td></tr>
-            </tfoot>
-          </table>
-        </div>
-      </div>
-    `);
-
-    document.getElementById('back-to-trips').addEventListener('click', goBack);
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      setContent(`<div class="state-error">Failed to load trip: ${err.message}</div>`);
-    }
   }
 }
 
