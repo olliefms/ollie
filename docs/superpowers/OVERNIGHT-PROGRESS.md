@@ -238,3 +238,71 @@ Full Loads CRUD, migrating the legacy inline list/detail out of `app.js`:
 `683a648` (before this progress-doc commit).
 
 ## Stopped after Phase 4. Did NOT start Phase 5 (Trips). No pushes, no merges, no version/`?v=` bumps.
+
+---
+
+# Progress — Phase 5 (Trips) — FINAL PHASE
+
+Supervised, subagent-driven (fresh implementer + spec-compliance + code-quality review per task).
+Plan: `docs/superpowers/plans/2026-06-10-fleet-ui-crud-phase-5-trips.md`. **Completes the Fleet UI
+CRUD project** — `app.js` is now shell + router + boot only, with **zero** inline entity views.
+
+## What shipped
+- **Backend (Task 1):** `PatchTripBody`'s five rate-override fields + `update_trip_rate_overrides`
+  switched to the repo's `double_option` pattern, delivering the spec's **override revert**: PATCH
+  omit = no change, JSON `null` = clear to inherited, value = set. Settlement-freeze still 409s on a
+  clear or a set. Backward-compatible with the MCP `update_trip` tool (shares `apply_trip_patch`).
+- **Pure payload helpers (Task 2):** `pages/trip-form-payload.js` — `buildCreateTripPayload`
+  (load-linked vs free-standing) + `buildTripPatch` (override omit/null/value tri-state) + `tripStopTypes`;
+  reuses the load helper's `toNaiveDateTime`. 46 new Vitest cases.
+- **Routing (Task 3):** `trip-new` (before `trip-detail`) + `trip-edit` routes, VIEW_PATHS/TITLES, stub.
+- **List (Task 4):** `pages/trips.js` — inline list ported verbatim + scope-gated `+ New Trip`.
+- **Form (Task 5):** `pages/trip-form.js` — create with a load-linked/free-standing **mode toggle**
+  (load mode omits stops so the backend derives them; free mode requires the stop editor), optional
+  driver/truck/trailers; edit exposes **only** notes + the five inheritable rate overrides
+  (ghost-placeholder + clear-to-inherited), directing driver/equipment/stop changes to the detail page.
+- **Detail + lifecycle (Task 6):** `pages/trip-detail.js` — read-only detail ported verbatim
+  (incl. the subtle `milesForStop` leg-index/mileage-summary contract), plus a status-aware,
+  scope-gated action bar: assign/unassign, dispatch/undispatch, per-stop arrive/depart/late,
+  check-call, complete, recalculate-miles, and a single guarded delete (soft-then-hard; 409 surfaced).
+- **Override surfacing (Task 8, added after verification):** the trip detail GET (`build_trip_detail`)
+  now returns the five **raw** override values so the edit form prefills current values and clear-to-
+  inherited is observable. Resolves the Task 5 limitation that no endpoint exposed raw overrides.
+
+## Decisions / deviations (consistent with Phases 1–4)
+- **Edit form = notes + rate overrides only.** PATCH can't touch stops/driver/equipment — those go
+  through the lifecycle endpoints, so structural changes live on the detail action bar (user-approved).
+- **Delete is a single guarded soft-then-hard action**, not a two-tier soft/reactivate UI — the backend
+  collapses cancel/delete into one `DELETE` (`planned|assigned|dispatched`→cancel; `cancelled`→purge;
+  `in_transit|delivered|completed`→409).
+- **`notes` is plain `Option<String>`** (not double_option), so it is omit-when-blank (no null-clear),
+  unlike the rate fields — documented in `buildTripPatch`.
+
+## Verification
+- **Unit/build:** `npm test` (full JS) **133 pass** (was 86; +46 trip payload, +1 router precedence).
+  `cargo test --lib trip_ops` green incl. the new override-persist + clear tests. `cargo build` +
+  `cargo clippy --all-targets` clean.
+  - *Known env caveat:* a local Ollama on :11434 feeds 768-dim embeddings into the dim-4 test schema,
+    blocking the **HTTP integration** tests from executing on this machine (affects untouched tests
+    identically; passes on CI). Backend logic is covered by db-layer unit tests + the browser pass.
+- **Every task passed independent spec-compliance + code-quality review.** Real issues caught & fixed:
+  dead `tristate` helper, a stale `'drivers'` lookup key, a duplicated mileage-warning branch, and the
+  override-surfacing gap below.
+- **Browser-verified** (Playwright, isolated `cargo run` PORT=3100, fresh temp LanceDB, owner
+  `owner@dev.local`): trips list + gated Create; **create from a load** (stops derived) → detail;
+  **create free-standing** (explicit stops) → detail; full **lifecycle chain** planned→assigned→
+  dispatched→in_transit→delivered→completed (assign/dispatch/arrive/depart/check-call/complete);
+  **delete guard** — 409 on a completed trip (kept), soft-cancel on a planned trip; only benign console
+  errors (pre-login 401s, favicon 404).
+- **Override set/clear re-verified end-to-end** after Task 8: PATCH `loaded_rate_per_mile:2.5` → GET
+  returns `2.5`; PATCH `null` → field absent (inherited); the **edit form prefills** the current
+  override and a UI clear round-trips to inherited. An earlier "overrides don't persist" finding was a
+  **false alarm** — the value always persisted (and feeds `driver_pay`); it was merely unobservable
+  because no endpoint surfaced the raw field and `driver_pay` is null without loaded miles. Task 8
+  closed the observability gap.
+
+## HEAD
+`6e5addf` (before this progress-doc commit). 12 commits on `claude/thirsty-black-57145e`.
+
+## Phase 5 complete — the Fleet UI CRUD project is DONE (all 6 phases). Branch unmerged; no pushes,
+## no merges, no version/`?v=` bumps. Awaiting supervised review / merge decision.
