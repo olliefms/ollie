@@ -105,10 +105,7 @@ impl DbClient {
     }
 
     pub async fn create_event_vector_index(&self) -> Result<(), AppError> {
-        self.event_table
-            .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
-            .execute().await
-            .map_err(|e| AppError::Internal(e.to_string()))
+        self.create_ivfpq_index(&self.event_table, "embedding", "events").await
     }
 
     pub async fn create_event_scalar_indices(&self) -> Result<(), AppError> {

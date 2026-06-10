@@ -240,10 +240,7 @@ impl DbClient {
     }
 
     pub async fn create_driver_vector_index(&self) -> Result<(), AppError> {
-        self.driver_table
-            .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
-            .execute().await
-            .map_err(|e| AppError::Internal(e.to_string()))
+        self.create_ivfpq_index(&self.driver_table, "embedding", "drivers").await
     }
 }
 

@@ -251,11 +251,20 @@ impl DbClient {
             .into_iter().map(|r| r.id).collect())
     }
 
-    pub async fn create_facility_vector_index(&self) -> Result<(), AppError> {
-        self.facility_table
-            .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
+    /// Ids of facilities persisted without an embedding (`embedding IS NULL`).
+    /// These are invisible to semantic dedup until backfilled — see
+    /// `crate::pipeline::embedding_backfill`.
+    pub async fn list_facilities_missing_embedding(&self) -> Result<Vec<Uuid>, AppError> {
+        let stream = self.facility_table.query()
+            .only_if("embedding IS NULL")
             .execute().await
-            .map_err(|e| AppError::Internal(e.to_string()))
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        Ok(batches_to_facilities(collect_stream(stream).await?)?
+            .into_iter().map(|r| r.id).collect())
+    }
+
+    pub async fn create_facility_vector_index(&self) -> Result<(), AppError> {
+        self.create_ivfpq_index(&self.facility_table, "embedding", "facilities").await
     }
 }
 
@@ -508,5 +517,29 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map[&f1.id].name, "ABC Warehouse");
         assert_eq!(map[&f2.id].name, "XYZ Dock");
+    }
+
+    #[tokio::test]
+    async fn test_list_facilities_missing_embedding() {
+        let (db, _dir) = test_db().await;
+        let missing = sample_facility(); // embedding: None
+        let mut embedded = sample_facility();
+        embedded.id = uuid::Uuid::new_v4();
+        embedded.embedding = Some(vec![0.1, 0.2, 0.3, 0.4]); // matches embed_dim=4
+        db.insert_facility(&missing).await.unwrap();
+        db.insert_facility(&embedded).await.unwrap();
+
+        let ids = db.list_facilities_missing_embedding().await.unwrap();
+        assert_eq!(ids, vec![missing.id]);
+    }
+
+    #[tokio::test]
+    async fn test_create_facility_vector_index_below_threshold_is_ok() {
+        // On a small table KMeans cannot train an IVF-PQ index; the guard must
+        // skip it and return Ok rather than surfacing a training error.
+        let (db, _dir) = test_db().await;
+        db.create_facility_vector_index().await.unwrap();
+        db.insert_facility(&sample_facility()).await.unwrap();
+        db.create_facility_vector_index().await.unwrap();
     }
 }

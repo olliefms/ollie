@@ -63,7 +63,15 @@ async fn create_new_facility(
 ) -> Result<Uuid, AppError> {
     let now = Utc::now();
     let text = format!("{name} {address}");
-    let embedding = embed_text(&state.ai, &text).await.ok();
+    // Best-effort: a None embedding leaves the facility out of semantic dedup
+    // until the startup backfill re-embeds it. Log so the gap is visible.
+    let embedding = match embed_text(&state.ai, &text).await {
+        Ok(e) => Some(e),
+        Err(e) => {
+            tracing::warn!("embedding facility '{name}' at create failed (will backfill): {e}");
+            None
+        }
+    };
     let record = FacilityRecord {
         id: Uuid::new_v4(), owner_id: 0,
         name: name.to_string(), address: address.to_string(),
@@ -98,9 +106,11 @@ mod tests {
         let config = Arc::new(Config::from_env().unwrap());
         let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
         let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
+        // Point at an unreachable port so embeds fail deterministically. These
+        // tests assert force-new/embed-failure behaviour and must not depend on
+        // a developer's locally-running Ollama (which would return a real
+        // 768-dim vector into this dim-4 test DB and panic).
         let ai = Arc::new(OllamaClient::new(
-            // Deliberately unreachable: these tests must not depend on a live Ollama
-            // (a real one on :11434 feeds wrong-dim embeddings into the dim-4 test db).
             "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "llava",
         ));
         let geocoding = Arc::new(crate::geocoding::GeocodingClient::new());

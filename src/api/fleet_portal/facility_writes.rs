@@ -143,7 +143,15 @@ pub async fn apply_facility_create(
         parsed.notes.as_deref().unwrap_or(""),
         parsed.tags.join(" "),
     );
-    let embedding = embed_text(&state.ai, &embed_input).await.ok();
+    // Best-effort: a None embedding leaves the facility out of semantic dedup
+    // until the startup backfill re-embeds it. Log so the gap is visible.
+    let embedding = match embed_text(&state.ai, &embed_input).await {
+        Ok(e) => Some(e),
+        Err(e) => {
+            tracing::warn!("embedding facility '{}' at create failed (will backfill): {e}", parsed.name);
+            None
+        }
+    };
 
     let now = Utc::now();
     let record = FacilityRecord {
