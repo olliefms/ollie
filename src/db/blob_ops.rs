@@ -152,11 +152,7 @@ impl DbClient {
     }
 
     pub async fn create_vector_index(&self) -> Result<(), AppError> {
-        self.blob_table
-            .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
-            .execute()
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))
+        self.create_ivfpq_index(&self.blob_table, "embedding", "blobs").await
     }
 }
 

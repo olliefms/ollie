@@ -1,4 +1,5 @@
 // src/pipeline/mod.rs
+pub mod embedding_backfill;
 pub mod geocoding;
 pub mod recovery;
 pub mod routing;

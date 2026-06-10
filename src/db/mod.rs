@@ -164,7 +164,38 @@ impl DbClient {
 
         Ok(client)
     }
+
+    /// Create an IVF-PQ vector index on `column` of `table`, but only once the
+    /// table holds enough rows to train KMeans. Below `MIN_IVFPQ_TRAINING_ROWS`
+    /// the index build fails ("KMeans cannot train K centroids with N vectors"),
+    /// so we skip it and rely on LanceDB's exact flat (brute-force) KNN search —
+    /// which is fast and exact at small scale. The index is re-attempted on every
+    /// startup, so it gets built once the table grows past the floor.
+    pub(crate) async fn create_ivfpq_index(
+        &self,
+        table: &Table,
+        column: &str,
+        label: &str,
+    ) -> Result<(), AppError> {
+        let rows = table.count_rows(None).await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        if rows < MIN_IVFPQ_TRAINING_ROWS {
+            tracing::debug!(
+                "deferring {label} vector index: {rows} rows < {MIN_IVFPQ_TRAINING_ROWS} (flat KNN search in use)"
+            );
+            return Ok(());
+        }
+        table
+            .create_index(&[column], lancedb::index::Index::IvfPq(Default::default()))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
 }
+
+/// Minimum row count before an IVF-PQ vector index is built. Below this, KMeans
+/// training cannot run; flat (brute-force) KNN search covers small datasets
+/// exactly and cheaply. See [`DbClient::create_ivfpq_index`].
+const MIN_IVFPQ_TRAINING_ROWS: usize = 256;
 
 async fn open_or_create<F>(
     conn: &lancedb::Connection,

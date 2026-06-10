@@ -198,10 +198,7 @@ impl DbClient {
     }
 
     pub async fn create_trailer_vector_index(&self) -> Result<(), AppError> {
-        self.trailer_table
-            .create_index(&["embedding"], lancedb::index::Index::IvfPq(Default::default()))
-            .execute().await
-            .map_err(|e| AppError::Internal(e.to_string()))
+        self.create_ivfpq_index(&self.trailer_table, "embedding", "trailers").await
     }
 }
 

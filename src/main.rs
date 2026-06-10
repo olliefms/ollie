@@ -5,7 +5,7 @@ use ollie::{
     config::Config,
     db::DbClient,
     geocoding::GeocodingClient,
-    pipeline::{recovery::requeue_stale, spawn_pipeline, spawn_geocoding_pipeline, spawn_routing_pipeline},
+    pipeline::{embedding_backfill::spawn_facility_embedding_backfill, recovery::requeue_stale, spawn_pipeline, spawn_geocoding_pipeline, spawn_routing_pipeline},
     routing::RoutingClient,
     storage::BlobStore,
     AppState,
@@ -56,6 +56,10 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = db.create_event_scalar_indices().await {
         tracing::warn!("scalar indices not created for events: {e}");
     }
+
+    // Recover facilities persisted without an embedding (e.g. embed model down
+    // at create, or geocode-skipped) so they become searchable for dedup again.
+    spawn_facility_embedding_backfill(db.clone(), ai.clone());
 
     let rp_origin = Url::parse(&config.driver_rp_origin)
         .expect("DRIVER_RP_ORIGIN must be a valid URL");
