@@ -46,6 +46,7 @@ import { renderFacilitiesView } from './pages/facilities.js';
 import { renderFacilityDetail } from './pages/facility-detail.js';
 import { renderFacilityForm } from './pages/facility-form.js';
 import { renderLoadForm } from './pages/load-form.js';
+import { renderTripForm } from './pages/trip-form.js';
 import { renderLoadsView } from './pages/loads.js';
 import { renderLoadDetail } from './pages/load-detail.js';
 
@@ -62,6 +63,8 @@ const VIEW_TITLES = {
   'driver-detail': 'Driver',
   'driver-edit': 'Edit Driver',
   trips: 'Trips',
+  'trip-new': 'New Trip',
+  'trip-edit': 'Edit Trip',
   'trip-detail': 'Trip Detail',
   events: 'Events',
   documents: 'Documents',
@@ -130,6 +133,8 @@ function renderRoute({ name, params }) {
     case 'driver-detail': renderDriverDetail(params.id); break;
     case 'driver-edit': renderDriverForm(params.id); break;
     case 'trips': renderTripsView(params); break;
+    case 'trip-new': renderTripForm(null); break;
+    case 'trip-edit': renderTripForm(params.id); break;
     case 'trip-detail': renderTripDetailView(params.id); break;
     case 'events': renderEventsView(); break;
     case 'documents': renderDocumentsView(params); break;

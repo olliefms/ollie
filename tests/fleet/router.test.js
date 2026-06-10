@@ -61,4 +61,10 @@ describe('matchRoute', () => {
     expect(matchRoute('/fleet/loads/abc123/edit')).toEqual({ name: 'load-edit', params: { id: 'abc123' } });
     expect(matchRoute('/fleet/loads/abc123')).toEqual({ name: 'load-detail', params: { id: 'abc123' } });
   });
+
+  it('matches trip new/edit/detail in the right precedence', () => {
+    expect(matchRoute('/fleet/trips/new')).toEqual({ name: 'trip-new', params: {} });
+    expect(matchRoute('/fleet/trips/abc/edit')).toEqual({ name: 'trip-edit', params: { id: 'abc' } });
+    expect(matchRoute('/fleet/trips/abc')).toEqual({ name: 'trip-detail', params: { id: 'abc' } });
+  });
 });
