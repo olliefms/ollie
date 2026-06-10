@@ -182,6 +182,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             crate::services::trip_lifecycle::CheckCallRequest,
             fleet_portal::trip_writes::RecalculateMilesBody,
             fleet_portal::trip_writes::PatchTripBody,
+            fleet_portal::trip_writes::PatchTripResult,
             fleet_portal::facility_writes::CreateFacilityBody,
             fleet_portal::facility_writes::PatchFacilityBody,
             fleet_portal::truck_writes::CreateTruckBody,

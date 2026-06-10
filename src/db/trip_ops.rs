@@ -284,6 +284,12 @@ impl DbClient {
         Ok(trips.into_iter().next())
     }
 
+    pub async fn count_trips_referencing_facility(&self, facility_id: Uuid) -> Result<usize, AppError> {
+        self.trip_table
+            .count_rows(Some(format!("stops LIKE '%\"{}\"%'", facility_id)))
+            .await.map_err(|e| AppError::Internal(e.to_string()))
+    }
+
     pub async fn any_trip_references_blob(&self, blob_id: Uuid) -> Result<bool, AppError> {
         let id_str = blob_id.to_string();
         // Use JSON string boundaries to avoid false positives from UUID substrings

@@ -274,14 +274,14 @@ pub async fn reactivate_facility_handler(
         (status = 204, description = "Facility permanently deleted"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Facility not found"),
-        (status = 409, description = "Conflict — referenced by load stops"),
+        (status = 409, description = "Conflict — referenced by load or trip stops"),
     ),
     security(("BearerAuth" = [])),
     tag = "fleet"
 )]
 /// Tier 2 — the deliberately difficult permanent purge (`facilities:delete`).
-/// Refused with 409 + an enumerated referrer list when any load stop references
-/// the facility; the user must clear the referrers first.
+/// Refused with 409 + an enumerated referrer list when any load or trip stop
+/// references the facility; the user must clear the referrers first.
 pub async fn permanent_delete_facility_handler(
     State(state): State<AppState>,
     Extension(claims): Extension<FleetUserClaims>,
@@ -291,10 +291,11 @@ pub async fn permanent_delete_facility_handler(
     // 404 early if it doesn't exist.
     state.db.get_facility_by_id(id).await?;
     let loads = state.db.count_loads_referencing_facility(id).await?;
-    if loads > 0 {
+    let trips = state.db.count_trips_referencing_facility(id).await?;
+    if loads + trips > 0 {
         return Err(AppError::Conflict(referrer_conflict_message(
             "facility",
-            &[("loads", loads)],
+            &[("loads", loads), ("trips", trips)],
         )));
     }
     state.db.delete_facility_by_id(id).await?;
