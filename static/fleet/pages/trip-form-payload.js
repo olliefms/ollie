@@ -81,16 +81,11 @@ export function buildCreateTripPayload({ mode = 'load', top = {}, driver_id, tru
   return { payload, errors };
 }
 
-function tristate(field, coerce) {
-  if (field.cleared) return null;
-  const v = coerce(field.value);
-  return v;
-}
-
 export function buildTripPatch({ notes = '', loaded_rate_per_mile, deadhead_rate_per_mile, extra_stop_fee, detention_rate_per_hour, free_dwell_minutes } = {}) {
   const errors = [];
   const payload = {};
 
+  // notes is plain Option<String> on the backend (not double_option), so omit-when-blank; cannot null-clear unlike rate fields
   const notesStr = str(notes);
   if (notesStr) payload.notes = notesStr;
 
