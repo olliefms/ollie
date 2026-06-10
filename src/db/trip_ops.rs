@@ -736,4 +736,32 @@ mod tests {
         assert_eq!(all_cleared.free_dwell_minutes, None,
             "Some(None) must clear free_dwell_minutes");
     }
+
+    // Proves the trip's raw overrides survive a FRESH get_trip read and map onto
+    // TripListItem — the same record->TripListItem conversion build_trip_detail
+    // uses before copying overrides onto the FleetTripListItem detail response.
+    // (build_trip_detail itself needs AppState/Ollama and is browser-verified.)
+    #[tokio::test]
+    async fn test_rate_overrides_survive_fresh_get_trip() {
+        let (db, _dir) = test_db().await;
+        let trip = sample_trip();
+        db.insert_trip(&trip).await.unwrap();
+
+        db.update_trip_rate_overrides(
+            trip.id,
+            Some(Some(2.5)),
+            Some(Some(1.1)),
+            Some(Some(50.0)),
+            Some(Some(75.0)),
+            Some(Some(120)),
+        ).await.unwrap();
+
+        let record = db.get_trip(trip.id).await.unwrap();
+        let item: crate::models::TripListItem = record.into();
+        assert_eq!(item.loaded_rate_per_mile, Some(2.5));
+        assert_eq!(item.deadhead_rate_per_mile, Some(1.1));
+        assert_eq!(item.extra_stop_fee, Some(50.0));
+        assert_eq!(item.detention_rate_per_hour, Some(75.0));
+        assert_eq!(item.free_dwell_minutes, Some(120));
+    }
 }

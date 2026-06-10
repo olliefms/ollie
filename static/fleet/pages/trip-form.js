@@ -392,11 +392,13 @@ function effectivePlaceholder(driverPay, key) {
   return 'inherited';
 }
 
-function rateOverrideRow(rf, placeholder) {
+function rateOverrideRow(rf, placeholder, currentValue) {
+  // Prefill with the trip's OWN override when present (null = inherited -> blank).
+  const valAttr = currentValue == null ? '' : ` value="${escHtml(String(currentValue))}"`;
   return `<div class="form-group" data-override-row="${escHtml(rf.key)}">
     <label class="form-label">${escHtml(rf.label)}</label>
     <input class="form-input" type="number" step="0.01" data-override-field="${escHtml(rf.key)}"
-      placeholder="${escHtml(placeholder)}">
+      placeholder="${escHtml(placeholder)}"${valAttr}>
     <label style="display:block;margin-top:0.35rem;font-size:0.85rem;">
       <input type="checkbox" data-override-clear="${escHtml(rf.key)}"> Clear to inherited
     </label>
@@ -414,7 +416,7 @@ async function renderEditForm(id) {
   const title = `Edit Trip — ${values.trip_number || values.id || ''}`;
 
   const ratesHtml = RATE_FIELDS.map(rf =>
-    rateOverrideRow(rf, effectivePlaceholder(driverPay, rf.key))
+    rateOverrideRow(rf, effectivePlaceholder(driverPay, rf.key), values[rf.key])
   ).join('');
 
   setContent(`
