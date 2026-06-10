@@ -70,7 +70,7 @@ async fn create_new_facility(
         normalized_address: None, lat: None, lng: None,
         geocode_status: GeocodeStatus::Pending, geocode_failure_count: 0,
         contacts: vec![], notes: None, tags: vec![], blob_ids: vec![],
-        avg_dwell_minutes: None, dwell_sample_count: 0,
+        avg_dwell_minutes: None, dwell_sample_count: 0, archived: false,
         embedding, created_at: now, updated_at: now,
     };
     state.db.insert_facility(&record).await?;
@@ -99,7 +99,9 @@ mod tests {
         let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
         let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
         let ai = Arc::new(OllamaClient::new(
-            "http://localhost:11434", "nomic-embed-text", "llama3.2", "llava",
+            // Deliberately unreachable: these tests must not depend on a live Ollama
+            // (a real one on :11434 feeds wrong-dim embeddings into the dim-4 test db).
+            "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "llava",
         ));
         let geocoding = Arc::new(crate::geocoding::GeocodingClient::new());
         let ors = Arc::new(RoutingClient::new(""));

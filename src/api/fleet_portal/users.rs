@@ -368,6 +368,22 @@ pub async fn caller_identity(
 }
 
 // ---------------------------------------------------------------------------
+// Response types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
+pub struct MeResponse {
+    /// Null when the principal is an API key with no parseable fleet_user id.
+    pub fleet_user_id: Option<Uuid>,
+    pub name: Option<String>,
+    pub email: Option<String>,
+    /// Role string: "owner" | "fleet_manager" | "dispatcher".
+    pub role: String,
+    /// Effective authorization scopes resolved server-side this request.
+    pub effective_scopes: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
 // HTTP handlers
 // ---------------------------------------------------------------------------
 
@@ -413,6 +429,47 @@ pub async fn get_user(
     claims.require_scope("users:read")?;
     let record = apply_get_user(&state, id).await?;
     Ok(Json(record))
+}
+
+#[utoipa::path(
+    get,
+    path = "/fleet/api/v1/me",
+    responses(
+        (status = 200, description = "Authenticated principal identity + scopes", body = MeResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "users"
+)]
+pub async fn me(
+    State(state): State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+) -> Result<impl IntoResponse, AppError> {
+    // Identity comes solely from the validated JWT claims; an API-key principal
+    // with no parseable fleet_user id gets a minimal identity.
+    let Ok(id) = claims.fleet_user_id.parse::<Uuid>() else {
+        return Ok(Json(MeResponse {
+            fleet_user_id: None,
+            name: None,
+            email: None,
+            role: Role::Dispatcher.as_str().to_string(),
+            effective_scopes: claims.effective_scopes.clone(),
+        }));
+    };
+    let (name, email, role) = match state.db.get_fleet_user_by_id(id).await {
+        Ok(u) => (Some(u.name), Some(u.email), u.role),
+        Err(e) => {
+            tracing::warn!(fleet_user_id = %id, error = %e, "GET /me: fleet_user lookup failed; returning minimal identity");
+            (None, None, Role::Dispatcher)
+        }
+    };
+    Ok(Json(MeResponse {
+        fleet_user_id: Some(id),
+        name,
+        email,
+        role: role.as_str().to_string(),
+        effective_scopes: claims.effective_scopes.clone(),
+    }))
 }
 
 #[utoipa::path(
@@ -527,6 +584,7 @@ pub async fn delete_user(
 pub fn router() -> Router<AppState> {
     use axum::routing::{get, put};
     Router::new()
+        .route("/fleet/api/v1/me", get(me))
         .route("/fleet/api/v1/users", get(list_users).post(create_user))
         .route(
             "/fleet/api/v1/users/{id}",

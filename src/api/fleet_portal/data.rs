@@ -65,6 +65,18 @@ pub struct FleetTripListItem {
     pub mileage_summary: Option<crate::models::trip::MileageSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver_pay: Option<crate::models::pay::DriverPay>,
+    /// Trip's OWN rate overrides (None = inherited from driver/terminal), NOT
+    /// effective rates. Lets the edit form prefill current override values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loaded_rate_per_mile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadhead_rate_per_mile: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_stop_fee: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detention_rate_per_hour: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub free_dwell_minutes: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -160,6 +172,12 @@ fn enrich_trip(
         mileage_summary: None,
         // list shows frozen pay only; live pay on detail
         driver_pay: None,
+        // raw overrides surfaced on detail only (set in build_trip_detail)
+        loaded_rate_per_mile: None,
+        deadhead_rate_per_mile: None,
+        extra_stop_fee: None,
+        detention_rate_per_hour: None,
+        free_dwell_minutes: None,
     }
 }
 
@@ -712,6 +730,12 @@ pub async fn build_trip_detail(
         .and_then(|o| o.facility_name.clone());
     enriched.mileage_summary = Some(summary);
     enriched.driver_pay = driver_pay_for_record(state, &record).await;
+    // Surface the trip's OWN rate overrides so the edit form can prefill them.
+    enriched.loaded_rate_per_mile = record.loaded_rate_per_mile;
+    enriched.deadhead_rate_per_mile = record.deadhead_rate_per_mile;
+    enriched.extra_stop_fee = record.extra_stop_fee;
+    enriched.detention_rate_per_hour = record.detention_rate_per_hour;
+    enriched.free_dwell_minutes = record.free_dwell_minutes;
     Ok(enriched)
 }
 
@@ -1312,6 +1336,7 @@ pub struct ListFacilitiesDispatchQuery {
     pub q: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub include_archived: Option<bool>,
 }
 
 #[utoipa::path(
@@ -1321,6 +1346,7 @@ pub struct ListFacilitiesDispatchQuery {
         ("q" = Option<String>, Query, description = "Substring search across name and address (case-insensitive)"),
         ("limit" = Option<usize>, Query, description = "Max results (default 20, max 100)"),
         ("offset" = Option<usize>, Query, description = "Pagination offset"),
+        ("include_archived" = Option<bool>, Query, description = "When true, include archived facilities (default false)"),
     ),
     responses(
         (status = 200, description = "List of facilities", body = crate::models::FacilityListResponse),
@@ -1343,7 +1369,8 @@ pub async fn list_facilities(
     // grows large enough to matter, push the OR-LIKE filter into
     // `build_facility_filter` so LanceDB does the work.
     const SCAN_CAP: usize = 1000;
-    let (_total, items) = state.db.list_facilities(None, &[], SCAN_CAP, 0).await?;
+    let include_archived = q.include_archived.unwrap_or(false);
+    let (_total, items) = state.db.list_facilities(None, &[], SCAN_CAP, 0, include_archived).await?;
 
     let filtered: Vec<_> = if let Some(query) = q.q.as_deref().filter(|s| !s.is_empty()) {
         let needle = query.to_lowercase();

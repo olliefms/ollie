@@ -221,23 +221,24 @@ impl DbClient {
         batches_to_trips(collect_stream(stream).await?)
     }
 
-    /// Apply optional trip-level rate overrides (read-modify-upsert). Only the
-    /// fields that are `Some` are changed.
+    /// Apply optional trip-level rate overrides (read-modify-upsert). Each field
+    /// is an `Option<Option<_>>`: `None` leaves it unchanged, `Some(None)` clears
+    /// the override back to inherited, and `Some(Some(v))` sets it.
     pub async fn update_trip_rate_overrides(
         &self,
         id: Uuid,
-        loaded: Option<f64>,
-        deadhead: Option<f64>,
-        extra_stop: Option<f64>,
-        detention: Option<f64>,
-        free_dwell: Option<u32>,
+        loaded: Option<Option<f64>>,
+        deadhead: Option<Option<f64>>,
+        extra_stop: Option<Option<f64>>,
+        detention: Option<Option<f64>>,
+        free_dwell: Option<Option<u32>>,
     ) -> Result<TripRecord, AppError> {
         let mut t = self.get_trip(id).await?;
-        if loaded.is_some() { t.loaded_rate_per_mile = loaded; }
-        if deadhead.is_some() { t.deadhead_rate_per_mile = deadhead; }
-        if extra_stop.is_some() { t.extra_stop_fee = extra_stop; }
-        if detention.is_some() { t.detention_rate_per_hour = detention; }
-        if free_dwell.is_some() { t.free_dwell_minutes = free_dwell; }
+        if let Some(v) = loaded { t.loaded_rate_per_mile = v; }
+        if let Some(v) = deadhead { t.deadhead_rate_per_mile = v; }
+        if let Some(v) = extra_stop { t.extra_stop_fee = v; }
+        if let Some(v) = detention { t.detention_rate_per_hour = v; }
+        if let Some(v) = free_dwell { t.free_dwell_minutes = v; }
         t.updated_at = Utc::now();
         self.upsert_trip(&t).await?;
         Ok(t)
@@ -281,6 +282,12 @@ impl DbClient {
         let mut trips = batches_to_trips(collect_stream(stream).await?)?;
         trips.sort_by_key(|t| std::cmp::Reverse(t.created_at));
         Ok(trips.into_iter().next())
+    }
+
+    pub async fn count_trips_referencing_facility(&self, facility_id: Uuid) -> Result<usize, AppError> {
+        self.trip_table
+            .count_rows(Some(format!("stops LIKE '%\"{}\"%'", facility_id)))
+            .await.map_err(|e| AppError::Internal(e.to_string()))
     }
 
     pub async fn any_trip_references_blob(&self, blob_id: Uuid) -> Result<bool, AppError> {
@@ -670,5 +677,97 @@ mod tests {
         let (db, _dir) = test_db().await;
         let result = db.get_last_trip_for_driver(uuid::Uuid::new_v4()).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_update_trip_rate_overrides_sets_clears_and_leaves_unchanged() {
+        let (db, _dir) = test_db().await;
+        let trip = sample_trip();
+        db.insert_trip(&trip).await.unwrap();
+
+        // Some(Some(v)) sets the override.
+        let set = db.update_trip_rate_overrides(
+            trip.id,
+            Some(Some(2.5)), // loaded
+            None,            // deadhead
+            None,            // extra_stop
+            None,            // detention
+            None,            // free_dwell
+        ).await.unwrap();
+        assert_eq!(set.loaded_rate_per_mile, Some(2.5));
+
+        // None leaves the existing override unchanged.
+        let unchanged = db.update_trip_rate_overrides(
+            trip.id, None, None, None, None, None,
+        ).await.unwrap();
+        assert_eq!(unchanged.loaded_rate_per_mile, Some(2.5),
+            "outer None must not touch the field");
+
+        // Some(None) clears the override back to inherited.
+        let cleared = db.update_trip_rate_overrides(
+            trip.id, Some(None), None, None, None, None,
+        ).await.unwrap();
+        assert_eq!(cleared.loaded_rate_per_mile, None,
+            "Some(None) must clear the override");
+
+        // The other four fields share the same code arm; exercise each through
+        // the clear path. First set them all, then clear each via Some(None).
+        let all_set = db.update_trip_rate_overrides(
+            trip.id,
+            None,
+            Some(Some(1.1)),  // deadhead
+            Some(Some(50.0)), // extra_stop
+            Some(Some(75.0)), // detention
+            Some(Some(120)),  // free_dwell
+        ).await.unwrap();
+        assert_eq!(all_set.deadhead_rate_per_mile, Some(1.1));
+        assert_eq!(all_set.extra_stop_fee, Some(50.0));
+        assert_eq!(all_set.detention_rate_per_hour, Some(75.0));
+        assert_eq!(all_set.free_dwell_minutes, Some(120));
+
+        let all_cleared = db.update_trip_rate_overrides(
+            trip.id,
+            None,
+            Some(None), // deadhead
+            Some(None), // extra_stop
+            Some(None), // detention
+            Some(None), // free_dwell
+        ).await.unwrap();
+        assert_eq!(all_cleared.deadhead_rate_per_mile, None,
+            "Some(None) must clear deadhead_rate_per_mile");
+        assert_eq!(all_cleared.extra_stop_fee, None,
+            "Some(None) must clear extra_stop_fee");
+        assert_eq!(all_cleared.detention_rate_per_hour, None,
+            "Some(None) must clear detention_rate_per_hour");
+        assert_eq!(all_cleared.free_dwell_minutes, None,
+            "Some(None) must clear free_dwell_minutes");
+    }
+
+    // Proves the trip's raw overrides survive a FRESH get_trip read and map onto
+    // TripListItem — the same record->TripListItem conversion build_trip_detail
+    // uses before copying overrides onto the FleetTripListItem detail response.
+    // (build_trip_detail itself needs AppState/Ollama and is browser-verified.)
+    #[tokio::test]
+    async fn test_rate_overrides_survive_fresh_get_trip() {
+        let (db, _dir) = test_db().await;
+        let trip = sample_trip();
+        db.insert_trip(&trip).await.unwrap();
+
+        db.update_trip_rate_overrides(
+            trip.id,
+            Some(Some(2.5)),
+            Some(Some(1.1)),
+            Some(Some(50.0)),
+            Some(Some(75.0)),
+            Some(Some(120)),
+        ).await.unwrap();
+
+        let record = db.get_trip(trip.id).await.unwrap();
+        let item: crate::models::TripListItem = record.into();
+        assert_eq!(item.loaded_rate_per_mile, Some(2.5));
+        assert_eq!(item.deadhead_rate_per_mile, Some(1.1));
+        assert_eq!(item.extra_stop_fee, Some(50.0));
+        assert_eq!(item.detention_rate_per_hour, Some(75.0));
+        assert_eq!(item.free_dwell_minutes, Some(120));
     }
 }

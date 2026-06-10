@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
+use super::double_option;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -130,16 +131,21 @@ pub struct UpdateDriverRequest {
     pub blob_ids: Option<Vec<Uuid>>,
     #[serde(default)]
     pub terminal_id: Option<Uuid>,
-    #[serde(default)]
-    pub loaded_rate_per_mile: Option<f64>,
-    #[serde(default)]
-    pub deadhead_rate_per_mile: Option<f64>,
-    #[serde(default)]
-    pub extra_stop_fee: Option<f64>,
-    #[serde(default)]
-    pub detention_rate_per_hour: Option<f64>,
-    #[serde(default)]
-    pub free_dwell_minutes: Option<u32>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub loaded_rate_per_mile: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub deadhead_rate_per_mile: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub extra_stop_fee: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<f64>)]
+    pub detention_rate_per_hour: Option<Option<f64>>,
+    #[serde(default, deserialize_with = "double_option")]
+    #[schema(value_type = Option<u32>)]
+    pub free_dwell_minutes: Option<Option<u32>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]

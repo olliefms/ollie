@@ -64,6 +64,15 @@
   color: var(--color-text);
 }
 
+.sidebar__group-label {
+  padding: var(--space-4) var(--space-4) var(--space-1);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-subtle);
+}
+
 .sidebar__link--active {
   background: var(--color-surface-2);
   color: var(--color-primary-dark);
@@ -312,7 +321,8 @@
   vertical-align: middle;
 }
 
-.data-table tbody tr.row--available {
+.data-table tbody tr.row--available,
+.table tbody tr.row--available {
   border-left: 3px solid var(--color-success);
 }
 
@@ -593,4 +603,127 @@
   font-size: 0.875rem;
   color: var(--color-text-muted);
   font-weight: 500;
+}
+
+/* ===== Component library (utils/ + components/) =====
+   renderTable() emits <table class="table">; renderForm() emits the
+   .form-panel structure. These reuse the same tokens as .data-table and
+   the inline forms so the migrated CRUD surfaces match DESIGN.md. */
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.table thead tr {
+  background: var(--color-surface-2);
+}
+
+.table th {
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.table tbody tr {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  transition: background 0.1s;
+}
+
+.table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.table tbody tr:hover {
+  background: var(--color-surface-2);
+  cursor: pointer;
+}
+
+.table td {
+  padding: var(--space-3) var(--space-4);
+  color: var(--color-text);
+  vertical-align: middle;
+}
+
+.form-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: var(--space-5);
+  max-width: 720px;
+}
+
+.form-panel__title {
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text);
+  margin: 0 0 var(--space-4);
+}
+
+.form-panel__actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.form-checkbox {
+  width: 16px;
+  height: 16px;
+}
+
+.inheritable-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.inheritable-field .form-input {
+  flex: 1;
+}
+
+.btn-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  color: var(--color-primary);
+  white-space: nowrap;
+}
+
+.btn-link:hover {
+  color: var(--color-primary-hover);
+  text-decoration: underline;
+}
+
+.detail-list {
+  margin: 0;
+  padding-left: var(--space-4);
+  list-style: disc;
+}
+
+.detail-list li {
+  margin-bottom: var(--space-2);
+}
+
+.contact-row {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3);
+  margin-bottom: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
 }

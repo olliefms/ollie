@@ -38,7 +38,9 @@ async fn build_app() -> (TestServer, Arc<DbClient>, TempDir, TempDir) {
     let db     = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
     let store  = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
     let ai     = Arc::new(OllamaClient::new(
-        "http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream",
+        // Deliberately unreachable: integration tests must not depend on a live
+        // Ollama (a real one on :11434 feeds wrong-dim embeddings into the test schema).
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
     ));
     let geocoding  = Arc::new(ollie::geocoding::GeocodingClient::new());
     let ors        = Arc::new(ollie::routing::RoutingClient::new(""));
