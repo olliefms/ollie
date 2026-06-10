@@ -4992,6 +4992,102 @@ async fn test_patch_trip_previous_trip_id_commits_even_when_recompute_fails() {
         Some(other_trip_id.as_str()));
 }
 
+#[tokio::test]
+async fn test_patch_trip_sets_rate_override() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate1@example.com", "password-patchrate1").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    let rec = state.db.get_trip(trip_id.parse().unwrap()).await.unwrap();
+    assert_eq!(rec.loaded_rate_per_mile, Some(2.5),
+        "value present should set the override");
+}
+
+#[tokio::test]
+async fn test_patch_trip_clears_rate_override_with_null() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate2@example.com", "password-patchrate2").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let tid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Seed an override first.
+    let set = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+    assert_eq!(set.status_code(), 200);
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, Some(2.5));
+
+    // Explicit null clears it back to inherited (None).
+    let clear = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": null }))
+        .await;
+    assert_eq!(clear.status_code(), 200);
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, None,
+        "explicit null should clear the override to inherited");
+}
+
+#[tokio::test]
+async fn test_patch_trip_omitted_rate_field_leaves_override_unchanged() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate3@example.com", "password-patchrate3").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let tid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Seed an override.
+    server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+
+    // PATCH that omits the rate field (touches only notes) must leave it as-is.
+    let resp = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "notes": "unrelated" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, Some(2.5),
+        "omitted rate field must not change the override");
+}
+
+#[tokio::test]
+async fn test_patch_trip_clear_rate_on_settled_trip_409s() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "patchrate4@example.com", "password-patchrate4").await;
+    let trip_id = make_trip_with_two_stops(&server).await;
+    let tid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Seed an override, then settle the trip (freezes pay-affecting fields).
+    server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": 2.5 }))
+        .await;
+    let settle = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "settlement_ref": "SETTLE-1" }))
+        .await;
+    assert_eq!(settle.status_code(), 200, "settling the trip should succeed");
+
+    // Clearing a rate override via null on a settled trip must 409, exactly like
+    // setting a value would — Some(None) is pay-affecting too.
+    let clear = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "loaded_rate_per_mile": null }))
+        .await;
+    assert_eq!(clear.status_code(), 409,
+        "clearing a rate override on a settled trip is frozen");
+
+    // And the override is untouched.
+    assert_eq!(state.db.get_trip(tid).await.unwrap().loaded_rate_per_mile, Some(2.5));
+}
+
 // ── Doctors (trip / load / facility) — v1.17.1 ─────────────────────────────
 
 #[tokio::test]
