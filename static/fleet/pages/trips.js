@@ -49,8 +49,7 @@ export async function renderTripsView(params = {}) {
     }
 
     setContent(`
-      <div class="page-header"><h1 class="page-title">Trips</h1><div class="page-controls">${selectHtml}
-          ${createBtn}</div></div>
+      <div class="page-header"><h1 class="page-title">Trips</h1><div class="page-controls">${selectHtml}${createBtn}</div></div>
       <div class="table-wrapper">
         <table class="data-table">
           <thead><tr><th>Trip #</th><th>Load #</th><th>Status</th><th>Driver</th><th>Route</th><th>Pickup</th><th>Delivery</th></tr></thead>
