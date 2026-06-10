@@ -161,8 +161,9 @@ impl DbClient {
         tag_filter: &[String],
         limit: usize,
         offset: usize,
+        include_archived: bool,
     ) -> Result<(usize, Vec<FacilityListItem>), AppError> {
-        let filter = build_facility_filter(name_filter, tag_filter);
+        let filter = build_facility_filter(name_filter, tag_filter, include_archived);
         let total = self.facility_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut q = self.facility_table.query();
@@ -181,7 +182,7 @@ impl DbClient {
         tag_filter: &[String],
         limit: usize,
     ) -> Result<Vec<FacilityListItem>, AppError> {
-        let filter = build_facility_filter(name_filter, tag_filter);
+        let filter = build_facility_filter(name_filter, tag_filter, false);
         let mut q = self.facility_table.query()
             .nearest_to(embedding)
             .map_err(|e| AppError::Internal(e.to_string()))?
@@ -382,10 +383,11 @@ fn row_to_facility(batch: &RecordBatch, i: usize) -> Result<FacilityRecord, AppE
     })
 }
 
-fn build_facility_filter(name: Option<&str>, tags: &[String]) -> Option<String> {
-    // Archived facilities drop out of active lists and the stop typeahead (both
-    // go through this filter). They remain fetchable by id (detail/reactivate).
-    let mut parts: Vec<String> = vec!["(archived = false OR archived IS NULL)".into()];
+fn build_facility_filter(name: Option<&str>, tags: &[String], include_archived: bool) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if !include_archived {
+        parts.push("(archived = false OR archived IS NULL)".into());
+    }
     // Escape single quotes to prevent SQL injection in LanceDB filter strings
     if let Some(n) = name {
         let n = n.replace('\'', "''");
@@ -395,7 +397,7 @@ fn build_facility_filter(name: Option<&str>, tags: &[String]) -> Option<String> 
         let tag = tag.replace('\'', "''");
         parts.push(format!("tags LIKE '%\"{tag}\"%'"));
     }
-    Some(parts.join(" AND "))
+    if parts.is_empty() { None } else { Some(parts.join(" AND ")) }
 }
 
 async fn collect_stream(
@@ -472,7 +474,7 @@ mod tests {
         let (db, _dir) = test_db().await;
         let f = sample_facility();
         db.insert_facility(&f).await.unwrap();
-        let (total, items) = db.list_facilities(None, &["cold".to_string()], 10, 0).await.unwrap();
+        let (total, items) = db.list_facilities(None, &["cold".to_string()], 10, 0, false).await.unwrap();
         assert_eq!(total, 1);
         assert_eq!(items[0].id, f.id);
     }

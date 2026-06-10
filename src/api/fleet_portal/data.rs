@@ -1336,6 +1336,7 @@ pub struct ListFacilitiesDispatchQuery {
     pub q: Option<String>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub include_archived: Option<bool>,
 }
 
 #[utoipa::path(
@@ -1345,6 +1346,7 @@ pub struct ListFacilitiesDispatchQuery {
         ("q" = Option<String>, Query, description = "Substring search across name and address (case-insensitive)"),
         ("limit" = Option<usize>, Query, description = "Max results (default 20, max 100)"),
         ("offset" = Option<usize>, Query, description = "Pagination offset"),
+        ("include_archived" = Option<bool>, Query, description = "When true, include archived facilities (default false)"),
     ),
     responses(
         (status = 200, description = "List of facilities", body = crate::models::FacilityListResponse),
@@ -1367,7 +1369,8 @@ pub async fn list_facilities(
     // grows large enough to matter, push the OR-LIKE filter into
     // `build_facility_filter` so LanceDB does the work.
     const SCAN_CAP: usize = 1000;
-    let (_total, items) = state.db.list_facilities(None, &[], SCAN_CAP, 0).await?;
+    let include_archived = q.include_archived.unwrap_or(false);
+    let (_total, items) = state.db.list_facilities(None, &[], SCAN_CAP, 0, include_archived).await?;
 
     let filtered: Vec<_> = if let Some(query) = q.q.as_deref().filter(|s| !s.is_empty()) {
         let needle = query.to_lowercase();

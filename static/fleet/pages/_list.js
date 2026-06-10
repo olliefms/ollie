@@ -13,6 +13,7 @@ import { setContent, navigate } from '../utils/dom.js';
 export function renderEntityList({
   title, columns, rows, detailView,
   createView, createScope, createLabel, emptyText,
+  rowClass, extraControls,
 }) {
   setContent(`
     <div class="page-header">
@@ -22,13 +23,15 @@ export function renderEntityList({
     <div id="list-table"></div>
   `);
 
+  const controlsEl = document.getElementById('list-controls');
   if (createView && hasScope(createScope)) {
     const btn = document.createElement('button');
     btn.className = 'btn btn--primary';
     btn.textContent = createLabel || '+ Create';
     btn.addEventListener('click', () => navigate(createView));
-    document.getElementById('list-controls').appendChild(btn);
+    controlsEl.appendChild(btn);
   }
+  if (extraControls) extraControls(controlsEl);
 
   const tableEl = document.getElementById('list-table');
   if (!rows.length) {
@@ -39,5 +42,6 @@ export function renderEntityList({
     columns,
     rows,
     onRowClick: (id) => navigate(detailView, { id }),
+    rowClass,
   });
 }
