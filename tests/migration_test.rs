@@ -929,7 +929,7 @@ async fn migration_opens_pre_archived_facilities_table_and_adds_archived_column(
     assert_eq!(client.facility_table.count_rows(None).await.unwrap(), 1);
 
     // Pre-existing row defaults to archived = false and stays in active lists.
-    let (total, items) = client.list_facilities(None, &[], 10, 0).await.unwrap();
+    let (total, items) = client.list_facilities(None, &[], 10, 0, false).await.unwrap();
     assert_eq!(total, 1);
     let id = items[0].id;
     let fac = client.get_facility_by_id(id).await.unwrap();
@@ -938,13 +938,13 @@ async fn migration_opens_pre_archived_facilities_table_and_adds_archived_column(
     // Soft archive round-trips and drops the row from the active list.
     let archived = client.set_facility_archived(id, true).await.unwrap();
     assert!(archived.archived);
-    let (active_total, _) = client.list_facilities(None, &[], 10, 0).await.unwrap();
+    let (active_total, _) = client.list_facilities(None, &[], 10, 0, false).await.unwrap();
     assert_eq!(active_total, 0, "archived facility must drop out of active list");
     // Still fetchable by id (for detail / reactivate).
     assert!(client.get_facility_by_id(id).await.unwrap().archived);
 
     // Reactivate brings it back.
     client.set_facility_archived(id, false).await.unwrap();
-    let (back, _) = client.list_facilities(None, &[], 10, 0).await.unwrap();
+    let (back, _) = client.list_facilities(None, &[], 10, 0, false).await.unwrap();
     assert_eq!(back, 1, "reactivated facility must return to the active list");
 }

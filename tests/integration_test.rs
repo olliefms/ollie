@@ -25,7 +25,9 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
     let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
     let ai = Arc::new(OllamaClient::new(
-        "http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream",
+        // Deliberately unreachable: integration tests must not depend on a live
+        // Ollama (a real one on :11434 feeds wrong-dim embeddings into the test schema).
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
     ));
     let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
     let ors = Arc::new(ollie::routing::RoutingClient::new(""));
@@ -65,7 +67,9 @@ async fn test_server_with_state() -> (TestServer, TempDir, TempDir, async_channe
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
     let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
     let ai = Arc::new(OllamaClient::new(
-        "http://localhost:11434", "nomic-embed-text", "llama3.2", "moondream",
+        // Deliberately unreachable: integration tests must not depend on a live
+        // Ollama (a real one on :11434 feeds wrong-dim embeddings into the test schema).
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
     ));
     let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
     let ors = Arc::new(ollie::routing::RoutingClient::new(""));
@@ -8522,4 +8526,98 @@ async fn test_facility_permanent_delete_guarded_by_load_stop_referrer() {
     let got = server.get(&format!("/fleet/api/v1/facilities/{fac_id}"))
         .add_header(header::AUTHORIZATION, &auth).await;
     assert_eq!(got.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_facility_permanent_delete_guarded_by_trip_stop_referrer() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Trip Referenced", "address": "Houston, TX" }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let fac_id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Archive the facility first (soft delete) — still referenced after archive.
+    let arch = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(arch.status_code(), 204);
+
+    // Create a free-standing trip (no load) with a stop referencing the facility.
+    let trip = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "stops": [{
+                "sequence": 1,
+                "stop_type": "pickup",
+                "facility_id": fac_id
+            }]
+        }))
+        .await;
+    assert_eq!(trip.status_code(), 201, "trip create failed: {:?}", trip.text());
+    let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Permanent delete must be refused with 409; body must mention trips.
+    let blocked = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(blocked.status_code(), 409);
+    let err = blocked.json::<serde_json::Value>()["error"].as_str().unwrap().to_string();
+    assert!(err.contains("trips"), "expected 'trips' in referrer message, got: {err}");
+
+    // Remove the referrer (cancel + hard delete the trip via two-step delete).
+    let del1 = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert!(del1.status_code() == 204 || del1.status_code() == 200);
+    let del2 = server.delete(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert!(del2.status_code() == 204 || del2.status_code() == 200);
+
+    // Now the permanent delete must succeed.
+    let purge = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}/permanent"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(purge.status_code(), 204, "purge should succeed once unreferenced: {:?}", purge.text());
+
+    let gone = server.get(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(gone.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_list_facilities_include_archived_query_param() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let auth = format!("Bearer {owner}");
+
+    // Create a facility then archive it.
+    let create = server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Archived Dock", "address": "Phoenix, AZ" }))
+        .await;
+    assert_eq!(create.status_code(), 201);
+    let fac_id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let arch = server.delete(&format!("/fleet/api/v1/facilities/{fac_id}"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(arch.status_code(), 204);
+
+    // Default list must not include the archived facility.
+    let default_list = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(default_list.status_code(), 200);
+    let default_items = default_list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert!(!default_items.iter().any(|f| f["id"] == fac_id),
+        "archived facility must not appear in the default list");
+
+    // include_archived=true must include it, with archived=true.
+    let archived_list = server.get("/fleet/api/v1/facilities?include_archived=true")
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(archived_list.status_code(), 200);
+    let archived_items = archived_list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    let found = archived_items.iter().find(|f| f["id"] == fac_id);
+    assert!(found.is_some(), "archived facility must appear with include_archived=true");
+    assert_eq!(found.unwrap()["archived"], true);
 }
