@@ -3,6 +3,7 @@ import { badge, escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 import { renderDetailPage, assignedDriverLink } from './_detail.js';
 import { confirmDelete } from '../components/confirm.js';
+import { appendMaintenanceHistory } from './_maintenance-history.js';
 
 export async function renderTrailerDetail(id) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
@@ -37,6 +38,7 @@ export async function renderTrailerDetail(id) {
         { label: 'Delete', scope: 'trailers:delete', onClick: (statusEl) => deleteTrailer(statusEl, id, t.unit_number) },
       ],
     });
+    await appendMaintenanceHistory('trailer', id);
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load trailer: ${escHtml(err.message)}</div>`);

@@ -40,7 +40,9 @@ export const VIEW_PATHS = {
   'trailer-detail': (p) => `/fleet/trailers/${p.id}`,
   'trailer-edit': (p) => `/fleet/trailers/${p.id}/edit`,
   maintenance: () => '/fleet/maintenance',
-  'maintenance-new': () => '/fleet/maintenance/new',
+  'maintenance-new': (p) => p && p.equipment_type
+    ? `/fleet/maintenance/new?equipment_type=${encodeURIComponent(p.equipment_type)}&equipment_id=${encodeURIComponent(p.equipment_id)}`
+    : '/fleet/maintenance/new',
   'maintenance-detail': (p) => `/fleet/maintenance/${p.id}`,
   'maintenance-edit': (p) => `/fleet/maintenance/${p.id}/edit`,
   facilities: () => '/fleet/facilities',

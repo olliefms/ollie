@@ -3,6 +3,7 @@ import { badge, escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 import { renderDetailPage, assignedDriverLink } from './_detail.js';
 import { confirmDelete } from '../components/confirm.js';
+import { appendMaintenanceHistory } from './_maintenance-history.js';
 
 export async function renderTruckDetail(id) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
@@ -32,6 +33,7 @@ export async function renderTruckDetail(id) {
         { label: 'Delete', scope: 'trucks:delete', onClick: (statusEl) => deleteTruck(statusEl, id, t.unit_number) },
       ],
     });
+    await appendMaintenanceHistory('truck', id);
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load truck: ${escHtml(err.message)}</div>`);
