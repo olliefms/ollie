@@ -18,7 +18,8 @@ async function seedScopes(fetchMock, scopes = ['*']) {
 }
 
 beforeEach(() => {
-  document.body.innerHTML = '<div id="main-content"></div>';
+  document.body.innerHTML =
+    '<div id="topbar-controls"></div><div id="main-content"></div>';
   localStorage.clear();
   clearMe();
   saveToken('test-token');
@@ -87,7 +88,7 @@ describe('renderMaintenanceView', () => {
     await renderMaintenanceView({});
     await Promise.resolve();
 
-    const selects = document.querySelectorAll('#main-content select');
+    const selects = document.querySelectorAll('#topbar-controls select');
     const typeSelect = [...selects].find(s =>
       s.getAttribute('aria-label') === 'Filter by equipment type'
     );
