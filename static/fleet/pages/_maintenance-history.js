@@ -28,7 +28,7 @@ export async function appendMaintenanceHistory(equipmentType, equipmentId) {
     const items = data.items || [];
 
     const rows = items.map(m => `
-      <tr data-row-id="${escHtml(m.id)}">
+      <tr data-row-id="${escHtml(m.id)}" style="cursor:pointer;">
         <td>${escHtml(m.service_date || '—')}</td>
         <td>${escHtml(categoryLabel(m.category))}</td>
         <td>${escHtml(m.description || '—')}</td>
