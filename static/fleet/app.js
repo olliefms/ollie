@@ -7,7 +7,7 @@
 
 import { isAuthenticated, clearToken } from './utils/auth.js';
 import {
-  tryRefresh, loadMe, clearMe, setOnUnauthorized,
+  tryRefresh, loadMe, clearMe, setOnUnauthorized, getScopes, getIdentity,
 } from './utils/api.js';
 import {
   matchRoute, replaceNavigate, startRouter,
@@ -15,6 +15,9 @@ import {
 import {
   setRefreshIndicator,
 } from './utils/dom.js';
+import { renderSidebar } from './components/nav.js';
+import { renderAccountFooter } from './components/account-footer.js';
+import { initTheme } from './utils/theme.js';
 import { renderHomeView } from './pages/home.js';
 import { renderEventsView, clearEventsRefresh } from './pages/events.js';
 import { renderDocumentsView } from './pages/documents.js';
@@ -86,11 +89,13 @@ const VIEW_TITLES = {
 // ─── pushState routing ───────────────────────────────────────
 
 let routerStarted = false;
+let meRefreshing = false;
 
 // Show the app shell and (idempotently) start the router. After the first call,
 // re-render the current route instead of re-wiring popstate/click listeners.
 function enterApp() {
   showApp();
+  renderChrome();
   if (!routerStarted) {
     routerStarted = true;
     startRouter(renderRoute);
@@ -155,21 +160,33 @@ function renderRoute({ name, params }) {
   }
 }
 
-// ─── Sidebar & logout ────────────────────────────────────────
+// ─── Sidebar & account footer ────────────────────────────────
 
-function initSidebar() {
-  // Sidebar items are <a data-link href> — the router intercepts their clicks.
-  const logoutBtn = document.getElementById('logout-btn');
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', async () => {
-      await fetch('/fleet/auth/logout', {
-        method: 'POST',
-        credentials: 'same-origin',
-      }).catch(() => {});
-      clearToken();
-      clearMe();
-      clearEventsRefresh();
-      showLogin();
+async function signOut() {
+  await fetch('/fleet/auth/logout', {
+    method: 'POST',
+    credentials: 'same-origin',
+  }).catch(() => {});
+  clearToken();
+  clearMe();
+  clearEventsRefresh();
+  showLogin();
+}
+
+// Render the scope-gated nav + account footer from the current /me snapshot.
+// Safe to call repeatedly (boot, login, tab refocus).
+function renderChrome() {
+  const scopes = getScopes();
+  const navEl = document.getElementById('sidebar-nav');
+  const footerEl = document.getElementById('sidebar-footer');
+  if (navEl) {
+    renderSidebar(navEl, { scopes, pathname: window.location.pathname });
+  }
+  if (footerEl) {
+    renderAccountFooter(footerEl, {
+      identity: getIdentity(),
+      scopes,
+      onSignOut: signOut,
     });
   }
 }
@@ -177,9 +194,9 @@ function initSidebar() {
 // ─── Boot ────────────────────────────────────────────────────
 
 async function boot() {
+  initTheme();
   initLoginForm(enterApp);
   initSetupForm(enterApp);
-  initSidebar();
 
   // A 401 from any apiFetch (after a failed refresh) drops back to the login pane.
   setOnUnauthorized(() => {
@@ -188,10 +205,16 @@ async function boot() {
   });
 
   // Keep effective scopes fresh while the tab is open: reload /me when the tab
-  // regains visibility (token refresh already reloads scopes via login flow).
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && isAuthenticated()) {
-      loadMe();
+  // regains visibility, then re-render the scope-gated chrome.
+  document.addEventListener('visibilitychange', async () => {
+    if (document.visibilityState === 'visible' && isAuthenticated() && !meRefreshing) {
+      meRefreshing = true;
+      try {
+        await loadMe();
+        renderChrome();
+      } finally {
+        meRefreshing = false;
+      }
     }
   });
 
