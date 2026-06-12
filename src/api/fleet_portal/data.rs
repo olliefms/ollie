@@ -1489,6 +1489,28 @@ pub struct ListEventsDispatchQuery {
     pub offset: Option<usize>,
 }
 
+fn trip_subject(t: &crate::models::TripRecord) -> String {
+    let route = if t.stops.len() >= 2 {
+        let o = t.stops.first().and_then(|s| s.name.as_deref()).unwrap_or("?");
+        let d = t.stops.last().and_then(|s| s.name.as_deref()).unwrap_or("?");
+        format!(" · {o} → {d}")
+    } else {
+        String::new()
+    };
+    format!("Trip {}{}", t.trip_number, route)
+}
+
+async fn subject_for(db: &crate::db::DbClient, entity_type: &str, id: Uuid) -> Option<String> {
+    match entity_type {
+        "trip" => db.get_trip(id).await.ok().map(|t| trip_subject(&t)),
+        "driver" => db.get_driver_by_id(id).await.ok().map(|d| d.name),
+        "truck" => db.get_truck_by_id(id).await.ok().map(|t| format!("Truck {}", t.unit_number)),
+        "trailer" => db.get_trailer_by_id(id).await.ok().map(|t| format!("Trailer {}", t.unit_number)),
+        "blob" => db.get_by_id(id).await.ok().map(|b| b.name),
+        _ => None,
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/fleet/api/v1/events",
@@ -1526,7 +1548,24 @@ pub async fn list_events(
         limit,
         offset,
     ).await?;
-    let items: Vec<EventResponse> = records.into_iter().map(EventResponse::from).collect();
+    let mut items: Vec<EventResponse> = records.into_iter().map(EventResponse::from).collect();
+
+    // Resolve subject labels, deduping lookups by (entity_type, entity_id).
+    let mut cache: std::collections::HashMap<(String, Uuid), Option<String>> =
+        std::collections::HashMap::new();
+    for it in items.iter_mut() {
+        let key = (it.entity_type.clone(), it.entity_id);
+        let label = match cache.get(&key) {
+            Some(v) => v.clone(),
+            None => {
+                let v = subject_for(&state.db, &it.entity_type, it.entity_id).await;
+                cache.insert(key, v.clone());
+                v
+            }
+        };
+        it.subject = label;
+    }
+
     Ok(Json(EventListResponse { returned: items.len(), items }))
 }
 
