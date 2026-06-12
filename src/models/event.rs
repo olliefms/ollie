@@ -40,10 +40,16 @@ pub struct EventResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
     pub occurred_at: String,
+    /// Display severity: "exception" | "system" | "normal".
+    pub severity: String,
+    /// Human label for the referenced entity (filled by the handler).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
 }
 
 impl From<EventRecord> for EventResponse {
     fn from(r: EventRecord) -> Self {
+        let severity = classify_severity(&r.event_type).to_string();
         Self {
             id: r.id,
             entity_type: r.entity_type,
@@ -52,6 +58,8 @@ impl From<EventRecord> for EventResponse {
             payload: r.payload.as_deref().and_then(|s| serde_json::from_str(s).ok()),
             actor: r.actor,
             occurred_at: r.occurred_at,
+            severity,
+            subject: None,
         }
     }
 }
