@@ -8737,3 +8737,41 @@ async fn test_maintenance_create_rejects_unknown_field() {
         .await;
     assert_eq!(resp.status_code(), 400);
 }
+
+#[tokio::test]
+async fn test_mcp_maintenance_crud() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mnt-mcp@example.com", "password-mnt-mcp").await;
+    let truck_id = create_truck(&server, "MCP-TRK-1").await;
+
+    let created = mcp_call(&server, &token, "create_maintenance", serde_json::json!({
+        "equipment_type": "truck",
+        "equipment_id": truck_id,
+        "service_date": "2026-06-02",
+        "category": "oil_change",
+        "description": "full synthetic + filter"
+    })).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["category"], "oil_change");
+
+    let got = mcp_call(&server, &token, "get_maintenance", serde_json::json!({
+        "maintenance_id": id
+    })).await;
+    assert_eq!(got["description"], "full synthetic + filter");
+
+    let listed = mcp_call(&server, &token, "list_maintenance", serde_json::json!({
+        "equipment_type": "truck",
+        "equipment_id": truck_id
+    })).await;
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+
+    // delete_maintenance: no confirmation arg needed. The test harness does not
+    // declare elicitation support (sends capabilities {}), so destructive ops
+    // proceed without a confirmation round-trip — same pattern as delete_truck /
+    // delete_trailer / delete_driver.
+    let deleted = mcp_call(&server, &token, "delete_maintenance", serde_json::json!({
+        "maintenance_id": id
+    })).await;
+    assert_eq!(deleted["deleted"], true);
+}
