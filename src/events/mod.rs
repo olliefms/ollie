@@ -5,6 +5,16 @@ fn now_z() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+async fn stop_name(db: &DbClient, trip_id: Uuid, seq: u32) -> Option<String> {
+    db.get_trip(trip_id)
+        .await
+        .ok()?
+        .stops
+        .into_iter()
+        .find(|s| s.sequence == seq)
+        .and_then(|s| s.name)
+}
+
 pub async fn on_trip_assigned(db: &DbClient, trip_id: Uuid) {
     let _ = db.append_event("trip", trip_id, "trip.assigned", None, None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, "trip assigned");
@@ -58,19 +68,21 @@ pub async fn on_trip_cancelled(db: &DbClient, trip_id: Uuid) {
 }
 
 pub async fn on_stop_arrived(db: &DbClient, trip_id: Uuid, seq: u32) {
-    let payload = serde_json::json!({ "seq": seq });
+    let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(db, trip_id, seq).await });
     let _ = db.append_event("trip", trip_id, "stop.arrived", Some(payload), None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, seq, "stop arrived");
 }
 
 pub async fn on_stop_departed(db: &DbClient, trip_id: Uuid, seq: u32) {
-    let payload = serde_json::json!({ "seq": seq });
+    let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(db, trip_id, seq).await });
     let _ = db.append_event("trip", trip_id, "stop.departed", Some(payload), None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, seq, "stop departed");
 }
 
 pub async fn on_stop_late(db: &DbClient, trip_id: Uuid, seq: u32, eta: Option<String>, notes: Option<String>) {
-    let payload = serde_json::json!({ "seq": seq, "eta": eta, "notes": notes });
+    let payload = serde_json::json!({
+        "seq": seq, "stop_name": stop_name(db, trip_id, seq).await, "eta": eta, "notes": notes
+    });
     let _ = db.append_event("trip", trip_id, "stop.late", Some(payload), None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, seq, "stop late");
 }
