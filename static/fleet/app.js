@@ -89,6 +89,7 @@ const VIEW_TITLES = {
 // ─── pushState routing ───────────────────────────────────────
 
 let routerStarted = false;
+let meRefreshing = false;
 
 // Show the app shell and (idempotently) start the router. After the first call,
 // re-render the current route instead of re-wiring popstate/click listeners.
@@ -175,15 +176,16 @@ async function signOut() {
 // Render the scope-gated nav + account footer from the current /me snapshot.
 // Safe to call repeatedly (boot, login, tab refocus).
 function renderChrome() {
+  const scopes = getScopes();
   const navEl = document.getElementById('sidebar-nav');
   const footerEl = document.getElementById('sidebar-footer');
   if (navEl) {
-    renderSidebar(navEl, { scopes: getScopes(), pathname: window.location.pathname });
+    renderSidebar(navEl, { scopes, pathname: window.location.pathname });
   }
   if (footerEl) {
     renderAccountFooter(footerEl, {
       identity: getIdentity(),
-      scopes: getScopes(),
+      scopes,
       onSignOut: signOut,
     });
   }
@@ -205,9 +207,14 @@ async function boot() {
   // Keep effective scopes fresh while the tab is open: reload /me when the tab
   // regains visibility, then re-render the scope-gated chrome.
   document.addEventListener('visibilitychange', async () => {
-    if (document.visibilityState === 'visible' && isAuthenticated()) {
-      await loadMe();
-      renderChrome();
+    if (document.visibilityState === 'visible' && isAuthenticated() && !meRefreshing) {
+      meRefreshing = true;
+      try {
+        await loadMe();
+        renderChrome();
+      } finally {
+        meRefreshing = false;
+      }
     }
   });
 
