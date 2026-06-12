@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { eventContext, jumpHref, eventRowHtml, eventsListHtml, attachEventHandlers, applyAttentionFilter } from '../../static/fleet/pages/events.js';
 
 const base = {
@@ -105,5 +105,32 @@ describe('applyAttentionFilter', () => {
   it('returns all rows when off', () => {
     const evs = [base, { ...base, id: 'x', severity: 'exception' }];
     expect(applyAttentionFilter(evs, false).length).toBe(2);
+  });
+});
+
+describe('renderEventsView header', () => {
+  beforeEach(() => {
+    document.body.innerHTML =
+      '<div id="topbar-controls"></div><div id="main-content"></div>';
+    localStorage.clear();
+  });
+
+  it('puts the attention toggle in the topbar, list in content, no page-title', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ events: [] }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { saveToken } = await import('../../static/fleet/utils/auth.js');
+    saveToken('test-token');
+
+    const { renderEventsView } = await import('../../static/fleet/pages/events.js');
+    await renderEventsView();
+    await Promise.resolve();
+
+    expect(document.querySelector('#topbar-controls #events-attention')).toBeTruthy();
+    const main = document.getElementById('main-content').innerHTML;
+    expect(main).not.toContain('page-title');
+    expect(document.getElementById('events-list')).toBeTruthy();
+    vi.restoreAllMocks();
   });
 });

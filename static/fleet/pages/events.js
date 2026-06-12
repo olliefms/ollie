@@ -1,6 +1,6 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
 import { escHtml, shortId, fmtDate, fmtRelative, humanizeEventType } from '../utils/format.js';
-import { setContent, setRefreshIndicator } from '../utils/dom.js';
+import { setContent, setRefreshIndicator, setTopbarControls } from '../utils/dom.js';
 
 const ROUTE_BASE = {
   trip: 'trips', driver: 'drivers', truck: 'trucks', trailer: 'trailers', blob: 'documents',
@@ -135,13 +135,14 @@ export async function renderEventsView() {
   // Reset filter state on each (re)entry so the button matches the rendered list
   attentionOnly = false;
 
-  // Initial skeleton so the list element exists before fetch
+  // Attention toggle lives in the topbar; the auto-refresh status is already
+  // surfaced by the topbar refresh indicator (set in fetchAndRenderEvents).
+  setTopbarControls((slot) => {
+    slot.innerHTML =
+      '<button id="events-attention" class="btn btn--ghost" aria-pressed="false">Needs attention only</button>';
+  });
+
   setContent(`
-    <div class="page-header">
-      <h1 class="page-title">Events</h1>
-      <span style="font-size: 0.8125rem; color: var(--color-text-subtle);">Auto-refreshes every 30s</span>
-      <button id="events-attention" class="btn btn--ghost" aria-pressed="false">Needs attention only</button>
-    </div>
     <div class="events-list" id="events-list">
       <div class="state-loading"><div class="spinner"></div></div>
     </div>

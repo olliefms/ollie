@@ -13,7 +13,7 @@ import {
   matchRoute, replaceNavigate, startRouter,
 } from './router.js';
 import {
-  setRefreshIndicator,
+  setRefreshIndicator, clearTopbarControls,
 } from './utils/dom.js';
 import { renderSidebar } from './components/nav.js';
 import { renderAccountFooter } from './components/account-footer.js';
@@ -128,6 +128,7 @@ function renderRoute({ name, params }) {
   const topbarTitle = document.getElementById('topbar-title');
   if (topbarTitle) topbarTitle.textContent = VIEW_TITLES[name] || name;
   setRefreshIndicator('');
+  clearTopbarControls();
 
   switch (name) {
     case 'home': renderHomeView(); break;

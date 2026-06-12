@@ -1,37 +1,37 @@
 import { escHtml } from '../utils/format.js';
 import { renderTable } from '../components/table.js';
 import { hasScope } from '../utils/api.js';
-import { setContent, navigate } from '../utils/dom.js';
+import { setContent, navigate, setTopbarControls } from '../utils/dom.js';
 
 /**
- * Render a standard entity list page: header + optional scope-gated Create
- * button + a clickable renderTable. Rows navigate to `detailView`.
+ * Render a standard entity list page. The title is shown by the shell topbar
+ * (set in app.js from VIEW_TITLES); this helper puts the page's filters
+ * (extraControls) and the scope-gated Create button into the topbar controls
+ * slot, and renders only the table into the content area.
  *
  * opts: { title, columns, rows, detailView,
- *         createView, createScope, createLabel, emptyText }
+ *         createView, createScope, createLabel, emptyText,
+ *         rowClass, extraControls }
+ * `title` is accepted for call-site compatibility but not rendered in-content.
  */
 export function renderEntityList({
-  title, columns, rows, detailView,
+  columns, rows, detailView,
   createView, createScope, createLabel, emptyText,
   rowClass, extraControls,
 }) {
-  setContent(`
-    <div class="page-header">
-      <h1 class="page-title">${escHtml(title)}</h1>
-      <div class="page-controls" id="list-controls"></div>
-    </div>
-    <div id="list-table"></div>
-  `);
+  // Filters first, primary action (Create) last so it anchors the far right.
+  setTopbarControls((slot) => {
+    if (extraControls) extraControls(slot);
+    if (createView && hasScope(createScope)) {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn--primary';
+      btn.textContent = createLabel || '+ Create';
+      btn.addEventListener('click', () => navigate(createView));
+      slot.appendChild(btn);
+    }
+  });
 
-  const controlsEl = document.getElementById('list-controls');
-  if (createView && hasScope(createScope)) {
-    const btn = document.createElement('button');
-    btn.className = 'btn btn--primary';
-    btn.textContent = createLabel || '+ Create';
-    btn.addEventListener('click', () => navigate(createView));
-    controlsEl.appendChild(btn);
-  }
-  if (extraControls) extraControls(controlsEl);
+  setContent('<div id="list-table"></div>');
 
   const tableEl = document.getElementById('list-table');
   if (!rows.length) {

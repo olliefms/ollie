@@ -73,3 +73,21 @@ export function setRefreshIndicator(msg) {
   const el = document.getElementById('refresh-indicator');
   if (el) el.textContent = msg;
 }
+
+/** Empty the topbar controls slot. Safe no-op if the slot is absent. */
+export function clearTopbarControls() {
+  const el = document.getElementById('topbar-controls');
+  if (el) el.replaceChildren();
+}
+
+/**
+ * Populate the topbar controls slot. Clears it first, then calls
+ * `builderFn(slotEl)` so the caller can append its filter/select/buttons.
+ * Safe no-op if the slot is absent.
+ */
+export function setTopbarControls(builderFn) {
+  const el = document.getElementById('topbar-controls');
+  if (!el) return;
+  el.replaceChildren();
+  if (builderFn) builderFn(el);
+}
