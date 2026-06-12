@@ -2,6 +2,17 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+/// Classify an event's display severity from its type.
+/// Exception wins over system when both could apply.
+pub fn classify_severity(event_type: &str) -> &'static str {
+    match event_type {
+        "stop.late" | "processing_failed" => "exception",
+        "processing_started" | "processing_completed" | "driver.equipment_changed"
+        | "driver.trailer_changed" => "system",
+        _ => "normal",
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct EventRecord {
     pub id: Uuid,
@@ -49,4 +60,23 @@ impl From<EventRecord> for EventResponse {
 pub struct EventListResponse {
     pub returned: usize,
     pub items: Vec<EventResponse>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::classify_severity;
+
+    #[test]
+    fn classifies_severity() {
+        assert_eq!(classify_severity("stop.late"), "exception");
+        assert_eq!(classify_severity("processing_failed"), "exception");
+        assert_eq!(classify_severity("processing_started"), "system");
+        assert_eq!(classify_severity("processing_completed"), "system");
+        assert_eq!(classify_severity("driver.equipment_changed"), "system");
+        assert_eq!(classify_severity("driver.trailer_changed"), "system");
+        assert_eq!(classify_severity("trip.dispatched"), "normal");
+        assert_eq!(classify_severity("stop.arrived"), "normal");
+        assert_eq!(classify_severity("check_call"), "normal");
+        assert_eq!(classify_severity("anything_else"), "normal");
+    }
 }
