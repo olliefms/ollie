@@ -20,6 +20,7 @@ use crate::{
     models::{
         DriverListResponse, DriverStatus,
         LoadDetailResponse,
+        MaintenanceListResponse,
         TrailerListResponse,
         TruckListResponse,
         EventListResponse, EventResponse,
@@ -1323,6 +1324,71 @@ pub async fn get_trailer(
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trailers:read")?;
     let record = state.db.get_trailer_by_id(id).await?;
+    Ok(Json(record))
+}
+
+// ---------------------------------------------------------------------------
+// Maintenance
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ListMaintenanceQuery {
+    pub equipment_type: Option<String>,
+    pub equipment_id: Option<uuid::Uuid>,
+    pub category: Option<String>,
+}
+
+#[utoipa::path(
+    get,
+    path = "/fleet/api/v1/maintenance",
+    params(
+        ("equipment_type" = Option<String>, Query, description = "Filter by equipment type (truck/trailer)"),
+        ("equipment_id" = Option<Uuid>, Query, description = "Filter by equipment UUID"),
+        ("category" = Option<String>, Query, description = "Filter by category"),
+    ),
+    responses(
+        (status = 200, description = "List of maintenance entries", body = MaintenanceListResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+pub async fn list_maintenance(
+    State(state): State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    Query(q): Query<ListMaintenanceQuery>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("maintenance:read")?;
+    let equipment_id = q.equipment_id.map(|id| id.to_string());
+    let (total, items) = state.db.list_maintenance(
+        q.equipment_type.as_deref(),
+        equipment_id.as_deref(),
+        q.category.as_deref(),
+        100,
+        0,
+    ).await?;
+    Ok(Json(MaintenanceListResponse { returned: total, items }))
+}
+
+#[utoipa::path(
+    get,
+    path = "/fleet/api/v1/maintenance/{id}",
+    params(("id" = Uuid, Path, description = "Maintenance UUID")),
+    responses(
+        (status = 200, description = "Maintenance record", body = MaintenanceRecord),
+        (status = 404, description = "Not found"),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+pub async fn get_maintenance(
+    State(state): State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    Path(id): Path<Uuid>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("maintenance:read")?;
+    let record = state.db.get_maintenance_by_id(id).await?;
     Ok(Json(record))
 }
 

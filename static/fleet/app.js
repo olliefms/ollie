@@ -35,6 +35,9 @@ import { renderTruckForm } from './pages/truck-form.js';
 import { renderTrailersView } from './pages/trailers.js';
 import { renderTrailerDetail } from './pages/trailer-detail.js';
 import { renderTrailerForm } from './pages/trailer-form.js';
+import { renderMaintenanceView } from './pages/maintenance.js';
+import { renderMaintenanceDetail } from './pages/maintenance-detail.js';
+import { renderMaintenanceForm } from './pages/maintenance-form.js';
 import { renderDriversView } from './pages/drivers.js';
 import { renderDriverDetail } from './pages/driver-detail.js';
 import { renderDriverForm } from './pages/driver-form.js';
@@ -79,6 +82,10 @@ const VIEW_TITLES = {
   'trailer-new': 'New Trailer',
   'trailer-detail': 'Trailer',
   'trailer-edit': 'Edit Trailer',
+  maintenance: 'Maintenance',
+  'maintenance-new': 'New Maintenance',
+  'maintenance-detail': 'Maintenance',
+  'maintenance-edit': 'Edit Maintenance',
   facilities: 'Facilities',
   'facility-new': 'New Facility',
   'facility-detail': 'Facility',
@@ -151,6 +158,10 @@ function renderRoute({ name, params }) {
     case 'trailer-new': renderTrailerForm(null); break;
     case 'trailer-detail': renderTrailerDetail(params.id); break;
     case 'trailer-edit': renderTrailerForm(params.id); break;
+    case 'maintenance': renderMaintenanceView(params); break;
+    case 'maintenance-new': renderMaintenanceForm(null, params); break;
+    case 'maintenance-detail': renderMaintenanceDetail(params.id); break;
+    case 'maintenance-edit': renderMaintenanceForm(params.id); break;
     case 'facilities': renderFacilitiesView(); break;
     case 'facility-new': renderFacilityForm(null); break;
     case 'facility-detail': renderFacilityDetail(params.id); break;

@@ -85,6 +85,11 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         fleet_portal::trailer_writes::create_trailer_handler,
         fleet_portal::trailer_writes::update_trailer_handler,
         fleet_portal::trailer_writes::delete_trailer_handler,
+        fleet_portal::data::list_maintenance,
+        fleet_portal::data::get_maintenance,
+        fleet_portal::maintenance_writes::create_maintenance_handler,
+        fleet_portal::maintenance_writes::update_maintenance_handler,
+        fleet_portal::maintenance_writes::delete_maintenance_handler,
         fleet_portal::data::list_events,
         fleet_portal::users::me,
         fleet_portal::users::list_users,
@@ -167,6 +172,13 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::UpdateTrailerRequest,
             models::TrailerListItem,
             models::TrailerListResponse,
+            models::EquipmentType,
+            models::MaintenanceCategory,
+            models::MaintenanceRecord,
+            models::MaintenanceListItem,
+            models::MaintenanceListResponse,
+            fleet_portal::maintenance_writes::CreateMaintenanceBody,
+            fleet_portal::maintenance_writes::PatchMaintenanceBody,
             models::TripStatus,
             models::TripStopType,
             models::TripStop,
@@ -233,13 +245,14 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
     tags(
         (name = "meta", description = "Server metadata endpoints (unauthenticated)"),
         (name = "blobs", description = "Document blob storage with AI summarisation and semantic search"),
-        (name = "fleet", description = "Fleet portal data API — loads, trips, drivers, trucks, trailers, events"),
+        (name = "fleet", description = "Fleet portal data API — loads, trips, drivers, trucks, trailers, maintenance, events"),
         (name = "fleet-auth", description = "Fleet portal authentication — login and JWT refresh"),
         (name = "fleet_users", description = "Fleet user admin CRUD and password management"),
         (name = "drivers", description = "Driver management with state machine"),
         (name = "events", description = "Append-only event journal (read-only)"),
         (name = "facilities", description = "Freight facility management with geocoding and semantic search"),
         (name = "loads", description = "Freight load lifecycle management"),
+        (name = "maintenance", description = "Equipment maintenance log tied to a truck or trailer"),
         (name = "trailers", description = "Trailer management with state machine"),
         (name = "trips", description = "Trip management with stop tracking and load cascade"),
         (name = "trucks", description = "Truck management with state machine"),
@@ -267,8 +280,8 @@ async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
 const LLMS_TXT: &str = r#"# ollie API
 
 ollie is a freight load-management system with RAG-enabled document storage. The
-core resources are loads, trips, drivers, trucks, trailers, facilities, and
-document blobs. Uploaded documents are summarized and embedded by Ollama for
+core resources are loads, trips, drivers, trucks, trailers, facilities,
+maintenance records, and document blobs. Uploaded documents are summarized and embedded by Ollama for
 semantic search.
 
 ## Which surface should I use?
@@ -321,6 +334,7 @@ Fleet & facilities:
   list_drivers, get_driver, attach_equipment, detach_equipment
   list_trucks, get_truck, create_truck, update_truck
   list_trailers, get_trailer, create_trailer, update_trailer
+  list_maintenance, get_maintenance, create_maintenance, update_maintenance
   list_facilities, get_facility, create_facility, update_facility
   list_events
 
@@ -335,7 +349,7 @@ Document blobs:
                      argument.
   get_blob_url       Presigned GET URL for a blob's bytes. Stream large files to disk.
   get_blob_metadata  Blob metadata plus a reverse lookup:
-                     attached_to.{loads,facilities,trips,drivers,trucks,trailers}.
+                     attached_to.{loads,facilities,trips,drivers,trucks,trailers,maintenance}.
   list_blobs         List blob metadata (optional name, tag, content_type, limit).
   delete_blob        Delete a blob (force? to override reference checks).
 
@@ -366,6 +380,9 @@ within the 7-day window).
              POST /drivers/:id/pin, POST /drivers/:id/attach-equipment, POST /drivers/:id/detach-equipment
   Trucks     GET /trucks, GET /trucks/:id, POST /trucks, PATCH /trucks/:id, DELETE /trucks/:id
   Trailers   GET /trailers, GET /trailers/:id, POST /trailers, PATCH /trailers/:id, DELETE /trailers/:id
+  Maintenance GET /maintenance (?equipment_type, ?equipment_id, ?category), GET /maintenance/:id,
+             POST /maintenance, PATCH /maintenance/:id, DELETE /maintenance/:id
+             (scope: maintenance:read / maintenance:write / maintenance:delete)
   Facilities GET /facilities (?q, ?limit, ?offset), GET /facilities/:id, POST /facilities, PATCH /facilities/:id
   Blobs      GET /blobs, GET /blob/:id, POST /blobs, PUT /blob/:id, DELETE /blob/:id, POST /blobs/:id/query
              (multipart POST /blobs accepts an optional visibility=driver field to expose the

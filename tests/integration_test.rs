@@ -6012,6 +6012,15 @@ async fn create_trailer(server: &TestServer, unit: &str) -> uuid::Uuid {
         .json::<serde_json::Value>()["id"].as_str().unwrap().parse().unwrap()
 }
 
+async fn create_truck(server: &TestServer, unit: &str) -> uuid::Uuid {
+    let owner_token = setup_owner(server).await;
+    server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": unit }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().parse().unwrap()
+}
+
 #[tokio::test]
 async fn test_driver_equipment_get_returns_empty_initially() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
@@ -8620,4 +8629,149 @@ async fn test_list_facilities_include_archived_query_param() {
     let found = archived_items.iter().find(|f| f["id"] == fac_id);
     assert!(found.is_some(), "archived facility must appear with include_archived=true");
     assert_eq!(found.unwrap()["archived"], true);
+}
+
+#[tokio::test]
+async fn test_fleet_user_maintenance_crud_http() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mnt-crud@example.com", "password-mnt1").await;
+    let auth = format!("Bearer {token}");
+    let truck_id = create_truck(&server, "MNT-TRK-1").await;
+
+    // POST create
+    let created = server.post("/fleet/api/v1/maintenance")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "equipment_type": "truck",
+            "equipment_id": truck_id,
+            "service_date": "2026-06-01",
+            "category": "repair",
+            "description": "replaced alternator",
+            "cost": 412.5,
+            "odometer": 184000,
+            "vendor": "Acme Diesel",
+            "invoice_ref": "INV-9931"
+        }))
+        .await;
+    assert_eq!(created.status_code(), 201);
+    let body: serde_json::Value = created.json();
+    let id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["category"], "repair");
+    assert_eq!(body["equipment_type"], "truck");
+    assert_eq!(body["cost"], 412.5);
+
+    // GET one
+    let one = server.get(&format!("/fleet/api/v1/maintenance/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(one.status_code(), 200);
+    assert_eq!(one.json::<serde_json::Value>()["description"], "replaced alternator");
+
+    // GET list filtered by equipment
+    let list = server.get(&format!(
+        "/fleet/api/v1/maintenance?equipment_type=truck&equipment_id={truck_id}"
+    ))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(list.status_code(), 200);
+    let items = list.json::<serde_json::Value>()["items"].as_array().unwrap().clone();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], id);
+
+    // PATCH update
+    let patched = server.patch(&format!("/fleet/api/v1/maintenance/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "category": "brakes", "description": "front pads" }))
+        .await;
+    assert_eq!(patched.status_code(), 200);
+    let pbody: serde_json::Value = patched.json();
+    assert_eq!(pbody["category"], "brakes");
+    assert_eq!(pbody["description"], "front pads");
+
+    // DELETE (hard)
+    let deleted = server.delete(&format!("/fleet/api/v1/maintenance/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(deleted.status_code(), 204);
+    let gone = server.get(&format!("/fleet/api/v1/maintenance/{id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(gone.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_maintenance_create_rejects_unknown_equipment() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mnt-eq@example.com", "password-mnt2").await;
+    let bogus = uuid::Uuid::new_v4();
+
+    let resp = server.post("/fleet/api/v1/maintenance")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "equipment_type": "truck",
+            "equipment_id": bogus,
+            "service_date": "2026-06-01",
+            "category": "repair",
+            "description": "ghost truck"
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_maintenance_create_rejects_unknown_field() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mnt-unk@example.com", "password-mnt3").await;
+    let trailer_id = create_trailer(&server, "MNT-TRL-1").await;
+
+    let resp = server.post("/fleet/api/v1/maintenance")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "equipment_type": "trailer",
+            "equipment_id": trailer_id,
+            "service_date": "2026-06-01",
+            "category": "tire",
+            "description": "new tires",
+            "owner_id": 5
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_mcp_maintenance_crud() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mnt-mcp@example.com", "password-mnt-mcp").await;
+    let truck_id = create_truck(&server, "MCP-TRK-1").await;
+
+    let created = mcp_call(&server, &token, "create_maintenance", serde_json::json!({
+        "equipment_type": "truck",
+        "equipment_id": truck_id,
+        "service_date": "2026-06-02",
+        "category": "oil_change",
+        "description": "full synthetic + filter"
+    })).await;
+    let id = created["id"].as_str().unwrap().to_string();
+    assert_eq!(created["category"], "oil_change");
+
+    let got = mcp_call(&server, &token, "get_maintenance", serde_json::json!({
+        "maintenance_id": id
+    })).await;
+    assert_eq!(got["description"], "full synthetic + filter");
+
+    let listed = mcp_call(&server, &token, "list_maintenance", serde_json::json!({
+        "equipment_type": "truck",
+        "equipment_id": truck_id
+    })).await;
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+
+    // delete_maintenance: no confirmation arg needed. The test harness does not
+    // declare elicitation support (sends capabilities {}), so destructive ops
+    // proceed without a confirmation round-trip — same pattern as delete_truck /
+    // delete_trailer / delete_driver.
+    let deleted = mcp_call(&server, &token, "delete_maintenance", serde_json::json!({
+        "maintenance_id": id
+    })).await;
+    assert_eq!(deleted["deleted"], true);
 }

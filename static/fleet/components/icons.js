@@ -23,6 +23,7 @@ const ICON_TRAILERS = make('<rect x="2" y="6" width="18" height="12" rx="1"/><ci
 const ICON_FACILITIES = make('<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M8 10h.01"/>');
 const ICON_TERMINALS = make('<path d="M22 8.35V20a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V8.35A2 2 0 0 1 3.26 6.5l8-3.2a2 2 0 0 1 1.48 0l8 3.2A2 2 0 0 1 22 8.35Z"/><path d="M6 18h12"/><path d="M6 14h12"/><path d="M6 10h12"/>');
 const ICON_DOCUMENTS = make('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>');
+const ICON_MAINTENANCE = make('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>');
 const ICON_KEY = make('<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>');
 const ICON_CHEV_UP = make('<polyline points="18 15 12 9 6 15"/>');
 const ICON_LOGOUT = make('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>');
@@ -34,6 +35,7 @@ export const eventsIcon = () => ICON_EVENTS.cloneNode(true);
 export const driversIcon = () => ICON_DRIVERS.cloneNode(true);
 export const trucksIcon = () => ICON_TRUCKS.cloneNode(true);
 export const trailersIcon = () => ICON_TRAILERS.cloneNode(true);
+export const maintenanceIcon = () => ICON_MAINTENANCE.cloneNode(true);
 export const facilitiesIcon = () => ICON_FACILITIES.cloneNode(true);
 export const terminalsIcon = () => ICON_TERMINALS.cloneNode(true);
 export const documentsIcon = () => ICON_DOCUMENTS.cloneNode(true);
