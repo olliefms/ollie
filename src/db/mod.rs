@@ -13,6 +13,7 @@ pub mod load_ops;
 pub mod terminal_ops;
 pub mod trailer_ops;
 pub mod trip_ops;
+mod maintenance_ops;
 pub mod truck_ops;
 
 use crate::error::AppError;
@@ -41,6 +42,7 @@ pub struct DbClient {
     pub load_table: Table,
     pub terminal_table: Table,
     pub trailer_table: Table,
+    pub maintenance_table: Table,
     pub trip_table: Table,
     pub truck_table: Table,
     pub embed_dim: usize,
@@ -78,6 +80,8 @@ impl DbClient {
         let truck_table = open_or_create_truck(&conn, embed_dim).await?;
 
         let trailer_table = open_or_create_trailer(&conn, embed_dim).await?;
+
+        let maintenance_table = open_or_create_maintenance(&conn, embed_dim).await?;
 
         let trip_table = open_or_create_trip(&conn, embed_dim).await?;
 
@@ -152,6 +156,7 @@ impl DbClient {
             load_table,
             terminal_table,
             trailer_table,
+            maintenance_table,
             trip_table,
             truck_table,
             embed_dim,
@@ -1080,6 +1085,66 @@ pub fn trailer_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("updated_at", DataType::Utf8, false),
         Field::new("blob_ids", DataType::Utf8, false),
     ]))
+}
+
+async fn open_or_create_maintenance(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = maintenance_schema(embed_dim);
+    match conn.open_table("maintenance").execute().await {
+        Err(_) => {
+            let batch = empty_maintenance_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("maintenance", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => Ok(table),
+    }
+}
+
+pub fn maintenance_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("equipment_type", DataType::Utf8, false),
+        Field::new("equipment_id", DataType::Utf8, false),
+        Field::new("service_date", DataType::Utf8, false),
+        Field::new("category", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
+        Field::new("cost", DataType::Float64, true),
+        Field::new("odometer", DataType::Int64, true),
+        Field::new("vendor", DataType::Utf8, true),
+        Field::new("invoice_ref", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+        Field::new("blob_ids", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_maintenance_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // equipment_type
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // equipment_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // service_date
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // category
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // description
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),   // cost
+        Arc::new(Int64Array::from(Vec::<Option<i64>>::new())),     // odometer
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // vendor
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // invoice_ref
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),                               // embedding
+        Arc::new(Int64Array::from(Vec::<i64>::new())),             // owner_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // created_at
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // updated_at
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // blob_ids
+    ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
 fn empty_trailer_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
