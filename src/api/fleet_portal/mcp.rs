@@ -297,6 +297,10 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "list_trailers" | "get_trailer" => "trailers:read",
         "create_trailer" | "update_trailer" => "trailers:write",
         "delete_trailer" => "trailers:delete",
+        // Maintenance
+        "list_maintenance" | "get_maintenance" => "maintenance:read",
+        "create_maintenance" | "update_maintenance" => "maintenance:write",
+        "delete_maintenance" => "maintenance:delete",
         // Facilities
         "list_facilities" | "get_facility" | "facility_doctor" => "facilities:read",
         "create_facility" | "update_facility" => "facilities:write",
@@ -341,7 +345,7 @@ rmcp::elicit_safe!(DestructiveConfirmation);
 fn is_destructive_op(name: &str, args: &Value) -> bool {
     match name {
         "cancel_trip" | "cancel_load" | "delete_load" | "delete_trip" | "delete_driver"
-        | "delete_truck" | "delete_trailer" | "delete_facility" | "delete_user" => true,
+        | "delete_truck" | "delete_trailer" | "delete_maintenance" | "delete_facility" | "delete_user" => true,
         "delete_blob" => args["force"].as_bool() == Some(true),
         _ => false,
     }
@@ -387,6 +391,7 @@ fn destructive_op_description(name: &str) -> &'static str {
         "delete_driver" => "deactivate the driver and revoke their access",
         "delete_truck" => "deactivate the truck",
         "delete_trailer" => "deactivate the trailer",
+        "delete_maintenance" => "permanently delete the maintenance entry",
         "delete_facility" => "delete the facility record",
         "delete_user" => "deactivate the user and revoke their access",
         "delete_blob" => "delete the blob",
@@ -704,6 +709,7 @@ const PAGINATED_LIST_TOOLS: &[&str] = &[
     "list_drivers",
     "list_trucks",
     "list_trailers",
+    "list_maintenance",
     "list_facilities",
     "list_blobs",
     "list_events",
@@ -748,6 +754,7 @@ fn annotations_for(name: &str) -> ToolAnnotations {
             | "delete_driver"
             | "delete_truck"
             | "delete_trailer"
+            | "delete_maintenance"
             | "delete_facility"
     );
     // update_* set fields to a target value; dispatch/undispatch converge to a
@@ -1201,6 +1208,66 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "list_maintenance",
+                "description": "List equipment maintenance entries. Optional filters: equipment_type (truck/trailer), equipment_id, category. Newest service_date first.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "equipment_type": { "type": "string", "enum": ["truck","trailer"] },
+                        "equipment_id":   { "type": "string", "format": "uuid" },
+                        "category":       { "type": "string", "enum": ["preventive_maintenance","repair","tire","inspection","oil_change","brakes","other"] }
+                    }
+                }
+            },
+            {
+                "name": "get_maintenance",
+                "description": "Get a single maintenance entry by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "maintenance_id": { "type": "string", "format": "uuid" } },
+                    "required": ["maintenance_id"]
+                }
+            },
+            {
+                "name": "create_maintenance",
+                "description": "Record completed maintenance work on a truck or trailer. `equipment_id` must reference an existing unit of the given `equipment_type`. `service_date` is an ISO date (YYYY-MM-DD). Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "equipment_type": { "type": "string", "enum": ["truck","trailer"] },
+                        "equipment_id":   { "type": "string", "format": "uuid" },
+                        "service_date":   { "type": "string" },
+                        "category":       { "type": "string", "enum": ["preventive_maintenance","repair","tire","inspection","oil_change","brakes","other"] },
+                        "description":    { "type": "string" },
+                        "cost":           { "type": "number" },
+                        "odometer":       { "type": "integer" },
+                        "vendor":         { "type": "string" },
+                        "invoice_ref":    { "type": "string" },
+                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                    },
+                    "required": ["equipment_type", "equipment_id", "service_date", "category", "description"]
+                }
+            },
+            {
+                "name": "update_maintenance",
+                "description": "Update a maintenance entry's fields. equipment_type/equipment_id are not changeable (delete + recreate to re-link). Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "maintenance_id": { "type": "string", "format": "uuid" },
+                        "service_date":   { "type": "string" },
+                        "category":       { "type": "string", "enum": ["preventive_maintenance","repair","tire","inspection","oil_change","brakes","other"] },
+                        "description":    { "type": "string" },
+                        "cost":           { "type": "number" },
+                        "odometer":       { "type": "integer" },
+                        "vendor":         { "type": "string" },
+                        "invoice_ref":    { "type": "string" },
+                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                    },
+                    "required": ["maintenance_id"]
+                }
+            },
+            {
                 "name": "list_events",
                 "description": "List events. Optional filters: trip_id, driver_id.",
                 "inputSchema": {
@@ -1421,6 +1488,15 @@ fn tools_list() -> Value {
                     "type": "object",
                     "properties": { "trailer_id": { "type": "string", "format": "uuid" } },
                     "required": ["trailer_id"]
+                }
+            },
+            {
+                "name": "delete_maintenance",
+                "description": "Permanently delete a maintenance entry (hard delete). Returns { deleted: true }.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "maintenance_id": { "type": "string", "format": "uuid" } },
+                    "required": ["maintenance_id"]
                 }
             },
             {
@@ -1662,6 +1738,10 @@ async fn handle_tool_call(
         "get_trailer" => tool_get_trailer(state, args).await,
         "create_trailer" => tool_create_trailer(state, args).await,
         "update_trailer" => tool_update_trailer(state, args).await,
+        "list_maintenance" => tool_list_maintenance(state, args).await,
+        "get_maintenance" => tool_get_maintenance(state, args).await,
+        "create_maintenance" => tool_create_maintenance(state, args).await,
+        "update_maintenance" => tool_update_maintenance(state, args).await,
         "list_events" => tool_list_events(state, args).await,
         "list_facilities" => tool_list_facilities(state, args).await,
         "get_facility" => tool_get_facility(state, args).await,
@@ -1681,6 +1761,7 @@ async fn handle_tool_call(
         "delete_driver" => tool_delete_driver(state, args).await,
         "delete_truck" => tool_delete_truck(state, args).await,
         "delete_trailer" => tool_delete_trailer(state, args).await,
+        "delete_maintenance" => tool_delete_maintenance(state, args).await,
         "delete_facility" => tool_delete_facility(state, args).await,
         "invoice_load" => tool_invoice_load(state, args).await,
         "cancel_load" => tool_cancel_load(state, args).await,
@@ -2305,6 +2386,47 @@ async fn tool_update_trailer(state: &AppState, args: &Value) -> Result<Value, St
     Ok(mcp_content(record))
 }
 
+async fn tool_list_maintenance(state: &AppState, args: &Value) -> Result<Value, String> {
+    let offset = cursor_offset(args)?;
+    let equipment_type = args["equipment_type"].as_str().map(|s| s.to_string());
+    let equipment_id = args["equipment_id"].as_str().map(|s| s.to_string());
+    let category = args["category"].as_str().map(|s| s.to_string());
+    let (total, items) = state.db.list_maintenance(
+        equipment_type.as_deref(),
+        equipment_id.as_deref(),
+        category.as_deref(),
+        PAGE_SIZE,
+        offset,
+    ).await.map_err(|e| e.to_string())?;
+    let returned = items.len();
+    Ok(mcp_content(paged(items, returned, total, offset)))
+}
+
+async fn tool_get_maintenance(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "maintenance_id")?;
+    let record = state.db.get_maintenance_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_create_maintenance(state: &AppState, args: &Value) -> Result<Value, String> {
+    let record = super::maintenance_writes::apply_maintenance_create(state, args.clone())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
+async fn tool_update_maintenance(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "maintenance_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("maintenance_id");
+    }
+    let record = super::maintenance_writes::apply_maintenance_patch(state, id, body)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
 async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, String> {
     let trip_id = parse_uuid_opt(args, "trip_id")?;
     let driver_id = parse_uuid_opt(args, "driver_id")?;
@@ -2494,10 +2616,12 @@ async fn tool_get_blob_metadata(state: &AppState, args: &Value) -> Result<Value,
     let drivers = state.db.drivers_referencing_blob(id).await.map_err(|e| e.to_string())?;
     let trucks = state.db.trucks_referencing_blob(id).await.map_err(|e| e.to_string())?;
     let trailers = state.db.trailers_referencing_blob(id).await.map_err(|e| e.to_string())?;
+    let maintenance = state.db.maintenance_referencing_blob(id).await.map_err(|e| e.to_string())?;
     let mut value = serde_json::to_value(&record).map_err(|e| e.to_string())?;
     value["attached_to"] = serde_json::json!({
         "loads": loads, "facilities": facilities, "trips": trips,
         "drivers": drivers, "trucks": trucks, "trailers": trailers,
+        "maintenance": maintenance,
     });
     Ok(mcp_content(value))
 }
@@ -2571,12 +2695,13 @@ async fn tool_delete_blob(state: &AppState, args: &Value) -> Result<Value, Strin
     let attached_to_driver = state.db.any_driver_references_blob(id).await.map_err(|e| e.to_string())?;
     let attached_to_truck = state.db.any_truck_references_blob(id).await.map_err(|e| e.to_string())?;
     let attached_to_trailer = state.db.any_trailer_references_blob(id).await.map_err(|e| e.to_string())?;
+    let attached_to_maintenance = state.db.any_maintenance_references_blob(id).await.map_err(|e| e.to_string())?;
     let was_attached = attached_to_load || attached_to_facility || attached_to_trip
-        || attached_to_driver || attached_to_truck || attached_to_trailer;
+        || attached_to_driver || attached_to_truck || attached_to_trailer || attached_to_maintenance;
 
     if was_attached && !force {
         return Err(format!(
-            "blob {id} is referenced by one or more loads/facilities/trips/drivers/trucks/trailers; \
+            "blob {id} is referenced by one or more loads/facilities/trips/drivers/trucks/trailers/maintenance; \
              pass force=true to delete anyway"
         ));
     }
@@ -2638,6 +2763,13 @@ async fn tool_delete_truck(state: &AppState, args: &Value) -> Result<Value, Stri
 async fn tool_delete_trailer(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "trailer_id")?;
     state.db.soft_delete_trailer(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+}
+
+async fn tool_delete_maintenance(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "maintenance_id")?;
+    state.db.get_maintenance_by_id(id).await.map_err(|e| e.to_string())?;
+    state.db.delete_maintenance(id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "deleted": true })))
 }
 
