@@ -18,5 +18,7 @@ export function categoryLabel(value) {
 
 export function money(value) {
   if (value == null) return '—';
-  return `$${Number(value).toFixed(2)}`;
+  const n = Number(value);
+  if (Number.isNaN(n)) return '—';
+  return `$${n.toFixed(2)}`;
 }
