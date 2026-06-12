@@ -258,7 +258,22 @@
 .topbar__actions {
   display: flex;
   align-items: center;
+  gap: var(--space-4);
+}
+
+.topbar__controls {
+  display: flex;
+  align-items: center;
   gap: var(--space-3);
+  flex-wrap: nowrap;
+}
+
+/* Compact control sizing so filters/buttons fit the 48px (--space-8) bar. */
+.topbar__controls .form-select,
+.topbar__controls .btn {
+  height: 32px;
+  padding: 0 var(--space-3);
+  font-size: 0.8125rem;
 }
 
 /* ===== Main Content ===== */
@@ -266,7 +281,7 @@
   grid-area: content;
   margin-top: var(--space-8);
   background: var(--color-bg);
-  padding: var(--space-5);
+  padding: var(--space-3) var(--space-5) var(--space-5);
   min-height: calc(100vh - var(--space-8));
 }
 
@@ -531,29 +546,6 @@
 .badge--truck   { background: var(--color-warning-soft); color: var(--color-warning); }
 .badge--trailer { background: var(--color-surface-2);    color: var(--color-text-muted); }
 .badge--blob    { background: var(--color-surface-2);    color: var(--color-text-muted); }
-
-/* ===== Page Header ===== */
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-5);
-  gap: var(--space-4);
-  flex-wrap: wrap;
-}
-
-.page-title {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--color-text);
-}
-
-.page-controls {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  flex-wrap: wrap;
-}
 
 /* ===== Detail View ===== */
 .detail-card {
