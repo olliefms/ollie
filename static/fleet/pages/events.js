@@ -41,8 +41,9 @@ export function eventRowHtml(ev) {
   const ctx = eventContext(payload, ev.event_type);
   const ctxHtml = ctx ? ` <span class="event-item__ctx">· ${escHtml(ctx)}</span>` : '';
   const href = jumpHref(entityType, ev.entity_id);
+  const jumpNoun = entityType === 'blob' ? 'document' : entityType;
   const jump = href
-    ? `<a class="event-item__jump" data-link href="${escHtml(href)}">Go to ${escHtml(entityType)} →</a>`
+    ? `<a class="event-item__jump" data-link href="${escHtml(href)}">Go to ${escHtml(jumpNoun)} →</a>`
     : '';
   const detailRows = [
     ev.actor ? `<dt>Actor</dt><dd>${escHtml(ev.actor)}</dd>` : '',

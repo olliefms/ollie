@@ -56,6 +56,9 @@ describe('eventRowHtml', () => {
     expect(html).toContain('&lt;b&gt;');
     expect(html).toContain('&quot;quoted&quot;');
   });
+  it('blob row jump link reads "Go to document"', () => {
+    expect(eventRowHtml({ ...base, entity_type: 'blob', entity_id: 'b1' })).toContain('Go to document');
+  });
 });
 
 describe('eventsListHtml', () => {

@@ -530,6 +530,7 @@
 .badge--driver  { background: var(--color-success-soft); color: var(--color-success); }
 .badge--truck   { background: var(--color-warning-soft); color: var(--color-warning); }
 .badge--trailer { background: var(--color-surface-2);    color: var(--color-text-muted); }
+.badge--blob    { background: var(--color-surface-2);    color: var(--color-text-muted); }
 
 /* ===== Page Header ===== */
 .page-header {
