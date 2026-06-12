@@ -25,7 +25,6 @@ const ICON_TERMINALS = make('<path d="M22 8.35V20a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V
 const ICON_DOCUMENTS = make('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/>');
 const ICON_KEY = make('<path d="m15.5 7.5 2.3 2.3a1 1 0 0 0 1.4 0l2.1-2.1a1 1 0 0 0 0-1.4L19 4"/><path d="m21 2-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/>');
 const ICON_CHEV_UP = make('<polyline points="18 15 12 9 6 15"/>');
-const ICON_THEME = make('<path d="M12 8a2.83 2.83 0 0 0 4 4 4 4 0 1 1-4-4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.9 4.9 1.4 1.4"/><path d="m17.7 17.7 1.4 1.4"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.3 17.7-1.4 1.4"/><path d="m19.1 4.9-1.4 1.4"/>');
 const ICON_LOGOUT = make('<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>');
 
 export const homeIcon = () => ICON_HOME.cloneNode(true);
@@ -40,5 +39,4 @@ export const terminalsIcon = () => ICON_TERMINALS.cloneNode(true);
 export const documentsIcon = () => ICON_DOCUMENTS.cloneNode(true);
 export const keyIcon = () => ICON_KEY.cloneNode(true);
 export const chevronUpIcon = () => ICON_CHEV_UP.cloneNode(true);
-export const themeIcon = () => ICON_THEME.cloneNode(true);
 export const logoutIcon = () => ICON_LOGOUT.cloneNode(true);

@@ -4,7 +4,7 @@ import * as icons from '../../static/fleet/components/icons.js';
 const NAMES = [
   'homeIcon', 'loadsIcon', 'tripsIcon', 'eventsIcon', 'driversIcon',
   'trucksIcon', 'trailersIcon', 'facilitiesIcon', 'terminalsIcon',
-  'documentsIcon', 'keyIcon', 'chevronUpIcon', 'themeIcon', 'logoutIcon',
+  'documentsIcon', 'keyIcon', 'chevronUpIcon', 'logoutIcon',
 ];
 
 describe('fleet icons', () => {
