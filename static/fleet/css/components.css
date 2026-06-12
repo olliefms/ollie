@@ -83,6 +83,7 @@
 .sidebar__footer {
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--color-border);
+  position: relative;
 }
 
 .sidebar__icon {
@@ -98,10 +99,6 @@
 }
 
 /* Account footer */
-.sidebar__footer {
-  position: relative;
-}
-
 .sidebar__account {
   display: flex;
   align-items: center;
@@ -162,7 +159,10 @@
   color: var(--color-text-subtle);
 }
 
-.sidebar__account-chev svg { width: 16px; height: 16px; }
+.sidebar__account-chev svg {
+  width: 16px;
+  height: 16px;
+}
 
 .sidebar__menu {
   position: absolute;
