@@ -14,6 +14,13 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Upper bound on rows scanned for a *filtered* event query (entity/type/time
+/// scoped). Such result sets are small (one entity's history), so we fetch a
+/// capped superset and order it in memory. If a filtered query ever matches more
+/// than this many rows, only the first `EVENT_SCAN_CAP` in scan (insertion) order
+/// are considered — a per-entity history that large is not expected in practice.
+const EVENT_SCAN_CAP: usize = 5_000;
+
 impl DbClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn append_event(
@@ -95,7 +102,24 @@ impl DbClient {
         let filter = build_event_filter(entity_id, entity_type, event_type, from, to)?;
         let total = self.event_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
-        let mut q = self.event_table.query().limit(limit + offset);
+
+        // LanceDB has no ORDER BY for scalar scans. The previous implementation
+        // applied LIMIT before sorting, so it returned the OLDEST `limit` rows
+        // and sorted only those among themselves — hiding all recent activity.
+        //
+        // The events table is append-only, so scan order tracks insertion order
+        // (ascending occurred_at). For the unfiltered feed we therefore fetch the
+        // TAIL of the scan — the newest `limit + offset` rows — which is O(page)
+        // regardless of table size. Filtered queries (entity/type/time) match a
+        // small set, so we scan a capped superset. Either window is then sorted
+        // descending and paginated in memory.
+        let (scan_offset, scan_limit) = if filter.is_some() {
+            (0, EVENT_SCAN_CAP)
+        } else {
+            let window = limit.saturating_add(offset);
+            (total.saturating_sub(window), window)
+        };
+        let mut q = self.event_table.query().offset(scan_offset).limit(scan_limit);
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let mut all = batches_to_events(collect_stream(stream).await?)?;
@@ -298,6 +322,63 @@ mod tests {
         let (total, items) = db.query_events(None, None, Some("processing_started"), None, None, 100, 0).await.unwrap();
         assert_eq!(total, 1);
         assert_eq!(items[0].event_type, "processing_started");
+    }
+
+    // The feed must return the NEWEST events, not the oldest: insert more events
+    // than the page size and assert we get the most-recent ones, newest-first.
+    #[tokio::test]
+    async fn test_query_events_unfiltered_returns_newest_first() {
+        let (db, _dir) = test_db().await;
+        for i in 0..25u32 {
+            let ts = format!("2026-01-01T00:{i:02}:00.000Z");
+            db.append_event("trip", Uuid::new_v4(), "stop.arrived", None, None, &ts, None).await.unwrap();
+        }
+        let (total, items) = db.query_events(None, None, None, None, None, 10, 0).await.unwrap();
+        assert_eq!(total, 25);
+        assert_eq!(items.len(), 10);
+        // Newest first: minute 24 down to minute 15.
+        assert_eq!(items[0].occurred_at, "2026-01-01T00:24:00.000Z");
+        assert_eq!(items[9].occurred_at, "2026-01-01T00:15:00.000Z");
+        for w in items.windows(2) {
+            assert!(w[0].occurred_at >= w[1].occurred_at, "must be descending");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_query_events_unfiltered_pagination() {
+        let (db, _dir) = test_db().await;
+        for i in 0..25u32 {
+            let ts = format!("2026-01-01T00:{i:02}:00.000Z");
+            db.append_event("trip", Uuid::new_v4(), "stop.arrived", None, None, &ts, None).await.unwrap();
+        }
+        // Second page of 5 (skip the 5 newest) -> minutes 19..15.
+        let (total, items) = db.query_events(None, None, None, None, None, 5, 5).await.unwrap();
+        assert_eq!(total, 25);
+        assert_eq!(items.len(), 5);
+        assert_eq!(items[0].occurred_at, "2026-01-01T00:19:00.000Z");
+        assert_eq!(items[4].occurred_at, "2026-01-01T00:15:00.000Z");
+    }
+
+    #[tokio::test]
+    async fn test_query_events_entity_filter_newest_first() {
+        let (db, _dir) = test_db().await;
+        let trip = Uuid::new_v4();
+        // Noise from another entity, plus 12 events for `trip`, all ascending.
+        for i in 0..8u32 {
+            let ts = format!("2026-01-01T00:{i:02}:00.000Z");
+            db.append_event("trip", Uuid::new_v4(), "stop.arrived", None, None, &ts, None).await.unwrap();
+        }
+        for i in 30..42u32 {
+            let ts = format!("2026-01-01T00:{i:02}:00.000Z");
+            db.append_event("trip", trip, "stop.arrived", None, None, &ts, None).await.unwrap();
+        }
+        let (total, items) = db.query_events(Some(trip), None, None, None, None, 5, 0).await.unwrap();
+        assert_eq!(total, 12);
+        assert_eq!(items.len(), 5);
+        assert!(items.iter().all(|r| r.entity_id == trip));
+        // Newest first: minute 41 down to 37.
+        assert_eq!(items[0].occurred_at, "2026-01-01T00:41:00.000Z");
+        assert_eq!(items[4].occurred_at, "2026-01-01T00:37:00.000Z");
     }
 
     #[test]
