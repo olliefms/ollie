@@ -1,10 +1,72 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
-import { escHtml, fmtDate, humanizeEventType } from '../utils/format.js';
+import { escHtml, shortId, fmtDate, fmtRelative, humanizeEventType } from '../utils/format.js';
 import { setContent, setRefreshIndicator } from '../utils/dom.js';
 
-const BLOB_NOISE_EVENTS = new Set([
-  'processing_started', 'processing_completed', 'processing_failed',
-]);
+const ROUTE_BASE = {
+  trip: 'trips', driver: 'drivers', truck: 'trucks', trailer: 'trailers', blob: 'documents',
+};
+
+export function jumpHref(entityType, entityId) {
+  const base = ROUTE_BASE[entityType];
+  return base ? `/fleet/${base}/${entityId}` : null;
+}
+
+export function eventContext(payload, eventType) {
+  const p = payload || {};
+  if (eventType && eventType.startsWith('stop.')) {
+    return p.stop_name || p.facility_name || (p.seq != null ? `Stop ${p.seq}` : '');
+  }
+  if (eventType === 'check_call') return p.location || '';
+  return p.stop_name || p.facility_name || p.location || '';
+}
+
+function severityClass(severity) {
+  if (severity === 'exception') return ' event-item--exception';
+  if (severity === 'system') return ' event-item--system';
+  return '';
+}
+
+function parsePayload(ev) {
+  try {
+    return typeof ev.payload === 'string' ? JSON.parse(ev.payload) : (ev.payload || {});
+  } catch (_) { return {}; }
+}
+
+export function eventRowHtml(ev) {
+  const entityType = (ev.entity_type || '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
+  const entityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
+  const badge = entityType ? `<span class="badge badge--${entityType}">${escHtml(entityLabel)}</span> ` : '';
+  const subject = ev.subject || shortId(ev.entity_id);
+  const payload = parsePayload(ev);
+  const ctx = eventContext(payload, ev.event_type);
+  const ctxHtml = ctx ? ` <span class="event-item__ctx">· ${escHtml(ctx)}</span>` : '';
+  const href = jumpHref(entityType, ev.entity_id);
+  const jump = href
+    ? `<a class="event-item__jump" data-link href="${escHtml(href)}">Go to ${escHtml(entityType)} →</a>`
+    : '';
+  const detailRows = [
+    ev.actor ? `<dt>Actor</dt><dd>${escHtml(ev.actor)}</dd>` : '',
+    `<dt>Time</dt><dd>${escHtml(fmtDate(ev.occurred_at))}</dd>`,
+    `<dt>Detail</dt><dd>${escHtml(JSON.stringify(payload))}</dd>`,
+  ].join('');
+
+  return `
+    <div class="event-item${severityClass(ev.severity)}" data-event-id="${escHtml(ev.id)}">
+      <div class="event-item__line">
+        ${badge}<span class="event-item__subject">${escHtml(subject)}</span>
+        <span class="event-item__type">${escHtml(humanizeEventType(ev.event_type || ''))}</span>${ctxHtml}
+        <span class="event-item__time">${escHtml(fmtRelative(ev.occurred_at))}</span>
+      </div>
+      <div class="event-item__detail" hidden>
+        <dl>${detailRows}</dl>
+        ${jump}
+      </div>
+    </div>`;
+}
+
+export function eventsListHtml(events) {
+  return events.map(eventRowHtml).join('');
+}
 
 let eventsRefreshTimer = null;
 
@@ -22,10 +84,8 @@ async function fetchAndRenderEvents() {
     const data = await res.json();
     const events = data.events || data.items || (Array.isArray(data) ? data : []);
 
-    const filtered = events.filter(ev => !BLOB_NOISE_EVENTS.has(ev.event_type));
-
     // Most recent first, using occurred_at
-    const sorted = [...filtered].sort((a, b) =>
+    const sorted = [...events].sort((a, b) =>
       new Date(b.occurred_at || 0).getTime() - new Date(a.occurred_at || 0).getTime()
     );
 
@@ -39,29 +99,7 @@ async function fetchAndRenderEvents() {
       return;
     }
 
-    const items = sorted.map(ev => {
-      const entityType = (ev.entity_type || '').toLowerCase().replace(/[^a-z0-9_]/g, '_');
-      const entityLabel = entityType.charAt(0).toUpperCase() + entityType.slice(1);
-
-      let payload = {};
-      try {
-        payload = typeof ev.payload === 'string' ? JSON.parse(ev.payload) : (ev.payload || {});
-      } catch (_) {}
-      const stopName = payload.facility_name || payload.stop_name ||
-        (payload.sequence != null ? `Stop ${payload.sequence}` : null);
-      const stopSuffix = stopName ? ` · ${escHtml(stopName)}` : '';
-
-      const badgeHtml = entityType
-        ? `<span class="badge badge--${entityType}">${escHtml(entityLabel)}</span> `
-        : '';
-
-      return `
-      <div class="event-item">
-        ${badgeHtml}<span class="event-item__type">${escHtml(humanizeEventType(ev.event_type || ''))}</span>${stopSuffix}
-        <span class="event-item__time">${fmtDate(ev.occurred_at)}</span>
-      </div>
-    `;
-    }).join('');
+    const items = eventsListHtml(sorted);
 
     const listEl = document.getElementById('events-list');
     if (listEl) {
