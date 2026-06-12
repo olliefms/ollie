@@ -36,6 +36,78 @@ export async function renderMaintenanceView(params = {}) {
       ],
       rows: items,
       extraControls: (controlsEl) => {
+        // ── Equipment Type select ──────────────────────────────
+        const typeSel = document.createElement('select');
+        typeSel.className = 'form-select';
+        typeSel.setAttribute('aria-label', 'Filter by equipment type');
+
+        for (const { value, label } of [
+          { value: '', label: 'All Equipment' },
+          { value: 'truck', label: 'Truck' },
+          { value: 'trailer', label: 'Trailer' },
+        ]) {
+          const opt = document.createElement('option');
+          opt.value = value;
+          opt.textContent = label;
+          if ((params.equipment_type || '') === value) opt.selected = true;
+          typeSel.appendChild(opt);
+        }
+
+        // ── Unit select ────────────────────────────────────────
+        const unitSel = document.createElement('select');
+        unitSel.className = 'form-select';
+        unitSel.setAttribute('aria-label', 'Filter by unit');
+        unitSel.disabled = !params.equipment_type;
+
+        const allUnitOpt = document.createElement('option');
+        allUnitOpt.value = '';
+        allUnitOpt.textContent = 'All Units';
+        unitSel.appendChild(allUnitOpt);
+
+        async function populateUnits(type, selectedId) {
+          if (!type) {
+            unitSel.disabled = true;
+            return;
+          }
+          try {
+            const endpoint = type === 'truck' ? `${API_BASE}/trucks` : `${API_BASE}/trailers`;
+            const r = await apiFetch(endpoint);
+            if (!r.ok) return;
+            const d = await r.json();
+            const units = d.items || (Array.isArray(d) ? d : []);
+            for (const u of units) {
+              const o = document.createElement('option');
+              o.value = u.id;
+              o.textContent = u.unit_number;
+              if (selectedId && String(u.id) === String(selectedId)) o.selected = true;
+              unitSel.appendChild(o);
+            }
+            unitSel.disabled = false;
+          } catch {
+            // leave "All Units" only — don't break the page
+          }
+        }
+
+        if (params.equipment_type) {
+          populateUnits(params.equipment_type, params.equipment_id);
+        }
+
+        typeSel.addEventListener('change', () => {
+          renderMaintenanceView({
+            ...params,
+            equipment_type: typeSel.value || undefined,
+            equipment_id: undefined,
+          });
+        });
+
+        unitSel.addEventListener('change', () => {
+          renderMaintenanceView({
+            ...params,
+            equipment_id: unitSel.value || undefined,
+          });
+        });
+
+        // ── Category select ────────────────────────────────────
         const sel = document.createElement('select');
         sel.className = 'form-select';
         sel.setAttribute('aria-label', 'Filter by category');
@@ -57,7 +129,10 @@ export async function renderMaintenanceView(params = {}) {
           renderMaintenanceView({ ...params, category: sel.value || undefined });
         });
 
+        // Insert order: typeSel first, then unitSel, then category (appended last)
         controlsEl.insertBefore(sel, controlsEl.firstChild);
+        controlsEl.insertBefore(unitSel, controlsEl.firstChild);
+        controlsEl.insertBefore(typeSel, controlsEl.firstChild);
       },
     });
   } catch (err) {
