@@ -1,6 +1,6 @@
 import { apiFetch, API_BASE, hasScope } from '../utils/api.js';
 import { escHtml, badge, shortId, fmtArrivalWindow } from '../utils/format.js';
-import { setContent, navigate } from '../utils/dom.js';
+import { setContent, navigate, setTopbarControls } from '../utils/dom.js';
 
 const LOAD_SCAN_CAP = 2000;
 
@@ -14,23 +14,6 @@ export async function renderLoadsView(params = {}) {
       ? `<div style="background:var(--color-warning-soft);border:1px solid var(--color-warning);border-radius:var(--radius);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text);">
            Showing the most recent ${escHtml(String(loads.length))} of ${escHtml(String(capTotal))} loads. Use the status filter to narrow results.
          </div>`
-      : '';
-
-    const statusOptions = [
-      '', 'planned', 'assigned', 'dispatched', 'in_transit',
-      'delivered', 'invoiced', 'settled', 'cancelled',
-    ];
-
-    const selectHtml = `
-      <select class="form-select" id="status-filter">
-        ${statusOptions.map(s =>
-          `<option value="${s}" ${s === filterStatus ? 'selected' : ''}>${s || 'All Statuses'}</option>`
-        ).join('')}
-      </select>
-    `;
-
-    const createBtn = hasScope('loads:write')
-      ? `<button class="btn btn--primary" id="new-load">+ New Load</button>`
       : '';
 
     const sorted = [...loads].sort((a, b) => {
@@ -65,14 +48,7 @@ export async function renderLoadsView(params = {}) {
     }
 
     return `
-      ${capBanner}<div class="page-header">
-        <h1 class="page-title">Loads</h1>
-        <div class="page-controls">
-          ${selectHtml}
-          ${createBtn}
-        </div>
-      </div>
-      <div class="table-wrapper">
+      ${capBanner}<div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
@@ -105,6 +81,23 @@ export async function renderLoadsView(params = {}) {
       // every normal paginated result where total exceeds page size.
       const capTotal = returned !== null && returned >= LOAD_SCAN_CAP ? returned : null;
       setContent(buildContent(loads, status, capTotal));
+
+      const statusOptions = [
+        '', 'planned', 'assigned', 'dispatched', 'in_transit',
+        'delivered', 'invoiced', 'settled', 'cancelled',
+      ];
+      const filterStatus = status || '';
+      const selectHtml = `
+        <select class="form-select" id="status-filter">
+          ${statusOptions.map(s =>
+            `<option value="${s}" ${s === filterStatus ? 'selected' : ''}>${s || 'All Statuses'}</option>`
+          ).join('')}
+        </select>
+      `;
+      const createBtn = hasScope('loads:write')
+        ? `<button class="btn btn--primary" id="new-load">+ New Load</button>`
+        : '';
+      setTopbarControls((slot) => { slot.innerHTML = `${selectHtml}${createBtn}`; });
 
       document.getElementById('new-load')?.addEventListener('click', () => navigate('load-new'));
 
