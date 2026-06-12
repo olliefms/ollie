@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { escHtml, shortId, fmtUSD, fmtMiles, fmtBytes, badge, humanizeEventType } from '../../static/fleet/utils/format.js';
+import { escHtml, shortId, fmtUSD, fmtMiles, fmtBytes, badge, humanizeEventType, fmtRelative } from '../../static/fleet/utils/format.js';
 
 describe('escHtml', () => {
   it('escapes HTML metacharacters', () => {
@@ -68,5 +68,33 @@ describe('humanizeEventType', () => {
   });
   it('title-cases unknown types', () => {
     expect(humanizeEventType('some_custom.event')).toBe('Some Custom Event');
+  });
+});
+
+describe('humanizeEventType additions', () => {
+  it('maps equipment + trailer change events', () => {
+    expect(humanizeEventType('driver.equipment_changed')).toBe('Driver Equipment Changed');
+    expect(humanizeEventType('driver.trailer_changed')).toBe('Driver Trailer Changed');
+  });
+});
+
+describe('fmtRelative', () => {
+  const now = 1_000_000_000_000;
+  it('seconds / minutes / hours / days', () => {
+    expect(fmtRelative(new Date(now - 5_000).toISOString(), now)).toBe('5s');
+    expect(fmtRelative(new Date(now - 120_000).toISOString(), now)).toBe('2m');
+    expect(fmtRelative(new Date(now - 3 * 3600_000).toISOString(), now)).toBe('3h');
+    expect(fmtRelative(new Date(now - 2 * 86400_000).toISOString(), now)).toBe('2d');
+  });
+  it('holds tier at the boundary (no early rollover)', () => {
+    expect(fmtRelative(new Date(now - 59_000).toISOString(), now)).toBe('59s');
+    expect(fmtRelative(new Date(now - 60_000).toISOString(), now)).toBe('1m');
+    expect(fmtRelative(new Date(now - 59 * 60_000).toISOString(), now)).toBe('59m');
+    expect(fmtRelative(new Date(now - 23 * 3600_000).toISOString(), now)).toBe('23h');
+  });
+  it('em-dash for falsy/invalid', () => {
+    expect(fmtRelative('', now)).toBe('—');
+    expect(fmtRelative(null, now)).toBe('—');
+    expect(fmtRelative('not-a-date', now)).toBe('—');
   });
 });
