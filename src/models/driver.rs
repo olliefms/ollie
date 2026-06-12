@@ -169,6 +169,8 @@ pub struct DriverListItem {
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
+    pub current_truck_id: Option<Uuid>,
+    pub current_trailer_ids: Vec<Uuid>,
     pub terminal_id: Option<Uuid>,
     pub loaded_rate_per_mile: Option<f64>,
     pub deadhead_rate_per_mile: Option<f64>,
@@ -193,6 +195,8 @@ impl From<DriverRecord> for DriverListItem {
             owner_id: r.owner_id,
             created_at: r.created_at,
             score: None,
+            current_truck_id: r.current_truck_id,
+            current_trailer_ids: r.current_trailer_ids,
             terminal_id: r.terminal_id,
             loaded_rate_per_mile: r.loaded_rate_per_mile,
             deadhead_rate_per_mile: r.deadhead_rate_per_mile,

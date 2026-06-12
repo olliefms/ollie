@@ -1,7 +1,7 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
 import { badge, escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
-import { renderDetailPage } from './_detail.js';
+import { renderDetailPage, assignedDriverLink } from './_detail.js';
 import { confirmDelete } from '../components/confirm.js';
 
 export async function renderTruckDetail(id) {
@@ -11,11 +11,14 @@ export async function renderTruckDetail(id) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const t = await res.json();
 
+    const driverField = await assignedDriverLink((d) => d.current_truck_id === id);
+
     renderDetailPage({
       title: `Truck ${t.unit_number || ''}`.trim(),
       fields: [
         { label: 'Unit #', value: t.unit_number },
         { label: 'Status', html: badge(t.status) },
+        { label: 'Assigned Driver', html: driverField },
         { label: 'Year', value: t.year },
         { label: 'Make', value: t.make },
         { label: 'Model', value: t.model },

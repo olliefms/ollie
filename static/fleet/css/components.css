@@ -445,6 +445,16 @@
   color: var(--color-text);
 }
 
+.detail-link {
+  color: var(--color-primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.detail-link:hover {
+  text-decoration: underline;
+}
+
 /* ===== Events List ===== */
 .events-list {
   background: var(--color-surface);
