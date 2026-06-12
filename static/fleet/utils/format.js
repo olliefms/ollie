@@ -79,6 +79,21 @@ export function humanizeEventType(type) {
     'driver_available':  'Driver Available',
     'truck_available':   'Truck Available',
     'trailer_available': 'Trailer Available',
+    'driver.equipment_changed': 'Driver Equipment Changed',
+    'driver.trailer_changed':   'Driver Trailer Changed',
   };
   return map[type] || String(type).replace(/[_.]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+export function fmtRelative(isoStr, nowMs = Date.now()) {
+  if (!isoStr) return '—';
+  const t = new Date(isoStr).getTime();
+  if (Number.isNaN(t)) return '—';
+  const s = Math.max(0, Math.floor((nowMs - t) / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
 }

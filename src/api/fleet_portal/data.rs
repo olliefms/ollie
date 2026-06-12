@@ -1489,6 +1489,28 @@ pub struct ListEventsDispatchQuery {
     pub offset: Option<usize>,
 }
 
+fn trip_subject(t: &crate::models::TripRecord) -> String {
+    let route = if t.stops.len() >= 2 {
+        let o = t.stops.first().and_then(|s| s.name.as_deref()).unwrap_or("?");
+        let d = t.stops.last().and_then(|s| s.name.as_deref()).unwrap_or("?");
+        format!(" · {o} → {d}")
+    } else {
+        String::new()
+    };
+    format!("Trip {}{}", t.trip_number, route)
+}
+
+async fn subject_for(db: &crate::db::DbClient, entity_type: &str, id: Uuid) -> Option<String> {
+    match entity_type {
+        "trip" => db.get_trip(id).await.ok().map(|t| trip_subject(&t)),
+        "driver" => db.get_driver_by_id(id).await.ok().map(|d| d.name),
+        "truck" => db.get_truck_by_id(id).await.ok().map(|t| format!("Truck {}", t.unit_number)),
+        "trailer" => db.get_trailer_by_id(id).await.ok().map(|t| format!("Trailer {}", t.unit_number)),
+        "blob" => db.get_by_id(id).await.ok().map(|b| b.name),
+        _ => None,
+    }
+}
+
 #[utoipa::path(
     get,
     path = "/fleet/api/v1/events",
@@ -1526,7 +1548,24 @@ pub async fn list_events(
         limit,
         offset,
     ).await?;
-    let items: Vec<EventResponse> = records.into_iter().map(EventResponse::from).collect();
+    let mut items: Vec<EventResponse> = records.into_iter().map(EventResponse::from).collect();
+
+    // Resolve subject labels, deduping lookups by (entity_type, entity_id).
+    let mut cache: std::collections::HashMap<(String, Uuid), Option<String>> =
+        std::collections::HashMap::new();
+    for it in items.iter_mut() {
+        let key = (it.entity_type.clone(), it.entity_id);
+        let label = match cache.get(&key) {
+            Some(v) => v.clone(),
+            None => {
+                let v = subject_for(&state.db, &it.entity_type, it.entity_id).await;
+                cache.insert(key, v.clone());
+                v
+            }
+        };
+        it.subject = label;
+    }
+
     Ok(Json(EventListResponse { returned: items.len(), items }))
 }
 
@@ -1600,6 +1639,168 @@ pub async fn count_pending_documents(
     let count = state.db.blob_table.count_rows(filter).await
         .map_err(|e| AppError::Internal(e.to_string()))?;
     Ok(Json(CountResponse { count }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::trip::{TripRecord, TripStatus, TripStop, TripStopType};
+    use crate::models::{DriverRecord, DriverStatus};
+    use tempfile::TempDir;
+
+    async fn test_db() -> (crate::db::DbClient, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db = crate::db::DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
+        (db, dir)
+    }
+
+    fn make_stop(seq: u32, name: Option<&str>) -> TripStop {
+        TripStop {
+            sequence: seq,
+            stop_type: TripStopType::Pickup,
+            facility_id: None,
+            name: name.map(|s| s.to_string()),
+            address: None,
+            load_stop_index: None,
+            scheduled_arrive: None,
+            scheduled_arrive_end: None,
+            actual_arrive: None,
+            actual_depart: None,
+            expected_dwell_minutes: None,
+            detention_free_minutes: None,
+            detention_grace_minutes: None,
+            notes: None,
+            timezone: None,
+            actual_arrive_utc: None,
+            actual_depart_utc: None,
+        }
+    }
+
+    fn make_trip(id: Uuid, trip_number: &str, stops: Vec<TripStop>) -> TripRecord {
+        let now = chrono::Utc::now();
+        TripRecord {
+            id,
+            trip_number: trip_number.into(),
+            load_id: None,
+            load_number: None,
+            previous_trip_id: None,
+            deadhead_miles: None,
+            loaded_miles: None,
+            total_miles: None,
+            segment_miles: vec![],
+            sequence: 0,
+            driver_id: None,
+            truck_id: None,
+            trailer_ids: vec![],
+            status: TripStatus::Planned,
+            stops,
+            notes: None,
+            blob_ids: vec![],
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
+            settlement_ref: None,
+            pay_period_start: None,
+            pay_period_end: None,
+            driver_pay_snapshot: None,
+            embedding: None,
+            owner_id: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn sample_driver(name: &str) -> DriverRecord {
+        let now = chrono::Utc::now();
+        DriverRecord {
+            id: Uuid::new_v4(),
+            name: name.into(),
+            phone: None,
+            email: None,
+            license_number: None,
+            license_state: None,
+            license_expiry: None,
+            status: DriverStatus::Available,
+            notes: None,
+            current_truck_id: None,
+            current_trailer_ids: vec![],
+            blob_ids: vec![],
+            embedding: None,
+            owner_id: 0,
+            created_at: now,
+            updated_at: now,
+            terminal_id: None,
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
+        }
+    }
+
+    // --- trip_subject (pure, no DB) ---
+
+    #[test]
+    fn test_trip_subject_with_two_stops() {
+        let trip = make_trip(Uuid::new_v4(), "T-2026-0042", vec![
+            make_stop(0, Some("A")),
+            make_stop(1, Some("B")),
+        ]);
+        assert_eq!(trip_subject(&trip), "Trip T-2026-0042 · A → B");
+    }
+
+    #[test]
+    fn test_trip_subject_with_one_stop() {
+        let trip = make_trip(Uuid::new_v4(), "T-2026-0042", vec![
+            make_stop(0, Some("A")),
+        ]);
+        assert_eq!(trip_subject(&trip), "Trip T-2026-0042");
+    }
+
+    #[test]
+    fn test_trip_subject_with_no_stops() {
+        let trip = make_trip(Uuid::new_v4(), "T-2026-0042", vec![]);
+        assert_eq!(trip_subject(&trip), "Trip T-2026-0042");
+    }
+
+    // --- subject_for (requires DB) ---
+
+    #[tokio::test]
+    async fn test_subject_for_driver_found() {
+        let (db, _dir) = test_db().await;
+        let driver = sample_driver("Jane Doe");
+        db.insert_driver(&driver).await.unwrap();
+        let result = subject_for(&db, "driver", driver.id).await;
+        assert_eq!(result, Some("Jane Doe".into()));
+    }
+
+    #[tokio::test]
+    async fn test_subject_for_driver_missing() {
+        let (db, _dir) = test_db().await;
+        let result = subject_for(&db, "driver", Uuid::new_v4()).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_subject_for_unknown_entity_type() {
+        let (db, _dir) = test_db().await;
+        let result = subject_for(&db, "bogus_type", Uuid::new_v4()).await;
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_subject_for_trip() {
+        let (db, _dir) = test_db().await;
+        let trip = make_trip(Uuid::new_v4(), "T-99", vec![
+            make_stop(0, Some("Origin")),
+            make_stop(1, Some("Dest")),
+        ]);
+        db.insert_trip(&trip).await.unwrap();
+        let result = subject_for(&db, "trip", trip.id).await;
+        assert_eq!(result, Some("Trip T-99 · Origin → Dest".into()));
+    }
 }
 
 /// Count events that occurred today (UTC).
