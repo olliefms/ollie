@@ -57,6 +57,19 @@
   --space-8: 48px;
 }
 
+/* Dark palette is deferred: the switcher is wired and sets [data-theme="dark"],
+   but these values intentionally mirror light until the dark palette lands.
+   Filling these in is the only step needed to enable dark mode. */
+[data-theme="dark"] {
+  /* TODO(dark-palette follow-on): real dark values. Mirrors light for now. */
+  --color-bg: #f9fafb;
+  --color-surface: #ffffff;
+  --color-surface-2: #f3f4f6;
+  --color-text: #111827;
+  --color-text-muted: #6b7280;
+  --color-border: #e5e7eb;
+}
+
 [hidden] { display: none !important; }
 
 *, *::before, *::after {
