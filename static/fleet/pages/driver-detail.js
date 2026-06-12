@@ -1,7 +1,7 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
 import { badge, escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
-import { renderDetailPage } from './_detail.js';
+import { renderDetailPage, detailLink } from './_detail.js';
 import { confirmDelete } from '../components/confirm.js';
 
 const RATE_FIELDS = [
@@ -24,6 +24,30 @@ function rateField(driver, terminal, rf) {
   return { label: rf.label, value: '—' };
 }
 
+// Fetch a unit by id; returns its unit_number (falls back to '(unknown unit)').
+async function unitNumber(kind, id) {
+  try {
+    const res = await apiFetch(`${API_BASE}/${kind}/${encodeURIComponent(id)}`);
+    if (res.ok) { const u = await res.json(); return u.unit_number || '(unknown unit)'; }
+  } catch (_) { /* fall through */ }
+  return '(unknown unit)';
+}
+
+// Attached-truck field as a clickable link, or '—' when none.
+async function truckLink(truckId) {
+  if (!truckId) return '—';
+  return detailLink('truck-detail', truckId, await unitNumber('trucks', truckId));
+}
+
+// Attached-trailer field: comma-separated links, or '—' when none.
+async function trailersLink(trailerIds) {
+  if (!trailerIds.length) return '—';
+  const links = await Promise.all(
+    trailerIds.map(async (tid) => detailLink('trailer-detail', tid, await unitNumber('trailers', tid))),
+  );
+  return links.join(', ');
+}
+
 export async function renderDriverDetail(id) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
   try {
@@ -37,6 +61,11 @@ export async function renderDriverDetail(id) {
       if (tRes.ok) terminal = await tRes.json();
     }
 
+    const [truckField, trailerField] = await Promise.all([
+      truckLink(d.current_truck_id),
+      trailersLink(d.current_trailer_ids || []),
+    ]);
+
     renderDetailPage({
       title: d.name || 'Driver',
       fields: [
@@ -48,6 +77,8 @@ export async function renderDriverDetail(id) {
         { label: 'License State', value: d.license_state },
         { label: 'License Expiry', value: d.license_expiry },
         { label: 'Terminal', value: terminal ? terminal.name : (d.terminal_id || '—') },
+        { label: 'Truck', html: truckField },
+        { label: 'Trailers', html: trailerField },
         { label: 'Notes', value: d.notes },
         ...RATE_FIELDS.map(rf => rateField(d, terminal, rf)),
       ],
