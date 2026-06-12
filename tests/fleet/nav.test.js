@@ -4,7 +4,7 @@ import { NAV_GROUPS, visibleGroups, renderSidebar } from '../../static/fleet/com
 const ALL = ['*'];
 const DISPATCHER = [
   'loads:read', 'trips:read', 'events:read', 'drivers:read',
-  'trucks:read', 'trailers:read', 'facilities:read', 'terminals:read', 'blobs:read',
+  'trucks:read', 'trailers:read', 'maintenance:read', 'facilities:read', 'terminals:read', 'blobs:read',
 ];
 
 describe('visibleGroups', () => {
@@ -21,7 +21,7 @@ describe('visibleGroups', () => {
     const labels = groups.flatMap(g => g.items.map(i => i.label));
     expect(labels).toEqual([
       'Home', 'Loads', 'Trips', 'Events', 'Drivers', 'Trucks',
-      'Trailers', 'Facilities', 'Terminals', 'Documents',
+      'Trailers', 'Maintenance', 'Facilities', 'Terminals', 'Documents',
     ]);
   });
 
@@ -45,7 +45,7 @@ describe('renderSidebar', () => {
   it('renders data-link anchors with icon + label', () => {
     renderSidebar(host, { scopes: ALL, pathname: '/fleet/loads' });
     const links = host.querySelectorAll('a.sidebar__link');
-    expect(links.length).toBe(10);
+    expect(links.length).toBe(11);
     const loads = [...links].find(a => a.getAttribute('href') === '/fleet/loads');
     expect(loads.hasAttribute('data-link')).toBe(true);
     expect(loads.querySelector('svg')).not.toBe(null);

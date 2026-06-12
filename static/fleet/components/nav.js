@@ -1,6 +1,6 @@
 import {
   homeIcon, loadsIcon, tripsIcon, eventsIcon, driversIcon,
-  trucksIcon, trailersIcon, facilitiesIcon, terminalsIcon, documentsIcon,
+  trucksIcon, trailersIcon, maintenanceIcon, facilitiesIcon, terminalsIcon, documentsIcon,
 } from './icons.js';
 import { scopeGranted } from './scope-gate.js';
 
@@ -17,6 +17,7 @@ export const NAV_GROUPS = [
     { label: 'Drivers',  path: '/fleet/drivers',  icon: driversIcon,  scope: 'drivers:read' },
     { label: 'Trucks',   path: '/fleet/trucks',   icon: trucksIcon,   scope: 'trucks:read' },
     { label: 'Trailers', path: '/fleet/trailers', icon: trailersIcon, scope: 'trailers:read' },
+    { label: 'Maintenance', path: '/fleet/maintenance', icon: maintenanceIcon, scope: 'maintenance:read' },
   ] },
   { label: 'Network', items: [
     { label: 'Facilities', path: '/fleet/facilities', icon: facilitiesIcon, scope: 'facilities:read' },
