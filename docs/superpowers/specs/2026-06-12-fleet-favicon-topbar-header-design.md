@@ -51,9 +51,13 @@ PNGs, it carries the brand blue directly. Match the manifest value exactly.
   - Copy `icon-192.png` + `icon-512.png` from `static/driver/` into `static/fleet/` so the
     fleet app is self-contained (no cross-app `/driver/...` references).
 - `static/driver/index.html` `<head>`: same two links (driver already has the PNGs).
-- **Driver PWA caching:** add `favicon.svg` to `STATIC_ASSETS` in `static/driver/sw.js` and
-  bump `CACHE_NAME` (per AGENTS.md — a new precached file without a cache-name bump leaves
-  the precache stale/incomplete on next release).
+- **Driver PWA caching — intentionally NOT touched.** `favicon.svg` is *not* added to
+  `STATIC_ASSETS` in `static/driver/sw.js`, and `CACHE_NAME` is *not* bumped. Rationale:
+  bumping `CACHE_NAME` is a PWA cache-stamp change, which by project rule only `/cut-release`
+  performs — feature PRs must not. A favicon loads fine over the network without being in
+  the offline precache, so there is no need to precache it. The next `/cut-release` bump
+  will fold `favicon.svg` into the cache naturally if desired. This keeps the change inside
+  the governance rule and smaller.
 
 ## Part 2 — Unified sticky topbar header (fleet)
 
@@ -121,7 +125,7 @@ Vitest + happy-dom (existing toolkit; ~190 tests today):
 - Add a test that `renderRoute` / navigation clears `#topbar-controls` between views (a
   list view populates it; a subsequent non-list view empties it).
 - Favicon: assert both `index.html` files contain the `rel="icon"` + `apple-touch-icon`
-  links; assert `sw.js` `STATIC_ASSETS` includes `favicon.svg` and `CACHE_NAME` was bumped.
+  links. (No `sw.js` assertion — see "Driver PWA caching" above; `sw.js` is unchanged.)
 
 ## Out of scope
 
