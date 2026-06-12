@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { eventContext, jumpHref, eventRowHtml, eventsListHtml } from '../../static/fleet/pages/events.js';
+import { eventContext, jumpHref, eventRowHtml, eventsListHtml, attachEventHandlers, applyAttentionFilter } from '../../static/fleet/pages/events.js';
 
 const base = {
   id: 'e1', entity_type: 'trip', entity_id: 't1', event_type: 'stop.arrived',
@@ -62,5 +62,45 @@ describe('eventsListHtml', () => {
   it('renders one row per event', () => {
     const html = eventsListHtml([base, { ...base, id: 'e2' }]);
     expect((html.match(/data-event-id=/g) || []).length).toBe(2);
+  });
+});
+
+describe('attachEventHandlers (expand)', () => {
+  it('toggles the detail panel on row click', () => {
+    const root = document.createElement('div');
+    root.innerHTML = eventsListHtml([base]);
+    document.body.appendChild(root);
+    attachEventHandlers(root);
+
+    const detail = root.querySelector('.event-item__detail');
+    expect(detail.hidden).toBe(true);
+    root.querySelector('.event-item__line').click();
+    expect(detail.hidden).toBe(false);
+    root.querySelector('.event-item__line').click();
+    expect(detail.hidden).toBe(true);
+    root.remove();
+  });
+
+  it('does not toggle when clicking the jump link', () => {
+    const root = document.createElement('div');
+    root.innerHTML = eventsListHtml([base]);
+    document.body.appendChild(root);
+    attachEventHandlers(root);
+    const detail = root.querySelector('.event-item__detail');
+    const link = root.querySelector('.event-item__jump');
+    if (link) link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(detail.hidden).toBe(true);
+    root.remove();
+  });
+});
+
+describe('applyAttentionFilter', () => {
+  it('keeps only exception rows when on', () => {
+    const evs = [base, { ...base, id: 'x', severity: 'exception' }];
+    expect(applyAttentionFilter(evs, true).map(e => e.id)).toEqual(['x']);
+  });
+  it('returns all rows when off', () => {
+    const evs = [base, { ...base, id: 'x', severity: 'exception' }];
+    expect(applyAttentionFilter(evs, false).length).toBe(2);
   });
 });

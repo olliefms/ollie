@@ -68,6 +68,21 @@ export function eventsListHtml(events) {
   return events.map(eventRowHtml).join('');
 }
 
+export function applyAttentionFilter(events, attentionOnly) {
+  return attentionOnly ? events.filter(e => e.severity === 'exception') : events;
+}
+
+export function attachEventHandlers(root) {
+  root.addEventListener('click', (e) => {
+    if (e.target.closest('.event-item__jump')) return;
+    const item = e.target.closest('.event-item');
+    if (!item || !root.contains(item)) return;
+    const detail = item.querySelector('.event-item__detail');
+    if (detail) detail.hidden = !detail.hidden;
+  });
+}
+
+let attentionOnly = false;
 let eventsRefreshTimer = null;
 
 export function clearEventsRefresh() {
@@ -89,21 +104,20 @@ async function fetchAndRenderEvents() {
       new Date(b.occurred_at || 0).getTime() - new Date(a.occurred_at || 0).getTime()
     );
 
+    const visible = applyAttentionFilter(sorted, attentionOnly);
+
     setRefreshIndicator(`Updated ${new Date().toLocaleTimeString()}`);
 
-    if (sorted.length === 0) {
-      const listEl = document.getElementById('events-list');
+    const listEl = document.getElementById('events-list');
+    if (visible.length === 0) {
       if (listEl) {
         listEl.innerHTML = '<div class="state-empty" style="min-height:120px;">No events found</div>';
       }
       return;
     }
 
-    const items = eventsListHtml(sorted);
-
-    const listEl = document.getElementById('events-list');
     if (listEl) {
-      listEl.innerHTML = items;
+      listEl.innerHTML = eventsListHtml(visible);
     }
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
@@ -117,18 +131,37 @@ async function fetchAndRenderEvents() {
 }
 
 export async function renderEventsView() {
+  // Reset filter state on each (re)entry so the button matches the rendered list
+  attentionOnly = false;
+
   // Initial skeleton so the list element exists before fetch
   setContent(`
     <div class="page-header">
       <h1 class="page-title">Events</h1>
       <span style="font-size: 0.8125rem; color: var(--color-text-subtle);">Auto-refreshes every 30s</span>
+      <button id="events-attention" class="btn btn--ghost" aria-pressed="false">Needs attention only</button>
     </div>
     <div class="events-list" id="events-list">
       <div class="state-loading"><div class="spinner"></div></div>
     </div>
   `);
 
+  // Attach row-expand handler once on the persistent container
+  const listEl = document.getElementById('events-list');
+  if (listEl) attachEventHandlers(listEl);
+
   await fetchAndRenderEvents();
+
+  // Wire the attention-only toggle
+  const attnBtn = document.getElementById('events-attention');
+  if (attnBtn) {
+    attnBtn.addEventListener('click', () => {
+      attentionOnly = !attentionOnly;
+      attnBtn.setAttribute('aria-pressed', String(attentionOnly));
+      attnBtn.classList.toggle('is-active', attentionOnly);
+      fetchAndRenderEvents();
+    });
+  }
 
   // Auto-refresh every 30s
   eventsRefreshTimer = setInterval(fetchAndRenderEvents, 30_000);
