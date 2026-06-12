@@ -50,6 +50,7 @@ function buildThemeSwitch() {
 
 export function renderAccountFooter(container, { identity, scopes = [], onSignOut } = {}) {
   const id = identity || {};
+  if (container._accountFooterTeardown) container._accountFooterTeardown();
   container.replaceChildren();
 
   const menu = document.createElement('div');
@@ -123,5 +124,6 @@ export function renderAccountFooter(container, { identity, scopes = [], onSignOu
     if (menu.hidden) open(); else close();
   });
 
+  container._accountFooterTeardown = close;
   container.append(menu, chip);
 }

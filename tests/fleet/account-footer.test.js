@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { initials, roleLabel, renderAccountFooter } from '../../static/fleet/components/account-footer.js';
 
 beforeEach(() => {
@@ -36,6 +36,7 @@ describe('renderAccountFooter', () => {
   const identity = { name: 'Jim Phillips', email: 'jim@acme.com', role: 'owner' };
   let host;
   beforeEach(() => { host = document.createElement('div'); document.body.appendChild(host); });
+  afterEach(() => { host.remove(); });
 
   it('renders the user chip with initials, name and role', () => {
     renderAccountFooter(host, { identity, scopes: ['*'], onSignOut() {} });
@@ -87,5 +88,19 @@ describe('renderAccountFooter', () => {
     dark.click();
     expect(dark.classList.contains('is-active')).toBe(true);
     expect(localStorage.getItem('fleet.theme')).toBe('dark');
+  });
+
+  it('tears down stale document listeners on re-render', () => {
+    renderAccountFooter(host, { identity, scopes: ['*'], onSignOut() {} });
+    host.querySelector('.sidebar__account').click(); // open
+    // Re-render same container while menu is open
+    renderAccountFooter(host, { identity, scopes: ['*'], onSignOut() {} });
+    const menu = host.querySelector('.sidebar__menu');
+    expect(menu.hidden).toBe(true);
+    // New chip still toggles; stale listeners from prior render must not interfere
+    host.querySelector('.sidebar__account').click();
+    expect(menu.hidden).toBe(false);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(menu.hidden).toBe(true);
   });
 });
