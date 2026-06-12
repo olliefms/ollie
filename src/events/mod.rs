@@ -146,10 +146,6 @@ mod tests {
         (db, dir)
     }
 
-    fn now_rfc3339() -> String {
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-    }
-
     fn make_stop(seq: u32, name: Option<&str>) -> TripStop {
         TripStop {
             sequence: seq,
@@ -247,12 +243,5 @@ mod tests {
         ).unwrap();
         assert_eq!(payload["stop_name"], serde_json::Value::Null);
         assert_eq!(payload["seq"], serde_json::json!(99u32));
-    }
-
-    #[tokio::test]
-    async fn test_stop_arrived_graceful_when_timestamp_only() {
-        // Also verify the now_rfc3339 helper used in other event_ops tests matches now_z().
-        let ts = now_rfc3339();
-        assert!(ts.ends_with('Z'), "timestamp must end in Z: {ts}");
     }
 }

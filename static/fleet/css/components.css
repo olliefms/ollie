@@ -625,7 +625,7 @@
 .event-item__line {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   white-space: nowrap;
 }
 
@@ -652,8 +652,8 @@
 }
 
 .event-item--exception {
-  border-left-color: #e5484d;
-  background: #fff5f5;
+  border-left-color: var(--color-danger);
+  background: var(--color-danger-soft);
 }
 
 .event-item--system {
@@ -661,8 +661,8 @@
 }
 
 .event-item__detail {
-  margin-top: 8px;
-  padding: 8px 10px;
+  margin-top: var(--space-2);
+  padding: var(--space-2) 10px;
   background: var(--color-surface-2);
   border-radius: 6px;
   font-size: 0.75rem;
@@ -671,7 +671,7 @@
 .event-item__detail dl {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 2px 12px;
+  gap: 2px var(--space-3);
   margin: 0 0 6px;
 }
 
