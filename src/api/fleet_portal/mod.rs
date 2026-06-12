@@ -7,6 +7,7 @@ pub mod data;
 pub mod driver_writes;
 pub mod facility_writes;
 pub mod jwt;
+pub mod maintenance_writes;
 pub mod mcp;
 pub mod middleware;
 pub mod trailer_writes;
@@ -121,6 +122,16 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
             get(data::get_trailer)
                 .patch(trailer_writes::update_trailer_handler)
                 .delete(trailer_writes::delete_trailer_handler),
+        )
+        .route(
+            "/fleet/api/v1/maintenance",
+            get(data::list_maintenance).post(maintenance_writes::create_maintenance_handler),
+        )
+        .route(
+            "/fleet/api/v1/maintenance/{id}",
+            get(data::get_maintenance)
+                .patch(maintenance_writes::update_maintenance_handler)
+                .delete(maintenance_writes::delete_maintenance_handler),
         )
         .route("/fleet/api/v1/events", get(data::list_events))
         // Facilities
