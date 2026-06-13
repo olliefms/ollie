@@ -279,7 +279,9 @@
 /* ===== Main Content ===== */
 .content {
   grid-area: content;
-  margin-top: var(--space-8);
+  /* No margin-top: the grid's first row (var(--space-8)) already reserves the
+     fixed topbar's height, so content's row starts below it. A margin-top here
+     would double-count that offset and leave a dead gap under the topbar. */
   background: var(--color-bg);
   padding: var(--space-3) var(--space-5) var(--space-5);
   min-height: calc(100vh - var(--space-8));
