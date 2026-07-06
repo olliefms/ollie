@@ -6911,6 +6911,75 @@ async fn test_mcp_trip_detail_surfaces_geocode_warning_for_ungeocoded_stop() {
     assert!(warnings[0].as_str().unwrap().contains("not geocoded"));
 }
 
+/// The REST `PUT /loads/{id}` handler must honor `load_number` (it's in the
+/// request schema); previously it silently ignored the field.
+#[tokio::test]
+async fn test_rest_update_load_sets_load_number() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let fac = create_test_facility(&server, "REST LN Dock", "Ogden, UT").await;
+    let load_id = create_2stop_load(&server, &fac, "REST LN Co").await;
+
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "load_number": "REST-123456" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    let got = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await.json::<serde_json::Value>();
+    assert_eq!(got["load_number"], "REST-123456", "REST update_load must persist load_number");
+}
+
+/// Regression: `create_trip` validates equipment BEFORE insert, so a rejected
+/// assignment (here an out-of-service trailer) leaves no orphaned Planned trip.
+#[tokio::test]
+async fn test_create_trip_rejects_bad_equipment_before_insert_no_orphan() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+
+    let fac = create_test_facility(&server, "Orphan Dock", "Reno, NV").await;
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "Orphan Driver" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "ORPH-TRK" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let trailer_id = server.post("/fleet/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "ORPH-TRL", "owner": "fleet" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    // PATCH deliberately rejects status writes, so set OOS directly via the DB.
+    state.db.update_trailer_status(
+        trailer_id.parse().unwrap(),
+        ollie::models::trailer::TrailerStatus::OutOfService,
+    ).await.unwrap();
+
+    let resp = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({
+            "driver_id": driver_id,
+            "truck_id": truck_id,
+            "trailer_ids": [trailer_id],
+            "stops": [{
+                "sequence": 1, "stop_type": "origin", "facility_id": fac,
+                "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago"
+            }]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "create with OOS trailer must be rejected");
+
+    // No orphaned trip should have been inserted for the driver.
+    let trips = server.get(&format!("/fleet/api/v1/trips?driver_id={driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await.json::<serde_json::Value>();
+    assert!(trips["items"].as_array().unwrap().is_empty(),
+        "no orphaned trip should persist after rejected create: {trips:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Blob-store MCP tools + presigned byte-transfer endpoints (#277)
 // ---------------------------------------------------------------------------

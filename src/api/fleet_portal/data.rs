@@ -402,6 +402,10 @@ pub async fn update_load(
         let _ = state.routing_tx.try_send(id);
     }
 
+    if let Some(ln) = body.load_number {
+        updated = state.db.update_load_number(id, ln).await?;
+    }
+
     let response = build_load_detail(&state, updated).await?;
     Ok(Json(response))
 }
@@ -752,9 +756,17 @@ pub async fn build_trip_detail(
     // industrial/warehouse addresses).
     let stop_fac_ids: Vec<Uuid> = record.stops.iter().filter_map(|s| s.facility_id).collect();
     if !stop_fac_ids.is_empty() {
-        let facs = state.db.batch_get_facilities(&stop_fac_ids).await.unwrap_or_default();
+        let facs = match state.db.batch_get_facilities(&stop_fac_ids).await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!(trip_id = %record.id, error = %e, "geocode-warning: batch_get_facilities failed");
+                Default::default()
+            }
+        };
+        let mut seen = std::collections::HashSet::new();
         for s in &record.stops {
             let Some(fid) = s.facility_id else { continue };
+            if !seen.insert(fid) { continue } // one warning per facility (same dock can be pickup+delivery)
             let Some(f) = facs.get(&fid) else { continue };
             if f.geocode_status != crate::models::facility::GeocodeStatus::Ready {
                 enriched.geocode_warnings.push(format!(

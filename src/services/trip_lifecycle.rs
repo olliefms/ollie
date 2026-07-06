@@ -45,36 +45,56 @@ pub struct CheckCallRequest {
     pub eta_next_stop: Option<String>,
 }
 
+/// Validates that a driver/truck/trailers are eligible for assignment WITHOUT
+/// mutating anything, returning the fetched records. Callers that create-then-
+/// assign (e.g. `apply_trip_create`) run this before any insert so a rejected
+/// assignment can't leave an orphaned record behind. `assign` uses it too, so
+/// the eligibility rules live in exactly one place.
+pub(crate) async fn validate_assignment(
+    state: &AppState,
+    driver_id: Uuid,
+    truck_id: Uuid,
+    trailer_ids: &[Uuid],
+) -> Result<
+    (
+        crate::models::driver::DriverRecord,
+        crate::models::truck::TruckRecord,
+        Vec<crate::models::trailer::TrailerRecord>,
+    ),
+    AppError,
+> {
+    let driver = state.db.get_driver_by_id(driver_id).await?;
+    if driver.status == DriverStatus::Inactive {
+        return Err(AppError::Conflict(format!("driver {driver_id} is not available for assignment")));
+    }
+
+    let truck = state.db.get_truck_by_id(truck_id).await?;
+    if matches!(truck.status, TruckStatus::OutOfService | TruckStatus::Inactive) {
+        return Err(AppError::Conflict(format!("truck {truck_id} is not available for assignment")));
+    }
+
+    let mut trailers = Vec::new();
+    for &trailer_id in trailer_ids {
+        let trailer = state.db.get_trailer_by_id(trailer_id).await?;
+        if !matches!(trailer.status, TrailerStatus::Available | TrailerStatus::Assigned) {
+            return Err(AppError::Conflict(format!(
+                "trailer {trailer_id} is not available for assignment"
+            )));
+        }
+        trailers.push(trailer);
+    }
+
+    Ok((driver, truck, trailers))
+}
+
 pub async fn assign(
     state: &AppState,
     trip_id: Uuid,
     req: AssignTripRequest,
 ) -> Result<TripRecord, AppError> {
-    let driver = state.db.get_driver_by_id(req.driver_id).await?;
-    if driver.status == DriverStatus::Inactive {
-        return Err(AppError::Conflict(format!("driver {} is not available for assignment", req.driver_id)));
-    }
-
-    let truck = state.db.get_truck_by_id(req.truck_id).await?;
-    if matches!(truck.status, TruckStatus::OutOfService | TruckStatus::Inactive) {
-        return Err(AppError::Conflict(format!("truck {} is not available for assignment", req.truck_id)));
-    }
-
-    // Pre-validate all trailers before any mutation to prevent partial state
-    let mut trailers = Vec::new();
-    for &trailer_id in &req.trailer_ids {
-        let trailer = state.db.get_trailer_by_id(trailer_id).await?;
-        if !matches!(
-            trailer.status,
-            TrailerStatus::Available | TrailerStatus::Assigned
-        ) {
-            return Err(AppError::Conflict(format!(
-                "trailer {} is not available for assignment",
-                trailer_id
-            )));
-        }
-        trailers.push(trailer);
-    }
+    // Validate (and fetch) all resources before any mutation to prevent partial state.
+    let (driver, truck, trailers) =
+        validate_assignment(state, req.driver_id, req.truck_id, &req.trailer_ids).await?;
 
     state.db.transition_trip_status(trip_id, TripStatus::Assigned).await?;
     state

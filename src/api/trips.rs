@@ -151,6 +151,19 @@ pub(crate) async fn apply_trip_create(
 
     record.embedding = embed_text(&state.ai, &record.embedding_text()).await.ok();
 
+    // If this create carries a full driver+truck assignment, validate the
+    // equipment BEFORE inserting so a rejected assignment (inactive driver,
+    // non-assignable trailer) can't leave an orphaned Planned trip behind.
+    if let (Some(driver_id), Some(truck_id)) = (record.driver_id, record.truck_id) {
+        crate::services::trip_lifecycle::validate_assignment(
+            state,
+            driver_id,
+            truck_id,
+            &record.trailer_ids,
+        )
+        .await?;
+    }
+
     state.db.insert_trip(&record).await?;
 
     // If created with a full driver+truck assignment, promote straight to
