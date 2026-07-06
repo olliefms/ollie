@@ -118,6 +118,7 @@ impl DbClient {
         record.load_number = load_number;
         record.updated_at = Utc::now();
         self.upsert_load(&record).await?;
+        self.sync_trip_load_numbers(id, &record.load_number).await?;
         Ok(record)
     }
 

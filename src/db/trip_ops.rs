@@ -234,6 +234,20 @@ impl DbClient {
         batches_to_trips(collect_stream(stream).await?)
     }
 
+    /// Fan a renamed load's number out to the denormalized copy on each of its trips.
+    pub(crate) async fn sync_trip_load_numbers(
+        &self, load_id: Uuid, load_number: &str,
+    ) -> Result<(), AppError> {
+        let trips = self.list_trips_for_load(load_id).await?;
+        for mut trip in trips {
+            if trip.load_number.as_deref() == Some(load_number) { continue; }
+            trip.load_number = Some(load_number.to_string());
+            trip.updated_at = Utc::now();
+            self.upsert_trip(&trip).await?;
+        }
+        Ok(())
+    }
+
     /// Apply optional trip-level rate overrides (read-modify-upsert). Each field
     /// is an `Option<Option<_>>`: `None` leaves it unchanged, `Some(None)` clears
     /// the override back to inherited, and `Some(Some(v))` sets it.
@@ -589,6 +603,32 @@ mod tests {
             created_at: now,
             updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn test_sync_trip_load_numbers_updates_only_matching_load() {
+        let (db, _dir) = test_db().await;
+        let load_id = uuid::Uuid::new_v4();
+        let other_load_id = uuid::Uuid::new_v4();
+
+        let mut stale = sample_trip();
+        stale.trip_number = "T-2026-0100".into();
+        stale.load_id = Some(load_id);
+        stale.load_number = Some("LD-2026-0001".into());
+        db.insert_trip(&stale).await.unwrap();
+
+        let mut unrelated = sample_trip();
+        unrelated.trip_number = "T-2026-0101".into();
+        unrelated.load_id = Some(other_load_id);
+        unrelated.load_number = Some("LD-2026-0002".into());
+        db.insert_trip(&unrelated).await.unwrap();
+
+        db.sync_trip_load_numbers(load_id, "9821550").await.unwrap();
+
+        let updated = db.get_trip(stale.id).await.unwrap();
+        assert_eq!(updated.load_number.as_deref(), Some("9821550"));
+        let untouched = db.get_trip(unrelated.id).await.unwrap();
+        assert_eq!(untouched.load_number.as_deref(), Some("LD-2026-0002"));
     }
 
     #[tokio::test]
