@@ -63,29 +63,30 @@ pub(crate) async fn validate_assignment(
     ),
     AppError,
 > {
+    // Assignment (`planned -> assigned`) is a planning action: it attaches
+    // equipment but does not put the driver on the road. The single-active-
+    // dispatch rule ("a driver/truck may only be *dispatched* on one trip at a
+    // time") therefore belongs to `dispatch`, not here — enforcing it at assign
+    // time blocks pre-staging the next leg of a chained trip while the current
+    // leg is still live, which is exactly how dedicated lanes are dispatched.
+    // We still reject genuinely unavailable resources (inactive/out-of-service),
+    // since those can never be dispatched no matter when the trip runs.
+    // `assign` only ever promotes Available -> Assigned, so a still-dispatched
+    // resource keeps its Dispatched status and stays bound to its live trip.
     let driver = state.db.get_driver_by_id(driver_id).await?;
     if driver.status == DriverStatus::Inactive {
         return Err(AppError::Conflict(format!("driver {driver_id} is not available for assignment")));
-    }
-    // Fail fast: a driver already dispatched elsewhere can never be dispatched on
-    // this trip (see `dispatch`), so reject at assign time instead of letting the
-    // assignment through and surfacing the conflict only at dispatch.
-    if driver.status == DriverStatus::Dispatched {
-        return Err(AppError::Conflict(format!("driver {driver_id} is already dispatched on another trip")));
     }
 
     let truck = state.db.get_truck_by_id(truck_id).await?;
     if matches!(truck.status, TruckStatus::OutOfService | TruckStatus::Inactive) {
         return Err(AppError::Conflict(format!("truck {truck_id} is not available for assignment")));
     }
-    if truck.status == TruckStatus::Dispatched {
-        return Err(AppError::Conflict(format!("truck {truck_id} is already dispatched on another trip")));
-    }
 
     let mut trailers = Vec::new();
     for &trailer_id in trailer_ids {
         let trailer = state.db.get_trailer_by_id(trailer_id).await?;
-        if !matches!(trailer.status, TrailerStatus::Available | TrailerStatus::Assigned) {
+        if matches!(trailer.status, TrailerStatus::OutOfService | TrailerStatus::Inactive) {
             return Err(AppError::Conflict(format!(
                 "trailer {trailer_id} is not available for assignment"
             )));
@@ -142,14 +143,32 @@ pub async fn unassign(state: &AppState, trip_id: Uuid) -> Result<TripRecord, App
     state.db.transition_trip_status(trip_id, TripStatus::Planned).await?;
     state.db.update_trip_resources(trip_id, None, None, vec![]).await?;
 
+    // Release each resource to Available — but never demote one that is currently
+    // Dispatched. Since assign now accepts a still-dispatched resource onto a
+    // planned follow-on, a resource on this (Assigned) trip can be live on ANOTHER
+    // trip; unassigning here must not knock it back to Available and defeat the
+    // single-active-dispatch guard at dispatch time. (unassign only runs on an
+    // Assigned trip, so a Dispatched status here always means "active elsewhere".)
     if let Some(driver_id) = existing.driver_id {
-        let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
+        if let Ok(d) = state.db.get_driver_by_id(driver_id).await {
+            if d.status != DriverStatus::Dispatched {
+                let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
+            }
+        }
     }
     if let Some(truck_id) = existing.truck_id {
-        let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
+        if let Ok(t) = state.db.get_truck_by_id(truck_id).await {
+            if t.status != TruckStatus::Dispatched {
+                let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
+            }
+        }
     }
     for &trailer_id in &existing.trailer_ids {
-        let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
+        if let Ok(tr) = state.db.get_trailer_by_id(trailer_id).await {
+            if tr.status != TrailerStatus::Dispatched {
+                let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
+            }
+        }
     }
 
     if let Some(load_id) = existing.load_id {
