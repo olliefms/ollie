@@ -221,11 +221,7 @@ impl DbClient {
         batches_to_trips(collect_stream(stream).await?)
     }
 
-    /// Propagate a renamed load's number onto the denormalized copy carried by
-    /// each of its trips. Trips snapshot `load_number` at creation, so a later
-    /// `update_load_number` must fan the new value out or get_trip/list surfaces
-    /// keep showing the stale number. (Filtering is unaffected — it resolves the
-    /// number to a load_id live.) Trips already at the new value are skipped.
+    /// Fan a renamed load's number out to the denormalized copy on each of its trips.
     pub(crate) async fn sync_trip_load_numbers(
         &self, load_id: Uuid, load_number: &str,
     ) -> Result<(), AppError> {
