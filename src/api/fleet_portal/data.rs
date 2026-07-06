@@ -18,16 +18,15 @@ use crate::{
     AppState,
     error::AppError,
     models::{
-        DriverListResponse, DriverStatus,
+        DriverListResponse,
         LoadDetailResponse,
         MaintenanceListResponse,
         TrailerListResponse,
         TruckListResponse,
         EventListResponse, EventResponse,
-        LoadStatus, TrailerStatus, TripStatus, TruckStatus,
+        LoadStatus,
     },
     api::loads::{ListLoadsQuery, resolve_stops_pub},
-    events,
 };
 use crate::models::{CreateLoadRequest, UpdateLoadRequest};
 use crate::services::trip_lifecycle::{
@@ -858,9 +857,8 @@ pub async fn assign_trip(
     Json(body): Json<AssignTripRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    // Thin wrapper around the shared lifecycle so REST and MCP behave identically
-    // (eligibility rules, status cascades, load transition, and event all live in
-    // one place). Assignment is planning: it does not enforce single-active-dispatch.
+    // Thin wrapper over the shared lifecycle so REST and MCP behave identically
+    // (eligibility rules live in trip_lifecycle::validate_assignment).
     let trip = crate::services::trip_lifecycle::assign(&state, id, body).await?;
     Ok(Json(trip))
 }
@@ -884,34 +882,9 @@ pub async fn unassign_trip(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
-    let existing = state.db.get_trip(id).await?;
-    state.db.transition_trip_status(id, TripStatus::Planned).await?;
-    state.db.update_trip_resources(id, None, None, vec![]).await?;
-
-    if let Some(driver_id) = existing.driver_id {
-        let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
-    }
-    if let Some(truck_id) = existing.truck_id {
-        let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
-    }
-    for &trailer_id in &existing.trailer_ids {
-        let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
-    }
-
-    if let Some(load_id) = existing.load_id {
-        let active = state.db.count_active_trips_for_load(load_id).await.unwrap_or(1);
-        if active == 0 {
-            if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                if load.status == LoadStatus::Assigned {
-                    let _ = state.db.transition_load_status(load_id, LoadStatus::Planned, None, None, None).await;
-                }
-            }
-        }
-    }
-
-    // Re-fetch after all mutations (stale-return rule)
-    let trip = state.db.get_trip(id).await?;
-    events::on_trip_unassigned(&state.db, id).await;
+    // Thin wrapper over the shared lifecycle (see assign_trip): one implementation
+    // for REST and MCP, including the "don't demote a still-dispatched resource" guard.
+    let trip = crate::services::trip_lifecycle::unassign(&state, id).await?;
     Ok(Json(trip))
 }
 

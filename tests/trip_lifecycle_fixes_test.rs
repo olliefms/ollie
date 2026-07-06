@@ -459,6 +459,51 @@ async fn assign_allows_dispatched_trailer_but_rejects_out_of_service() {
     assert!(format!("{err:?}").contains("not available"), "got: {err:?}");
 }
 
+#[tokio::test]
+async fn unassign_does_not_demote_a_still_dispatched_resource() {
+    // Regression for the double-dispatch corruption: driver D is dispatched on
+    // live trip A, then pre-assigned to follow-on trip B. Unassigning B must NOT
+    // knock D back to Available (D is still on A) — otherwise the dispatch guard
+    // would let D be dispatched a second time.
+    let (state, _b, _d) = test_state().await;
+    let did = Uuid::new_v4();
+    state.db.insert_driver(&driver(did, DriverStatus::Available)).await.unwrap();
+    let tkid = Uuid::new_v4();
+    state.db.insert_truck(&truck(tkid, TruckStatus::Available)).await.unwrap();
+    let trid = Uuid::new_v4();
+    state.db.insert_trailer(&trailer(trid, TrailerStatus::Available)).await.unwrap();
+
+    // Trip A: assign then dispatch → driver/truck/trailer all Dispatched.
+    let ta = Uuid::new_v4();
+    state
+        .db
+        .insert_trip(&trip(ta, "T-UNA-A", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
+        .await
+        .unwrap();
+    trip_lifecycle::assign(&state, ta, AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid] })
+        .await
+        .unwrap();
+    trip_lifecycle::dispatch(&state, ta).await.unwrap();
+    assert_eq!(state.db.get_driver_by_id(did).await.unwrap().status, DriverStatus::Dispatched);
+
+    // Trip B: pre-assign the same still-dispatched resources.
+    let tb = Uuid::new_v4();
+    state
+        .db
+        .insert_trip(&trip(tb, "T-UNA-B", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
+        .await
+        .unwrap();
+    trip_lifecycle::assign(&state, tb, AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid] })
+        .await
+        .unwrap();
+
+    // Unassign B — resources must stay Dispatched (they're live on A).
+    trip_lifecycle::unassign(&state, tb).await.unwrap();
+    assert_eq!(state.db.get_driver_by_id(did).await.unwrap().status, DriverStatus::Dispatched, "driver must stay dispatched on trip A");
+    assert_eq!(state.db.get_truck_by_id(tkid).await.unwrap().status, TruckStatus::Dispatched, "truck must stay dispatched on trip A");
+    assert_eq!(state.db.get_trailer_by_id(trid).await.unwrap().status, TrailerStatus::Dispatched, "trailer must stay dispatched on trip A");
+}
+
 // --- #5 -------------------------------------------------------------------
 
 #[tokio::test]
