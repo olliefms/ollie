@@ -63,29 +63,30 @@ pub(crate) async fn validate_assignment(
     ),
     AppError,
 > {
+    // Assignment (`planned -> assigned`) is a planning action: it attaches
+    // equipment but does not put the driver on the road. The single-active-
+    // dispatch rule ("a driver/truck may only be *dispatched* on one trip at a
+    // time") therefore belongs to `dispatch`, not here — enforcing it at assign
+    // time blocks pre-staging the next leg of a chained trip while the current
+    // leg is still live, which is exactly how dedicated lanes are dispatched.
+    // We still reject genuinely unavailable resources (inactive/out-of-service),
+    // since those can never be dispatched no matter when the trip runs.
+    // `assign` only ever promotes Available -> Assigned, so a still-dispatched
+    // resource keeps its Dispatched status and stays bound to its live trip.
     let driver = state.db.get_driver_by_id(driver_id).await?;
     if driver.status == DriverStatus::Inactive {
         return Err(AppError::Conflict(format!("driver {driver_id} is not available for assignment")));
-    }
-    // Fail fast: a driver already dispatched elsewhere can never be dispatched on
-    // this trip (see `dispatch`), so reject at assign time instead of letting the
-    // assignment through and surfacing the conflict only at dispatch.
-    if driver.status == DriverStatus::Dispatched {
-        return Err(AppError::Conflict(format!("driver {driver_id} is already dispatched on another trip")));
     }
 
     let truck = state.db.get_truck_by_id(truck_id).await?;
     if matches!(truck.status, TruckStatus::OutOfService | TruckStatus::Inactive) {
         return Err(AppError::Conflict(format!("truck {truck_id} is not available for assignment")));
     }
-    if truck.status == TruckStatus::Dispatched {
-        return Err(AppError::Conflict(format!("truck {truck_id} is already dispatched on another trip")));
-    }
 
     let mut trailers = Vec::new();
     for &trailer_id in trailer_ids {
         let trailer = state.db.get_trailer_by_id(trailer_id).await?;
-        if !matches!(trailer.status, TrailerStatus::Available | TrailerStatus::Assigned) {
+        if matches!(trailer.status, TrailerStatus::OutOfService | TrailerStatus::Inactive) {
             return Err(AppError::Conflict(format!(
                 "trailer {trailer_id} is not available for assignment"
             )));

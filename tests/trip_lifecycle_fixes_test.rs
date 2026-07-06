@@ -3,14 +3,17 @@
 // Regression tests for dispatcher-reported trip-lifecycle issues (2026-07-06):
 //   #2  a non-freight "empty move" trip (terminal/empty_move stops, no pickup)
 //       has a real completion path: dispatched -> in_transit -> delivered.
-//   #4  assign fails fast when the driver/truck is already dispatched elsewhere,
-//       instead of letting the assignment through and failing only at dispatch.
+//   #4  assign is a planning action: it succeeds even when the driver/truck is
+//       still dispatched on another (chained) trip, leaving the follow-on in
+//       assigned. The single-active-dispatch rule is enforced at dispatch, which
+//       still refuses to dispatch a driver already dispatched elsewhere.
 //   #5  delete distinguishes the soft-cancel (first call) from the hard-delete
 //       (second call) via its return value.
 //   #6  delete is blocked while another trip still references it as
 //       previous_trip_id, and the error names the referencing trip.
 
 use ollie::models::trip::TripStopType;
+use ollie::models::trailer::{TrailerOwner, TrailerRecord, TrailerStatus};
 use ollie::models::{
     DriverRecord, DriverStatus, TripRecord, TripStatus, TripStop, TruckRecord, TruckStatus,
 };
@@ -108,6 +111,29 @@ fn truck(id: Uuid, status: TruckStatus) -> TruckRecord {
         year: None,
         make: None,
         model: None,
+        vin: None,
+        plate: None,
+        plate_state: None,
+        status,
+        notes: None,
+        blob_ids: vec![],
+        embedding: None,
+        owner_id: 0,
+        created_at: now(),
+        updated_at: now(),
+    }
+}
+
+fn trailer(id: Uuid, status: TrailerStatus) -> TrailerRecord {
+    TrailerRecord {
+        id,
+        unit_number: "TR1".into(),
+        owner: TrailerOwner::Fleet,
+        owner_name: None,
+        year: None,
+        make: None,
+        trailer_type: None,
+        length_ft: None,
         vin: None,
         plate: None,
         plate_state: None,
@@ -311,7 +337,10 @@ async fn loaded_trip_still_gated_on_pickup_depart() {
 // --- #4 -------------------------------------------------------------------
 
 #[tokio::test]
-async fn assign_rejects_already_dispatched_driver() {
+async fn assign_allows_dispatched_driver_but_dispatch_rejects() {
+    // A driver dispatched on their current (chained) trip can still be *assigned*
+    // to the follow-on leg — that's planning, not dispatching. The single-active-
+    // dispatch rule fires only when we try to `dispatch` the follow-on.
     let (state, _b, _d) = test_state().await;
     let did = Uuid::new_v4();
     state.db.insert_driver(&driver(did, DriverStatus::Dispatched)).await.unwrap();
@@ -324,18 +353,29 @@ async fn assign_rejects_already_dispatched_driver() {
         .await
         .unwrap();
 
-    let err = trip_lifecycle::assign(
+    let assigned = trip_lifecycle::assign(
         &state,
         tid,
         AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![] },
     )
     .await
-    .expect_err("assign should reject a dispatched driver up front");
+    .expect("assign should succeed for a dispatched driver (planning the next leg)");
+    assert_eq!(assigned.status, TripStatus::Assigned);
+    assert_eq!(assigned.driver_id, Some(did));
+    // The driver stays Dispatched on their live trip — assign never demotes.
+    assert_eq!(
+        state.db.get_driver_by_id(did).await.unwrap().status,
+        DriverStatus::Dispatched
+    );
+
+    let err = trip_lifecycle::dispatch(&state, tid)
+        .await
+        .expect_err("dispatch must still refuse a driver already dispatched elsewhere");
     assert!(format!("{err:?}").contains("already dispatched"), "got: {err:?}");
 }
 
 #[tokio::test]
-async fn assign_rejects_already_dispatched_truck() {
+async fn assign_allows_dispatched_truck_but_dispatch_rejects() {
     let (state, _b, _d) = test_state().await;
     let did = Uuid::new_v4();
     state.db.insert_driver(&driver(did, DriverStatus::Available)).await.unwrap();
@@ -348,14 +388,75 @@ async fn assign_rejects_already_dispatched_truck() {
         .await
         .unwrap();
 
-    let err = trip_lifecycle::assign(
+    let assigned = trip_lifecycle::assign(
         &state,
         tid,
         AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![] },
     )
     .await
-    .expect_err("assign should reject a dispatched truck up front");
+    .expect("assign should succeed for a dispatched truck (planning the next leg)");
+    assert_eq!(assigned.status, TripStatus::Assigned);
+    assert_eq!(assigned.truck_id, Some(tkid));
+    assert_eq!(
+        state.db.get_truck_by_id(tkid).await.unwrap().status,
+        TruckStatus::Dispatched
+    );
+
+    let err = trip_lifecycle::dispatch(&state, tid)
+        .await
+        .expect_err("dispatch must still refuse a truck already dispatched elsewhere");
     assert!(format!("{err:?}").contains("already dispatched"), "got: {err:?}");
+}
+
+#[tokio::test]
+async fn assign_allows_dispatched_trailer_but_rejects_out_of_service() {
+    let (state, _b, _d) = test_state().await;
+    let did = Uuid::new_v4();
+    state.db.insert_driver(&driver(did, DriverStatus::Available)).await.unwrap();
+    let tkid = Uuid::new_v4();
+    state.db.insert_truck(&truck(tkid, TruckStatus::Available)).await.unwrap();
+
+    // A dispatched trailer (still on the live leg) can be pre-assigned to the follow-on.
+    let trid = Uuid::new_v4();
+    state.db.insert_trailer(&trailer(trid, TrailerStatus::Dispatched)).await.unwrap();
+    let tid = Uuid::new_v4();
+    state
+        .db
+        .insert_trip(&trip(tid, "T-ASSIGN-0003", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
+        .await
+        .unwrap();
+
+    let assigned = trip_lifecycle::assign(
+        &state,
+        tid,
+        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid] },
+    )
+    .await
+    .expect("assign should succeed for a dispatched trailer");
+    assert_eq!(assigned.status, TripStatus::Assigned);
+    assert_eq!(assigned.trailer_ids, vec![trid]);
+    assert_eq!(
+        state.db.get_trailer_by_id(trid).await.unwrap().status,
+        TrailerStatus::Dispatched
+    );
+
+    // An out-of-service trailer is genuinely unavailable and is still rejected.
+    let oos = Uuid::new_v4();
+    state.db.insert_trailer(&trailer(oos, TrailerStatus::OutOfService)).await.unwrap();
+    let tid2 = Uuid::new_v4();
+    state
+        .db
+        .insert_trip(&trip(tid2, "T-ASSIGN-0004", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
+        .await
+        .unwrap();
+    let err = trip_lifecycle::assign(
+        &state,
+        tid2,
+        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![oos] },
+    )
+    .await
+    .expect_err("assign should reject an out-of-service trailer");
+    assert!(format!("{err:?}").contains("not available"), "got: {err:?}");
 }
 
 // --- #5 -------------------------------------------------------------------
