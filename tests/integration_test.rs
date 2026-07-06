@@ -456,6 +456,28 @@ async fn test_list_facilities() {
     assert!(list.json::<serde_json::Value>()["returned"].as_u64().unwrap() >= 1);
 }
 
+/// The default (no-limit) list follows the scan-cap pattern and returns every
+/// facility up to the cap — not a silent page of 20. Guards the regression
+/// where the UI, which sends no limit, could only ever see 20 facilities.
+#[tokio::test]
+async fn test_list_facilities_default_returns_more_than_twenty() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    for i in 0..25 {
+        server.post("/fleet/api/v1/facilities")
+            .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+            .json(&serde_json::json!({ "name": format!("Dock {i}"), "address": "Memphis, TN" }))
+            .await;
+    }
+    let list = server.get("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(list.status_code(), 200);
+    let body = list.json::<serde_json::Value>();
+    assert_eq!(body["returned"].as_u64().unwrap(), 25);
+    assert_eq!(body["items"].as_array().unwrap().len(), 25);
+}
+
 async fn create_test_facility(server: &axum_test::TestServer, name: &str, address: &str) -> String {
     let owner_token = setup_owner(server).await;
     server.post("/fleet/api/v1/facilities")

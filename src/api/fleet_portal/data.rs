@@ -1450,7 +1450,7 @@ pub struct ListFacilitiesDispatchQuery {
     path = "/fleet/api/v1/facilities",
     params(
         ("q" = Option<String>, Query, description = "Substring search across name and address (case-insensitive)"),
-        ("limit" = Option<usize>, Query, description = "Max results (default 20, max 100)"),
+        ("limit" = Option<usize>, Query, description = "Max results (default and max 1000, the scan cap)"),
         ("offset" = Option<usize>, Query, description = "Pagination offset"),
         ("include_archived" = Option<bool>, Query, description = "When true, include archived facilities (default false)"),
     ),
@@ -1467,14 +1467,15 @@ pub async fn list_facilities(
     Query(q): Query<ListFacilitiesDispatchQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("facilities:read")?;
-    let limit = q.limit.unwrap_or(20).min(100);
-    let offset = q.offset.unwrap_or(0);
-
-    // Fetch up to the scan cap, then apply the `q` filter and paginate in
-    // memory. At current facility volume (~tens) this is cheap; if the table
-    // grows large enough to matter, push the OR-LIKE filter into
+    // Follow the fleet list "scan cap" pattern: fetch up to the cap, apply the
+    // `q` filter in memory, and return everything (the UI sends no limit and
+    // renders all rows). Callers may still pass an explicit limit/offset to
+    // page. At current facility volume (~tens) the in-memory filter is cheap;
+    // if the table grows large enough to matter, push the OR-LIKE filter into
     // `build_facility_filter` so LanceDB does the work.
     const SCAN_CAP: usize = 1000;
+    let limit = q.limit.unwrap_or(SCAN_CAP).min(SCAN_CAP);
+    let offset = q.offset.unwrap_or(0);
     let include_archived = q.include_archived.unwrap_or(false);
     let (_total, items) = state.db.list_facilities(None, &[], SCAN_CAP, 0, include_archived).await?;
 
