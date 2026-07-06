@@ -61,4 +61,32 @@ describe('loads list header', () => {
     expect(main).not.toContain('page-title');
     expect(main).toContain('Load #');
   });
+
+  it('renders the origin → destination facility names in the Route column', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock);
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      returned: 1,
+      items: [{
+        id: 'l1',
+        load_number: 'L-100',
+        status: 'planned',
+        customer_name: 'Acme',
+        stops: [
+          { name: 'Chicago DC', scheduled_arrive: '2026-07-01T12:00:00Z' },
+          { name: 'Dallas Yard', scheduled_arrive: '2026-07-02T12:00:00Z' },
+        ],
+      }],
+    }));
+
+    const { renderLoadsView } = await import('../../static/fleet/pages/loads.js');
+    await renderLoadsView({});
+    await Promise.resolve();
+
+    const main = document.getElementById('main-content').innerHTML;
+    expect(main).toContain('Chicago DC');
+    expect(main).toContain('Dallas Yard');
+    expect(main).not.toContain('— → —');
+  });
 });
