@@ -286,6 +286,29 @@ pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppEr
     Ok(trip)
 }
 
+/// Deletes a trip, always releasing its equipment. A non-terminal trip
+/// (Planned/Assigned/Dispatched) is soft-cancelled via `cancel` — which
+/// transitions it to Cancelled AND releases its driver/truck/trailers back to
+/// Available — and an already-Cancelled trip is hard-deleted. This preserves
+/// the two-call delete semantics of `db.delete_trip` while ensuring equipment
+/// is never stranded in `assigned` after the owning trip is gone.
+pub async fn delete(state: &AppState, trip_id: Uuid) -> Result<(), AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
+    match existing.status {
+        TripStatus::Cancelled => return state.db.hard_delete_trip(trip_id).await,
+        TripStatus::InTransit | TripStatus::Delivered | TripStatus::Completed => {
+            return Err(AppError::Conflict(format!(
+                "cannot delete trip with status '{}'",
+                existing.status.as_str()
+            )));
+        }
+        _ => {}
+    }
+    // Planned / Assigned / Dispatched: soft-cancel, which releases equipment.
+    cancel(state, trip_id).await?;
+    Ok(())
+}
+
 /// Completes a delivered trip and releases its resources. Returns `()` because
 /// the admin/dispatch surfaces respond 204 No Content.
 pub async fn complete(state: &AppState, trip_id: Uuid) -> Result<(), AppError> {

@@ -319,6 +319,7 @@ pub struct CreateLoadRequest {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateLoadRequest {
+    pub load_number: Option<String>,
     pub customer_name: Option<String>,
     pub customer_ref: Option<String>,
     pub stops: Option<Vec<StopInput>>,

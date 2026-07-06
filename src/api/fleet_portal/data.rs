@@ -78,6 +78,12 @@ pub struct FleetTripListItem {
     pub detention_rate_per_hour: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub free_dwell_minutes: Option<u32>,
+    /// Stop facilities that are not yet geocoded — their missing coordinates are
+    /// why `mileage_summary`/`total_miles` may be null. Populated on trip detail
+    /// (create_trip / get_trip) so dispatchers see the blocker instead of a
+    /// silently null mileage. Empty on list views.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub geocode_warnings: Vec<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -179,6 +185,7 @@ fn enrich_trip(
         extra_stop_fee: None,
         detention_rate_per_hour: None,
         free_dwell_minutes: None,
+        geocode_warnings: Vec::new(),
     }
 }
 
@@ -737,6 +744,27 @@ pub async fn build_trip_detail(
     enriched.extra_stop_fee = record.extra_stop_fee;
     enriched.detention_rate_per_hour = record.detention_rate_per_hour;
     enriched.free_dwell_minutes = record.free_dwell_minutes;
+
+    // Surface any stop facility that isn't geocoded — missing coordinates are why
+    // trip mileage may come back null. Without this the failure is invisible to a
+    // dispatcher until they notice the blank mileage. The repair path is
+    // update_facility with explicit lat/lng (US Census can't resolve many new
+    // industrial/warehouse addresses).
+    let stop_fac_ids: Vec<Uuid> = record.stops.iter().filter_map(|s| s.facility_id).collect();
+    if !stop_fac_ids.is_empty() {
+        let facs = state.db.batch_get_facilities(&stop_fac_ids).await.unwrap_or_default();
+        for s in &record.stops {
+            let Some(fid) = s.facility_id else { continue };
+            let Some(f) = facs.get(&fid) else { continue };
+            if f.geocode_status != crate::models::facility::GeocodeStatus::Ready {
+                enriched.geocode_warnings.push(format!(
+                    "Stop '{}' ({}) is not geocoded (status: {}); trip mileage cannot be computed until coordinates are set — fix via update_facility with lat/lng.",
+                    f.name, f.address, f.geocode_status.as_str()
+                ));
+            }
+        }
+    }
+
     Ok(enriched)
 }
 

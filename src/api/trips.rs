@@ -152,6 +152,25 @@ pub(crate) async fn apply_trip_create(
     record.embedding = embed_text(&state.ai, &record.embedding_text()).await.ok();
 
     state.db.insert_trip(&record).await?;
+
+    // If created with a full driver+truck assignment, promote straight to
+    // Assigned via the shared lifecycle so the trip is immediately dispatchable
+    // (and recoverable via unassign). Without this the trip is stuck in Planned
+    // with equipment attached: dispatch_trip rejects it (needs Assigned) and
+    // unassign_driver rejects it (Planned->Planned is not a valid transition).
+    if let (Some(driver_id), Some(truck_id)) = (record.driver_id, record.truck_id) {
+        return crate::services::trip_lifecycle::assign(
+            state,
+            record.id,
+            crate::services::trip_lifecycle::AssignTripRequest {
+                driver_id,
+                truck_id,
+                trailer_ids: record.trailer_ids.clone(),
+            },
+        )
+        .await;
+    }
+
     for s in &mut record.stops { s.fill_utc_fields(); }
     Ok(record)
 }

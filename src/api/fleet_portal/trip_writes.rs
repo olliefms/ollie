@@ -296,7 +296,7 @@ pub async fn delete_trip_handler(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:delete")?;
-    state.db.delete_trip(id).await?;
+    crate::services::trip_lifecycle::delete(&state, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
