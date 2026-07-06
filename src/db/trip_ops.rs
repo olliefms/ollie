@@ -221,6 +221,19 @@ impl DbClient {
         batches_to_trips(collect_stream(stream).await?)
     }
 
+    /// Trips whose `previous_trip_id` points at `prev_trip_id` — the successors
+    /// in a relay chain. Used to guard against orphaning a chain link on delete.
+    pub async fn list_trips_referencing_previous(
+        &self, prev_trip_id: Uuid,
+    ) -> Result<Vec<TripRecord>, AppError> {
+        let id_str = prev_trip_id.to_string();
+        let stream = self.trip_table.query()
+            .only_if(format!("previous_trip_id = '{id_str}'"))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        batches_to_trips(collect_stream(stream).await?)
+    }
+
     /// Apply optional trip-level rate overrides (read-modify-upsert). Each field
     /// is an `Option<Option<_>>`: `None` leaves it unchanged, `Some(None)` clears
     /// the override back to inherited, and `Some(Some(v))` sets it.

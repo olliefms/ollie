@@ -1008,7 +1008,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "stop_depart",
-                "description": "Record actual departure from a trip stop. Triggers trip and load status cascades (e.g. dispatched → in_transit on pickup, → delivered on final stop).",
+                "description": "Record actual departure from a trip stop. Triggers trip and load status cascades: dispatched → in_transit when the first pickup departs (or, on a non-freight/empty move with no pickup, when the first stop departs), and → delivered when the final stop departs. A single-stop empty move advances straight to delivered on that one depart.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1456,7 +1456,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "delete_trip",
-                "description": "Delete a trip. Active trips are soft-cancelled; already-cancelled trips are hard-deleted. Blocked if the trip is in_transit, delivered, or completed. Returns { deleted: true }.",
+                "description": "Delete a trip. Active trips are soft-cancelled; already-cancelled trips are hard-deleted. Blocked if the trip is in_transit, delivered, or completed, or if another trip still references it via previous_trip_id. Returns { deleted: true, status: \"cancelled\" | \"deleted\" } — 'cancelled' means the record and its trip number still exist; call again to hard-delete.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "id": { "type": "string", "format": "uuid" } },
@@ -2691,8 +2691,14 @@ async fn tool_delete_load(state: &AppState, args: &Value) -> Result<Value, Strin
 
 async fn tool_delete_trip(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
-    crate::services::trip_lifecycle::delete(state, id).await.map_err(|e| e.to_string())?;
-    Ok(mcp_content(serde_json::json!({ "deleted": true })))
+    let outcome = crate::services::trip_lifecycle::delete(state, id).await.map_err(|e| e.to_string())?;
+    let status = match outcome {
+        crate::services::trip_lifecycle::DeleteOutcome::Cancelled => "cancelled",
+        crate::services::trip_lifecycle::DeleteOutcome::Deleted => "deleted",
+    };
+    // `deleted: true` retained for back-compat; `status` distinguishes the
+    // soft-cancel (record + trip number still exist) from the hard-delete.
+    Ok(mcp_content(serde_json::json!({ "deleted": true, "status": status })))
 }
 
 async fn tool_delete_driver(state: &AppState, args: &Value) -> Result<Value, String> {
