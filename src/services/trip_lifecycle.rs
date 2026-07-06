@@ -67,10 +67,19 @@ pub(crate) async fn validate_assignment(
     if driver.status == DriverStatus::Inactive {
         return Err(AppError::Conflict(format!("driver {driver_id} is not available for assignment")));
     }
+    // Fail fast: a driver already dispatched elsewhere can never be dispatched on
+    // this trip (see `dispatch`), so reject at assign time instead of letting the
+    // assignment through and surfacing the conflict only at dispatch.
+    if driver.status == DriverStatus::Dispatched {
+        return Err(AppError::Conflict(format!("driver {driver_id} is already dispatched on another trip")));
+    }
 
     let truck = state.db.get_truck_by_id(truck_id).await?;
     if matches!(truck.status, TruckStatus::OutOfService | TruckStatus::Inactive) {
         return Err(AppError::Conflict(format!("truck {truck_id} is not available for assignment")));
+    }
+    if truck.status == TruckStatus::Dispatched {
+        return Err(AppError::Conflict(format!("truck {truck_id} is already dispatched on another trip")));
     }
 
     let mut trailers = Vec::new();
@@ -306,16 +315,41 @@ pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppEr
     Ok(trip)
 }
 
+/// Outcome of a `delete` call, so callers can tell the two-call soft-then-hard
+/// semantics apart: the first call on an active trip `Cancelled` it (record and
+/// its trip number still exist); a second call `Deleted` it for good.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteOutcome {
+    Cancelled,
+    Deleted,
+}
+
 /// Deletes a trip, always releasing its equipment. A non-terminal trip
 /// (Planned/Assigned/Dispatched) is soft-cancelled via `cancel` — which
 /// transitions it to Cancelled AND releases its driver/truck/trailers back to
 /// Available — and an already-Cancelled trip is hard-deleted. This preserves
 /// the two-call delete semantics of `db.delete_trip` while ensuring equipment
 /// is never stranded in `assigned` after the owning trip is gone.
-pub async fn delete(state: &AppState, trip_id: Uuid) -> Result<(), AppError> {
+///
+/// A hard-delete is refused while another trip still points at this one via
+/// `previous_trip_id`, so deletion can't strand a dangling chain link; the
+/// caller is told which trips to re-point or clear first.
+pub async fn delete(state: &AppState, trip_id: Uuid) -> Result<DeleteOutcome, AppError> {
     let existing = state.db.get_trip(trip_id).await?;
     match existing.status {
-        TripStatus::Cancelled => return state.db.hard_delete_trip(trip_id).await,
+        TripStatus::Cancelled => {
+            let referencing = state.db.list_trips_referencing_previous(trip_id).await?;
+            if !referencing.is_empty() {
+                let nums: Vec<&str> = referencing.iter().map(|t| t.trip_number.as_str()).collect();
+                return Err(AppError::Conflict(format!(
+                    "cannot delete trip: it is referenced as previous_trip_id by {}. \
+                     Re-point or clear those trips first.",
+                    nums.join(", ")
+                )));
+            }
+            state.db.hard_delete_trip(trip_id).await?;
+            return Ok(DeleteOutcome::Deleted);
+        }
         TripStatus::InTransit | TripStatus::Delivered | TripStatus::Completed => {
             return Err(AppError::Conflict(format!(
                 "cannot delete trip with status '{}'",
@@ -326,7 +360,7 @@ pub async fn delete(state: &AppState, trip_id: Uuid) -> Result<(), AppError> {
     }
     // Planned / Assigned / Dispatched: soft-cancel, which releases equipment.
     cancel(state, trip_id).await?;
-    Ok(())
+    Ok(DeleteOutcome::Cancelled)
 }
 
 /// Completes a delivered trip and releases its resources. Returns `()` because

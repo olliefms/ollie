@@ -54,11 +54,18 @@ pub async fn record_stop_arrive(
 /// Record an actual-departure time for a trip stop. In addition to the load-stop
 /// cascade and `stop.departed` event, this advances trip + load status:
 ///
-/// * First pickup depart on a `Dispatched` trip → trip becomes `InTransit`, and
-///   the load follows if it is still `Dispatched`.
+/// * First transit-starting depart on a `Dispatched` trip → trip becomes
+///   `InTransit`, and the load follows if it is still `Dispatched`. For a loaded
+///   trip that stop is the first `Pickup`; for a non-freight trip (a
+///   repositioning/empty/maintenance move with no pickup) it is the first stop.
 /// * Final stop depart on an `InTransit` trip → trip becomes `Delivered`, the
 ///   load follows when all of its trips are `Delivered`, and the driver's next
 ///   `Assigned` trip is auto-dispatched.
+///
+/// A single-stop non-freight trip (e.g. one `terminal` stop) advances through
+/// both cascades on the one depart: the first sets `InTransit`, the second
+/// re-reads that status and sets `Delivered`, giving empty moves a real
+/// completion path.
 ///
 /// Returns a re-fetched trip reflecting any status transitions.
 pub async fn record_stop_depart(
@@ -73,7 +80,7 @@ pub async fn record_stop_depart(
         .await?;
 
     cascade_load_stop_depart(state, &trip, seq, &actual_depart).await;
-    cascade_first_pickup_in_transit(state, &trip, seq).await;
+    cascade_start_in_transit(state, &trip, seq).await;
     cascade_final_stop_delivered(state, trip_id, seq).await;
 
     events::on_stop_departed(&state.db, trip_id, seq).await;
@@ -123,9 +130,22 @@ async fn cascade_load_stop_depart(state: &AppState, trip: &TripRecord, seq: u32,
         .await;
 }
 
-async fn cascade_first_pickup_in_transit(state: &AppState, trip: &TripRecord, seq: u32) {
+async fn cascade_start_in_transit(state: &AppState, trip: &TripRecord, seq: u32) {
     let Some(stop) = trip.stops.iter().find(|s| s.sequence == seq) else { return };
-    if stop.stop_type != TripStopType::Pickup || trip.status != TripStatus::Dispatched {
+    if trip.status != TripStatus::Dispatched {
+        return;
+    }
+    // A loaded trip starts transit only when its first `Pickup` departs. A
+    // non-freight trip (repositioning/empty/maintenance move with no pickup)
+    // has no pickup to gate on, so its first stop's departure starts transit —
+    // otherwise such a trip could never leave `Dispatched` and never complete.
+    let has_pickup = trip.stops.iter().any(|s| s.stop_type == TripStopType::Pickup);
+    let starts_transit = if has_pickup {
+        stop.stop_type == TripStopType::Pickup
+    } else {
+        trip.stops.iter().map(|s| s.sequence).min() == Some(seq)
+    };
+    if !starts_transit {
         return;
     }
     if state
