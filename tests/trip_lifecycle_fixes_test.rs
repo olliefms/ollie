@@ -205,15 +205,17 @@ async fn single_terminal_stop_trip_reaches_delivered_and_completes() {
             Some(did),
             None,
             None,
-            vec![stop(0, TripStopType::Terminal)],
+            // Single stop at sequence 2 (not 0/1) per AGENTS.md: keeps a 1-based
+            // vs 0-based mixup visible in cascade tests.
+            vec![stop(2, TripStopType::Terminal)],
         ))
         .await
         .unwrap();
 
-    trip_stops::record_stop_arrive(&state, tid, 0, "2026-05-22T10:00:00".into())
+    trip_stops::record_stop_arrive(&state, tid, 2, "2026-05-22T10:00:00".into())
         .await
         .unwrap();
-    let after = trip_stops::record_stop_depart(&state, tid, 0, "2026-05-22T10:30:00".into())
+    let after = trip_stops::record_stop_depart(&state, tid, 2, "2026-05-22T10:30:00".into())
         .await
         .unwrap();
     assert_eq!(
@@ -240,14 +242,14 @@ async fn two_stop_empty_move_starts_transit_then_delivers() {
             None,
             None,
             vec![
-                stop(0, TripStopType::EmptyMove),
-                stop(1, TripStopType::Terminal),
+                stop(1, TripStopType::EmptyMove),
+                stop(2, TripStopType::Terminal),
             ],
         ))
         .await
         .unwrap();
 
-    let after0 = trip_stops::record_stop_depart(&state, tid, 0, "2026-05-22T08:00:00".into())
+    let after0 = trip_stops::record_stop_depart(&state, tid, 1, "2026-05-22T08:00:00".into())
         .await
         .unwrap();
     assert_eq!(
@@ -256,7 +258,7 @@ async fn two_stop_empty_move_starts_transit_then_delivers() {
         "first stop depart of a no-pickup trip should start transit"
     );
 
-    let after1 = trip_stops::record_stop_depart(&state, tid, 1, "2026-05-22T12:00:00".into())
+    let after1 = trip_stops::record_stop_depart(&state, tid, 2, "2026-05-22T12:00:00".into())
         .await
         .unwrap();
     assert_eq!(after1.status, TripStatus::Delivered, "final stop depart should deliver");
@@ -278,15 +280,15 @@ async fn loaded_trip_still_gated_on_pickup_depart() {
             None,
             None,
             vec![
-                stop(0, TripStopType::Origin),
-                stop(1, TripStopType::Pickup),
-                stop(2, TripStopType::Delivery),
+                stop(1, TripStopType::Origin),
+                stop(2, TripStopType::Pickup),
+                stop(3, TripStopType::Delivery),
             ],
         ))
         .await
         .unwrap();
 
-    let after_origin = trip_stops::record_stop_depart(&state, tid, 0, "2026-05-22T06:00:00".into())
+    let after_origin = trip_stops::record_stop_depart(&state, tid, 1, "2026-05-22T06:00:00".into())
         .await
         .unwrap();
     assert_eq!(
@@ -295,12 +297,12 @@ async fn loaded_trip_still_gated_on_pickup_depart() {
         "departing origin (not the pickup) must not start transit on a loaded trip"
     );
 
-    let after_pickup = trip_stops::record_stop_depart(&state, tid, 1, "2026-05-22T07:00:00".into())
+    let after_pickup = trip_stops::record_stop_depart(&state, tid, 2, "2026-05-22T07:00:00".into())
         .await
         .unwrap();
     assert_eq!(after_pickup.status, TripStatus::InTransit);
 
-    let after_delivery = trip_stops::record_stop_depart(&state, tid, 2, "2026-05-22T15:00:00".into())
+    let after_delivery = trip_stops::record_stop_depart(&state, tid, 3, "2026-05-22T15:00:00".into())
         .await
         .unwrap();
     assert_eq!(after_delivery.status, TripStatus::Delivered);
@@ -318,7 +320,7 @@ async fn assign_rejects_already_dispatched_driver() {
     let tid = Uuid::new_v4();
     state
         .db
-        .insert_trip(&trip(tid, "T-ASSIGN-0001", TripStatus::Planned, None, None, None, vec![stop(0, TripStopType::Terminal)]))
+        .insert_trip(&trip(tid, "T-ASSIGN-0001", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
         .await
         .unwrap();
 
@@ -342,7 +344,7 @@ async fn assign_rejects_already_dispatched_truck() {
     let tid = Uuid::new_v4();
     state
         .db
-        .insert_trip(&trip(tid, "T-ASSIGN-0002", TripStatus::Planned, None, None, None, vec![stop(0, TripStopType::Terminal)]))
+        .insert_trip(&trip(tid, "T-ASSIGN-0002", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
         .await
         .unwrap();
 
@@ -364,7 +366,7 @@ async fn delete_soft_cancels_then_hard_deletes() {
     let tid = Uuid::new_v4();
     state
         .db
-        .insert_trip(&trip(tid, "T-DEL-0001", TripStatus::Assigned, None, None, None, vec![stop(0, TripStopType::Terminal)]))
+        .insert_trip(&trip(tid, "T-DEL-0001", TripStatus::Assigned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
         .await
         .unwrap();
 
@@ -391,13 +393,13 @@ async fn delete_blocked_while_referenced_as_previous_trip() {
     let prev = Uuid::new_v4();
     state
         .db
-        .insert_trip(&trip(prev, "T-PREV-0001", TripStatus::Cancelled, None, None, None, vec![stop(0, TripStopType::Terminal)]))
+        .insert_trip(&trip(prev, "T-PREV-0001", TripStatus::Cancelled, None, None, None, vec![stop(1, TripStopType::Terminal)]))
         .await
         .unwrap();
     let succ = Uuid::new_v4();
     state
         .db
-        .insert_trip(&trip(succ, "T-SUCC-0002", TripStatus::Planned, None, None, Some(prev), vec![stop(0, TripStopType::Terminal)]))
+        .insert_trip(&trip(succ, "T-SUCC-0002", TripStatus::Planned, None, None, Some(prev), vec![stop(1, TripStopType::Terminal)]))
         .await
         .unwrap();
 
