@@ -44,8 +44,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
-    events,
-    models::{DriverStatus, LoadStatus, TrailerStatus, TripStatus, TruckStatus},
+    models::LoadStatus,
     services::trip_lifecycle::{CheckCallRequest, StopLateRequest},
     AppState,
 };
@@ -836,7 +835,7 @@ fn tools_list() -> Value {
                         "notes": { "type": "string" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
-                        "load_number": { "type": "integer" }
+                        "load_number": { "type": "string", "description": "Human-facing load/reference number (free-form string, e.g. a broker/Landstar number). Omit to auto-assign LD-YYYY-NNNN." }
                     },
                     "required": ["customer_name", "stops"]
                 }
@@ -857,7 +856,8 @@ fn tools_list() -> Value {
                         "miles": { "type": "number" },
                         "notes": { "type": "string" },
                         "tags": { "type": "array", "items": { "type": "string" } },
-                        "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                        "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "load_number": { "type": "string", "description": "Human-facing load/reference number (free-form string). Overwrites the existing number." }
                     },
                     "required": ["id"]
                 }
@@ -1983,6 +1983,10 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
         let _ = state.routing_tx.try_send(id);
     }
 
+    if let Some(ln) = req.load_number {
+        updated = state.db.update_load_number(id, ln).await.map_err(|e| e.to_string())?;
+    }
+
     Ok(mcp_content(updated))
 }
 
@@ -2073,6 +2077,7 @@ async fn tool_recalculate_trip_miles(
 }
 
 async fn tool_assign_driver(state: &AppState, args: &Value) -> Result<Value, String> {
+    use crate::services::trip_lifecycle::{assign, AssignTripRequest};
     let trip_id = parse_uuid(args, "trip_id")?;
     let driver_id = parse_uuid(args, "driver_id")?;
     let truck_id = parse_uuid(args, "truck_id")?;
@@ -2082,79 +2087,22 @@ async fn tool_assign_driver(state: &AppState, args: &Value) -> Result<Value, Str
             .map_err(|e| format!("invalid trailer_ids: {e}"))?,
     };
 
-    let driver = state.db.get_driver_by_id(driver_id).await.map_err(|e| e.to_string())?;
-    if driver.status != DriverStatus::Available {
-        return Err(format!("driver {driver_id} is not available"));
-    }
-
-    let truck = state.db.get_truck_by_id(truck_id).await.map_err(|e| e.to_string())?;
-    if truck.status != TruckStatus::Available {
-        return Err(format!("truck {truck_id} is not available"));
-    }
-
-    for &tid in &trailer_ids {
-        let trailer = state.db.get_trailer_by_id(tid).await.map_err(|e| e.to_string())?;
-        if trailer.status != TrailerStatus::Available {
-            return Err(format!("trailer {tid} is not available"));
-        }
-    }
-
-    state.db.transition_trip_status(trip_id, TripStatus::Assigned).await.map_err(|e| e.to_string())?;
-    state.db.update_trip_resources(trip_id, Some(driver_id), Some(truck_id), trailer_ids.clone())
-        .await.map_err(|e| e.to_string())?;
-
-    state.db.update_driver_status(driver_id, DriverStatus::Assigned).await.map_err(|e| e.to_string())?;
-    state.db.update_truck_status(truck_id, TruckStatus::Assigned).await.map_err(|e| e.to_string())?;
-    for &tid in &trailer_ids {
-        state.db.update_trailer_status(tid, TrailerStatus::Assigned).await.map_err(|e| e.to_string())?;
-    }
-
-    // Re-fetch after all mutations (stale-return rule)
-    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
-
-    if let Some(load_id) = trip.load_id {
-        if let Ok(load) = state.db.get_load_by_id(load_id).await {
-            if load.status == LoadStatus::Planned {
-                let _ = state.db.transition_load_status(load_id, LoadStatus::Assigned, None, None, None).await;
-            }
-        }
-    }
-
-    events::on_trip_assigned(&state.db, trip_id).await;
+    // Delegate to the shared lifecycle so MCP and REST behave identically. Its
+    // availability checks are lenient (only OutOfService/Inactive trucks and
+    // Inactive drivers are rejected; already-Assigned trailers are accepted),
+    // so re-assigning equipment already attached to THIS trip is idempotent
+    // rather than a spurious "not available" error.
+    let trip = assign(state, trip_id, AssignTripRequest { driver_id, truck_id, trailer_ids })
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(trip))
 }
 
 async fn tool_unassign_driver(state: &AppState, args: &Value) -> Result<Value, String> {
     let trip_id = parse_uuid(args, "trip_id")?;
-
-    let existing = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
-    state.db.transition_trip_status(trip_id, TripStatus::Planned).await.map_err(|e| e.to_string())?;
-    state.db.update_trip_resources(trip_id, None, None, vec![]).await.map_err(|e| e.to_string())?;
-
-    if let Some(driver_id) = existing.driver_id {
-        let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
-    }
-    if let Some(truck_id) = existing.truck_id {
-        let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
-    }
-    for &tid in &existing.trailer_ids {
-        let _ = state.db.update_trailer_status(tid, TrailerStatus::Available).await;
-    }
-
-    if let Some(load_id) = existing.load_id {
-        let active = state.db.count_active_trips_for_load(load_id).await.unwrap_or(1);
-        if active == 0 {
-            if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                if load.status == LoadStatus::Assigned {
-                    let _ = state.db.transition_load_status(load_id, LoadStatus::Planned, None, None, None).await;
-                }
-            }
-        }
-    }
-
-    // Re-fetch after all mutations (stale-return rule)
-    let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
-    events::on_trip_unassigned(&state.db, trip_id).await;
+    let trip = crate::services::trip_lifecycle::unassign(state, trip_id)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(trip))
 }
 
@@ -2743,7 +2691,7 @@ async fn tool_delete_load(state: &AppState, args: &Value) -> Result<Value, Strin
 
 async fn tool_delete_trip(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
-    state.db.delete_trip(id).await.map_err(|e| e.to_string())?;
+    crate::services::trip_lifecycle::delete(state, id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "deleted": true })))
 }
 

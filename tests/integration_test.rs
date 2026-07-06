@@ -6762,6 +6762,224 @@ async fn test_fleet_user_mcp_create_truck_and_trailer_then_assign() {
     assert_eq!(trip["truck_id"], truck_id);
 }
 
+/// Regression: creating a trip the "obvious way" — driver + truck + trailer in a
+/// single create_trip call — must land in `assigned` and dispatch straight away.
+/// Previously it landed in `planned` with equipment attached: un-dispatchable
+/// (dispatch needs `assigned`) AND un-unwindable (unassign needs `assigned`).
+#[tokio::test]
+async fn test_mcp_create_trip_with_equipment_lands_assigned_and_dispatchable() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let token = fleet_user_login(&server, "ct-eq@example.com", "password-ct-eq").await;
+
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "CT Eq Driver" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = mcp_call(&server, &token, "create_truck",
+        serde_json::json!({ "unit_number": "CT-EQ-TRK" })).await["id"].as_str().unwrap().to_string();
+    let trailer_id = mcp_call(&server, &token, "create_trailer",
+        serde_json::json!({ "unit_number": "CT-EQ-TRL", "owner": "fleet" })).await["id"].as_str().unwrap().to_string();
+
+    let fac1 = create_test_facility(&server, "CT Eq A", "Dallas, TX").await;
+    let fac2 = create_test_facility(&server, "CT Eq B", "Houston, TX").await;
+
+    let trip = mcp_call(&server, &token, "create_trip", serde_json::json!({
+        "driver_id": driver_id,
+        "truck_id": truck_id,
+        "trailer_ids": [trailer_id],
+        "stops": [
+            { "sequence": 1, "stop_type": "pickup", "facility_id": fac1,
+              "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+            { "sequence": 2, "stop_type": "delivery", "facility_id": fac2,
+              "scheduled_arrive": "2026-08-02T08:00:00", "timezone": "America/Chicago" },
+        ]
+    })).await;
+    let trip_id = trip["id"].as_str().unwrap().to_string();
+    assert_eq!(trip["status"], "assigned", "create_trip with driver+truck must land assigned: {trip:?}");
+    assert_eq!(trip["driver_id"].as_str().unwrap(), driver_id);
+    assert_eq!(trip["truck_id"].as_str().unwrap(), truck_id);
+
+    let dispatched = mcp_call(&server, &token, "dispatch_trip",
+        serde_json::json!({ "trip_id": trip_id })).await;
+    assert_eq!(dispatched["status"], "dispatched", "assigned trip must dispatch");
+}
+
+/// Regression: deleting a trip must release its truck/trailer/driver back to
+/// `available`. Previously delete soft-cancelled the trip but left the equipment
+/// stranded in `assigned`, blocking all further assignment.
+#[tokio::test]
+async fn test_mcp_delete_trip_releases_equipment() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let token = fleet_user_login(&server, "del-eq@example.com", "password-del-eq").await;
+
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "Del Eq Driver" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = mcp_call(&server, &token, "create_truck",
+        serde_json::json!({ "unit_number": "DEL-EQ-TRK" })).await["id"].as_str().unwrap().to_string();
+    let trailer_id = mcp_call(&server, &token, "create_trailer",
+        serde_json::json!({ "unit_number": "DEL-EQ-TRL", "owner": "fleet" })).await["id"].as_str().unwrap().to_string();
+    let fac = create_test_facility(&server, "Del Eq Dock", "Boise, ID").await;
+
+    let trip = mcp_call(&server, &token, "create_trip", serde_json::json!({
+        "driver_id": driver_id,
+        "truck_id": truck_id,
+        "trailer_ids": [trailer_id],
+        "stops": [
+            { "sequence": 1, "stop_type": "pickup", "facility_id": fac,
+              "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+            { "sequence": 2, "stop_type": "delivery", "facility_id": fac,
+              "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+        ]
+    })).await;
+    let trip_id = trip["id"].as_str().unwrap().to_string();
+    assert_eq!(trip["status"], "assigned");
+
+    let truck_before = server.get(&format!("/fleet/api/v1/trucks/{truck_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await.json::<serde_json::Value>();
+    assert_eq!(truck_before["status"], "assigned", "sanity: truck assigned while trip lives");
+
+    let del = mcp_call(&server, &token, "delete_trip", serde_json::json!({ "id": trip_id })).await;
+    assert_eq!(del["deleted"], serde_json::json!(true));
+
+    let truck_after = server.get(&format!("/fleet/api/v1/trucks/{truck_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await.json::<serde_json::Value>();
+    assert_eq!(truck_after["status"], "available", "truck must be released after delete_trip");
+    let trailer_after = server.get(&format!("/fleet/api/v1/trailers/{trailer_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await.json::<serde_json::Value>();
+    assert_eq!(trailer_after["status"], "available", "trailer must be released after delete_trip");
+    let driver_after = server.get(&format!("/fleet/api/v1/drivers/{driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await.json::<serde_json::Value>();
+    assert_eq!(driver_after["status"], "available", "driver must be released after delete_trip");
+}
+
+/// Regression: `create_load` must accept a free-form STRING `load_number` (the
+/// schema previously declared it `integer`), and `update_load` must be able to
+/// set it after creation.
+#[tokio::test]
+async fn test_mcp_create_load_string_number_and_update_load_number() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "ln@example.com", "password-ln").await;
+    let fac = create_test_facility(&server, "LN Dock", "Memphis, TN").await;
+
+    let load = mcp_call(&server, &token, "create_load", serde_json::json!({
+        "customer_name": "Landstar",
+        "load_number": "JQL 9821550",
+        "stops": [
+            { "sequence": 1, "stop_type": "pickup", "service_type": "live_load", "facility_id": fac,
+              "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+            { "sequence": 2, "stop_type": "delivery", "service_type": "live_unload", "facility_id": fac,
+              "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+        ]
+    })).await;
+    assert_eq!(load["load_number"], "JQL 9821550");
+    let load_id = load["id"].as_str().unwrap().to_string();
+
+    let updated = mcp_call(&server, &token, "update_load", serde_json::json!({
+        "id": load_id,
+        "load_number": "Landstar 26918641"
+    })).await;
+    assert_eq!(updated["load_number"], "Landstar 26918641");
+}
+
+/// A stop facility that hasn't geocoded surfaces a `geocode_warnings` entry on
+/// trip detail so a dispatcher sees the blocker instead of a silently-null mileage.
+#[tokio::test]
+async fn test_mcp_trip_detail_surfaces_geocode_warning_for_ungeocoded_stop() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "gw@example.com", "password-gw").await;
+    // Test facilities never geocode (no worker; receiver dropped) → stay `pending`.
+    let fac = create_test_facility(&server, "Ungeocoded Dock", "1000 Nowhere Rd, Novilla, ZZ").await;
+
+    let trip = mcp_call(&server, &token, "create_trip", serde_json::json!({
+        "stops": [
+            { "sequence": 1, "stop_type": "pickup", "facility_id": fac,
+              "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago" },
+            { "sequence": 2, "stop_type": "delivery", "facility_id": fac,
+              "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/Chicago" }
+        ]
+    })).await;
+    let warnings = trip["geocode_warnings"].as_array().expect("geocode_warnings array present");
+    assert!(!warnings.is_empty(), "expected a geocode warning for an ungeocoded stop: {trip:?}");
+    assert!(warnings[0].as_str().unwrap().contains("not geocoded"));
+}
+
+/// The REST `PUT /loads/{id}` handler must honor `load_number` (it's in the
+/// request schema); previously it silently ignored the field.
+#[tokio::test]
+async fn test_rest_update_load_sets_load_number() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let fac = create_test_facility(&server, "REST LN Dock", "Ogden, UT").await;
+    let load_id = create_2stop_load(&server, &fac, "REST LN Co").await;
+
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "load_number": "REST-123456" }))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+
+    let got = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await.json::<serde_json::Value>();
+    assert_eq!(got["load_number"], "REST-123456", "REST update_load must persist load_number");
+}
+
+/// Regression: `create_trip` validates equipment BEFORE insert, so a rejected
+/// assignment (here an out-of-service trailer) leaves no orphaned Planned trip.
+#[tokio::test]
+async fn test_create_trip_rejects_bad_equipment_before_insert_no_orphan() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+
+    let fac = create_test_facility(&server, "Orphan Dock", "Reno, NV").await;
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "Orphan Driver" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "ORPH-TRK" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let trailer_id = server.post("/fleet/api/v1/trailers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "ORPH-TRL", "owner": "fleet" }))
+        .await.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    // PATCH deliberately rejects status writes, so set OOS directly via the DB.
+    state.db.update_trailer_status(
+        trailer_id.parse().unwrap(),
+        ollie::models::trailer::TrailerStatus::OutOfService,
+    ).await.unwrap();
+
+    let resp = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({
+            "driver_id": driver_id,
+            "truck_id": truck_id,
+            "trailer_ids": [trailer_id],
+            "stops": [{
+                "sequence": 1, "stop_type": "origin", "facility_id": fac,
+                "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/Chicago"
+            }]
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "create with OOS trailer must be rejected");
+
+    // No orphaned trip should have been inserted for the driver.
+    let trips = server.get(&format!("/fleet/api/v1/trips?driver_id={driver_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await.json::<serde_json::Value>();
+    assert!(trips["items"].as_array().unwrap().is_empty(),
+        "no orphaned trip should persist after rejected create: {trips:?}");
+}
+
 // ---------------------------------------------------------------------------
 // Blob-store MCP tools + presigned byte-transfer endpoints (#277)
 // ---------------------------------------------------------------------------

@@ -113,6 +113,14 @@ impl DbClient {
         Ok(record)
     }
 
+    pub async fn update_load_number(&self, id: Uuid, load_number: String) -> Result<LoadRecord, AppError> {
+        let mut record = self.get_load_by_id(id).await?;
+        record.load_number = load_number;
+        record.updated_at = Utc::now();
+        self.upsert_load(&record).await?;
+        Ok(record)
+    }
+
     pub async fn update_load_miles(&self, id: Uuid, miles: f64) -> Result<(), AppError> {
         let mut record = self.get_load_by_id(id).await?;
         record.miles = Some(miles);
@@ -467,6 +475,17 @@ mod tests {
     async fn test_get_load_not_found() {
         let (db, _dir) = test_db().await;
         assert!(matches!(db.get_load_by_id(uuid::Uuid::new_v4()).await, Err(AppError::NotFound)));
+    }
+
+    #[tokio::test]
+    async fn test_update_load_number() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+        let updated = db.update_load_number(load.id, "JQL-9821550".into()).await.unwrap();
+        assert_eq!(updated.load_number, "JQL-9821550");
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.load_number, "JQL-9821550");
     }
 
     #[tokio::test]
