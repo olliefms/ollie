@@ -426,6 +426,12 @@
   width: 100%;
 }
 
+.btn--sm {
+  height: 26px;
+  padding: 0 var(--space-3);
+  font-size: 0.8125rem;
+}
+
 .btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
@@ -878,6 +884,11 @@
 
 .inheritable-field .form-input {
   flex: 1;
+}
+
+.stop-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 
 .btn-link {

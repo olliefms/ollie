@@ -82,9 +82,11 @@ export async function renderTripDetail(id) {
     const stopRows = stops.map((stop, i) => {
       const seq = stop.sequence;
       const stopActions = canStopTimes ? `
-        <button class="btn-link" data-stop-arrive="${seq}">Arrive</button>
-        <button class="btn-link" data-stop-depart="${seq}">Depart</button>
-        <button class="btn-link" data-stop-late="${seq}">Late</button>
+        <div class="stop-actions">
+          <button class="btn btn--secondary btn--sm" data-stop-arrive="${seq}">Arrive</button>
+          <button class="btn btn--secondary btn--sm" data-stop-depart="${seq}">Depart</button>
+          <button class="btn btn--secondary btn--sm" data-stop-late="${seq}">Late</button>
+        </div>
       ` : '';
       return `
       <tr>
