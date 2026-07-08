@@ -351,6 +351,7 @@ Document blobs:
   get_blob_metadata  Blob metadata plus a reverse lookup:
                      attached_to.{loads,facilities,trips,drivers,trucks,trailers,maintenance}.
   list_blobs         List blob metadata (optional name, tag, content_type, limit).
+  update_blob        Edit a blob's name and/or tags (tags is a full replace of the set).
   delete_blob        Delete a blob (force? to override reference checks).
 
 Presigned URLs require OLLIE_PUBLIC_BASE_URL to be configured on the server.

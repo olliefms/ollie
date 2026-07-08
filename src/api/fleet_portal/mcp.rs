@@ -308,7 +308,7 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "list_events" => "events:read",
         // Blobs
         "list_blobs" | "search_blobs" | "get_blob_url" | "get_blob_metadata" => "blobs:read",
-        "upload_blob" => "blobs:write",
+        "upload_blob" | "update_blob" => "blobs:write",
         "delete_blob" => "blobs:delete",
         // load_doctor reads a load's integrity.
         "load_doctor" => "loads:read",
@@ -467,7 +467,7 @@ fn blob_resource_links(tool: &str, value: &Value, args: &Value) -> Vec<Content> 
             .as_array()
             .map(|items| items.iter().filter_map(link_from).collect())
             .unwrap_or_default(),
-        "get_blob_metadata" => link_from(value).into_iter().collect(),
+        "get_blob_metadata" | "update_blob" => link_from(value).into_iter().collect(),
         // get_blob_url's payload is the URL, not the record — link by id from args.
         "get_blob_url" => args["id"]
             .as_str()
@@ -1432,6 +1432,19 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "update_blob",
+                "description": "Edit a blob's metadata: rename it and/or set its tags. `tags` is a FULL REPLACE of the tag set (send the complete desired list, not a delta — read the current tags with get_blob_metadata first if you only want to add/remove one). At least one of `name` or `tags` must be provided. Does not touch the file bytes, summary, or embedding. Returns the updated blob record.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id":   { "type": "string", "format": "uuid" },
+                        "name": { "type": "string", "description": "New display name for the blob." },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Complete new tag set (replaces all existing tags)." }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
                 "name": "search_blobs",
                 "description": "SEMANTIC search over blobs by meaning, using vector similarity over Ollama embeddings of each blob's summary — use this for natural-language queries like 'rate con mentioning hazmat detention'. (Contrast list_blobs, which only does literal name-substring and exact-tag matching.) Returns ranked BlobListItems each with a `score` (higher = closer), best match first. Optional name/tag pre-filters and limit (default 10, max 100).",
                 "inputSchema": {
@@ -1753,6 +1766,7 @@ async fn handle_tool_call(
         "upload_blob" => tool_upload_blob(state, args).await,
         "get_blob_url" => tool_get_blob_url(state, args).await,
         "get_blob_metadata" => tool_get_blob_metadata(state, args).await,
+        "update_blob" => tool_update_blob(state, args).await,
         "list_blobs" => tool_list_blobs(state, args).await,
         "search_blobs" => tool_search_blobs(state, args).await,
         "delete_blob" => tool_delete_blob(state, args).await,
@@ -2574,6 +2588,32 @@ async fn tool_get_blob_metadata(state: &AppState, args: &Value) -> Result<Value,
     Ok(mcp_content(value))
 }
 
+/// Edit a blob's name and/or tags — a thin wrapper over the same
+/// `db.update_metadata` path the REST `PUT /fleet/api/v1/blobs/{id}` handler uses,
+/// so MCP and REST share one impl. `tags` is a full replace of the set.
+async fn tool_update_blob(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let name = args.get("name").and_then(Value::as_str).map(str::to_string);
+    let tags = match args.get("tags") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(arr)) => Some(
+            arr.iter()
+                .map(|t| {
+                    t.as_str()
+                        .map(str::to_string)
+                        .ok_or_else(|| "update_blob: tags must be an array of strings".to_string())
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        Some(_) => return Err("update_blob: tags must be an array of strings".to_string()),
+    };
+    if name.is_none() && tags.is_none() {
+        return Err("update_blob requires at least one of `name` or `tags`".to_string());
+    }
+    let record = state.db.update_metadata(id, name, tags).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(record))
+}
+
 async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String> {
     let limit = args["limit"].as_u64().map(|n| n as usize).unwrap_or(PAGE_SIZE).min(1000);
     let name = args["name"].as_str();
@@ -2974,6 +3014,78 @@ mod tests {
     }
 
     #[test]
+    fn update_blob_is_a_write_scoped_catalog_tool() {
+        assert_eq!(tool_required_scope("update_blob"), Some("blobs:write"));
+        assert!(
+            tool_catalog().iter().any(|t| t.name == "update_blob"),
+            "update_blob must be advertised in the tool catalog"
+        );
+        // update_* converge to a target value → not read-only, not destructive.
+        assert!(!is_destructive_op("update_blob", &json!({ "tags": [] })));
+    }
+
+    #[tokio::test]
+    async fn tool_update_blob_replaces_tags_and_renames() {
+        let (state, _b, _d) = test_state().await;
+        let now = chrono::Utc::now();
+        let id = Uuid::new_v4();
+        state
+            .db
+            .insert(&crate::models::BlobRecord {
+                id,
+                owner_id: 0,
+                checksum: "chk".into(),
+                name: "old.txt".into(),
+                mime_type: "text/plain".into(),
+                size: 1,
+                status: crate::models::BlobStatus::Ready,
+                error: None,
+                summary: None,
+                tags: vec!["old".into()],
+                embedding: None,
+                created_at: now,
+                updated_at: now,
+                visibility: Default::default(),
+                uploaded_by: None,
+            })
+            .await
+            .unwrap();
+
+        // Full-replace of tags + rename in one call.
+        let out = tool_update_blob(
+            &state,
+            &json!({ "id": id.to_string(), "name": "new.txt", "tags": ["a", "b"] }),
+        )
+        .await
+        .unwrap();
+        let rec: crate::models::BlobRecord = serde_json::from_value(out).unwrap();
+        assert_eq!(rec.name, "new.txt");
+        assert_eq!(rec.tags, vec!["a", "b"]);
+
+        // Omitting tags leaves them untouched; empty array clears them.
+        tool_update_blob(&state, &json!({ "id": id.to_string(), "name": "renamed" }))
+            .await
+            .unwrap();
+        let persisted = state.db.get_by_id(id).await.unwrap();
+        assert_eq!(persisted.tags, vec!["a", "b"], "omitted tags must be preserved");
+        assert_eq!(persisted.name, "renamed");
+
+        tool_update_blob(&state, &json!({ "id": id.to_string(), "tags": [] }))
+            .await
+            .unwrap();
+        assert!(state.db.get_by_id(id).await.unwrap().tags.is_empty());
+
+        // No mutable field → rejected.
+        assert!(tool_update_blob(&state, &json!({ "id": id.to_string() })).await.is_err());
+        // Non-string tags → rejected.
+        assert!(
+            tool_update_blob(&state, &json!({ "id": id.to_string(), "tags": [1, 2] }))
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
     fn tool_catalog_carries_titles_and_annotations() {
         let catalog = tool_catalog();
         let find = |n: &str| {
@@ -3115,6 +3227,12 @@ mod tests {
         let links = blob_resource_links("get_blob_metadata", &rec, &json!({}));
         assert_eq!(links.len(), 1);
         assert_eq!(uri_of(&links[0]).as_deref(), Some("ollie://blob/33333333-3333-3333-3333-333333333333"));
+
+        // update_blob: links from the returned record, same shape as get_blob_metadata.
+        let rec = json!({ "id": "55555555-5555-5555-5555-555555555555", "name": "d", "mime_type": "text/plain", "size": 1 });
+        let links = blob_resource_links("update_blob", &rec, &json!({}));
+        assert_eq!(links.len(), 1);
+        assert_eq!(uri_of(&links[0]).as_deref(), Some("ollie://blob/55555555-5555-5555-5555-555555555555"));
 
         // get_blob_url: the distinct args-based path (payload is the URL, not the record).
         let links = blob_resource_links(
