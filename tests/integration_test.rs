@@ -4463,7 +4463,7 @@ async fn setup_driver_with_dispatched_load_trip(
 #[tokio::test]
 async fn test_driver_trip_detail_shows_trip_notes_not_load_notes() {
     let (server, _db, _blob, _rx, state) = test_server_with_state().await;
-    let (driver_token, trip_id, _load_id) =
+    let (driver_token, trip_id, load_id) =
         setup_driver_with_dispatched_load_trip(&server, &state).await;
     let owner_token = setup_owner(&server).await;
 
@@ -4472,7 +4472,7 @@ async fn test_driver_trip_detail_shows_trip_notes_not_load_notes() {
     const TRIP_OPS: &str = "Sealed trailer — do not break seal. Tracking + check calls required.";
 
     // Load notes carry the financials that must stay back-office.
-    let put_load = server.put(&format!("/fleet/api/v1/loads/{_load_id}"))
+    let put_load = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "notes": LOAD_FINANCIALS }))
         .await;
