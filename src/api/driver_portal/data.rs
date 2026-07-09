@@ -71,7 +71,6 @@ pub struct DriverTripLoadSummary {
     pub customer_ref: Option<String>,
     pub commodity: Option<String>,
     pub weight_lbs: Option<f64>,
-    pub notes: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -104,6 +103,7 @@ pub struct DriverTripDetailResponse {
     pub status: String,
     pub truck_unit: Option<String>,
     pub trailer_units: Vec<String>,
+    pub notes: Option<String>,
     pub load: Option<DriverTripLoadSummary>,
     pub stops: Vec<DriverTripStopSummary>,
     pub mileage_summary: crate::models::trip::MileageSummary,
@@ -531,7 +531,6 @@ pub async fn trip_detail(
         customer_ref: l.customer_ref,
         commodity: l.commodity,
         weight_lbs: l.weight_lbs,
-        notes: l.notes,
     });
 
     let stops = trip
@@ -583,6 +582,7 @@ pub async fn trip_detail(
         status: trip.status.as_str().to_string(),
         truck_unit,
         trailer_units,
+        notes: trip.notes.clone(),
         load,
         stops,
         mileage_summary,

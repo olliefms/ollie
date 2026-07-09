@@ -105,13 +105,6 @@ export async function renderTripDetail(container, tripId) {
       commodityDiv.className = 'trip-detail-row';
       commodityDiv.textContent = `${data.load.commodity} • ${formatWeight(data.load.weight_lbs)}`;
       loadSection.appendChild(commodityDiv);
-
-      if (data.load.notes) {
-        const notesDiv = document.createElement('div');
-        notesDiv.className = 'trip-detail-row trip-detail-notes';
-        notesDiv.textContent = data.load.notes;
-        loadSection.appendChild(notesDiv);
-      }
     } else {
       const noLoadDiv = document.createElement('div');
       noLoadDiv.className = 'trip-detail-row';
@@ -120,6 +113,16 @@ export async function renderTripDetail(container, tripId) {
     }
 
     page.appendChild(loadSection);
+
+    if (data.notes) {
+      const notesSection = document.createElement('div');
+      notesSection.className = 'trip-detail-section';
+      const notesDiv = document.createElement('div');
+      notesDiv.className = 'trip-detail-row trip-detail-notes';
+      notesDiv.textContent = data.notes;
+      notesSection.appendChild(notesDiv);
+      page.appendChild(notesSection);
+    }
 
     const stopsSection = document.createElement('div');
     stopsSection.className = 'trip-detail-section trip-detail-stops';

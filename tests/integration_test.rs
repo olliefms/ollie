@@ -4457,6 +4457,51 @@ async fn setup_driver_with_dispatched_load_trip(
     (token, trip_id, load_id)
 }
 
+/// The driver trip-detail view must surface the *trip* notes (operational text
+/// authored for the driver) and must never leak the *load* notes, which routinely
+/// carry back-office financials (rate/revenue, cargo value). See bug 2026-07-08.
+#[tokio::test]
+async fn test_driver_trip_detail_shows_trip_notes_not_load_notes() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let (driver_token, trip_id, load_id) =
+        setup_driver_with_dispatched_load_trip(&server, &state).await;
+    let owner_token = setup_owner(&server).await;
+
+    const LOAD_FINANCIALS: &str =
+        "48 pcs ELECTRONICS, $100,000 cargo value. Total revenue $837.68 (line haul + FSC).";
+    const TRIP_OPS: &str = "Sealed trailer — do not break seal. Tracking + check calls required.";
+
+    // Load notes carry the financials that must stay back-office.
+    let put_load = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "notes": LOAD_FINANCIALS }))
+        .await;
+    assert_eq!(put_load.status_code(), 200);
+
+    // Trip notes carry the driver-facing operational instructions.
+    let patch_trip = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "notes": TRIP_OPS }))
+        .await;
+    assert_eq!(patch_trip.status_code(), 200);
+
+    let detail = server.get(&format!("/driver/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+
+    // Trip notes are surfaced at the top level.
+    assert_eq!(body["notes"].as_str(), Some(TRIP_OPS),
+        "driver trip detail must expose the trip's own notes");
+
+    // Load notes (financials) must never reach the driver payload.
+    assert!(body["load"]["notes"].is_null(),
+        "load notes must not be surfaced to the driver app");
+    assert!(!body.to_string().contains("$100,000") && !body.to_string().contains("837.68"),
+        "no load financials may appear anywhere in the driver trip-detail response");
+}
+
 #[tokio::test]
 async fn test_220_driver_patch_cascades_to_load_and_transitions_status() {
     let (server, _db, _blob, _rx, state) = test_server_with_state().await;
