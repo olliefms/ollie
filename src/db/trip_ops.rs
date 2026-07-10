@@ -176,6 +176,29 @@ impl DbClient {
         Ok(record)
     }
 
+    /// Clear recorded actual times on a trip stop. Clearing arrival also clears
+    /// departure (a departure requires an arrival). Unlike `update_trip_stop`,
+    /// this sets the fields to `None` rather than leaving them untouched.
+    pub async fn clear_trip_stop_times(
+        &self, id: Uuid, seq: u32,
+        clear_arrive: bool,
+        clear_depart: bool,
+    ) -> Result<TripRecord, AppError> {
+        let mut record = self.get_trip(id).await?;
+        let stop = record.stops.iter_mut()
+            .find(|s| s.sequence == seq)
+            .ok_or(AppError::NotFound)?;
+        if clear_arrive {
+            stop.actual_arrive = None;
+            stop.actual_depart = None;
+        } else if clear_depart {
+            stop.actual_depart = None;
+        }
+        record.updated_at = Utc::now();
+        self.upsert_trip(&record).await?;
+        Ok(record)
+    }
+
     pub async fn delete_trip(&self, id: Uuid) -> Result<(), AppError> {
         let record = self.get_trip(id).await?;
         match record.status {

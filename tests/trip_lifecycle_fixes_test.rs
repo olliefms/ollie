@@ -557,3 +557,79 @@ async fn delete_blocked_while_referenced_as_previous_trip() {
     assert!(msg.contains("T-SUCC-0002"), "error should name the referencing trip: {msg}");
     assert!(state.db.get_trip(prev).await.is_ok(), "refused delete must leave the trip intact");
 }
+
+// --- driver stop-time clear (2026-07-10) ----------------------------------
+
+#[tokio::test]
+async fn clear_arrive_also_clears_depart() {
+    let (state, _b, _d) = test_state().await;
+    let tid = Uuid::new_v4();
+    state
+        .db
+        .insert_trip(&trip(
+            tid,
+            "T-CLEAR-0001",
+            TripStatus::Dispatched,
+            None,
+            None,
+            None,
+            vec![
+                stop(1, TripStopType::EmptyMove),
+                stop(2, TripStopType::Terminal),
+            ],
+        ))
+        .await
+        .unwrap();
+
+    trip_stops::record_stop_arrive(&state, tid, 1, "2026-05-22T08:00:00".into())
+        .await
+        .unwrap();
+    trip_stops::record_stop_depart(&state, tid, 1, "2026-05-22T08:30:00".into())
+        .await
+        .unwrap();
+
+    // Clearing the arrival cascades to the departure.
+    trip_stops::clear_stop_times(&state, tid, 1, true, false)
+        .await
+        .unwrap();
+
+    let after = state.db.get_trip(tid).await.unwrap();
+    let s1 = after.stops.iter().find(|s| s.sequence == 1).unwrap();
+    assert!(s1.actual_arrive.is_none(), "arrival should be cleared");
+    assert!(s1.actual_depart.is_none(), "departure should be cleared with the arrival");
+}
+
+#[tokio::test]
+async fn clear_depart_leaves_arrive() {
+    let (state, _b, _d) = test_state().await;
+    let tid = Uuid::new_v4();
+    state
+        .db
+        .insert_trip(&trip(
+            tid,
+            "T-CLEAR-0002",
+            TripStatus::Dispatched,
+            None,
+            None,
+            None,
+            vec![stop(1, TripStopType::Terminal)],
+        ))
+        .await
+        .unwrap();
+
+    trip_stops::record_stop_arrive(&state, tid, 1, "2026-05-22T08:00:00".into())
+        .await
+        .unwrap();
+    trip_stops::record_stop_depart(&state, tid, 1, "2026-05-22T08:30:00".into())
+        .await
+        .unwrap();
+
+    trip_stops::clear_stop_times(&state, tid, 1, false, true)
+        .await
+        .unwrap();
+
+    let after = state.db.get_trip(tid).await.unwrap();
+    let s1 = after.stops.iter().find(|s| s.sequence == 1).unwrap();
+    assert!(s1.actual_arrive.is_some(), "arrival should remain");
+    assert!(s1.actual_depart.is_none(), "only departure should be cleared");
+}

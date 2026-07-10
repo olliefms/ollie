@@ -1066,10 +1066,16 @@
 .stop-actual-edit { padding: var(--space-1) var(--space-2); background: transparent; border: none; cursor: pointer; color: var(--color-text-muted); min-height: 44px; min-width: 44px; }
 .stop-actual-edit:hover { color: var(--color-text); }
 .stop-actual-editor { position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; }
+.stop-actual-clear { padding: var(--space-1) var(--space-2); background: transparent; border: none; cursor: pointer; color: var(--color-text-muted); min-height: 44px; min-width: 44px; }
+.stop-actual-clear:hover { color: var(--color-danger); }
+.stop-actual-clear--armed { color: var(--color-text-inverse); background: var(--color-danger); border-radius: var(--radius); min-width: auto; padding: var(--space-1) var(--space-2); font-size: 0.8rem; }
 .stop-detail-actual-disabled { color: var(--color-text-disabled); font-style: italic; }
 
 /* Equipment page */
 .equipment-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
@@ -1118,6 +1124,59 @@
   border-radius: var(--radius);
   padding: var(--space-2);
 }
+.trailer-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.trailer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  font-size: 0.9rem;
+}
+.trailer-chip__remove {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 var(--space-1);
+  min-width: 28px;
+  min-height: 28px;
+}
+.trailer-chip__remove:hover { color: var(--color-danger); }
+.trailer-typeahead { position: relative; }
+.trailer-suggestions {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--color-surface);
+}
+.trailer-suggestion {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+  padding: var(--space-3);
+  min-height: 44px;
+  color: var(--color-text);
+  font: inherit;
+}
+.trailer-suggestion:last-child { border-bottom: none; }
+.trailer-suggestion:hover { background: var(--color-bg); }
+.trailer-suggestion--new { color: var(--color-primary); }
 .equipment-pick-row {
   display: flex;
   align-items: center;

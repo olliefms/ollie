@@ -130,6 +130,14 @@ pub struct UpdateStopTimesRequest {
     pub actual_arrive: Option<String>,
     #[serde(default)]
     pub actual_depart: Option<String>,
+    /// Clear the recorded arrival (and, since departure requires arrival, the
+    /// departure too). Explicit boolean so a clear is distinguishable from an
+    /// omitted field.
+    #[serde(default)]
+    pub clear_arrive: bool,
+    /// Clear the recorded departure only.
+    #[serde(default)]
+    pub clear_depart: bool,
 }
 
 #[derive(Serialize)]
@@ -722,6 +730,27 @@ pub async fn update_stop_times(
     let stop_idx = trip.stops.iter().position(|s| s.sequence == seq).ok_or(AppError::NotFound)?;
     let tz = trip.stops[stop_idx].timezone.clone();
 
+    // Clearing is the correction escape hatch — no sequence guard, and it takes
+    // precedence over any set fields in the same request.
+    if req.clear_arrive || req.clear_depart {
+        trip_stops::clear_stop_times(&state, id, seq, req.clear_arrive, req.clear_depart).await?;
+        let final_trip = state.db.get_trip(id).await?;
+        let stop = final_trip.stops.iter().find(|s| s.sequence == seq).ok_or(AppError::NotFound)?;
+        return Ok(Json(serde_json::json!({
+            "sequence": stop.sequence,
+            "actual_arrive": stop.actual_arrive,
+            "actual_depart": stop.actual_depart,
+            "timezone": stop.timezone,
+            "trip_status": final_trip.status.as_str(),
+        })));
+    }
+
+    // Guard only a NEW arrival (none recorded yet). Editing an existing arrival is
+    // an intentional correction and must stay unblocked.
+    if req.actual_arrive.is_some() && trip.stops[stop_idx].actual_arrive.is_none() {
+        check_arrival_allowed(trip.status, &trip.stops, seq)?;
+    }
+
     if let Some(a) = req.actual_arrive.as_deref() {
         trip_stops::validate_arrive(a, tz.as_deref())?;
     }
@@ -780,6 +809,33 @@ pub async fn update_stop_times(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// Enforce driver-side ordering when recording a *new* arrival. Fleet-side
+/// backfill uses the shared service directly and is intentionally unrestricted.
+///
+/// * The trip must be dispatched to the driver (`Dispatched` or `InTransit`).
+/// * Every earlier stop must have departed before arriving at a later one.
+fn check_arrival_allowed(
+    status: crate::models::TripStatus,
+    stops: &[crate::models::TripStop],
+    seq: u32,
+) -> Result<(), AppError> {
+    use crate::models::TripStatus;
+    if !matches!(status, TripStatus::Dispatched | TripStatus::InTransit) {
+        return Err(AppError::UnprocessableEntity(
+            "trip not yet dispatched to you".into(),
+        ));
+    }
+    let prior_incomplete = stops
+        .iter()
+        .any(|s| s.sequence < seq && s.actual_depart.is_none());
+    if prior_incomplete {
+        return Err(AppError::UnprocessableEntity(
+            "complete the previous stop first".into(),
+        ));
+    }
+    Ok(())
+}
 
 fn resolve_stop_name_sync(
     fac_map: &HashMap<Uuid, crate::models::FacilityRecord>,
@@ -964,5 +1020,32 @@ mod tests {
     fn test_sunday_of_a_wednesday() {
         let d = chrono::NaiveDate::from_ymd_opt(2026, 5, 13).unwrap();
         assert_eq!(sunday_of(d), chrono::NaiveDate::from_ymd_opt(2026, 5, 10).unwrap());
+    }
+
+    #[test]
+    fn test_arrival_rejected_when_not_dispatched() {
+        let stops = vec![make_stop(1, None, None)];
+        assert!(check_arrival_allowed(TripStatus::Assigned, &stops, 1).is_err());
+        assert!(check_arrival_allowed(TripStatus::Planned, &stops, 1).is_err());
+    }
+
+    #[test]
+    fn test_arrival_rejected_before_prior_stop_departs() {
+        let stops = vec![
+            make_stop(1, None, None), // not departed
+            make_stop(2, None, None),
+        ];
+        assert!(check_arrival_allowed(TripStatus::Dispatched, &stops, 2).is_err());
+    }
+
+    #[test]
+    fn test_arrival_allowed_when_dispatched_and_prior_departed() {
+        let stops = vec![
+            make_stop(1, Some("2026-05-01T09:00:00"), None), // departed
+            make_stop(2, None, None),
+        ];
+        assert!(check_arrival_allowed(TripStatus::Dispatched, &stops, 2).is_ok());
+        // First stop has no predecessors, so only the dispatch gate applies.
+        assert!(check_arrival_allowed(TripStatus::InTransit, &stops, 1).is_ok());
     }
 }
