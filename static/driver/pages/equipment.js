@@ -123,24 +123,14 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
   renderCurrentList(current);
   card.appendChild(currentList);
 
-  // Picker
+  // Picker — type-to-complete with removable chips instead of a long list.
   const picker = document.createElement('div');
   picker.className = 'equipment-picker';
 
   const filterLabel = document.createElement('label');
-  filterLabel.textContent = 'Find trailer';
+  filterLabel.textContent = 'Add trailer';
   filterLabel.className = 'form-label';
   picker.appendChild(filterLabel);
-
-  const filter = document.createElement('input');
-  filter.type = 'text';
-  filter.placeholder = 'Type unit number or filter list';
-  filter.className = 'form-input';
-  picker.appendChild(filter);
-
-  const listWrap = document.createElement('div');
-  listWrap.className = 'equipment-list';
-  picker.appendChild(listWrap);
 
   const selectedSet = new Set(current.map(t => t.id));
   // Unit numbers the driver typed that aren't known trailers yet — created on
@@ -148,74 +138,83 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
   const pendingNewUnits = new Set();
   const unitById = new Map([...current, ...allTrailers].map(t => [t.id, t.unit_number]));
 
-  const renderList = () => {
-    listWrap.replaceChildren();
+  // Selected trailers as chips.
+  const chips = document.createElement('div');
+  chips.className = 'trailer-chips';
 
-    // Queued new trailers show as checked rows; unchecking removes them.
-    pendingNewUnits.forEach(unit => {
-      const row = document.createElement('label');
-      row.className = 'equipment-pick-row';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = true;
-      cb.addEventListener('change', () => {
-        pendingNewUnits.delete(unit);
-        renderList();
-      });
-      const text = document.createElement('span');
-      const u = document.createElement('strong');
-      u.textContent = unit;
-      const m = document.createElement('span');
-      m.className = 'muted';
-      m.textContent = ' · new trailer';
-      text.appendChild(u);
-      text.appendChild(m);
-      row.appendChild(cb);
-      row.appendChild(text);
-      listWrap.appendChild(row);
-    });
-
-    const q = filter.value.trim().toLowerCase();
-    const filtered = allTrailers.filter(t =>
-      !q || t.unit_number.toLowerCase().includes(q)
-        || (t.owner_name && t.owner_name.toLowerCase().includes(q))
-    );
-    if (filtered.length === 0) {
-      const raw = filter.value.trim();
-      if (raw && !pendingNewUnits.has(raw)) {
-        // No known trailer matches — let the driver hook a brand-new one.
-        const add = document.createElement('button');
-        add.type = 'button';
-        add.className = 'btn btn-secondary';
-        add.textContent = `Hook new trailer “${raw}”`;
-        add.addEventListener('click', () => {
-          pendingNewUnits.add(raw);
-          filter.value = '';
-          renderList();
-        });
-        listWrap.appendChild(add);
-      } else {
-        const empty = document.createElement('div');
-        empty.className = 'muted';
-        empty.textContent = 'No trailers match.';
-        listWrap.appendChild(empty);
-      }
+  const renderChips = () => {
+    chips.replaceChildren();
+    const known = Array.from(selectedSet).map(id => ({
+      id,
+      unit: unitById.get(id) || (allTrailers.find(t => t.id === id) || {}).unit_number || '—',
+    }));
+    if (known.length === 0 && pendingNewUnits.size === 0) {
+      const empty = document.createElement('span');
+      empty.className = 'muted small';
+      empty.textContent = 'No trailers selected.';
+      chips.appendChild(empty);
       return;
     }
-    filtered.slice(0, 50).forEach(t => {
-      const row = document.createElement('label');
-      row.className = 'equipment-pick-row';
-      const cb = document.createElement('input');
-      cb.type = 'checkbox';
-      cb.checked = selectedSet.has(t.id);
-      cb.addEventListener('change', () => {
-        if (cb.checked) selectedSet.add(t.id);
-        else selectedSet.delete(t.id);
-      });
-      const text = document.createElement('span');
+    known.forEach(({ id, unit }) => chips.appendChild(makeChip(unit, null, () => {
+      selectedSet.delete(id);
+      renderChips();
+    })));
+    pendingNewUnits.forEach(unit => chips.appendChild(makeChip(unit, 'new', () => {
+      pendingNewUnits.delete(unit);
+      renderChips();
+    })));
+  };
+
+  // Typeahead input + suggestions dropdown.
+  const typeahead = document.createElement('div');
+  typeahead.className = 'trailer-typeahead';
+
+  const filter = document.createElement('input');
+  filter.type = 'text';
+  filter.placeholder = 'Type a trailer number';
+  filter.className = 'form-input';
+  filter.autocomplete = 'off';
+  typeahead.appendChild(filter);
+
+  const suggestions = document.createElement('div');
+  suggestions.className = 'trailer-suggestions';
+  suggestions.hidden = true;
+  typeahead.appendChild(suggestions);
+
+  const addKnown = (t) => {
+    selectedSet.add(t.id);
+    unitById.set(t.id, t.unit_number);
+    filter.value = '';
+    renderSuggestions();
+    renderChips();
+  };
+  const addNew = (raw) => {
+    pendingNewUnits.add(raw);
+    filter.value = '';
+    renderSuggestions();
+    renderChips();
+  };
+
+  const renderSuggestions = () => {
+    suggestions.replaceChildren();
+    const raw = filter.value.trim();
+    const q = raw.toLowerCase();
+    if (!q) { suggestions.hidden = true; return; }
+
+    const matches = allTrailers.filter(t =>
+      !selectedSet.has(t.id) && (
+        t.unit_number.toLowerCase().includes(q)
+        || (t.owner_name && t.owner_name.toLowerCase().includes(q))
+      )
+    ).slice(0, 8);
+
+    matches.forEach(t => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'trailer-suggestion';
       const unit = document.createElement('strong');
       unit.textContent = t.unit_number;
-      text.appendChild(unit);
+      row.appendChild(unit);
       const meta = [];
       if (t.owner_name) meta.push(t.owner_name);
       if (t.trailer_type) meta.push(t.trailer_type);
@@ -223,15 +222,40 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
         const m = document.createElement('span');
         m.className = 'muted';
         m.textContent = ' · ' + meta.join(' · ');
-        text.appendChild(m);
+        row.appendChild(m);
       }
-      row.appendChild(cb);
-      row.appendChild(text);
-      listWrap.appendChild(row);
+      row.addEventListener('click', () => addKnown(t));
+      suggestions.appendChild(row);
     });
+
+    // Offer to hook a brand-new trailer when the typed value isn't an exact match.
+    const exact = allTrailers.some(t => t.unit_number.toLowerCase() === q);
+    if (!exact && !pendingNewUnits.has(raw)) {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'trailer-suggestion trailer-suggestion--new';
+      add.textContent = `Hook new trailer “${raw}”`;
+      add.addEventListener('click', () => addNew(raw));
+      suggestions.appendChild(add);
+    }
+
+    suggestions.hidden = suggestions.childElementCount === 0;
   };
-  filter.addEventListener('input', renderList);
-  renderList();
+
+  filter.addEventListener('input', renderSuggestions);
+  filter.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const first = suggestions.querySelector('.trailer-suggestion');
+    if (first) first.click();
+  });
+
+  picker.appendChild(chips);
+  picker.appendChild(typeahead);
+  renderChips();
+
+  // Keep renderList name for the submit handler below (re-renders selection UI).
+  const renderList = () => { renderChips(); renderSuggestions(); };
 
   const submit = document.createElement('button');
   submit.type = 'button';
@@ -281,6 +305,28 @@ function buildTrailerSection(current, allTrailers, onSubmit) {
 
   card.appendChild(picker);
   return card;
+}
+
+function makeChip(unit, tag, onRemove) {
+  const chip = document.createElement('span');
+  chip.className = 'trailer-chip';
+  const u = document.createElement('strong');
+  u.textContent = unit;
+  chip.appendChild(u);
+  if (tag) {
+    const t = document.createElement('span');
+    t.className = 'muted';
+    t.textContent = ` · ${tag}`;
+    chip.appendChild(t);
+  }
+  const x = document.createElement('button');
+  x.type = 'button';
+  x.className = 'trailer-chip__remove';
+  x.textContent = '×';
+  x.setAttribute('aria-label', `Remove ${unit}`);
+  x.addEventListener('click', onRemove);
+  chip.appendChild(x);
+  return chip;
 }
 
 async function submitTrailerChange(body) {

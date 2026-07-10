@@ -88,9 +88,56 @@ pub async fn record_stop_depart(
     state.db.get_trip(trip_id).await
 }
 
+/// Clear recorded actual times on a trip stop, cascading the clear to the linked
+/// load stop. Clearing arrival also clears departure. Status transitions are not
+/// rewound — clearing is a data correction. Returns a re-fetched trip.
+pub async fn clear_stop_times(
+    state: &AppState,
+    trip_id: Uuid,
+    seq: u32,
+    clear_arrive: bool,
+    clear_depart: bool,
+) -> Result<TripRecord, AppError> {
+    let trip = state
+        .db
+        .clear_trip_stop_times(trip_id, seq, clear_arrive, clear_depart)
+        .await?;
+
+    cascade_load_stop_clear(state, &trip, seq, clear_arrive, clear_depart).await;
+
+    state.db.get_trip(trip_id).await
+}
+
 // ---------------------------------------------------------------------------
 // internal cascade helpers
 // ---------------------------------------------------------------------------
+
+async fn cascade_load_stop_clear(
+    state: &AppState, trip: &TripRecord, seq: u32,
+    clear_arrive: bool, clear_depart: bool,
+) {
+    let Some(load_id) = trip.load_id else { return };
+    let Some(stop) = trip.stops.iter().find(|s| s.sequence == seq) else { return };
+    let Some(load_stop_idx) = stop.load_stop_index else { return };
+    let Ok(load) = state.db.get_load_by_id(load_id).await else { return };
+    let mut updated_stops = load.stops.clone();
+    if (load_stop_idx as usize) >= updated_stops.len() {
+        return;
+    }
+    if clear_arrive {
+        updated_stops[load_stop_idx as usize].actual_arrive = None;
+        updated_stops[load_stop_idx as usize].actual_depart = None;
+    } else if clear_depart {
+        updated_stops[load_stop_idx as usize].actual_depart = None;
+    }
+    let _ = state
+        .db
+        .update_load_metadata(
+            load_id, None, None, Some(updated_stops),
+            None, None, None, None, None, None, None, None,
+        )
+        .await;
+}
 
 async fn cascade_load_stop_arrive(state: &AppState, trip: &TripRecord, seq: u32, value: &str) {
     let Some(load_id) = trip.load_id else { return };

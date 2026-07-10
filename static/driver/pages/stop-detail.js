@@ -237,7 +237,10 @@ function renderActualSection(stop, tripId, onChange) {
   arrivedRow.appendChild(renderActualLine('Arrived', stop.actual_arrive, stop.actual_arrive_utc, stop.timezone, async (newVal) => {
     await patchStop(tripId, stop.sequence, { actual_arrive: newVal });
     onChange();
-  }, !stop.actual_arrive));
+  }, !stop.actual_arrive, async () => {
+    await patchStop(tripId, stop.sequence, { clear_arrive: true });
+    onChange();
+  }));
   const arrivalBubble = renderArrivalStatusBubble(stop);
   if (arrivalBubble) arrivedRow.appendChild(arrivalBubble);
   section.appendChild(arrivedRow);
@@ -248,7 +251,10 @@ function renderActualSection(stop, tripId, onChange) {
     departedRow.appendChild(renderActualLine('Departed', stop.actual_depart, stop.actual_depart_utc, stop.timezone, async (newVal) => {
       await patchStop(tripId, stop.sequence, { actual_depart: newVal });
       onChange();
-    }, !stop.actual_depart));
+    }, !stop.actual_depart, async () => {
+      await patchStop(tripId, stop.sequence, { clear_depart: true });
+      onChange();
+    }));
     const dwellBubbles = renderDwellBubbles(stop);
     dwellBubbles.forEach(b => departedRow.appendChild(b));
   } else {
@@ -322,7 +328,7 @@ function renderDwellBubbles(stop) {
   return out;
 }
 
-function renderActualLine(label, currentValue, currentValueUtc, tz, onSave, primary) {
+function renderActualLine(label, currentValue, currentValueUtc, tz, onSave, primary, onClear) {
   const wrap = document.createElement('span');
   const lbl = document.createElement('span');
   lbl.className = 'stop-detail-actual-label';
@@ -356,7 +362,11 @@ function renderActualLine(label, currentValue, currentValueUtc, tz, onSave, prim
     const display = convertNaive(currentValue, tz, deviceTz);
     dt.value = display ? display.slice(0, 16) : '';
     dt.addEventListener('change', async () => {
-      if (!dt.value) return;
+      // Emptying the field via the picker's built-in "Clear" clears the entry.
+      if (!dt.value) {
+        if (onClear) { try { await onClear(); } catch (err) { alert(err.message || 'Clear failed'); } }
+        return;
+      }
       const newVal = dt.value + ':00';
       const back = convertNaive(newVal, deviceTz, tz);
       try { await onSave(back); }
@@ -368,8 +378,42 @@ function renderActualLine(label, currentValue, currentValueUtc, tz, onSave, prim
     });
     wrap.appendChild(edit);
     wrap.appendChild(dt);
+
+    if (onClear) wrap.appendChild(renderClearButton(label, onClear));
   }
   return wrap;
+}
+
+// Trash-can clear with a two-tap inline confirm (no blocking dialog). First tap
+// arms it; second tap within the window clears. Auto-disarms after 3s.
+function renderClearButton(label, onClear) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'stop-actual-clear';
+  btn.textContent = '🗑';
+  btn.setAttribute('aria-label', `Clear ${label}`);
+  let armed = false;
+  let timer = null;
+  const disarm = () => {
+    armed = false;
+    btn.classList.remove('stop-actual-clear--armed');
+    btn.textContent = '🗑';
+    if (timer) { clearTimeout(timer); timer = null; }
+  };
+  btn.addEventListener('click', async () => {
+    if (!armed) {
+      armed = true;
+      btn.classList.add('stop-actual-clear--armed');
+      btn.textContent = 'Clear?';
+      timer = setTimeout(disarm, 3000);
+      return;
+    }
+    disarm();
+    btn.disabled = true;
+    try { await onClear(); }
+    catch (err) { btn.disabled = false; alert(err.message || 'Clear failed'); }
+  });
+  return btn;
 }
 
 async function patchStop(tripId, seq, body) {
