@@ -2,6 +2,33 @@
 
 This file is for AI coding agents working on this codebase. Read it before making changes.
 
+## Sync with origin — before and after every task
+
+**Before doing anything else in a session** — before reading issues, branching, or editing a single file — make the local checkout match origin. Skip only if the human EXPLICITLY says to work offline or against a stale state.
+
+```bash
+git fetch origin
+git status --porcelain        # MUST be empty before switching branches
+```
+
+- If `git status --porcelain` prints anything, **STOP.** The tree is dirty — do NOT `git checkout`. A checkout from a dirty branch can silently carry uncommitted edits onto `main`. Tell the human; let them commit, stash, or discard first.
+- Only with a clean tree, update the default branch:
+
+  ```bash
+  git checkout main && git pull --ff-only origin main
+  ```
+
+- If `git pull --ff-only` fails, local `main` has **diverged** from `origin/main`. STOP and tell the human. Never force-push, hard-reset, or rebase to force it.
+- **Resuming mid-task on a feature branch?** `git fetch` is still mandatory, but stay on that branch — don't switch to `main`. Only rebase/merge onto it when asked. The non-negotiable part is that `main` is current before cutting a NEW branch.
+
+**After a PR merges, or after tearing down a git worktree,** bring local `main` back in line with `origin/main` — from the primary checkout, AFTER leaving the worktree (`main` can't be checked out in two worktrees at once), clean tree only:
+
+```bash
+git checkout main && git pull --ff-only origin main
+```
+
+This applies to every agent and session unless explicitly told otherwise.
+
 ## Project Overview
 
 ollie is a self-hosted freight **Transportation Management System (TMS)** written in Rust. It manages the operational core of a trucking dispatch operation — loads, trips, drivers, trucks, trailers, and facilities — alongside an AI-enabled document store (the original "blob store": files content-addressed on disk, summarized and embedded by Ollama, indexed in LanceDB for semantic search).
@@ -318,6 +345,7 @@ Trunk-based. Three skills cover the workflow:
 - **Minor (x.Y.0):** any new feature, endpoint, or UI capability
 
 ### Key rules
+- **Sync `main` with `origin/main` first.** Before cutting any release branch or bump commit, follow the [Sync with origin](#sync-with-origin--before-and-after-every-task) section at the top of this guide — a stale local `main` produces a bad tag.
 - **Bump version, then tag.** The tag points to the bump commit on main.
 - **Use `refs/tags/vX.Y.Z` when pushing tags** to avoid branch/tag ambiguity.
 - **Subagent commit discipline:** after each subagent completes, run `git diff --stat HEAD` to confirm it committed. If the diff is non-empty, commit manually before proceeding — one subagent silently skipped its commit in v1.3.1.
