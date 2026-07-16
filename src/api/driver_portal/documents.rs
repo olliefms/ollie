@@ -217,7 +217,7 @@ pub async fn list_documents(
         .map_err(|_| AppError::Unauthorized)?;
     assert_trip_belongs_to_driver(&state, trip_id, driver_id).await?;
     let tag = format!("trip:{trip_id}");
-    let (_total, items) = state.db.list(None, &[tag], 200, 0).await?;
+    let (_total, items) = state.db.list(None, &[tag], false, 200, 0).await?;
     let visible: Vec<_> = items
         .into_iter()
         .filter(|b| b.visibility == BlobVisibility::Driver || b.uploaded_by == Some(driver_id))

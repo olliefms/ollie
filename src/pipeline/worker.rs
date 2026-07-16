@@ -2,7 +2,7 @@
 use crate::{
     ai::{
         embed::embed_text,
-        extract::{extract_content, Extractable},
+        extract::{extract_content, fit_image_for_vision, scanned_pdf_page_image, Extractable},
         summarize::{describe_image, summarize_text},
         OllamaClient,
     },
@@ -55,35 +55,58 @@ pub async fn process_blob(
                     Ok((Some(summary), Some(embedding)))
                 }
             }
-            Extractable::ScannedPdf(_bytes, raw_text) => {
-                // There is no PDF→image rasterizer in the tree, so the raw PDF
-                // bytes are NOT a decodable image — feeding them to the vision
-                // model crashes Ollama's CLIP tokenizer (SIGSEGV). Until page
-                // rasterization is added, summarize whatever text we extracted.
-                // A scanned PDF with no extractable text degrades to no summary
-                // rather than a hard failure. (#281)
-                if raw_text.trim().is_empty() {
-                    tracing::info!("scanned PDF {id} has no extractable text; skipping summarization");
-                    Ok((None, None))
-                } else {
-                    let summary = summarize_text(ai, &raw_text).await?;
-                    let embed_source = if summary.is_empty() { &raw_text } else { &summary };
-                    let embedding = embed_text(ai, embed_source).await?;
-                    Ok((Some(summary), Some(embedding)))
+            Extractable::ScannedPdf(bytes, raw_text) => {
+                // A scanned PDF's page is usually one full-page JPEG; recover it
+                // and describe it with the vision model. Raw PDF bytes must never
+                // reach the vision model — they crash Ollama's CLIP tokenizer
+                // (SIGSEGV, #281) — so only a validated, size-fitted page image is
+                // sent. When no usable image is found, degrade to whatever text
+                // the extractor produced, as before. (#367)
+                let page_image = tokio::task::spawn_blocking(move || {
+                    scanned_pdf_page_image(&bytes)
+                        .and_then(|img| fit_image_for_vision(&img, MAX_VISION_BYTES))
+                })
+                .await
+                .ok()
+                .flatten();
+                match page_image {
+                    Some(img) => {
+                        let description = describe_image(ai, &bytes::Bytes::from(img)).await?;
+                        let embedding = embed_text(ai, &description).await?;
+                        Ok((Some(description), Some(embedding)))
+                    }
+                    None if raw_text.trim().is_empty() => {
+                        tracing::info!("scanned PDF {id} has no extractable text or usable page image; skipping summarization");
+                        Ok((None, None))
+                    }
+                    None => {
+                        let summary = summarize_text(ai, &raw_text).await?;
+                        let embed_source = if summary.is_empty() { &raw_text } else { &summary };
+                        let embedding = embed_text(ai, embed_source).await?;
+                        Ok((Some(summary), Some(embedding)))
+                    }
                 }
             }
             Extractable::ImageBytes(bytes) => {
-                if bytes.len() > MAX_VISION_BYTES {
-                    tracing::info!(
-                        "image {} bytes exceeds vision threshold {}; skipping AI description",
-                        bytes.len(),
-                        MAX_VISION_BYTES
-                    );
-                    Ok((None, None))
-                } else {
-                    let description = describe_image(ai, &bytes).await?;
-                    let embedding = embed_text(ai, &description).await?;
-                    Ok((Some(description), Some(embedding)))
+                // Oversized images are downscaled to fit the vision budget instead
+                // of being skipped outright; only undecodable/unshrinkable payloads
+                // still skip AI description. (#367)
+                let fitted = tokio::task::spawn_blocking(move || {
+                    fit_image_for_vision(&bytes, MAX_VISION_BYTES)
+                })
+                .await
+                .ok()
+                .flatten();
+                match fitted {
+                    Some(img) => {
+                        let description = describe_image(ai, &bytes::Bytes::from(img)).await?;
+                        let embedding = embed_text(ai, &description).await?;
+                        Ok((Some(description), Some(embedding)))
+                    }
+                    None => {
+                        tracing::info!("image {id} could not be fitted for the vision model; skipping AI description");
+                        Ok((None, None))
+                    }
                 }
             }
             Extractable::Unsupported => Ok((None, None)),

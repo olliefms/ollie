@@ -25,6 +25,10 @@ pub struct ListQuery {
     pub limit: Option<usize>,
     /// Pagination offset (default 0)
     pub offset: Option<usize>,
+    /// When true, return only blobs with no AI summary (null or empty).
+    /// Ignored for semantic search (?s=) — unsummarized blobs have no
+    /// embedding and can never match a vector query anyway.
+    pub missing_summary: Option<bool>,
 }
 
 /// Multipart form fields for blob upload
@@ -47,6 +51,54 @@ pub struct BlobUploadRequest {
 /// `DefaultBodyLimit` and the `max_bytes` advertised by `upload_blob`
 /// cannot drift apart.
 pub(crate) const PRESIGNED_UPLOAD_MAX_BYTES: usize = 50 * 1024 * 1024;
+
+/// Shared blob metadata update: rename/retag, and optionally set/replace the AI
+/// summary. Used by the fleet REST `PUT /fleet/api/v1/blob/{id}` handler and the
+/// MCP `update_blob` tool so both surfaces share one impl.
+///
+/// A supplied summary is trimmed and must be non-empty; it is re-embedded via
+/// Ollama so semantic search stays consistent, and setting it marks the blob
+/// ready and clears any pipeline error — the backfill path for scanned docs the
+/// pipeline couldn't summarize (#367).
+pub(crate) async fn apply_blob_update(
+    state: &AppState,
+    id: Uuid,
+    name: Option<String>,
+    tags: Option<Vec<String>>,
+    summary: Option<String>,
+) -> Result<BlobRecord, AppError> {
+    if name.is_none() && tags.is_none() && summary.is_none() {
+        return Err(AppError::BadRequest(
+            "at least one of 'name', 'tags', or 'summary' is required".into(),
+        ));
+    }
+    let summary = match summary {
+        Some(s) => {
+            let trimmed = s.trim().to_string();
+            if trimmed.is_empty() {
+                return Err(AppError::BadRequest("'summary' must not be empty".into()));
+            }
+            // Same cap as blob query prompts — keeps the embed call within the
+            // embedding model's context.
+            if trimmed.len() > 4096 {
+                return Err(AppError::BadRequest("'summary' exceeds 4096 characters".into()));
+            }
+            Some(trimmed)
+        }
+        None => None,
+    };
+    // Surface NotFound (and apply name/tags) before spending an Ollama call.
+    let mut record = if name.is_some() || tags.is_some() {
+        state.db.update_metadata(id, name, tags).await?
+    } else {
+        state.db.get_by_id(id).await?
+    };
+    if let Some(s) = summary {
+        let embedding = crate::ai::embed::embed_text(&state.ai, &s).await?;
+        record = state.db.set_summary(id, s, embedding).await?;
+    }
+    Ok(record)
+}
 
 /// Shared blob ingest: content-addressed dedup, storage write, DB insert, and
 /// pipeline enqueue. Used by the admin multipart upload, the fleet_user multipart

@@ -329,6 +329,69 @@ async fn test_put_updates_name_and_tags() {
 }
 
 #[tokio::test]
+async fn test_put_blob_summary_validation() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let upload = server.post("/fleet/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .multipart(axum_test::multipart::MultipartForm::new()
+            .add_part("file", axum_test::multipart::Part::bytes(b"summary target".to_vec())
+                .file_name("scan.txt").mime_type("text/plain")))
+        .await;
+    let id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // No mutable field at all → 400.
+    let empty = server.put(&format!("/fleet/api/v1/blob/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(empty.status_code(), 400);
+
+    // Whitespace-only summary → 400 (rejected before any Ollama call).
+    let blank = server.put(&format!("/fleet/api/v1/blob/{id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "summary": "   " }))
+        .await;
+    assert_eq!(blank.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_list_blobs_missing_summary_filter() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+
+    let mut ids = Vec::new();
+    for content in [&b"first doc"[..], &b"second doc"[..]] {
+        let upload = server.post("/fleet/api/v1/blobs")
+            .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+            .multipart(axum_test::multipart::MultipartForm::new()
+                .add_part("file", axum_test::multipart::Part::bytes(content.to_vec())
+                    .file_name("doc.txt").mime_type("text/plain")))
+            .await;
+        ids.push(upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string());
+    }
+
+    // Backfill a summary onto the first blob directly (no Ollama in tests).
+    let first: uuid::Uuid = ids[0].parse().unwrap();
+    state.db.set_summary(first, "backfilled".into(), vec![0.0; state.db.embed_dim])
+        .await.unwrap();
+
+    let resp = server.get("/fleet/api/v1/blobs?missing_summary=true")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200);
+    let body = resp.json::<serde_json::Value>();
+    let listed: Vec<&str> = body["items"].as_array().unwrap()
+        .iter().map(|i| i["id"].as_str().unwrap()).collect();
+    assert_eq!(listed, vec![ids[1].as_str()], "only the summary-less blob should be listed");
+
+    let all = server.get("/fleet/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(all.json::<serde_json::Value>()["items"].as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn test_delete_blob_blocked_when_referenced_by_load() {
     let (server, _b, _d, _rx) = test_server().await;
     let owner_token = setup_owner(&server).await;

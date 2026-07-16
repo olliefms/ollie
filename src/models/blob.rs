@@ -91,6 +91,9 @@ pub struct BlobRecord {
 pub struct UpdateBlobRequest {
     pub name: Option<String>,
     pub tags: Option<Vec<String>>,
+    /// Set/replace the AI summary. Re-embedded via Ollama so semantic search
+    /// stays consistent; marks the blob ready and clears any pipeline error.
+    pub summary: Option<String>,
 }
 
 /// Returned by GET /fleet/api/v1/blobs — no embedding, optional score
