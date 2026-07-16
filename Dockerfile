@@ -18,7 +18,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+# tesseract-ocr powers the scanned-document OCR path in the AI pipeline —
+# without it, scans degrade to the (unreliable) vision model. (#372)
+RUN apt-get update && apt-get install -y ca-certificates libssl3 tesseract-ocr tesseract-ocr-eng && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY --from=builder /usr/local/bin/ollie /usr/local/bin/ollie
