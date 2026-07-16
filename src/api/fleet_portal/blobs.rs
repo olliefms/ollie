@@ -57,7 +57,9 @@ pub async fn list_blobs(
         return Ok(Json(BlobListResponse { returned, items }));
     }
 
-    let (_total, items) = state.db.list(q.name.as_deref(), &q.tag, limit, offset).await?;
+    let (_total, items) = state.db
+        .list(q.name.as_deref(), &q.tag, q.missing_summary.unwrap_or(false), limit, offset)
+        .await?;
     let returned = items.len();
     Ok(Json(BlobListResponse { returned, items }))
 }
@@ -212,10 +214,10 @@ pub async fn get_blob(
     put,
     path = "/fleet/api/v1/blob/{id}",
     params(("id" = Uuid, Path, description = "Blob UUID")),
-    request_body(content = UpdateBlobRequest, description = "Fields to update — at least one of name or tags required"),
+    request_body(content = UpdateBlobRequest, description = "Fields to update — at least one of name, tags, or summary required"),
     responses(
         (status = 200, description = "Updated blob record", body = BlobRecord),
-        (status = 400, description = "Bad request — neither name nor tags provided"),
+        (status = 400, description = "Bad request — none of name, tags, or summary provided (or summary empty)"),
         (status = 404, description = "Not found"),
         (status = 401, description = "Unauthorized"),
     ),
@@ -229,12 +231,8 @@ pub async fn update_blob(
     Json(body): Json<UpdateBlobRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("blobs:write")?;
-    if body.name.is_none() && body.tags.is_none() {
-        return Err(AppError::BadRequest(
-            "at least one of 'name' or 'tags' is required".into(),
-        ));
-    }
-    let updated = state.db.update_metadata(id, body.name, body.tags).await?;
+    let updated =
+        crate::api::blobs::apply_blob_update(&state, id, body.name, body.tags, body.summary).await?;
     Ok(Json(updated))
 }
 

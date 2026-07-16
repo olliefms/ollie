@@ -350,8 +350,13 @@ Document blobs:
   get_blob_url       Presigned GET URL for a blob's bytes. Stream large files to disk.
   get_blob_metadata  Blob metadata plus a reverse lookup:
                      attached_to.{loads,facilities,trips,drivers,trucks,trailers,maintenance}.
-  list_blobs         List blob metadata (optional name, tag, content_type, limit).
-  update_blob        Edit a blob's name and/or tags (tags is a full replace of the set).
+  list_blobs         List blob metadata (optional name, tag, content_type, limit;
+                     missing_summary=true returns only blobs with no AI summary).
+  update_blob        Edit a blob's name, tags, and/or AI summary (tags is a full replace
+                     of the set; a summary is re-embedded and marks the blob ready —
+                     the backfill path for docs the pipeline couldn't summarize).
+  resummarize_blob   Re-queue one blob through the AI pipeline (extract → summarize →
+                     embed). Asynchronous — poll get_blob_metadata for status ready.
   delete_blob        Delete a blob (force? to override reference checks).
 
 Presigned URLs require OLLIE_PUBLIC_BASE_URL to be configured on the server.
@@ -455,9 +460,11 @@ forbidden (403).
 ### Document blobs
   Files are content-addressed and deduplicated — identical bytes share storage and AI
   output. Each upload is processed asynchronously: Ollama generates a text summary and
-  a vector embedding (status: pending → processing → ready | failed). Semantic search
-  via ?s=<query>. Ask a natural-language question about a ready document via
-  POST /fleet/api/v1/blobs/:id/query (body: { prompt, model? }).
+  a vector embedding (status: pending → processing → ready | failed). Scanned/image-only
+  PDFs are summarized via the vision model (the embedded page image is recovered and
+  described); GET /blobs?missing_summary=true lists docs the pipeline couldn't summarize.
+  Semantic search via ?s=<query>. Ask a natural-language question about a ready document
+  via POST /fleet/api/v1/blobs/:id/query (body: { prompt, model? }).
 
 ### List vs. search counts
   GET list endpoints return a `returned` field. Without ?s= it is the total matching

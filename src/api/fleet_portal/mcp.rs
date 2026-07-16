@@ -155,7 +155,7 @@ impl ServerHandler for OllieMcp {
         let (total, blobs) = self
             .state
             .db
-            .list(None, &[], PAGE_SIZE, offset)
+            .list(None, &[], false, PAGE_SIZE, offset)
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
         let returned = blobs.len();
@@ -308,7 +308,7 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "list_events" => "events:read",
         // Blobs
         "list_blobs" | "search_blobs" | "get_blob_url" | "get_blob_metadata" => "blobs:read",
-        "upload_blob" | "update_blob" => "blobs:write",
+        "upload_blob" | "update_blob" | "resummarize_blob" => "blobs:write",
         "delete_blob" => "blobs:delete",
         // load_doctor reads a load's integrity.
         "load_doctor" => "loads:read",
@@ -468,8 +468,8 @@ fn blob_resource_links(tool: &str, value: &Value, args: &Value) -> Vec<Content> 
             .map(|items| items.iter().filter_map(link_from).collect())
             .unwrap_or_default(),
         "get_blob_metadata" | "update_blob" => link_from(value).into_iter().collect(),
-        // get_blob_url's payload is the URL, not the record — link by id from args.
-        "get_blob_url" => args["id"]
+        // These payloads aren't the record itself — link by id from args.
+        "get_blob_url" | "resummarize_blob" => args["id"]
             .as_str()
             .map(|id| {
                 vec![Content::resource_link(RawResource::new(
@@ -586,7 +586,7 @@ async fn completion_values(
             .collect(),
         "tag" => state
             .db
-            .list(None, &[], 500, 0)
+            .list(None, &[], false, 500, 0)
             .await
             .map_err(internal)?
             .1
@@ -1408,14 +1408,15 @@ fn tools_list() -> Value {
             },
             {
                 "name": "list_blobs",
-                "description": "List blob metadata. Optional filters: name (substring), tag (exact), content_type (exact MIME match), limit (default 100, max 1000). Response includes `total` (count for the name/tag filter) and `truncated` (true when more results exist than were returned — for content_type queries this means the scan window was saturated).",
+                "description": "List blob metadata. Optional filters: name (substring), tag (exact), content_type (exact MIME match), missing_summary (true = only blobs with no AI summary — useful for finding docs that need resummarize_blob or a manual summary), limit (default 100, max 1000). Response includes `total` (count for the name/tag/missing_summary filter) and `truncated` (true when more results exist than were returned — for content_type queries this means the scan window was saturated).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "name":         { "type": "string" },
-                        "tag":          { "type": "string" },
-                        "content_type": { "type": "string" },
-                        "limit":        { "type": "integer", "minimum": 1, "maximum": 1000 }
+                        "name":            { "type": "string" },
+                        "tag":             { "type": "string" },
+                        "content_type":    { "type": "string" },
+                        "missing_summary": { "type": "boolean", "description": "When true, return only blobs whose AI summary is null or empty." },
+                        "limit":           { "type": "integer", "minimum": 1, "maximum": 1000 }
                     }
                 }
             },
@@ -1433,13 +1434,25 @@ fn tools_list() -> Value {
             },
             {
                 "name": "update_blob",
-                "description": "Edit a blob's metadata: rename it and/or set its tags. `tags` is a FULL REPLACE of the tag set (send the complete desired list, not a delta — read the current tags with get_blob_metadata first if you only want to add/remove one). At least one of `name` or `tags` must be provided. Does not touch the file bytes, summary, or embedding. Returns the updated blob record.",
+                "description": "Edit a blob's metadata: rename it, set its tags, and/or set its AI summary. `tags` is a FULL REPLACE of the tag set (send the complete desired list, not a delta — read the current tags with get_blob_metadata first if you only want to add/remove one). `summary` replaces the AI summary (e.g. backfilling a scanned doc the pipeline couldn't read); it is re-embedded server-side so semantic search stays consistent, and setting it marks the blob ready and clears any pipeline error. At least one of `name`, `tags`, or `summary` must be provided. Does not touch the file bytes. Returns the updated blob record.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "id":   { "type": "string", "format": "uuid" },
-                        "name": { "type": "string", "description": "New display name for the blob." },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Complete new tag set (replaces all existing tags)." }
+                        "id":      { "type": "string", "format": "uuid" },
+                        "name":    { "type": "string", "description": "New display name for the blob." },
+                        "tags":    { "type": "array", "items": { "type": "string" }, "description": "Complete new tag set (replaces all existing tags)." },
+                        "summary": { "type": "string", "description": "New AI summary text (non-empty). Re-embedded server-side; marks the blob ready." }
+                    },
+                    "required": ["id"]
+                }
+            },
+            {
+                "name": "resummarize_blob",
+                "description": "Re-run the AI pipeline (content extraction → summary → embedding) for one blob. Use for docs whose summary is missing or stale — e.g. scanned PDFs uploaded before scanned-page vision support. The blob is re-queued (status returns to pending) and processed asynchronously; poll get_blob_metadata for status ready. Fails if the blob is already pending or processing.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "format": "uuid" }
                     },
                     "required": ["id"]
                 }
@@ -1767,6 +1780,7 @@ async fn handle_tool_call(
         "get_blob_url" => tool_get_blob_url(state, args).await,
         "get_blob_metadata" => tool_get_blob_metadata(state, args).await,
         "update_blob" => tool_update_blob(state, args).await,
+        "resummarize_blob" => tool_resummarize_blob(state, args).await,
         "list_blobs" => tool_list_blobs(state, args).await,
         "search_blobs" => tool_search_blobs(state, args).await,
         "delete_blob" => tool_delete_blob(state, args).await,
@@ -2588,12 +2602,14 @@ async fn tool_get_blob_metadata(state: &AppState, args: &Value) -> Result<Value,
     Ok(mcp_content(value))
 }
 
-/// Edit a blob's name and/or tags — a thin wrapper over the same
-/// `db.update_metadata` path the REST `PUT /fleet/api/v1/blobs/{id}` handler uses,
-/// so MCP and REST share one impl. `tags` is a full replace of the set.
+/// Edit a blob's name, tags, and/or AI summary — a thin wrapper over the same
+/// `apply_blob_update` path the REST `PUT /fleet/api/v1/blob/{id}` handler uses,
+/// so MCP and REST share one impl. `tags` is a full replace of the set; a
+/// summary is re-embedded and marks the blob ready (#367).
 async fn tool_update_blob(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
     let name = args.get("name").and_then(Value::as_str).map(str::to_string);
+    let summary = args.get("summary").and_then(Value::as_str).map(str::to_string);
     let tags = match args.get("tags") {
         None | Some(Value::Null) => None,
         Some(Value::Array(arr)) => Some(
@@ -2607,11 +2623,36 @@ async fn tool_update_blob(state: &AppState, args: &Value) -> Result<Value, Strin
         ),
         Some(_) => return Err("update_blob: tags must be an array of strings".to_string()),
     };
-    if name.is_none() && tags.is_none() {
-        return Err("update_blob requires at least one of `name` or `tags`".to_string());
-    }
-    let record = state.db.update_metadata(id, name, tags).await.map_err(|e| e.to_string())?;
+    let record = crate::api::blobs::apply_blob_update(state, id, name, tags, summary)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(record))
+}
+
+/// Re-queue one blob through the AI pipeline (extract → summarize → embed).
+/// Status is set back to pending BEFORE the enqueue so a crash between the two
+/// is repaired by startup recovery, which re-enqueues all non-ready blobs.
+async fn tool_resummarize_blob(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "id")?;
+    let record = state.db.get_by_id(id).await.map_err(|e| e.to_string())?;
+    if matches!(record.status, crate::models::BlobStatus::Pending | crate::models::BlobStatus::Processing) {
+        return Err(format!(
+            "blob {id} is already {} — wait for the pipeline to finish before re-queuing",
+            record.status.as_str()
+        ));
+    }
+    state.db.mark_pending(id).await.map_err(|e| e.to_string())?;
+    state
+        .pipeline_tx
+        .send(id)
+        .await
+        .map_err(|e| format!("failed to enqueue blob for processing: {e}"))?;
+    Ok(mcp_content(serde_json::json!({
+        "queued": true,
+        "id": id,
+        "status": "pending",
+        "instructions": "Processing is asynchronous — poll get_blob_metadata until status is ready, then read the new summary."
+    })))
 }
 
 async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -2619,13 +2660,15 @@ async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String
     let name = args["name"].as_str();
     let content_type = args["content_type"].as_str();
     let tags: Vec<String> = args["tag"].as_str().map(|t| vec![t.to_string()]).unwrap_or_default();
+    let missing_summary = args["missing_summary"].as_bool().unwrap_or(false);
     let offset = cursor_offset(args)?;
 
     match content_type {
-        // No content_type filter: the DB applies name/tag at the source, so cursor
-        // pagination is exact — nextCursor when records remain past this page.
+        // No content_type filter: the DB applies name/tag/missing_summary at the
+        // source, so cursor pagination is exact — nextCursor when records remain
+        // past this page.
         None => {
-            let (total, items) = state.db.list(name, &tags, limit, offset)
+            let (total, items) = state.db.list(name, &tags, missing_summary, limit, offset)
                 .await.map_err(|e| e.to_string())?;
             let returned = items.len();
             Ok(mcp_content(paged(items, returned, total, offset)))
@@ -2637,7 +2680,7 @@ async fn tool_list_blobs(state: &AppState, args: &Value) -> Result<Value, String
         // so a paging agent knows the MIME-filtered view is incomplete.
         Some(ct) => {
             let window = limit.max(1000);
-            let (_total, items) = state.db.list(name, &tags, window, 0)
+            let (_total, items) = state.db.list(name, &tags, missing_summary, window, 0)
                 .await.map_err(|e| e.to_string())?;
             let scanned = items.len();
             let matched: Vec<_> = items.into_iter().filter(|i| i.mime_type == ct).collect();
@@ -3083,6 +3126,104 @@ mod tests {
                 .await
                 .is_err()
         );
+        // Empty/whitespace summary → rejected before any Ollama call.
+        assert!(
+            tool_update_blob(&state, &json!({ "id": id.to_string(), "summary": "   " }))
+                .await
+                .is_err()
+        );
+    }
+
+    fn ready_blob(id: Uuid, summary: Option<&str>) -> crate::models::BlobRecord {
+        let now = chrono::Utc::now();
+        crate::models::BlobRecord {
+            id,
+            owner_id: 0,
+            checksum: format!("chk-{id}"),
+            name: "scan.pdf".into(),
+            mime_type: "application/pdf".into(),
+            size: 1,
+            status: crate::models::BlobStatus::Ready,
+            error: None,
+            summary: summary.map(str::to_string),
+            tags: vec![],
+            embedding: None,
+            created_at: now,
+            updated_at: now,
+            visibility: Default::default(),
+            uploaded_by: None,
+        }
+    }
+
+    #[test]
+    fn resummarize_blob_is_a_write_scoped_catalog_tool() {
+        assert_eq!(tool_required_scope("resummarize_blob"), Some("blobs:write"));
+        assert!(
+            tool_catalog().iter().any(|t| t.name == "resummarize_blob"),
+            "resummarize_blob must be advertised in the tool catalog"
+        );
+        // Regenerates AI output; doesn't destroy user data.
+        assert!(!is_destructive_op("resummarize_blob", &json!({})));
+    }
+
+    #[tokio::test]
+    async fn tool_resummarize_blob_requeues_and_preserves_summary() {
+        let (state, _b, _d) = test_state().await;
+        // test_state drops its pipeline receiver — swap in a live channel so the
+        // enqueue can be observed.
+        let (pipeline_tx, pipeline_rx) = async_channel::bounded(10);
+        let state = AppState { pipeline_tx, ..state };
+
+        let id = Uuid::new_v4();
+        state.db.insert(&ready_blob(id, Some("old summary"))).await.unwrap();
+
+        let out = tool_resummarize_blob(&state, &json!({ "id": id.to_string() }))
+            .await
+            .unwrap();
+        assert_eq!(out["queued"], json!(true));
+        assert_eq!(out["status"], json!("pending"));
+        assert_eq!(pipeline_rx.try_recv().unwrap(), id, "blob id must be enqueued");
+
+        let persisted = state.db.get_by_id(id).await.unwrap();
+        assert_eq!(persisted.status, crate::models::BlobStatus::Pending);
+        assert_eq!(persisted.summary.as_deref(), Some("old summary"),
+            "old summary must survive until the pipeline overwrites it");
+
+        // Already pending → rejected instead of double-queuing.
+        let err = tool_resummarize_blob(&state, &json!({ "id": id.to_string() }))
+            .await
+            .unwrap_err();
+        assert!(err.contains("already"), "got: {err}");
+
+        // Unknown blob → error, nothing enqueued.
+        assert!(
+            tool_resummarize_blob(&state, &json!({ "id": Uuid::new_v4().to_string() }))
+                .await
+                .is_err()
+        );
+        assert!(pipeline_rx.try_recv().is_err(), "no extra enqueues expected");
+    }
+
+    #[tokio::test]
+    async fn tool_list_blobs_missing_summary_filter() {
+        let (state, _b, _d) = test_state().await;
+        let bare = Uuid::new_v4();
+        let summarized = Uuid::new_v4();
+        state.db.insert(&ready_blob(bare, None)).await.unwrap();
+        state.db.insert(&ready_blob(summarized, Some("done"))).await.unwrap();
+
+        let out = tool_list_blobs(&state, &json!({ "missing_summary": true })).await.unwrap();
+        assert_eq!(out["total"], json!(1));
+        let ids: Vec<String> = out["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids, vec![bare.to_string()]);
+
+        let all = tool_list_blobs(&state, &json!({})).await.unwrap();
+        assert_eq!(all["total"], json!(2), "filter off must return everything");
     }
 
     #[test]

@@ -68,6 +68,31 @@ impl DbClient {
         self.upsert_blob(&record).await
     }
 
+    /// Re-queue a blob for pipeline processing. Setting status back to pending
+    /// before the enqueue makes a resummarize request crash-safe: recovery
+    /// re-enqueues every pending/processing blob on startup. Existing summary
+    /// and embedding are preserved until mark_ready overwrites them.
+    pub async fn mark_pending(&self, id: Uuid) -> Result<(), AppError> {
+        let mut record = self.get_by_id(id).await?;
+        record.status = BlobStatus::Pending;
+        record.updated_at = Utc::now();
+        self.upsert_blob(&record).await
+    }
+
+    /// Set/replace a blob's AI summary and its embedding, marking the blob
+    /// ready and clearing any pipeline error. This is the backfill path for
+    /// documents the pipeline couldn't summarize (#367).
+    pub async fn set_summary(&self, id: Uuid, summary: String, embedding: Vec<f32>) -> Result<BlobRecord, AppError> {
+        let mut record = self.get_by_id(id).await?;
+        record.summary = Some(summary);
+        record.embedding = Some(embedding);
+        record.status = BlobStatus::Ready;
+        record.error = None;
+        record.updated_at = Utc::now();
+        self.upsert_blob(&record).await?;
+        Ok(record)
+    }
+
     pub async fn mark_failed(&self, id: Uuid, error: String) -> Result<(), AppError> {
         let mut record = self.get_by_id(id).await?;
         record.status = BlobStatus::Failed;
@@ -104,8 +129,9 @@ impl DbClient {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    pub async fn list(&self, name_filter: Option<&str>, tag_filter: &[String], limit: usize, offset: usize) -> Result<(usize, Vec<BlobListItem>), AppError> {
-        let filter = build_filter(name_filter, tag_filter, None);
+    pub async fn list(&self, name_filter: Option<&str>, tag_filter: &[String], missing_summary: bool, limit: usize, offset: usize) -> Result<(usize, Vec<BlobListItem>), AppError> {
+        let extra = missing_summary.then_some("(summary IS NULL OR summary = '')");
+        let filter = build_filter(name_filter, tag_filter, extra);
         let total = self.blob_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut q = self.blob_table.query();
@@ -400,6 +426,65 @@ mod tests {
             .await.unwrap();
         assert_eq!(updated.name, "new.txt");
         assert_eq!(updated.tags, vec!["x"]);
+    }
+
+    #[tokio::test]
+    async fn test_mark_pending_preserves_ai_fields() {
+        let (db, _dir) = test_db().await;
+        let mut record = sample_record();
+        record.status = BlobStatus::Ready;
+        record.summary = Some("old summary".into());
+        record.embedding = Some(vec![0.1, 0.2, 0.3, 0.4]);
+        db.insert(&record).await.unwrap();
+        db.mark_pending(record.id).await.unwrap();
+        let fetched = db.get_by_id(record.id).await.unwrap();
+        assert_eq!(fetched.status, BlobStatus::Pending);
+        assert_eq!(fetched.summary.as_deref(), Some("old summary"),
+            "mark_pending must not wipe the existing summary");
+        assert!(fetched.embedding.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_set_summary_marks_ready_and_clears_error() {
+        let (db, _dir) = test_db().await;
+        let mut record = sample_record();
+        record.status = BlobStatus::Failed;
+        record.error = Some("vision model exploded".into());
+        db.insert(&record).await.unwrap();
+        let updated = db.set_summary(record.id, "backfilled summary".into(), vec![1.0, 2.0, 3.0, 4.0])
+            .await.unwrap();
+        assert_eq!(updated.status, BlobStatus::Ready);
+        assert_eq!(updated.summary.as_deref(), Some("backfilled summary"));
+        assert!(updated.error.is_none());
+        let fetched = db.get_by_id(record.id).await.unwrap();
+        assert_eq!(fetched.summary.as_deref(), Some("backfilled summary"));
+        assert!(fetched.embedding.is_some());
+        assert!(fetched.error.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_missing_summary_filter() {
+        let (db, _dir) = test_db().await;
+        let no_summary = sample_record();
+        let mut empty_summary = sample_record();
+        empty_summary.id = Uuid::new_v4();
+        empty_summary.summary = Some(String::new());
+        let mut with_summary = sample_record();
+        with_summary.id = Uuid::new_v4();
+        with_summary.summary = Some("has one".into());
+        db.insert(&no_summary).await.unwrap();
+        db.insert(&empty_summary).await.unwrap();
+        db.insert(&with_summary).await.unwrap();
+
+        let (total, items) = db.list(None, &[], true, 10, 0).await.unwrap();
+        assert_eq!(total, 2, "null and empty-string summaries both count as missing");
+        let ids: Vec<Uuid> = items.iter().map(|i| i.id).collect();
+        assert!(ids.contains(&no_summary.id));
+        assert!(ids.contains(&empty_summary.id));
+        assert!(!ids.contains(&with_summary.id));
+
+        let (all_total, _) = db.list(None, &[], false, 10, 0).await.unwrap();
+        assert_eq!(all_total, 3);
     }
 
     #[tokio::test]
