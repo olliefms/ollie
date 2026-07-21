@@ -117,6 +117,11 @@ pub async fn delete_expense(
         ));
     }
 
+    // Sever the 1:1 back-link so the maintenance entry isn't left pointing at a
+    // deleted expense (which would brick its cost). Best-effort.
+    if let Some(maintenance_id) = record.maintenance_id {
+        let _ = state.db.clear_maintenance_expense_link(maintenance_id).await;
+    }
     state.db.delete_expense(id).await?;
     events::expense_deleted(&state.db, id, Some(actor)).await;
     Ok(StatusCode::NO_CONTENT)

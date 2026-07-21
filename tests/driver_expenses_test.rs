@@ -284,6 +284,56 @@ async fn test_driver_can_delete_own_submitted() {
 }
 
 #[tokio::test]
+async fn test_driver_delete_linked_expense_unlinks_maintenance() {
+    let (server, state, _b, _d) = setup().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+    let owner_token = setup_owner(&server).await;
+
+    // Driver submits an expense.
+    let upload = upload_expense(&server, &driver_token, &trip_id, Some("repair")).await;
+    let sc = upload.status_code().as_u16();
+    assert!(sc == 201 || sc == 202);
+    let list = server.get("/driver/api/v1/expenses")
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    let expense_id = list.json::<serde_json::Value>()["items"][0]["id"]
+        .as_str().unwrap().to_string();
+
+    // Fleet creates a maintenance record and links it to the driver's expense.
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": format!("T-LINK-{}", uuid::Uuid::new_v4()) }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let mid = server.post("/fleet/api/v1/maintenance")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "driver roadside repair",
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let patch = server.patch(&format!("/fleet/api/v1/expenses/{expense_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "maintenance_id": mid }))
+        .await;
+    assert_eq!(patch.status_code(), 200);
+
+    // Driver deletes their own (still submitted) expense.
+    let delete = server.delete(&format!("/driver/api/v1/expenses/{expense_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(delete.status_code(), 204);
+
+    // Maintenance back-link is cleared, not left dangling.
+    let got = server.get(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert!(got.json::<serde_json::Value>()["expense_id"].is_null());
+}
+
+#[tokio::test]
 async fn test_driver_cannot_see_or_delete_others() {
     let (server, state, _b, _d) = setup().await;
     let (driver_a_token, trip_a) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;

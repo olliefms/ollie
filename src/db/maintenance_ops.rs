@@ -76,6 +76,16 @@ impl DbClient {
         Ok(record)
     }
 
+    /// Sever the 1:1 expense back-link (fetch -> clear expense_id -> upsert).
+    /// `update_maintenance_metadata` is Some-wins and cannot write null, so
+    /// clearing needs its own op. Used when a linked expense is deleted.
+    pub async fn clear_maintenance_expense_link(&self, id: Uuid) -> Result<(), AppError> {
+        let mut record = self.get_maintenance_by_id(id).await?;
+        record.expense_id = None;
+        record.updated_at = Utc::now();
+        self.upsert_maintenance(&record).await
+    }
+
     pub async fn update_maintenance_embedding(&self, id: Uuid, embedding: Vec<f32>) -> Result<(), AppError> {
         let mut record = self.get_maintenance_by_id(id).await?;
         record.embedding = Some(embedding);

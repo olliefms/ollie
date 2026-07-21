@@ -108,8 +108,14 @@ pub async fn apply_expense_create(
             .map_err(|_| AppError::BadRequest(format!("unknown trip: {trip_id}")))?;
     }
     if let Some(maintenance_id) = parsed.maintenance_id {
-        state.db.get_maintenance_by_id(maintenance_id).await
+        let maint = state.db.get_maintenance_by_id(maintenance_id).await
             .map_err(|_| AppError::BadRequest(format!("unknown maintenance entry: {maintenance_id}")))?;
+        // The expense does not exist yet, so any existing link is to another one.
+        if maint.expense_id.is_some() {
+            return Err(AppError::BadRequest(
+                "maintenance record is already linked to an expense".into(),
+            ));
+        }
     }
 
     let now = Utc::now();
@@ -391,11 +397,18 @@ pub(crate) async fn apply_expense_review(
     state.db.update_expense(&record).await?;
 
     // Maintenance cost mirror: a reviewed repair's amount is the entry's cost.
+    // Best-effort — the review has already committed, and the linked entry may
+    // have been deleted since. A mirror failure must not fail the review.
     if let Some(maintenance_id) = record.maintenance_id {
-        state.db.update_maintenance_metadata(
+        if let Err(e) = state.db.update_maintenance_metadata(
             maintenance_id,
             None, None, None, record.amount, None, None, None, None, None,
-        ).await?;
+        ).await {
+            tracing::warn!(
+                expense_id = %record.id, %maintenance_id, error = %e,
+                "failed to mirror reviewed expense amount onto maintenance cost",
+            );
+        }
     }
 
     if let Ok(embedding) = embed_text(&state.ai, &record.embedding_text()).await {
@@ -425,6 +438,18 @@ pub(crate) async fn apply_expense_patch(
 
     let mut record = state.db.get_expense_by_id(id).await?;
     authorize_expense_mutation(&record, &actor, scopes)?;
+
+    // Re-pointing an already-linked expense to a different maintenance record is
+    // rejected (mirrors the maintenance-side guard); same-id is an idempotent no-op.
+    if let (Some(cur), Some(new)) = (record.maintenance_id, parsed.maintenance_id) {
+        if cur != new {
+            return Err(AppError::BadRequest(
+                "expense is already linked to a maintenance record (unlink is not \
+                 supported; delete and recreate to re-link)"
+                    .into(),
+            ));
+        }
+    }
 
     let touches_money = parsed.amount.is_some()
         || parsed.approved_amount.is_some()
@@ -485,6 +510,13 @@ pub(crate) async fn apply_expense_patch(
             return Err(AppError::BadRequest("amount must not be negative".into()));
         }
     }
+    if let Some(a) = record.approved_amount {
+        if a < 0.0 {
+            return Err(AppError::BadRequest(
+                "approved_amount must not be negative".into(),
+            ));
+        }
+    }
     if record.equipment_type.is_some() != record.equipment_id.is_some() {
         return Err(AppError::BadRequest(
             "equipment_type and equipment_id must be provided together".into(),
@@ -504,8 +536,14 @@ pub(crate) async fn apply_expense_patch(
             .map_err(|_| AppError::BadRequest(format!("unknown trip: {trip_id}")))?;
     }
     if let Some(maintenance_id) = parsed.maintenance_id {
-        state.db.get_maintenance_by_id(maintenance_id).await
+        let maint = state.db.get_maintenance_by_id(maintenance_id).await
             .map_err(|_| AppError::BadRequest(format!("unknown maintenance entry: {maintenance_id}")))?;
+        // Target already linked to a *different* expense -> reject (1:1).
+        if maint.expense_id.is_some_and(|other| other != id) {
+            return Err(AppError::BadRequest(
+                "maintenance record is already linked to an expense".into(),
+            ));
+        }
     }
     if let (Some(t), Some(a)) = (record.amount, record.approved_amount) {
         if a > t {
@@ -529,12 +567,18 @@ pub(crate) async fn apply_expense_patch(
         }
     }
     // A reviewed expense whose amount moved re-mirrors cost onto its entry.
+    // Best-effort: the patch has committed and the linked entry may be gone.
     if matches!(record.status, ExpenseStatus::Reviewed) && amount_changed {
         if let Some(maintenance_id) = record.maintenance_id {
-            state.db.update_maintenance_metadata(
+            if let Err(e) = state.db.update_maintenance_metadata(
                 maintenance_id,
                 None, None, None, record.amount, None, None, None, None, None,
-            ).await?;
+            ).await {
+                tracing::warn!(
+                    expense_id = %record.id, %maintenance_id, error = %e,
+                    "failed to mirror patched expense amount onto maintenance cost",
+                );
+            }
         }
     }
 
@@ -553,6 +597,11 @@ pub(crate) async fn apply_expense_delete(
 ) -> Result<(), AppError> {
     let record = state.db.get_expense_by_id(id).await?;
     authorize_expense_mutation(&record, &actor, scopes)?;
+    // Sever the 1:1 back-link first so the maintenance entry isn't left pointing
+    // at a deleted expense (which would brick its cost). Best-effort.
+    if let Some(maintenance_id) = record.maintenance_id {
+        let _ = state.db.clear_maintenance_expense_link(maintenance_id).await;
+    }
     state.db.delete_expense(id).await?;
     events::expense_deleted(&state.db, id, Some(actor)).await;
     Ok(())

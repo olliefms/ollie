@@ -158,6 +158,20 @@ async fn create_truck(server: &TestServer, token: &str) -> String {
     resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
 }
 
+async fn create_maintenance_unlinked(
+    server: &TestServer, token: &str, truck_id: &str, desc: &str,
+) -> String {
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": desc,
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    m.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn test_create_and_get_expense() {
     let (server, _d1, _d2, _rx) = test_server().await;
@@ -568,6 +582,139 @@ async fn test_maintenance_cannot_repoint_linked_expense() {
     let e = server.get(&format!("/fleet/api/v1/expenses/{exp_x}"))
         .authorization_bearer(&token).await;
     assert_eq!(e.json::<serde_json::Value>()["maintenance_id"], *aid);
+}
+
+#[tokio::test]
+async fn test_expense_create_rejects_already_linked_maintenance() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "unlinked repair").await;
+
+    // Expense A links M via create (writes the back-reference onto M).
+    let a = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(a.status_code(), 201);
+
+    // Expense B create against the now-linked M -> 400.
+    let b = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(b.status_code(), 400);
+
+    // Expense C created unlinked, then PATCH to the linked M -> 400.
+    let cid = create_expense(&server, &token, "repair").await;
+    let patch = server.patch(&format!("/fleet/api/v1/expenses/{cid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "maintenance_id": mid })).await;
+    assert_eq!(patch.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_expense_patch_cannot_repoint_maintenance() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let m1 = create_maintenance_unlinked(&server, &token, &truck_id, "repair one").await;
+    let m2 = create_maintenance_unlinked(&server, &token, &truck_id, "repair two").await;
+
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": m1 })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Re-point to a different maintenance record -> 400.
+    let repoint = server.patch(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "maintenance_id": m2 })).await;
+    assert_eq!(repoint.status_code(), 400);
+
+    // Same-id PATCH is an idempotent no-op -> 200.
+    let same = server.patch(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "maintenance_id": m1 })).await;
+    assert_eq!(same.status_code(), 200);
+}
+
+#[tokio::test]
+async fn test_patch_rejects_negative_approved_amount() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let id = create_expense(&server, &token, "fuel").await;
+    // Review first so the money fields carry values (owner has expenses:approve).
+    let r = server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 50.0, "approved_amount": 50.0, "payment_method": "company"
+        })).await;
+    assert_eq!(r.status_code(), 200);
+    // PATCH a negative approved_amount -> 400.
+    let patch = server.patch(&format!("/fleet/api/v1/expenses/{id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "approved_amount": -5.0 })).await;
+    assert_eq!(patch.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_delete_linked_expense_unlinks_maintenance() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "linked repair").await;
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Deleting the linked expense clears the maintenance back-link.
+    let del = server.delete(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(del.status_code(), 204);
+
+    let got = server.get(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(got.status_code(), 200);
+    assert!(got.json::<serde_json::Value>()["expense_id"].is_null());
+
+    // With the link gone, direct cost edits are allowed again.
+    let patch = server.patch(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "cost": 123.0 })).await;
+    assert_eq!(patch.status_code(), 200);
+    assert_eq!(patch.json::<serde_json::Value>()["cost"], 123.0);
+}
+
+#[tokio::test]
+async fn test_delete_maintenance_unlinks_expense_and_review_succeeds() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "temp repair").await;
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Deleting the maintenance record clears the expense's forward link.
+    let del = server.delete(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(del.status_code(), 204);
+
+    let e = server.get(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token).await;
+    assert!(e.json::<serde_json::Value>()["maintenance_id"].is_null());
+
+    // Reviewing the now-unlinked expense still succeeds (mirror is best-effort).
+    let r = server.post(&format!("/fleet/api/v1/expenses/{eid}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 75.0, "approved_amount": 75.0, "payment_method": "company"
+        })).await;
+    assert_eq!(r.status_code(), 200);
 }
 
 #[tokio::test]
