@@ -300,6 +300,10 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "list_maintenance" | "get_maintenance" => "maintenance:read",
         "create_maintenance" | "update_maintenance" => "maintenance:write",
         "delete_maintenance" => "maintenance:delete",
+        // Expenses
+        "list_expenses" | "get_expense" => "expenses:read",
+        "create_expense" | "update_expense" | "delete_expense" => "expenses:write",
+        "review_expense" => "expenses:approve",
         // Facilities
         "list_facilities" | "get_facility" | "facility_doctor" => "facilities:read",
         "create_facility" | "update_facility" => "facilities:write",
@@ -712,6 +716,7 @@ const PAGINATED_LIST_TOOLS: &[&str] = &[
     "list_facilities",
     "list_blobs",
     "list_events",
+    "list_expenses",
 ];
 
 /// Advertise the `cursor` pagination param on a list tool's input schema. The
@@ -1268,6 +1273,103 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "list_expenses",
+                "description": "List expenses. Optional filters: status (submitted/reviewed/settled), category, driver_id, trip_id, equipment_id, submitted_by, from/to (YYYY-MM-DD). Newest first. status=submitted is the review queue.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "status":       { "type": "string", "enum": ["submitted","reviewed","settled"] },
+                        "category":     { "type": "string", "enum": ["fuel","tolls","scales","lumper","parking","repair","supplies","permit","other"] },
+                        "driver_id":    { "type": "string", "format": "uuid" },
+                        "trip_id":      { "type": "string", "format": "uuid" },
+                        "equipment_id": { "type": "string", "format": "uuid" },
+                        "submitted_by": { "type": "string" },
+                        "from":         { "type": "string" },
+                        "to":           { "type": "string" },
+                        "cursor":       { "type": "string" }
+                    }
+                }
+            },
+            {
+                "name": "get_expense",
+                "description": "Get a single expense by UUID, including AI-suggested fields and derived reimbursement/deduction.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "expense_id": { "type": "string", "format": "uuid" } },
+                    "required": ["expense_id"]
+                }
+            },
+            {
+                "name": "create_expense",
+                "description": "Create an expense record (status=submitted). Attach receipt blobs via blob_ids. Optional links: driver_id, trip_id, equipment_type+equipment_id, maintenance_id (links an existing maintenance record; its cost will mirror this expense). Amounts are set at review, but amount may be pre-filled. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "category":       { "type": "string", "enum": ["fuel","tolls","scales","lumper","parking","repair","supplies","permit","other"] },
+                        "driver_id":      { "type": "string", "format": "uuid" },
+                        "trip_id":        { "type": "string", "format": "uuid" },
+                        "equipment_type": { "type": "string", "enum": ["truck","trailer"] },
+                        "equipment_id":   { "type": "string", "format": "uuid" },
+                        "maintenance_id": { "type": "string", "format": "uuid" },
+                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "expense_date":   { "type": "string" },
+                        "vendor":         { "type": "string" },
+                        "amount":         { "type": "number" }
+                    },
+                    "required": ["category"]
+                }
+            },
+            {
+                "name": "update_expense",
+                "description": "Update an un-settled expense. Non-managers may only edit their own submitted records; money fields (amount, approved_amount, payment_method, review_note) require expenses:approve. Unknown fields are rejected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "expense_id":     { "type": "string", "format": "uuid" },
+                        "category":       { "type": "string", "enum": ["fuel","tolls","scales","lumper","parking","repair","supplies","permit","other"] },
+                        "driver_id":      { "type": "string", "format": "uuid" },
+                        "trip_id":        { "type": "string", "format": "uuid" },
+                        "equipment_type": { "type": "string", "enum": ["truck","trailer"] },
+                        "equipment_id":   { "type": "string", "format": "uuid" },
+                        "maintenance_id": { "type": "string", "format": "uuid" },
+                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "expense_date":   { "type": "string" },
+                        "vendor":         { "type": "string" },
+                        "amount":         { "type": "number" },
+                        "approved_amount":{ "type": "number" },
+                        "payment_method": { "type": "string", "enum": ["company","personal"] },
+                        "review_note":    { "type": "string" }
+                    },
+                    "required": ["expense_id"]
+                }
+            },
+            {
+                "name": "review_expense",
+                "description": "Review an expense: set the receipt total (amount), the approved_amount (0 <= approved <= amount; equal = full approval, 0 = rejection, between = partial), and payment_method (company = any company funds; personal = driver's own money). Personal approved portion becomes a reimbursement; company denied portion becomes a deduction. Clears AI suggestions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "expense_id":      { "type": "string", "format": "uuid" },
+                        "amount":          { "type": "number" },
+                        "approved_amount": { "type": "number" },
+                        "payment_method":  { "type": "string", "enum": ["company","personal"] },
+                        "expense_date":    { "type": "string" },
+                        "vendor":          { "type": "string" },
+                        "review_note":     { "type": "string" }
+                    },
+                    "required": ["expense_id", "amount", "approved_amount", "payment_method"]
+                }
+            },
+            {
+                "name": "delete_expense",
+                "description": "Delete an un-settled expense. Non-managers may only delete their own submitted records.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": { "expense_id": { "type": "string", "format": "uuid" } },
+                    "required": ["expense_id"]
+                }
+            },
+            {
                 "name": "list_events",
                 "description": "List events. Optional filters: trip_id, driver_id.",
                 "inputSchema": {
@@ -1768,6 +1870,12 @@ async fn handle_tool_call(
         "get_maintenance" => tool_get_maintenance(state, args).await,
         "create_maintenance" => tool_create_maintenance(state, args).await,
         "update_maintenance" => tool_update_maintenance(state, args).await,
+        "list_expenses" => tool_list_expenses(state, args).await,
+        "get_expense" => tool_get_expense(state, args).await,
+        "create_expense" => tool_create_expense(state, args, caller_id).await,
+        "update_expense" => tool_update_expense(state, args, scopes, caller_id).await,
+        "review_expense" => tool_review_expense(state, args, caller_id).await,
+        "delete_expense" => tool_delete_expense(state, args, scopes, caller_id).await,
         "list_events" => tool_list_events(state, args).await,
         "list_facilities" => tool_list_facilities(state, args).await,
         "get_facility" => tool_get_facility(state, args).await,
@@ -2401,6 +2509,115 @@ async fn tool_update_maintenance(state: &AppState, args: &Value) -> Result<Value
         .await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(record))
+}
+
+// ---------------------------------------------------------------------------
+// Expenses — thin wrappers over the `expenses` module's `apply_*` helpers,
+// which carry all validation and ACL (settled-lock, ownership, money-field
+// gating). No behavior is duplicated here; the REST integration tests exercise
+// the same code paths.
+// ---------------------------------------------------------------------------
+
+/// The authenticated caller's fleet_user id as an `actor`/`submitted_by`
+/// marker, or an error when the principal has no resolvable identity (e.g. an
+/// API-key caller) — expense mutations always need a submitter/actor/reviewer.
+fn require_caller_id(caller_id: Option<Uuid>) -> Result<Uuid, String> {
+    caller_id.ok_or_else(|| "authenticated fleet_user identity required".to_string())
+}
+
+async fn tool_list_expenses(state: &AppState, args: &Value) -> Result<Value, String> {
+    let offset = cursor_offset(args)?;
+    let filter = crate::db::expense_ops::ExpenseFilter {
+        status: args["status"].as_str().map(String::from),
+        category: args["category"].as_str().map(String::from),
+        driver_id: parse_uuid_opt(args, "driver_id")?.map(|id| id.to_string()),
+        trip_id: parse_uuid_opt(args, "trip_id")?.map(|id| id.to_string()),
+        equipment_id: parse_uuid_opt(args, "equipment_id")?.map(|id| id.to_string()),
+        submitted_by: args["submitted_by"].as_str().map(String::from),
+        from: args["from"].as_str().map(String::from),
+        to: args["to"].as_str().map(String::from),
+    };
+    let (total, items) = state.db.list_expenses(&filter, PAGE_SIZE, offset)
+        .await.map_err(|e| e.to_string())?;
+    let items: Vec<crate::models::ExpenseResponse> =
+        items.into_iter().map(crate::models::ExpenseResponse::from).collect();
+    let returned = items.len();
+    Ok(mcp_content(paged(items, returned, total, offset)))
+}
+
+async fn tool_get_expense(state: &AppState, args: &Value) -> Result<Value, String> {
+    let id = parse_uuid(args, "expense_id")?;
+    let record = state.db.get_expense_by_id(id).await.map_err(|e| e.to_string())?;
+    Ok(mcp_content(crate::models::ExpenseResponse::from(record)))
+}
+
+async fn tool_create_expense(
+    state: &AppState,
+    args: &Value,
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let caller_id = require_caller_id(caller_id)?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("cursor");
+    }
+    let submitted_by = format!("fleet_user:{caller_id}");
+    let record = super::expenses::apply_expense_create(state, body, submitted_by)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(crate::models::ExpenseResponse::from(record)))
+}
+
+async fn tool_update_expense(
+    state: &AppState,
+    args: &Value,
+    scopes: &[String],
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let caller_id = require_caller_id(caller_id)?;
+    let id = parse_uuid(args, "expense_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("expense_id");
+        map.remove("cursor");
+    }
+    let actor = format!("fleet_user:{caller_id}");
+    let record = super::expenses::apply_expense_patch(state, id, body, actor, scopes)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(crate::models::ExpenseResponse::from(record)))
+}
+
+async fn tool_review_expense(
+    state: &AppState,
+    args: &Value,
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let caller_id = require_caller_id(caller_id)?;
+    let id = parse_uuid(args, "expense_id")?;
+    let mut body = args.clone();
+    if let Value::Object(map) = &mut body {
+        map.remove("expense_id");
+    }
+    let record = super::expenses::apply_expense_review(state, id, body, caller_id.to_string())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(crate::models::ExpenseResponse::from(record)))
+}
+
+async fn tool_delete_expense(
+    state: &AppState,
+    args: &Value,
+    scopes: &[String],
+    caller_id: Option<Uuid>,
+) -> Result<Value, String> {
+    let caller_id = require_caller_id(caller_id)?;
+    let id = parse_uuid(args, "expense_id")?;
+    let actor = format!("fleet_user:{caller_id}");
+    super::expenses::apply_expense_delete(state, id, actor, scopes)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(serde_json::json!({ "deleted": true })))
 }
 
 async fn tool_list_events(state: &AppState, args: &Value) -> Result<Value, String> {
@@ -3420,6 +3637,27 @@ mod tests {
             assert_eq!(reject.is_error, Some(true));
             let text = reject.content[0].as_text().map(|t| t.text.clone()).unwrap_or_default();
             assert!(text.contains("not performed"), "abort message: {text}");
+        }
+    }
+
+    #[test]
+    fn expense_tools_scope_map_and_catalog() {
+        assert_eq!(tool_required_scope("list_expenses"), Some("expenses:read"));
+        assert_eq!(tool_required_scope("get_expense"), Some("expenses:read"));
+        assert_eq!(tool_required_scope("create_expense"), Some("expenses:write"));
+        assert_eq!(tool_required_scope("update_expense"), Some("expenses:write"));
+        assert_eq!(tool_required_scope("delete_expense"), Some("expenses:write"));
+        assert_eq!(tool_required_scope("review_expense"), Some("expenses:approve"));
+
+        let catalog = tool_catalog();
+        for name in [
+            "list_expenses", "get_expense", "create_expense", "update_expense",
+            "review_expense", "delete_expense",
+        ] {
+            assert!(
+                catalog.iter().any(|t| t.name == name),
+                "tool catalog must contain {name}"
+            );
         }
     }
 }
