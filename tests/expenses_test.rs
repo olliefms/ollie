@@ -535,6 +535,42 @@ async fn test_expense_cannot_double_link() {
 }
 
 #[tokio::test]
+async fn test_maintenance_cannot_repoint_linked_expense() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let exp_x = create_expense(&server, &token, "repair").await;
+    let exp_y = create_expense(&server, &token, "repair").await;
+
+    let a = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "first repair", "expense_id": exp_x,
+        })).await;
+    assert_eq!(a.status_code(), 201);
+    let aid = a.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Re-pointing to a different (unlinked) expense is rejected.
+    let repoint = server.patch(&format!("/fleet/api/v1/maintenance/{aid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_y })).await;
+    assert_eq!(repoint.status_code(), 400);
+
+    // Self-linking (same expense it's already linked to) is an idempotent no-op.
+    let same = server.patch(&format!("/fleet/api/v1/maintenance/{aid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_x })).await;
+    assert_eq!(same.status_code(), 200);
+
+    // Expense X's back-pointer must still point at A.
+    let e = server.get(&format!("/fleet/api/v1/expenses/{exp_x}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(e.json::<serde_json::Value>()["maintenance_id"], *aid);
+}
+
+#[tokio::test]
 async fn test_warranty_maintenance_needs_no_expense() {
     let (server, _d1, _d2, _rx) = test_server().await;
     let token = setup_owner(&server).await;

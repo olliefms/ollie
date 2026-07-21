@@ -265,6 +265,16 @@ pub async fn apply_maintenance_patch(
         ));
     }
 
+    if let (Some(cur), Some(new)) = (current.expense_id, parsed.expense_id) {
+        if cur != new {
+            return Err(AppError::BadRequest(
+                "maintenance record is already linked to an expense (unlink is not \
+                 supported; delete and recreate to re-link)"
+                    .into(),
+            ));
+        }
+    }
+
     let mut cost = parsed.cost;
     if let Some(expense_id) = parsed.expense_id {
         let expense = state.db.get_expense_by_id(expense_id).await
