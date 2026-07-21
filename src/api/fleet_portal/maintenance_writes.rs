@@ -193,6 +193,11 @@ pub async fn apply_maintenance_create(
         }
         let expense = state.db.get_expense_by_id(expense_id).await
             .map_err(|_| AppError::BadRequest("unknown expense".into()))?;
+        if expense.maintenance_id.is_some() {
+            return Err(AppError::BadRequest(
+                "expense is already linked to a maintenance record".into(),
+            ));
+        }
         if expense.amount.is_some() {
             cost = expense.amount;
         }
@@ -254,11 +259,21 @@ pub async fn apply_maintenance_patch(
             "cost is managed by the linked expense".into(),
         ));
     }
+    if parsed.expense_id.is_some() && parsed.cost.is_some() {
+        return Err(AppError::BadRequest(
+            "cost cannot be set directly when linking an expense".into(),
+        ));
+    }
 
     let mut cost = parsed.cost;
     if let Some(expense_id) = parsed.expense_id {
         let expense = state.db.get_expense_by_id(expense_id).await
             .map_err(|_| AppError::BadRequest("unknown expense".into()))?;
+        if expense.maintenance_id.is_some_and(|other| other != id) {
+            return Err(AppError::BadRequest(
+                "expense is already linked to a maintenance record".into(),
+            ));
+        }
         if expense.amount.is_some() {
             cost = expense.amount;
         }

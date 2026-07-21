@@ -472,6 +472,69 @@ async fn test_maintenance_expense_crosslink_and_cost_mirror() {
 }
 
 #[tokio::test]
+async fn test_patch_linking_expense_rejects_cost_in_same_body() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "unlinked oil change",
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    let mid = m.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let exp_id = create_expense(&server, &token, "repair").await;
+
+    let bad = server.patch(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_id, "cost": 999.0 })).await;
+    assert_eq!(bad.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_expense_cannot_double_link() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let exp_id = create_expense(&server, &token, "repair").await;
+
+    let a = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "first repair", "expense_id": exp_id,
+        })).await;
+    assert_eq!(a.status_code(), 201);
+
+    let b = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "second repair, same expense", "expense_id": exp_id,
+        })).await;
+    assert_eq!(b.status_code(), 400);
+
+    let c = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "third repair, unlinked",
+        })).await;
+    assert_eq!(c.status_code(), 201);
+    let cid = c.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let patch = server.patch(&format!("/fleet/api/v1/maintenance/{cid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_id })).await;
+    assert_eq!(patch.status_code(), 400);
+}
+
+#[tokio::test]
 async fn test_warranty_maintenance_needs_no_expense() {
     let (server, _d1, _d2, _rx) = test_server().await;
     let token = setup_owner(&server).await;
