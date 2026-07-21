@@ -2,6 +2,7 @@
 use base64::{engine::general_purpose, Engine as _};
 use bytes::Bytes;
 
+#[derive(Clone)]
 pub enum Extractable {
     Text(String),
     /// Scanned PDF: raw bytes + whatever garbled text was extracted (may be empty)
@@ -10,6 +11,17 @@ pub enum Extractable {
     ImageBytes(Bytes),
     Unsupported,
 }
+
+/// Maximum binary payload sent to the Ollama vision model. Anything larger
+/// overflows moondream's ~8K-token context window and Ollama returns an
+/// opaque 500. ~500 KB binary ≈ 670 KB base64.
+pub(crate) const MAX_VISION_BYTES: usize = 500_000;
+
+/// Maximum pixel long edge sent to the vision model. moondream returns an
+/// EMPTY response for full-resolution scans (e.g. 2432×3168) even when the
+/// byte payload is under MAX_VISION_BYTES — the trigger is resolution, not
+/// bytes. (#372)
+pub(crate) const MAX_VISION_DIM: u32 = 1024;
 
 pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
     if mime_type.starts_with("text/")

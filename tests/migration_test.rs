@@ -948,3 +948,117 @@ async fn migration_opens_pre_archived_facilities_table_and_adds_archived_column(
     let (back, _) = client.list_facilities(None, &[], 10, 0, false).await.unwrap();
     assert_eq!(back, 1, "reactivated facility must return to the active list");
 }
+
+// --- Maintenance `expense_id` column migration (expense-tracking task 4) ---
+
+/// Pre-expense_id maintenance schema: current `maintenance_schema` minus the
+/// `expense_id` column appended at the end.
+fn maintenance_schema_pre_expense_id(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("equipment_type", DataType::Utf8, false),
+        Field::new("equipment_id", DataType::Utf8, false),
+        Field::new("service_date", DataType::Utf8, false),
+        Field::new("category", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, false),
+        Field::new("cost", DataType::Float64, true),
+        Field::new("odometer", DataType::Int64, true),
+        Field::new("vendor", DataType::Utf8, true),
+        Field::new("invoice_ref", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+        Field::new("blob_ids", DataType::Utf8, false),
+    ]))
+}
+
+async fn seed_pre_expense_id_maintenance(path: &str) -> Uuid {
+    let conn = lancedb::connect(path).execute().await.unwrap();
+    let schema = maintenance_schema_pre_expense_id(EMBED_DIM);
+    let id = Uuid::new_v4();
+    let id_str = id.to_string();
+    let equipment_id = Uuid::new_v4().to_string();
+    let now = Utc::now().to_rfc3339();
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![None];
+    let batch = RecordBatch::try_new(schema.clone(), vec![
+        Arc::new(StringArray::from(vec![Some(id_str.as_str())])),
+        Arc::new(StringArray::from(vec![Some("truck")])),
+        Arc::new(StringArray::from(vec![Some(equipment_id.as_str())])),
+        Arc::new(StringArray::from(vec![Some("2026-05-01")])),
+        Arc::new(StringArray::from(vec![Some("repair")])),
+        Arc::new(StringArray::from(vec![Some("legacy repair")])),
+        Arc::new(Float64Array::from(vec![Some(150.0_f64)])),
+        Arc::new(Int64Array::from(vec![Some(100_000_i64)])),
+        Arc::new(StringArray::from(vec![Some("Legacy Vendor")])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+            nulls, EMBED_DIM as i32,
+        )),
+        Arc::new(Int64Array::from(vec![1_i64])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        Arc::new(StringArray::from(vec![Some("[]")])),
+    ]).unwrap();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    conn.create_table("maintenance", reader).execute().await.unwrap();
+    id
+}
+
+#[tokio::test]
+async fn migration_opens_pre_expense_id_maintenance_table_and_adds_expense_id_column() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    let seeded_id = seed_pre_expense_id_maintenance(path).await;
+
+    let client = DbClient::new(path, EMBED_DIM).await.expect(
+        "DbClient::new must migrate a pre-expense_id maintenance table without erroring. \
+         If this fails with a DataFusion CAST parser error, the expense_id migration \
+         is using an Arrow type name (e.g. `Utf8`) where a SQL keyword (`string`) is \
+         required — see AGENTS.md.",
+    );
+
+    let schema = client.maintenance_table.schema().await.unwrap();
+    assert!(
+        schema.field_with_name("expense_id").is_ok(),
+        "post-migration maintenance schema missing expense_id"
+    );
+    assert_eq!(client.maintenance_table.count_rows(None).await.unwrap(), 1);
+
+    // (a) Pre-existing row is readable, with expense_id defaulting to None.
+    let seeded = client.get_maintenance_by_id(seeded_id).await.unwrap();
+    assert_eq!(seeded.description, "legacy repair");
+    assert_eq!(seeded.expense_id, None);
+
+    // (b) A fresh record carrying expense_id round-trips via insert/get.
+    use ollie::models::{EquipmentType, MaintenanceCategory, MaintenanceRecord};
+    let new_id = Uuid::new_v4();
+    let linked_expense_id = Uuid::new_v4();
+    let now = Utc::now();
+    let record = MaintenanceRecord {
+        id: new_id,
+        equipment_type: EquipmentType::Truck,
+        equipment_id: Uuid::new_v4(),
+        service_date: "2026-07-01".into(),
+        category: MaintenanceCategory::Repair,
+        description: "post-migration repair".into(),
+        cost: Some(300.0),
+        odometer: Some(101_000),
+        vendor: Some("New Vendor".into()),
+        invoice_ref: None,
+        blob_ids: vec![],
+        expense_id: Some(linked_expense_id),
+        embedding: None,
+        owner_id: 1,
+        created_at: now,
+        updated_at: now,
+    };
+    client.insert_maintenance(&record).await.unwrap();
+    let fetched = client.get_maintenance_by_id(new_id).await.unwrap();
+    assert_eq!(fetched.expense_id, Some(linked_expense_id));
+}

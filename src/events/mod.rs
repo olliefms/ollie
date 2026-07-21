@@ -134,6 +134,21 @@ pub async fn on_check_call(db: &DbClient, trip_id: Uuid, location: String, notes
     tracing::info!(trip_id = %trip_id, "check call");
 }
 
+pub async fn expense_submitted(db: &DbClient, expense_id: Uuid, actor: Option<String>) {
+    let _ = db.append_event("expense", expense_id, "expense.submitted", None, actor.as_deref(), &now_z(), None).await;
+    tracing::info!(expense_id = %expense_id, "expense submitted");
+}
+
+pub async fn expense_reviewed(db: &DbClient, expense_id: Uuid, payload: serde_json::Value, actor: Option<String>) {
+    let _ = db.append_event("expense", expense_id, "expense.reviewed", Some(payload), actor.as_deref(), &now_z(), None).await;
+    tracing::info!(expense_id = %expense_id, "expense reviewed");
+}
+
+pub async fn expense_deleted(db: &DbClient, expense_id: Uuid, actor: Option<String>) {
+    let _ = db.append_event("expense", expense_id, "expense.deleted", None, actor.as_deref(), &now_z(), None).await;
+    tracing::info!(expense_id = %expense_id, "expense deleted");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

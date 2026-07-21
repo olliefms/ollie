@@ -21,7 +21,7 @@ describe('visibleGroups', () => {
     const labels = groups.flatMap(g => g.items.map(i => i.label));
     expect(labels).toEqual([
       'Home', 'Loads', 'Trips', 'Events', 'Drivers', 'Trucks',
-      'Trailers', 'Maintenance', 'Facilities', 'Terminals', 'Documents',
+      'Trailers', 'Maintenance', 'Expenses', 'Facilities', 'Terminals', 'Documents',
     ]);
   });
 
@@ -45,7 +45,7 @@ describe('renderSidebar', () => {
   it('renders data-link anchors with icon + label', () => {
     renderSidebar(host, { scopes: ALL, pathname: '/fleet/loads' });
     const links = host.querySelectorAll('a.sidebar__link');
-    expect(links.length).toBe(11);
+    expect(links.length).toBe(12);
     const loads = [...links].find(a => a.getAttribute('href') === '/fleet/loads');
     expect(loads.hasAttribute('data-link')).toBe(true);
     expect(loads.querySelector('svg')).not.toBe(null);

@@ -5,6 +5,7 @@ pub mod blob_links;
 pub mod blobs;
 pub mod data;
 pub mod driver_writes;
+pub mod expenses;
 pub mod facility_writes;
 pub mod jwt;
 pub mod maintenance_writes;
@@ -169,6 +170,21 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/fleet/api/v1/drivers/count", get(data::count_active_drivers))
         .route("/fleet/api/v1/blobs/count", get(data::count_pending_documents))
         .route("/fleet/api/v1/events/count", get(data::count_events_today))
+        // Expenses
+        .route(
+            "/fleet/api/v1/expenses",
+            get(expenses::list_expenses_handler).post(expenses::create_expense_handler),
+        )
+        .route(
+            "/fleet/api/v1/expenses/{id}",
+            get(expenses::get_expense_handler)
+                .patch(expenses::patch_expense_handler)
+                .delete(expenses::delete_expense_handler),
+        )
+        .route(
+            "/fleet/api/v1/expenses/{id}/review",
+            post(expenses::review_expense_handler),
+        )
         // Blob endpoints
         .route(
             "/fleet/api/v1/blobs",

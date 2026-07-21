@@ -195,9 +195,11 @@ export async function renderTripDetail(container, tripId) {
     docsSection.appendChild(fileInput);
 
     let pendingDoctype = 'other';
+    let pendingExpenseCategory = 'other';
 
-    uploadBtn.addEventListener('click', () => openDoctypeSheet(dt => {
+    uploadBtn.addEventListener('click', () => openDoctypeSheet((dt, category) => {
       pendingDoctype = dt;
+      pendingExpenseCategory = category || 'other';
       fileInput.click();
     }));
 
@@ -207,6 +209,9 @@ export async function renderTripDetail(container, tripId) {
       const form = new FormData();
       form.append('file', file);
       form.append('doctype', pendingDoctype);
+      if (pendingDoctype === 'expense') {
+        form.append('expense_category', pendingExpenseCategory || 'other');
+      }
       uploadBtn.disabled = true;
       const originalLabel = uploadBtn.textContent;
       uploadBtn.textContent = 'Uploading…';
@@ -349,6 +354,12 @@ export async function renderTripDetail(container, tripId) {
       }
     }
 
+    const EXPENSE_CATEGORIES = [
+      ['fuel', 'Fuel'], ['tolls', 'Tolls'], ['scales', 'Scales'],
+      ['lumper', 'Lumper'], ['parking', 'Parking'], ['repair', 'Repair'],
+      ['supplies', 'Supplies'], ['permit', 'Permit'], ['other', 'Other'],
+    ];
+
     function openDoctypeSheet(onPick) {
       const sheet = document.createElement('div');
       sheet.className = 'sheet';
@@ -358,19 +369,46 @@ export async function renderTripDetail(container, tripId) {
       title.className = 'sheet__title';
       title.textContent = 'What kind of document?';
       inner.appendChild(title);
-      [['bol','BOL'],['pod','POD'],['scale_ticket','Scale Ticket'],['other','Other']].forEach(([id, label]) => {
+
+      const closeSheet = () => { if (sheet.parentNode) document.body.removeChild(sheet); };
+
+      [['bol','BOL'],['pod','POD'],['expense','Expense'],['other','Other']].forEach(([id, label]) => {
         const b = document.createElement('button');
         b.type = 'button';
         b.className = 'btn btn-secondary sheet__option';
         b.textContent = label;
         b.addEventListener('click', () => {
-          document.body.removeChild(sheet);
+          if (id === 'expense') {
+            showExpenseCategoryPicker();
+            return;
+          }
+          closeSheet();
           onPick(id);
         });
         inner.appendChild(b);
       });
+
+      function showExpenseCategoryPicker() {
+        inner.replaceChildren();
+        const catTitle = document.createElement('div');
+        catTitle.className = 'sheet__title';
+        catTitle.textContent = 'Expense category';
+        inner.appendChild(catTitle);
+        EXPENSE_CATEGORIES.forEach(([id, label]) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'btn btn-secondary sheet__option';
+          b.textContent = label;
+          b.addEventListener('click', () => {
+            closeSheet();
+            onPick('expense', id);
+          });
+          inner.appendChild(b);
+        });
+      }
+
       sheet.appendChild(inner);
-      sheet.addEventListener('click', e => { if (e.target === sheet) document.body.removeChild(sheet); });
+      sheet.addEventListener('click', e => { if (e.target === sheet) closeSheet(); });
       document.body.appendChild(sheet);
     }
 

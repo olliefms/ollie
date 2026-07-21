@@ -62,6 +62,8 @@ pub const DISPATCHER_SCOPES: &[&str] = &[
     "trailers:write",
     "maintenance:read",
     "maintenance:write",
+    "expenses:read",
+    "expenses:write",
     "facilities:read",
     "facilities:write",
     "terminals:read",
@@ -97,6 +99,9 @@ pub const ALL_SCOPES: &[&str] = &[
     "maintenance:read",
     "maintenance:write",
     "maintenance:delete",
+    "expenses:read",
+    "expenses:write",
+    "expenses:approve",
     "facilities:read",
     "facilities:write",
     "facilities:delete",
@@ -270,6 +275,21 @@ mod tests {
                 scope_granted(&owner_plain, scope),
                 "grant changed owner authority for {scope}",
             );
+        }
+    }
+
+    #[test]
+    fn test_dispatcher_expense_scopes() {
+        let eff = effective_scopes(Role::Dispatcher, &[]);
+        assert!(scope_granted(&eff, "expenses:read"));
+        assert!(scope_granted(&eff, "expenses:write"));
+        assert!(!scope_granted(&eff, "expenses:approve"));
+    }
+
+    #[test]
+    fn test_expense_scopes_in_vocabulary() {
+        for s in ["expenses:read", "expenses:write", "expenses:approve"] {
+            assert!(ALL_SCOPES.contains(&s), "missing {s}");
         }
     }
 }

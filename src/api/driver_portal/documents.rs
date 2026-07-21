@@ -3,7 +3,7 @@ use crate::{
     api::driver_portal::jwt::DriverClaims,
     api::utils::sanitize_filename,
     error::AppError,
-    models::{BlobRecord, BlobStatus, BlobVisibility},
+    models::{BlobRecord, BlobStatus, BlobVisibility, ExpenseCategory},
     AppState,
 };
 use axum::{
@@ -18,7 +18,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 const MAX_DOC_SIZE: usize = 50 * 1024 * 1024;
-const ALLOWED_DOCTYPES: &[&str] = &["bol", "pod", "scale_ticket", "other"];
+const ALLOWED_DOCTYPES: &[&str] = &["bol", "pod", "scale_ticket", "expense", "other"];
 
 async fn assert_trip_belongs_to_driver(
     state: &AppState,
@@ -74,6 +74,7 @@ pub async fn upload_document(
     let mut filename: Option<String> = None;
     let mut file_content_type: Option<String> = None;
     let mut doctype = "other".to_string();
+    let mut expense_category: Option<ExpenseCategory> = None;
 
     while let Some(field) = multipart
         .next_field()
@@ -105,6 +106,16 @@ pub async fn upload_document(
                     return Err(AppError::BadRequest(format!("invalid doctype: {raw}")));
                 }
                 doctype = raw;
+            }
+            "expense_category" => {
+                let raw = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(e.to_string()))?;
+                expense_category = Some(
+                    raw.parse::<ExpenseCategory>()
+                        .map_err(AppError::BadRequest)?,
+                );
             }
             _ => {}
         }
@@ -190,6 +201,41 @@ pub async fn upload_document(
                 None, None, Some(new_ids), None,
             ).await?;
         }
+    }
+
+    if doctype == "expense" {
+        let now = Utc::now();
+        let expense = crate::models::ExpenseRecord {
+            id: Uuid::new_v4(),
+            status: crate::models::ExpenseStatus::Submitted,
+            category: expense_category.unwrap_or(crate::models::ExpenseCategory::Other),
+            driver_id: Some(driver_id),
+            trip_id: Some(trip_id),
+            equipment_type: None,
+            equipment_id: None,
+            maintenance_id: None,
+            blob_ids: vec![record.id],
+            submitted_by: format!("driver:{driver_id}"),
+            expense_date: None,
+            vendor: None,
+            amount: None,
+            approved_amount: None,
+            payment_method: None,
+            suggested_amount: None,
+            suggested_date: None,
+            suggested_vendor: None,
+            suggested_card_last4: None,
+            reviewed_by: None,
+            reviewed_at: None,
+            review_note: None,
+            settlement_id: None,
+            embedding: None,
+            owner_id: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        state.db.insert_expense(&expense).await?;
+        crate::events::expense_submitted(&state.db, expense.id, Some(expense.submitted_by.clone())).await;
     }
 
     Ok((status_code, Json(record)))

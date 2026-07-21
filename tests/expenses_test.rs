@@ -1,0 +1,868 @@
+// tests/expenses_test.rs
+//
+// Integration tests for fleet REST expense create/list/get (#233 task 5).
+
+use axum::http::header;
+use axum_test::TestServer;
+use ollie::{
+    ai::OllamaClient,
+    api,
+    config::Config,
+    db::DbClient,
+    storage::BlobStore,
+    AppState,
+};
+use std::sync::Arc;
+use tempfile::TempDir;
+use webauthn_rs::prelude::{Url, WebauthnBuilder};
+
+#[allow(clippy::type_complexity)]
+async fn test_server_with_state() -> (
+    TestServer,
+    TempDir,
+    TempDir,
+    async_channel::Receiver<uuid::Uuid>,
+    AppState,
+) {
+    let blob_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
+    std::env::set_var("DRIVER_RP_ID", "localhost");
+    std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+    std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-secret-must-be-32b");
+
+    let config = Arc::new(Config::from_env().unwrap());
+    let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
+    let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
+    let ai = Arc::new(OllamaClient::new(
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
+    ));
+    let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
+    let ors = Arc::new(ollie::routing::RoutingClient::new(""));
+
+    let (pipeline_tx, rx) = async_channel::bounded(100);
+    let (geocoding_tx, _grx) = async_channel::bounded(100);
+    let (routing_tx, _rrx) = async_channel::bounded(100);
+
+    let rp_origin = Url::parse("http://localhost:3000").unwrap();
+    let webauthn = Arc::new(
+        WebauthnBuilder::new("localhost", &rp_origin).unwrap().build().unwrap(),
+    );
+    let auth_challenge_store = Arc::new(dashmap::DashMap::new());
+    let reg_challenge_store = Arc::new(dashmap::DashMap::new());
+
+    let state = AppState {
+        db, store, ai, geocoding, ors,
+        pipeline_tx, geocoding_tx, routing_tx, config,
+        webauthn, auth_challenge_store, reg_challenge_store,
+    };
+    let server = TestServer::new(api::router(state.clone())).unwrap();
+    (server, blob_dir, db_dir, rx, state)
+}
+
+/// Create a dispatcher user via the users API (owner-authenticated) and log in,
+/// returning the dispatcher's JWT.
+async fn create_dispatcher_and_login(server: &TestServer, owner: &str) -> String {
+    let email = "dispatcher@example.com";
+    let password = "dispatcher-password-123";
+    let create = server.post("/fleet/api/v1/users")
+        .authorization_bearer(owner)
+        .json(&serde_json::json!({
+            "email": email, "name": "Dispatcher", "password": password, "role": "dispatcher",
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201, "dispatcher create failed");
+    let login = server.post("/fleet/auth/login")
+        .json(&serde_json::json!({ "email": email, "password": password }))
+        .await;
+    assert_eq!(login.status_code(), 200, "dispatcher login failed");
+    login.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+}
+
+async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>) {
+    let blob_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
+    std::env::set_var("DRIVER_RP_ID", "localhost");
+    std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+    std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-secret-must-be-32b");
+
+    let config = Arc::new(Config::from_env().unwrap());
+    let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
+    let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
+    let ai = Arc::new(OllamaClient::new(
+        // Deliberately unreachable: integration tests must not depend on a live
+        // Ollama (a real one on :11434 feeds wrong-dim embeddings into the test schema).
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
+    ));
+    let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
+    let ors = Arc::new(ollie::routing::RoutingClient::new(""));
+
+    let (pipeline_tx, rx) = async_channel::bounded(100);
+    let (geocoding_tx, _grx) = async_channel::bounded(100);
+    let (routing_tx, _rrx) = async_channel::bounded(100);
+
+    let rp_origin = Url::parse("http://localhost:3000").unwrap();
+    let webauthn = Arc::new(
+        WebauthnBuilder::new("localhost", &rp_origin)
+            .unwrap()
+            .build()
+            .unwrap(),
+    );
+    let auth_challenge_store = Arc::new(dashmap::DashMap::new());
+    let reg_challenge_store = Arc::new(dashmap::DashMap::new());
+
+    let state = AppState {
+        db, store, ai, geocoding, ors,
+        pipeline_tx, geocoding_tx, routing_tx, config,
+        webauthn, auth_challenge_store, reg_challenge_store,
+    };
+    let server = TestServer::new(api::router(state)).unwrap();
+    (server, blob_dir, db_dir, rx)
+}
+
+const OWNER_EMAIL: &str = "owner@example.com";
+const OWNER_PASSWORD: &str = "owner-password-123";
+
+/// First-run owner bootstrap (idempotent), returning an owner JWT.
+async fn setup_owner(server: &TestServer) -> String {
+    let resp = server.post("/fleet/setup")
+        .json(&serde_json::json!({
+            "email": OWNER_EMAIL, "name": "Owner", "password": OWNER_PASSWORD,
+        }))
+        .await;
+    if resp.status_code() == 200 {
+        return resp.json::<serde_json::Value>()["token"].as_str().unwrap().to_string();
+    }
+    let login = server.post("/fleet/auth/login")
+        .json(&serde_json::json!({ "email": OWNER_EMAIL, "password": OWNER_PASSWORD }))
+        .await;
+    assert_eq!(login.status_code(), 200, "owner login failed");
+    login.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
+}
+
+async fn create_expense(server: &TestServer, token: &str, category: &str) -> String {
+    let resp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({ "category": category }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn create_truck(server: &TestServer, token: &str) -> String {
+    let resp = server.post("/fleet/api/v1/trucks")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({ "unit_number": format!("T-{}", uuid::Uuid::new_v4()) }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn create_maintenance_unlinked(
+    server: &TestServer, token: &str, truck_id: &str, desc: &str,
+) -> String {
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": desc,
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    m.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn test_create_and_get_expense() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let resp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "fuel" }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "submitted");
+    assert_eq!(body["category"], "fuel");
+    assert!(body["amount"].is_null());
+    assert!(body["submitted_by"].as_str().unwrap().starts_with("fleet_user:"));
+    let id = body["id"].as_str().unwrap();
+
+    let got = server.get(&format!("/fleet/api/v1/expenses/{id}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(got.status_code(), 200);
+    assert_eq!(got.json::<serde_json::Value>()["id"], *id);
+}
+
+#[tokio::test]
+async fn test_create_expense_validates_links() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    // unknown driver -> 400
+    let resp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "category": "repair",
+            "driver_id": uuid::Uuid::new_v4(),
+        })).await;
+    assert_eq!(resp.status_code(), 400);
+    // equipment_type without equipment_id -> 400
+    let resp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "equipment_type": "truck" }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_list_expenses_filters() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    for cat in ["fuel", "tolls"] {
+        let r = server.post("/fleet/api/v1/expenses")
+            .authorization_bearer(&token)
+            .json(&serde_json::json!({ "category": cat })).await;
+        assert_eq!(r.status_code(), 201);
+    }
+    let all = server.get("/fleet/api/v1/expenses").authorization_bearer(&token).await;
+    assert_eq!(all.status_code(), 200);
+    assert_eq!(all.json::<serde_json::Value>()["total"], 2);
+    let fuel = server.get("/fleet/api/v1/expenses?category=fuel")
+        .authorization_bearer(&token).await;
+    assert_eq!(fuel.json::<serde_json::Value>()["total"], 1);
+    let queue = server.get("/fleet/api/v1/expenses?status=submitted")
+        .authorization_bearer(&token).await;
+    assert_eq!(queue.json::<serde_json::Value>()["total"], 2);
+}
+
+#[tokio::test]
+async fn test_expenses_require_auth() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    assert_eq!(server.get("/fleet/api/v1/expenses").await.status_code(), 401);
+}
+
+#[tokio::test]
+async fn test_create_expense_rejects_negative_amount() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let resp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "fuel", "amount": -5.0 }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_get_expense_not_found() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let resp = server.get(&format!("/fleet/api/v1/expenses/{}", uuid::Uuid::new_v4()))
+        .authorization_bearer(&token).await;
+    assert_eq!(resp.status_code(), 404);
+}
+
+#[tokio::test]
+async fn test_create_expense_rejects_unknown_category() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let resp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "not-a-real-category" }))
+        .await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_list_expenses_rejects_unknown_status_and_category() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let _ = create_expense(&server, &token, "fuel").await;
+    let resp = server.get("/fleet/api/v1/expenses?status=not-a-status")
+        .authorization_bearer(&token).await;
+    assert_eq!(resp.status_code(), 400);
+    let resp = server.get("/fleet/api/v1/expenses?category=not-a-category")
+        .authorization_bearer(&token).await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_review_full_partial_and_reject_derivations() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let id = create_expense(&server, &token, "fuel").await;
+
+    // Partial approval on company funds -> deduction of the denied portion.
+    let resp = server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 100.0, "approved_amount": 80.0,
+            "payment_method": "company", "review_note": "20 was personal snacks"
+        })).await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["status"], "reviewed");
+    assert_eq!(body["disposition"], "partial");
+    assert!((body["deduction"].as_f64().unwrap() - 20.0).abs() < 1e-9);
+    assert!(body.get("reimbursement").is_none() || body["reimbursement"].is_null());
+    assert!(body["reviewed_by"].as_str().is_some());
+
+    // Re-review is allowed while unsettled: flip to personal full approval.
+    let resp = server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 100.0, "approved_amount": 100.0, "payment_method": "personal"
+        })).await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert_eq!(body["disposition"], "approved");
+    assert!((body["reimbursement"].as_f64().unwrap() - 100.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn test_review_validation() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let id = create_expense(&server, &token, "fuel").await;
+    // approved > amount -> 400
+    let resp = server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 50.0, "approved_amount": 60.0, "payment_method": "company"
+        })).await;
+    assert_eq!(resp.status_code(), 400);
+    // negative amount -> 400
+    let resp = server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": -5.0, "approved_amount": 0.0, "payment_method": "company"
+        })).await;
+    assert_eq!(resp.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_review_clears_suggestions() {
+    let (server, _d1, _d2, _rx, state) = test_server_with_state().await;
+    let token = setup_owner(&server).await;
+    let id = create_expense(&server, &token, "fuel").await;
+    let uid: uuid::Uuid = id.parse().unwrap();
+    state.db.update_expense_suggestions(
+        uid, Some(42.0), Some("2026-07-01".into()), Some("Loves".into()), Some("1234".into()),
+    ).await.unwrap();
+
+    let resp = server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 42.0, "approved_amount": 42.0, "payment_method": "company"
+        })).await;
+    assert_eq!(resp.status_code(), 200);
+    let body: serde_json::Value = resp.json();
+    assert!(body["suggested_amount"].is_null());
+    assert!(body["suggested_vendor"].is_null());
+}
+
+#[tokio::test]
+async fn test_settled_expense_is_locked() {
+    let (server, _d1, _d2, _rx, state) = test_server_with_state().await;
+    let token = setup_owner(&server).await;
+    let id = create_expense(&server, &token, "fuel").await;
+    let uid: uuid::Uuid = id.parse().unwrap();
+    // Simulate the future settlements feature.
+    let mut rec = state.db.get_expense_by_id(uid).await.unwrap();
+    rec.status = "settled".parse().unwrap();
+    rec.settlement_id = Some(uuid::Uuid::new_v4());
+    state.db.update_expense(&rec).await.unwrap();
+
+    for resp in [
+        server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+            .authorization_bearer(&token)
+            .json(&serde_json::json!({
+                "amount": 1.0, "approved_amount": 1.0, "payment_method": "company"
+            })).await,
+        server.patch(&format!("/fleet/api/v1/expenses/{id}"))
+            .authorization_bearer(&token)
+            .json(&serde_json::json!({ "vendor": "x" })).await,
+        server.delete(&format!("/fleet/api/v1/expenses/{id}"))
+            .authorization_bearer(&token).await,
+    ] {
+        assert_eq!(resp.status_code(), 409, "settled record must reject mutation");
+    }
+}
+
+#[tokio::test]
+async fn test_dispatcher_scope_enforcement() {
+    // Owner creates a dispatcher user; dispatcher can create + edit own submitted,
+    // cannot review, cannot edit others' records.
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let disp = create_dispatcher_and_login(&server, &owner).await;
+    let own = create_expense(&server, &disp, "tolls").await;
+    let other = create_expense(&server, &owner, "fuel").await;
+
+    // Dispatcher edits own submitted record: OK.
+    let r = server.patch(&format!("/fleet/api/v1/expenses/{own}"))
+        .authorization_bearer(&disp)
+        .json(&serde_json::json!({ "vendor": "PA Turnpike" })).await;
+    assert_eq!(r.status_code(), 200);
+    // Dispatcher edits someone else's record: 403.
+    let r = server.patch(&format!("/fleet/api/v1/expenses/{other}"))
+        .authorization_bearer(&disp)
+        .json(&serde_json::json!({ "vendor": "nope" })).await;
+    assert_eq!(r.status_code(), 403);
+    // Dispatcher cannot review: 403.
+    let r = server.post(&format!("/fleet/api/v1/expenses/{own}/review"))
+        .authorization_bearer(&disp)
+        .json(&serde_json::json!({
+            "amount": 10.0, "approved_amount": 10.0, "payment_method": "company"
+        })).await;
+    assert_eq!(r.status_code(), 403);
+    // Dispatcher deletes own submitted: 204. Owner's record: 403.
+    assert_eq!(server.delete(&format!("/fleet/api/v1/expenses/{own}"))
+        .authorization_bearer(&disp).await.status_code(), 204);
+    assert_eq!(server.delete(&format!("/fleet/api/v1/expenses/{other}"))
+        .authorization_bearer(&disp).await.status_code(), 403);
+}
+
+#[tokio::test]
+async fn test_money_fields_require_approve_scope_on_patch() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let owner = setup_owner(&server).await;
+    let disp = create_dispatcher_and_login(&server, &owner).await;
+    let own = create_expense(&server, &disp, "fuel").await;
+    let r = server.patch(&format!("/fleet/api/v1/expenses/{own}"))
+        .authorization_bearer(&disp)
+        .json(&serde_json::json!({ "amount": 99.0 })).await;
+    assert_eq!(r.status_code(), 403);
+}
+
+#[tokio::test]
+async fn test_maintenance_expense_crosslink_and_cost_mirror() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    // Create a truck (copy the minimal truck-create request shape from
+    // tests/integration_test.rs truck tests).
+    let truck_id = create_truck(&server, &token).await; // local helper
+    // Expense with equipment link, then a maintenance record linked to it.
+    let exp_id = {
+        let r = server.post("/fleet/api/v1/expenses")
+            .authorization_bearer(&token)
+            .json(&serde_json::json!({
+                "category": "repair", "equipment_type": "truck", "equipment_id": truck_id,
+            })).await;
+        assert_eq!(r.status_code(), 201);
+        r.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+    };
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "roadside tire replacement",
+            "expense_id": exp_id,
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    let mid = m.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Cross-link written back onto the expense.
+    let e = server.get(&format!("/fleet/api/v1/expenses/{exp_id}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(e.json::<serde_json::Value>()["maintenance_id"], *mid);
+
+    // Review mirrors amount onto maintenance.cost.
+    let r = server.post(&format!("/fleet/api/v1/expenses/{exp_id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 612.0, "approved_amount": 612.0, "payment_method": "company"
+        })).await;
+    assert_eq!(r.status_code(), 200);
+    let got = server.get(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(got.json::<serde_json::Value>()["cost"], 612.0);
+
+    // Direct cost edits on a linked maintenance record are rejected.
+    let bad = server.patch(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "cost": 1.0 })).await;
+    assert_eq!(bad.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_patch_linking_expense_rejects_cost_in_same_body() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "unlinked oil change",
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    let mid = m.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let exp_id = create_expense(&server, &token, "repair").await;
+
+    let bad = server.patch(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_id, "cost": 999.0 })).await;
+    assert_eq!(bad.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_expense_cannot_double_link() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let exp_id = create_expense(&server, &token, "repair").await;
+
+    let a = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "first repair", "expense_id": exp_id,
+        })).await;
+    assert_eq!(a.status_code(), 201);
+
+    let b = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "second repair, same expense", "expense_id": exp_id,
+        })).await;
+    assert_eq!(b.status_code(), 400);
+
+    let c = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "third repair, unlinked",
+        })).await;
+    assert_eq!(c.status_code(), 201);
+    let cid = c.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let patch = server.patch(&format!("/fleet/api/v1/maintenance/{cid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_id })).await;
+    assert_eq!(patch.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_maintenance_cannot_repoint_linked_expense() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let exp_x = create_expense(&server, &token, "repair").await;
+    let exp_y = create_expense(&server, &token, "repair").await;
+
+    let a = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "first repair", "expense_id": exp_x,
+        })).await;
+    assert_eq!(a.status_code(), 201);
+    let aid = a.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Re-pointing to a different (unlinked) expense is rejected.
+    let repoint = server.patch(&format!("/fleet/api/v1/maintenance/{aid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_y })).await;
+    assert_eq!(repoint.status_code(), 400);
+
+    // Self-linking (same expense it's already linked to) is an idempotent no-op.
+    let same = server.patch(&format!("/fleet/api/v1/maintenance/{aid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "expense_id": exp_x })).await;
+    assert_eq!(same.status_code(), 200);
+
+    // Expense X's back-pointer must still point at A.
+    let e = server.get(&format!("/fleet/api/v1/expenses/{exp_x}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(e.json::<serde_json::Value>()["maintenance_id"], *aid);
+}
+
+#[tokio::test]
+async fn test_expense_create_rejects_already_linked_maintenance() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "unlinked repair").await;
+
+    // Expense A links M via create (writes the back-reference onto M).
+    let a = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(a.status_code(), 201);
+
+    // Expense B create against the now-linked M -> 400.
+    let b = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(b.status_code(), 400);
+
+    // Expense C created unlinked, then PATCH to the linked M -> 400.
+    let cid = create_expense(&server, &token, "repair").await;
+    let patch = server.patch(&format!("/fleet/api/v1/expenses/{cid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "maintenance_id": mid })).await;
+    assert_eq!(patch.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_expense_patch_cannot_repoint_maintenance() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let m1 = create_maintenance_unlinked(&server, &token, &truck_id, "repair one").await;
+    let m2 = create_maintenance_unlinked(&server, &token, &truck_id, "repair two").await;
+
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": m1 })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Re-point to a different maintenance record -> 400.
+    let repoint = server.patch(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "maintenance_id": m2 })).await;
+    assert_eq!(repoint.status_code(), 400);
+
+    // Same-id PATCH is an idempotent no-op -> 200.
+    let same = server.patch(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "maintenance_id": m1 })).await;
+    assert_eq!(same.status_code(), 200);
+}
+
+#[tokio::test]
+async fn test_patch_rejects_negative_approved_amount() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let id = create_expense(&server, &token, "fuel").await;
+    // Review first so the money fields carry values (owner has expenses:approve).
+    let r = server.post(&format!("/fleet/api/v1/expenses/{id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 50.0, "approved_amount": 50.0, "payment_method": "company"
+        })).await;
+    assert_eq!(r.status_code(), 200);
+    // PATCH a negative approved_amount -> 400.
+    let patch = server.patch(&format!("/fleet/api/v1/expenses/{id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "approved_amount": -5.0 })).await;
+    assert_eq!(patch.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_delete_linked_expense_unlinks_maintenance() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "linked repair").await;
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Deleting the linked expense clears the maintenance back-link.
+    let del = server.delete(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(del.status_code(), 204);
+
+    let got = server.get(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(got.status_code(), 200);
+    assert!(got.json::<serde_json::Value>()["expense_id"].is_null());
+
+    // With the link gone, direct cost edits are allowed again.
+    let patch = server.patch(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "cost": 123.0 })).await;
+    assert_eq!(patch.status_code(), 200);
+    assert_eq!(patch.json::<serde_json::Value>()["cost"], 123.0);
+}
+
+#[tokio::test]
+async fn test_delete_maintenance_unlinks_expense_and_review_succeeds() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "temp repair").await;
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Deleting the maintenance record clears the expense's forward link.
+    let del = server.delete(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(del.status_code(), 204);
+
+    let e = server.get(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token).await;
+    assert!(e.json::<serde_json::Value>()["maintenance_id"].is_null());
+
+    // Reviewing the now-unlinked expense still succeeds (mirror is best-effort).
+    let r = server.post(&format!("/fleet/api/v1/expenses/{eid}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 75.0, "approved_amount": 75.0, "payment_method": "company"
+        })).await;
+    assert_eq!(r.status_code(), 200);
+}
+
+// ── MCP delete_maintenance shares the REST unlink logic (final-review finding) ──
+//
+// Helpers copied from tests/integration_test.rs (each integration test file is
+// its own binary — no shared test-support module exists yet).
+
+/// Extract the single JSON-RPC message from a Streamable-HTTP SSE response body.
+/// rmcp frames each POST reply as one `event: message` / `data: {…}` SSE event.
+fn sse_json(body: &str) -> serde_json::Value {
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                continue; // priming/keep-alive frames carry no JSON payload
+            }
+            return serde_json::from_str(rest)
+                .unwrap_or_else(|e| panic!("SSE data not JSON ({e}): {rest}"));
+        }
+    }
+    panic!("no SSE `data:` event in body: {body:?}");
+}
+
+/// Open an MCP session: `initialize` then the `notifications/initialized` ack.
+/// Returns the `Mcp-Session-Id` the server assigned (used on subsequent calls).
+async fn mcp_session(server: &TestServer, token: &str) -> String {
+    let resp = server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "ollie-test", "version": "1.0" }
+            }
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "initialize HTTP {}", resp.status_code());
+    let session = resp
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize must return an Mcp-Session-Id header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.clone())
+        .json(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    session
+}
+
+/// Send one JSON-RPC request on an existing session and return the parsed reply
+/// (the full JSON-RPC envelope: `{ jsonrpc, id, result | error }`).
+async fn mcp_rpc(
+    server: &TestServer,
+    token: &str,
+    session: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let resp = server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.to_string())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "MCP {method} HTTP {}", resp.status_code());
+    sse_json(&resp.text())
+}
+
+/// Full convenience path: open a session, invoke a tool, and return the tool's
+/// decoded payload (the JSON object inside the result's text content block).
+async fn mcp_call(
+    server: &TestServer,
+    token: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let session = mcp_session(server, token).await;
+    let body = mcp_rpc(
+        server,
+        token,
+        &session,
+        "tools/call",
+        serde_json::json!({ "name": name, "arguments": args }),
+    )
+    .await;
+    assert!(body["error"].is_null(), "MCP {name} error: {:?}", body["error"]);
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .expect("MCP content[0].text missing");
+    serde_json::from_str(text).expect("inner JSON parse")
+}
+
+#[tokio::test]
+async fn test_mcp_delete_maintenance_unlinks_expense() {
+    // The final-review finding: `tool_delete_maintenance` used to call
+    // `state.db.delete_maintenance` directly, bypassing the REST handler's
+    // unlink-paired-expense logic (see `test_delete_maintenance_unlinks_expense_
+    // and_review_succeeds` above for the REST-path equivalent). Deleting via the
+    // MCP tool must sever the expense's forward link too, since the re-point
+    // guard would otherwise make a dangling link permanent.
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "mcp-path repair").await;
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Delete the maintenance record via the MCP tool (not the REST endpoint).
+    let result = mcp_call(&server, &token, "delete_maintenance",
+        serde_json::json!({ "maintenance_id": mid })).await;
+    assert_eq!(result["deleted"], true);
+
+    let e = server.get(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(e.status_code(), 200);
+    assert!(e.json::<serde_json::Value>()["maintenance_id"].is_null(),
+        "MCP delete_maintenance must clear the paired expense's maintenance_id");
+}
+
+#[tokio::test]
+async fn test_warranty_maintenance_needs_no_expense() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "warranty turbo replacement", "cost": 0.0,
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    let body: serde_json::Value = m.json();
+    assert_eq!(body["cost"], 0.0);
+    assert!(body["expense_id"].is_null());
+}

@@ -91,6 +91,12 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         fleet_portal::maintenance_writes::update_maintenance_handler,
         fleet_portal::maintenance_writes::delete_maintenance_handler,
         fleet_portal::data::list_events,
+        fleet_portal::expenses::create_expense_handler,
+        fleet_portal::expenses::list_expenses_handler,
+        fleet_portal::expenses::get_expense_handler,
+        fleet_portal::expenses::review_expense_handler,
+        fleet_portal::expenses::patch_expense_handler,
+        fleet_portal::expenses::delete_expense_handler,
         fleet_portal::users::me,
         fleet_portal::users::list_users,
         fleet_portal::users::get_user,
@@ -114,6 +120,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         driver_portal::documents::list_documents,
         driver_portal::documents::get_document_content,
         driver_portal::documents::delete_document,
+        driver_portal::expenses::list_expenses,
+        driver_portal::expenses::delete_expense,
         version::get_version,
     ),
     components(
@@ -179,6 +187,15 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::MaintenanceListResponse,
             fleet_portal::maintenance_writes::CreateMaintenanceBody,
             fleet_portal::maintenance_writes::PatchMaintenanceBody,
+            models::ExpenseCategory,
+            models::ExpenseStatus,
+            models::PaymentMethod,
+            models::ExpenseRecord,
+            models::ExpenseResponse,
+            models::ExpenseListResponse,
+            fleet_portal::expenses::CreateExpenseBody,
+            fleet_portal::expenses::ReviewExpenseBody,
+            fleet_portal::expenses::PatchExpenseBody,
             models::TripStatus,
             models::TripStopType,
             models::TripStop,
@@ -337,6 +354,7 @@ Fleet & facilities:
   list_maintenance, get_maintenance, create_maintenance, update_maintenance
   list_facilities, get_facility, create_facility, update_facility
   list_events
+  list_expenses, get_expense, create_expense, update_expense, review_expense, delete_expense
 
 Data-integrity doctors:
   trip_doctor, load_doctor, facility_doctor — diagnose (and optionally repair) one record.
@@ -389,6 +407,11 @@ within the 7-day window).
   Maintenance GET /maintenance (?equipment_type, ?equipment_id, ?category), GET /maintenance/:id,
              POST /maintenance, PATCH /maintenance/:id, DELETE /maintenance/:id
              (scope: maintenance:read / maintenance:write / maintenance:delete)
+  Expenses   GET /expenses (?status, ?category, ?driver_id, ?trip_id, ?equipment_id,
+             ?submitted_by, ?from, ?to), GET /expenses/:id, POST /expenses,
+             PATCH /expenses/:id, DELETE /expenses/:id, POST /expenses/:id/review
+             (scope: expenses:read / expenses:write / expenses:approve; dispatcher
+             role holds read+write but not approve)
   Facilities GET /facilities (?q, ?limit, ?offset), GET /facilities/:id, POST /facilities, PATCH /facilities/:id
   Blobs      GET /blobs, GET /blob/:id, POST /blobs, PUT /blob/:id, DELETE /blob/:id, POST /blobs/:id/query
              (multipart POST /blobs accepts an optional visibility=driver field to expose the
@@ -468,6 +491,27 @@ forbidden (403).
   Semantic search via ?s=<query>. Ask a natural-language question about a ready document
   via POST /fleet/api/v1/blobs/:id/query (body: { prompt, model? }).
 
+### Expenses
+  Lifecycle: submitted → reviewed → settled. Settled sets settlement_id, which
+  locks the record permanently (no further edits or delete). Money is derived,
+  never stored: review sets amount (receipt total) and approved_amount (0 <=
+  approved_amount <= amount), then payment_method decides the effect —
+  personal + approved portion > 0 becomes a reimbursement owed to the driver;
+  company + denied portion (amount - approved_amount) > 0 becomes a deduction
+  owed by the driver. disposition is "approved" | "partial" | "rejected" from
+  comparing amount vs approved_amount. A submitted expense may carry AI-staged
+  suggested_amount/date/vendor/card_last4 from receipt extraction; review
+  always clears them.
+
+  Maintenance linkage: maintenance.expense_id and expense.maintenance_id
+  cross-reference each other. When linked, maintenance cost is a read-only
+  mirror of the expense's amount and cannot be set directly (cost +
+  expense_id together is a 400). expense_id unset + cost 0 means an explicit
+  no-charge (warranty/goodwill); expense_id unset + cost set is a legacy or
+  manually-tracked record. Link at create (create_maintenance's expense_id or
+  create_expense's maintenance_id) or backfill later via update_maintenance
+  expense_id; unlinking is not supported (delete + recreate).
+
 ### List vs. search counts
   GET list endpoints return a `returned` field. Without ?s= it is the total matching
   count (for pagination); with ?s=<query> it is the number of items in this response.
@@ -483,6 +527,11 @@ surface and not described in /openapi.json.
   PUT /equipment/trailer sets the driver's currently attached trailers (body:
   trailer_ids OR trailer_unit_numbers) and cascades onto their active
   Dispatched/InTransit trip unless they have arrived at the final delivery stop.
+  Expenses: POST /trips/:id/documents (multipart; doctype=expense plus an
+  optional expense_category field auto-creates a submitted expense from the
+  uploaded receipt), GET /expenses (?status, ?limit, ?offset) — this driver's
+  own records, DELETE /expenses/:id — own submitted (not yet reviewed) records
+  only.
 
 ## Full spec
 

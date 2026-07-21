@@ -152,6 +152,13 @@ export async function renderAccount(container) {
   const settingsList = document.createElement('div');
   settingsList.className = 'account-settings';
 
+  const expensesRow = document.createElement('button');
+  expensesRow.type = 'button';
+  expensesRow.className = 'account-row';
+  expensesRow.textContent = 'Expenses';
+  expensesRow.addEventListener('click', () => navigate('/driver/expenses'));
+  settingsList.appendChild(expensesRow);
+
   const logoutRow = document.createElement('button');
   logoutRow.type = 'button';
   logoutRow.className = 'account-row account-row--button';
