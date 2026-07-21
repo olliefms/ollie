@@ -27,6 +27,9 @@ function fields(editing) {
 
 export async function renderMaintenanceForm(id, prefill = {}) {
   let values = {};
+  // Set when arriving from an expense (category=repair): links the new
+  // maintenance record to the expense and mirrors its cost server-side.
+  let expenseId;
   if (id) {
     const res = await apiFetch(`${API_BASE}/maintenance/${encodeURIComponent(id)}`);
     if (res.ok) values = await res.json();
@@ -36,6 +39,7 @@ export async function renderMaintenanceForm(id, prefill = {}) {
       equipment_type: prefill.equipment_type || fromQuery.get('equipment_type') || undefined,
       equipment_id: prefill.equipment_id || fromQuery.get('equipment_id') || undefined,
     };
+    expenseId = prefill.expense_id || fromQuery.get('expense_id') || undefined;
   }
 
   renderFormPage({
@@ -47,9 +51,10 @@ export async function renderMaintenanceForm(id, prefill = {}) {
       const url = id
         ? `${API_BASE}/maintenance/${encodeURIComponent(id)}`
         : `${API_BASE}/maintenance`;
+      const body = (!id && expenseId) ? { ...payload, expense_id: expenseId } : payload;
       const res = await apiFetch(url, {
         method: id ? 'PATCH' : 'POST',
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
       });
       if (res.ok) {
         const saved = await res.json().catch(() => ({}));

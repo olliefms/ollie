@@ -40,11 +40,29 @@ export const VIEW_PATHS = {
   'trailer-detail': (p) => `/fleet/trailers/${p.id}`,
   'trailer-edit': (p) => `/fleet/trailers/${p.id}/edit`,
   maintenance: () => '/fleet/maintenance',
-  'maintenance-new': (p) => p && p.equipment_type
-    ? `/fleet/maintenance/new?equipment_type=${encodeURIComponent(p.equipment_type)}&equipment_id=${encodeURIComponent(p.equipment_id)}`
-    : '/fleet/maintenance/new',
+  'maintenance-new': (p) => {
+    if (!p || !p.equipment_type) return '/fleet/maintenance/new';
+    const qs = new URLSearchParams({
+      equipment_type: p.equipment_type,
+      equipment_id: p.equipment_id,
+    });
+    if (p.expense_id) qs.set('expense_id', p.expense_id);
+    return `/fleet/maintenance/new?${qs.toString()}`;
+  },
   'maintenance-detail': (p) => `/fleet/maintenance/${p.id}`,
   'maintenance-edit': (p) => `/fleet/maintenance/${p.id}/edit`,
+  expenses: () => '/fleet/expenses',
+  'expense-new': (p) => {
+    if (!p || Object.keys(p).length === 0) return '/fleet/expenses/new';
+    const qs = new URLSearchParams();
+    for (const k of ['driver_id', 'trip_id', 'equipment_type', 'equipment_id']) {
+      if (p[k]) qs.set(k, p[k]);
+    }
+    const s = qs.toString();
+    return s ? `/fleet/expenses/new?${s}` : '/fleet/expenses/new';
+  },
+  'expense-detail': (p) => `/fleet/expenses/${p.id}`,
+  'expense-edit': (p) => `/fleet/expenses/${p.id}/edit`,
   facilities: () => '/fleet/facilities',
   'facility-new': () => '/fleet/facilities/new',
   'facility-detail': (p) => `/fleet/facilities/${p.id}`,

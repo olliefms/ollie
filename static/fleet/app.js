@@ -38,6 +38,9 @@ import { renderTrailerForm } from './pages/trailer-form.js';
 import { renderMaintenanceView } from './pages/maintenance.js';
 import { renderMaintenanceDetail } from './pages/maintenance-detail.js';
 import { renderMaintenanceForm } from './pages/maintenance-form.js';
+import { renderExpensesView } from './pages/expenses.js';
+import { renderExpenseDetail } from './pages/expense-detail.js';
+import { renderExpenseForm } from './pages/expense-form.js';
 import { renderDriversView } from './pages/drivers.js';
 import { renderDriverDetail } from './pages/driver-detail.js';
 import { renderDriverForm } from './pages/driver-form.js';
@@ -86,6 +89,10 @@ const VIEW_TITLES = {
   'maintenance-new': 'New Maintenance',
   'maintenance-detail': 'Maintenance',
   'maintenance-edit': 'Edit Maintenance',
+  expenses: 'Expenses',
+  'expense-new': 'New Expense',
+  'expense-detail': 'Expense',
+  'expense-edit': 'Edit Expense',
   facilities: 'Facilities',
   'facility-new': 'New Facility',
   'facility-detail': 'Facility',
@@ -163,6 +170,10 @@ function renderRoute({ name, params }) {
     case 'maintenance-new': renderMaintenanceForm(null, params); break;
     case 'maintenance-detail': renderMaintenanceDetail(params.id); break;
     case 'maintenance-edit': renderMaintenanceForm(params.id); break;
+    case 'expenses': renderExpensesView(params); break;
+    case 'expense-new': renderExpenseForm(null, params); break;
+    case 'expense-detail': renderExpenseDetail(params.id); break;
+    case 'expense-edit': renderExpenseForm(params.id); break;
     case 'facilities': renderFacilitiesView(); break;
     case 'facility-new': renderFacilityForm(null); break;
     case 'facility-detail': renderFacilityDetail(params.id); break;

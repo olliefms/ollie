@@ -1,7 +1,7 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
 import { escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
-import { renderDetailPage } from './_detail.js';
+import { renderDetailPage, detailLink } from './_detail.js';
 import { confirmDelete } from '../components/confirm.js';
 import { categoryLabel, money } from '../utils/maintenance-meta.js';
 
@@ -24,6 +24,9 @@ export async function renderMaintenanceDetail(id) {
         { label: 'Odometer', value: m.odometer },
         { label: 'Vendor', value: m.vendor },
         { label: 'Invoice Ref', value: m.invoice_ref },
+        ...(m.expense_id
+          ? [{ label: 'Linked expense', html: detailLink('expense-detail', m.expense_id, 'View expense') }]
+          : []),
       ],
       actions: [
         { label: 'Edit', scope: 'maintenance:write', onClick: () => navigate('maintenance-edit', { id }) },
