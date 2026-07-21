@@ -72,13 +72,23 @@ pub async fn extract_expense_fields(ai: &OllamaClient, content: &Extractable) ->
                 .ok()?
         }
         Extractable::ImageBytes(bytes) => {
-            let fitted = fit_image_for_vision(bytes, MAX_VISION_BYTES)?;
+            let bytes = bytes.clone();
+            let fitted = tokio::task::spawn_blocking(move || fit_image_for_vision(&bytes, MAX_VISION_BYTES))
+                .await
+                .ok()
+                .flatten()?;
             ai.generate(&ai.vision_model.clone(), PROMPT, Some(bytes_to_base64(&bytes::Bytes::from(fitted))))
                 .await
                 .ok()?
         }
         Extractable::ScannedPdf(bytes, raw_text) => {
-            let page_image = scanned_pdf_page_image(bytes).and_then(|img| fit_image_for_vision(&img, MAX_VISION_BYTES));
+            let bytes = bytes.clone();
+            let page_image = tokio::task::spawn_blocking(move || {
+                scanned_pdf_page_image(&bytes).and_then(|img| fit_image_for_vision(&img, MAX_VISION_BYTES))
+            })
+            .await
+            .ok()
+            .flatten();
             match page_image {
                 Some(img) => {
                     ai.generate(&ai.vision_model.clone(), PROMPT, Some(bytes_to_base64(&bytes::Bytes::from(img))))
