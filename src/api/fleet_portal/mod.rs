@@ -177,7 +177,13 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         )
         .route(
             "/fleet/api/v1/expenses/{id}",
-            get(expenses::get_expense_handler),
+            get(expenses::get_expense_handler)
+                .patch(expenses::patch_expense_handler)
+                .delete(expenses::delete_expense_handler),
+        )
+        .route(
+            "/fleet/api/v1/expenses/{id}/review",
+            post(expenses::review_expense_handler),
         )
         // Blob endpoints
         .route(
