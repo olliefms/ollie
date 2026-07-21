@@ -15,6 +15,7 @@ pub mod trailer_ops;
 pub mod trip_ops;
 pub mod maintenance_ops;
 pub mod truck_ops;
+pub mod expense_ops;
 
 use crate::error::AppError;
 use arrow_array::{
@@ -45,6 +46,7 @@ pub struct DbClient {
     pub maintenance_table: Table,
     pub trip_table: Table,
     pub truck_table: Table,
+    pub expense_table: Table,
     pub embed_dim: usize,
 }
 
@@ -82,6 +84,8 @@ impl DbClient {
         let trailer_table = open_or_create_trailer(&conn, embed_dim).await?;
 
         let maintenance_table = open_or_create_maintenance(&conn, embed_dim).await?;
+
+        let expense_table = open_or_create_expense(&conn, embed_dim).await?;
 
         let trip_table = open_or_create_trip(&conn, embed_dim).await?;
 
@@ -159,6 +163,7 @@ impl DbClient {
             maintenance_table,
             trip_table,
             truck_table,
+            expense_table,
             embed_dim,
         };
 
@@ -1144,6 +1149,90 @@ fn empty_maintenance_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<Reco
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // created_at
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // updated_at
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // blob_ids
+    ]).map_err(|e| AppError::Internal(e.to_string()))
+}
+
+async fn open_or_create_expense(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = expense_schema(embed_dim);
+    match conn.open_table("expenses").execute().await {
+        Err(_) => {
+            let batch = empty_expense_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("expenses", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => Ok(table),
+    }
+}
+
+pub fn expense_schema(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("category", DataType::Utf8, false),
+        Field::new("driver_id", DataType::Utf8, true),
+        Field::new("trip_id", DataType::Utf8, true),
+        Field::new("equipment_type", DataType::Utf8, true),
+        Field::new("equipment_id", DataType::Utf8, true),
+        Field::new("maintenance_id", DataType::Utf8, true),
+        Field::new("blob_ids", DataType::Utf8, false),          // JSON Vec<Uuid>
+        Field::new("submitted_by", DataType::Utf8, false),
+        Field::new("expense_date", DataType::Utf8, true),
+        Field::new("vendor", DataType::Utf8, true),
+        Field::new("amount", DataType::Float64, true),
+        Field::new("approved_amount", DataType::Float64, true),
+        Field::new("payment_method", DataType::Utf8, true),
+        Field::new("suggested_amount", DataType::Float64, true),
+        Field::new("suggested_date", DataType::Utf8, true),
+        Field::new("suggested_vendor", DataType::Utf8, true),
+        Field::new("suggested_card_last4", DataType::Utf8, true),
+        Field::new("reviewed_by", DataType::Utf8, true),
+        Field::new("reviewed_at", DataType::Utf8, true),
+        Field::new("review_note", DataType::Utf8, true),
+        Field::new("settlement_id", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn empty_expense_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch, AppError> {
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![];
+    RecordBatch::try_new(schema, vec![
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // status
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // category
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // driver_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // trip_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // equipment_type
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // equipment_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // maintenance_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // blob_ids
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // submitted_by
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // expense_date
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // vendor
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),   // amount
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),   // approved_amount
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // payment_method
+        Arc::new(Float64Array::from(Vec::<Option<f64>>::new())),   // suggested_amount
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // suggested_date
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // suggested_vendor
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // suggested_card_last4
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // reviewed_by
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // reviewed_at
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // review_note
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // settlement_id
+        Arc::new(FixedSizeListArray::from_iter_primitive::<
+            arrow_array::types::Float32Type, _, _
+        >(nulls, embed_dim as i32)),                               // embedding
+        Arc::new(Int64Array::from(Vec::<i64>::new())),             // owner_id
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // created_at
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // updated_at
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
