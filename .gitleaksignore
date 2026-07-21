@@ -1,0 +1,5 @@
+# Dummy JWT-secret example in the verify skill on the stale unmerged branch
+# issue-372-scanned-pdf-ocr (no PR; superseded by the re-committed fix). The CI
+# scan fetches all refs, so this fingerprint blocks every PR until the branch
+# is deleted. Safe to remove this entry once the branch is gone.
+7e5637c7866c92253863bc531e6c344b899923d7:.claude/skills/verify/SKILL.md:generic-api-key:15
