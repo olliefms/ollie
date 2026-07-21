@@ -144,7 +144,8 @@ pub async fn delete_maintenance_handler(
 
 /// Resolve the parent equipment's unit number, erroring if it does not exist.
 /// Used both to validate equipment existence and to enrich the embedding text.
-async fn resolve_equipment_unit(
+/// `pub(crate)` so `expenses.rs` can reuse the same equipment-existence check.
+pub(crate) async fn resolve_equipment_unit(
     state: &AppState,
     equipment_type: EquipmentType,
     equipment_id: Uuid,
