@@ -140,10 +140,18 @@ pub async fn delete_maintenance_handler(
     Path(id): Path<Uuid>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("maintenance:delete")?;
-    // 404 if absent, so delete is observable.
+    apply_maintenance_delete(&state, id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Shared maintenance-delete writer — used by the HTTP handler and the MCP
+/// `delete_maintenance` tool. 404s if the record is absent (so delete stays
+/// observable), severs the 1:1 link on the paired expense (best-effort, so the
+/// expense isn't left pointing at a deleted maintenance record — which later
+/// breaks its cost mirror and, since #362's re-point guard, would otherwise be
+/// permanent), then hard-deletes.
+pub(crate) async fn apply_maintenance_delete(state: &AppState, id: Uuid) -> Result<(), AppError> {
     let record = state.db.get_maintenance_by_id(id).await?;
-    // Sever the 1:1 link so the paired expense isn't left pointing at a deleted
-    // maintenance record (which later breaks its cost mirror). Best-effort.
     if let Some(expense_id) = record.expense_id {
         if let Ok(mut expense) = state.db.get_expense_by_id(expense_id).await {
             expense.maintenance_id = None;
@@ -152,7 +160,7 @@ pub async fn delete_maintenance_handler(
         }
     }
     state.db.delete_maintenance(id).await?;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 /// Resolve the parent equipment's unit number, erroring if it does not exist.

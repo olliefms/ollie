@@ -2,6 +2,7 @@
 //
 // Integration tests for fleet REST expense create/list/get (#233 task 5).
 
+use axum::http::header;
 use axum_test::TestServer;
 use ollie::{
     ai::OllamaClient,
@@ -715,6 +716,137 @@ async fn test_delete_maintenance_unlinks_expense_and_review_succeeds() {
             "amount": 75.0, "approved_amount": 75.0, "payment_method": "company"
         })).await;
     assert_eq!(r.status_code(), 200);
+}
+
+// ── MCP delete_maintenance shares the REST unlink logic (final-review finding) ──
+//
+// Helpers copied from tests/integration_test.rs (each integration test file is
+// its own binary — no shared test-support module exists yet).
+
+/// Extract the single JSON-RPC message from a Streamable-HTTP SSE response body.
+/// rmcp frames each POST reply as one `event: message` / `data: {…}` SSE event.
+fn sse_json(body: &str) -> serde_json::Value {
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                continue; // priming/keep-alive frames carry no JSON payload
+            }
+            return serde_json::from_str(rest)
+                .unwrap_or_else(|e| panic!("SSE data not JSON ({e}): {rest}"));
+        }
+    }
+    panic!("no SSE `data:` event in body: {body:?}");
+}
+
+/// Open an MCP session: `initialize` then the `notifications/initialized` ack.
+/// Returns the `Mcp-Session-Id` the server assigned (used on subsequent calls).
+async fn mcp_session(server: &TestServer, token: &str) -> String {
+    let resp = server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "ollie-test", "version": "1.0" }
+            }
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "initialize HTTP {}", resp.status_code());
+    let session = resp
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize must return an Mcp-Session-Id header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.clone())
+        .json(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    session
+}
+
+/// Send one JSON-RPC request on an existing session and return the parsed reply
+/// (the full JSON-RPC envelope: `{ jsonrpc, id, result | error }`).
+async fn mcp_rpc(
+    server: &TestServer,
+    token: &str,
+    session: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let resp = server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.to_string())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "MCP {method} HTTP {}", resp.status_code());
+    sse_json(&resp.text())
+}
+
+/// Full convenience path: open a session, invoke a tool, and return the tool's
+/// decoded payload (the JSON object inside the result's text content block).
+async fn mcp_call(
+    server: &TestServer,
+    token: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let session = mcp_session(server, token).await;
+    let body = mcp_rpc(
+        server,
+        token,
+        &session,
+        "tools/call",
+        serde_json::json!({ "name": name, "arguments": args }),
+    )
+    .await;
+    assert!(body["error"].is_null(), "MCP {name} error: {:?}", body["error"]);
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .expect("MCP content[0].text missing");
+    serde_json::from_str(text).expect("inner JSON parse")
+}
+
+#[tokio::test]
+async fn test_mcp_delete_maintenance_unlinks_expense() {
+    // The final-review finding: `tool_delete_maintenance` used to call
+    // `state.db.delete_maintenance` directly, bypassing the REST handler's
+    // unlink-paired-expense logic (see `test_delete_maintenance_unlinks_expense_
+    // and_review_succeeds` above for the REST-path equivalent). Deleting via the
+    // MCP tool must sever the expense's forward link too, since the re-point
+    // guard would otherwise make a dangling link permanent.
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let mid = create_maintenance_unlinked(&server, &token, &truck_id, "mcp-path repair").await;
+    let exp = server.post("/fleet/api/v1/expenses")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "category": "repair", "maintenance_id": mid })).await;
+    assert_eq!(exp.status_code(), 201);
+    let eid = exp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Delete the maintenance record via the MCP tool (not the REST endpoint).
+    let result = mcp_call(&server, &token, "delete_maintenance",
+        serde_json::json!({ "maintenance_id": mid })).await;
+    assert_eq!(result["deleted"], true);
+
+    let e = server.get(&format!("/fleet/api/v1/expenses/{eid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(e.status_code(), 200);
+    assert!(e.json::<serde_json::Value>()["maintenance_id"].is_null(),
+        "MCP delete_maintenance must clear the paired expense's maintenance_id");
 }
 
 #[tokio::test]

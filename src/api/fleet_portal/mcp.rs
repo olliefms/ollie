@@ -3027,8 +3027,8 @@ async fn tool_delete_trailer(state: &AppState, args: &Value) -> Result<Value, St
 
 async fn tool_delete_maintenance(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "maintenance_id")?;
-    state.db.get_maintenance_by_id(id).await.map_err(|e| e.to_string())?;
-    state.db.delete_maintenance(id).await.map_err(|e| e.to_string())?;
+    super::maintenance_writes::apply_maintenance_delete(state, id).await
+        .map_err(|e| e.to_string())?;
     Ok(mcp_content(serde_json::json!({ "deleted": true })))
 }
 
