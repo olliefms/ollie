@@ -461,8 +461,10 @@ forbidden (403).
   Files are content-addressed and deduplicated — identical bytes share storage and AI
   output. Each upload is processed asynchronously: Ollama generates a text summary and
   a vector embedding (status: pending → processing → ready | failed). Scanned/image-only
-  PDFs are summarized via the vision model (the embedded page image is recovered and
-  described); GET /blobs?missing_summary=true lists docs the pipeline couldn't summarize.
+  PDFs and document photos are summarized OCR-first (the page image is recovered and read
+  with tesseract), falling back to the vision model for non-document images; a doc nothing
+  can read stays ready with no summary rather than failing.
+  GET /blobs?missing_summary=true lists docs the pipeline couldn't summarize.
   Semantic search via ?s=<query>. Ask a natural-language question about a ready document
   via POST /fleet/api/v1/blobs/:id/query (body: { prompt, model? }).
 

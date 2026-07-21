@@ -251,10 +251,34 @@ Facility addresses are geocoded asynchronously after create or address-change up
 `extract_content()` in `src/ai/extract.rs` returns an `Extractable` enum:
 
 - `Text(String)` — for `text/*`, `application/json`, `application/xml`, and PDFs with ≥50 words
-- `ImageBytes(Vec<u8>)` — for `image/*` and PDFs with <50 extractable words
+- `ScannedPdf(Bytes, String)` — PDFs with <50 extractable words (raw bytes + whatever text came out)
+- `ImageBytes(Bytes)` — for `image/*` whose bytes sniff as a real raster image
 - `Unsupported` — everything else
 
-PDFs use `pdf_extract::extract_text_from_mem()`. If it can't extract ≥50 words, the PDF is treated as an image and sent to the vision model.
+PDFs use `pdf_extract::extract_text_from_mem()`. For scanned PDFs the pipeline recovers
+the page's embedded DCTDecode JPEG (`scanned_pdf_page_image`, lopdf) and for images it uses
+the bytes directly; either way the payload is summarized **OCR-first** (#372):
+
+1. **OCR (tesseract)** at full resolution — local vision models cannot reliably read document
+   scans (moondream returns empty output for full-res scans and hallucinates document contents
+   at lower resolutions), while tesseract reads printed scans nearly verbatim. When OCR yields
+   ≥20 words, `summarize_document_text` (a document-indexing-framed prompt — the bare prompt
+   makes llama3.2 refuse OCR'd invoices as "sensitive") summarizes it.
+2. **Vision fallback** (`describe_image`) for payloads with no machine-readable text (freight
+   photos, handwriting) — sized via `fit_image_for_vision`, which caps BOTH bytes (500 KB) and
+   pixel long edge (1024 px; full-res scans under the byte cap made moondream return empty).
+3. **Raw-PDF-text fallback** — a scanned PDF with no usable page image degrades to whatever
+   garbled text the extractor produced.
+
+**Never send raw PDF bytes to the vision model** — they crash Ollama's CLIP tokenizer
+(SIGSEGV, #281). **Empty text must never reach `embed_text`** — the worker's
+`embeddable_source` guard turns "nothing readable" into ready-with-no-summary, never a
+`failed` blob (#372). tesseract ships in the runtime Docker image (`tesseract-ocr` +
+`tesseract-ocr-eng`); where the binary is missing (local dev), OCR quietly degrades to the
+vision path. `OLLIE_TESSERACT_BIN` overrides the binary path (used by tests as a fake-OCR
+hook). The `processing_completed` event payload records `summary_source`
+(`text|ocr|vision|pdf_text|preserved|none` — `preserved` = the run yielded nothing and the
+blob's existing summary was kept).
 
 ## Environment Variables
 
@@ -272,6 +296,7 @@ PDFs use `pdf_extract::extract_text_from_mem()`. If it can't extract ≥50 words
 | `OLLAMA_EMBED_MODEL` | No | `nomic-embed-text` | Embedding model |
 | `OLLAMA_SUMMARY_MODEL` | No | `llama3.2` | Text summarization model |
 | `OLLAMA_VISION_MODEL` | No | `moondream` | Vision/image description model |
+| `OLLIE_TESSERACT_BIN` | No | `tesseract` | Path to the tesseract binary for scanned-document OCR (#372). Missing binary = OCR skipped, vision fallback |
 | `OLLAMA_EMBED_DIM` | No | `768` | Embedding dimension (must match model) |
 | `PIPELINE_WORKERS` | No | `1` | Concurrent pipeline workers |
 | `TERMINAL_TIMEZONE` | No (deprecated) | America/New_York | **Seed-only.** First-boot timezone for the Default terminal row. No longer read by `Config`; terminals own timezone (#185). |

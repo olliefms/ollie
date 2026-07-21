@@ -1,6 +1,7 @@
 // src/ai/mod.rs
 pub mod embed;
 pub mod extract;
+pub mod ocr;
 pub mod summarize;
 
 use crate::error::AppError;
