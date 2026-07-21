@@ -48,6 +48,8 @@ pub struct CreateMaintenanceBody {
     pub invoice_ref: Option<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub expense_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -69,6 +71,8 @@ pub struct PatchMaintenanceBody {
     pub invoice_ref: Option<String>,
     #[serde(default)]
     pub blob_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub expense_id: Option<Uuid>,
 }
 
 #[utoipa::path(
@@ -77,7 +81,7 @@ pub struct PatchMaintenanceBody {
     request_body(content = CreateMaintenanceBody, description = "Maintenance entry to create"),
     responses(
         (status = 201, description = "Created maintenance record", body = MaintenanceRecord),
-        (status = 400, description = "Bad request — unknown field, blank description, or unknown equipment"),
+        (status = 400, description = "Bad request — unknown field, blank description, unknown equipment, unknown expense, or cost set alongside expense_id"),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
@@ -100,7 +104,7 @@ pub async fn create_maintenance_handler(
     request_body(content = PatchMaintenanceBody, description = "Fields to update — all optional"),
     responses(
         (status = 200, description = "Updated maintenance record", body = MaintenanceRecord),
-        (status = 400, description = "Bad request — unknown field or invalid body"),
+        (status = 400, description = "Bad request — unknown field, invalid body, unknown expense, or cost edit on an expense-linked record"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Maintenance entry not found"),
     ),
@@ -180,6 +184,20 @@ pub async fn apply_maintenance_create(
 
     let unit = resolve_equipment_unit(state, parsed.equipment_type, parsed.equipment_id).await?;
 
+    let mut cost = parsed.cost;
+    if let Some(expense_id) = parsed.expense_id {
+        if parsed.cost.is_some() {
+            return Err(AppError::BadRequest(
+                "cost cannot be set directly when linking an expense".into(),
+            ));
+        }
+        let expense = state.db.get_expense_by_id(expense_id).await
+            .map_err(|_| AppError::BadRequest("unknown expense".into()))?;
+        if expense.amount.is_some() {
+            cost = expense.amount;
+        }
+    }
+
     let now = Utc::now();
     let record = MaintenanceRecord {
         id: Uuid::new_v4(),
@@ -188,12 +206,12 @@ pub async fn apply_maintenance_create(
         service_date: parsed.service_date,
         category: parsed.category,
         description: parsed.description,
-        cost: parsed.cost,
+        cost,
         odometer: parsed.odometer,
         vendor: parsed.vendor,
         invoice_ref: parsed.invoice_ref,
         blob_ids: parsed.blob_ids,
-        expense_id: None,
+        expense_id: parsed.expense_id,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -205,6 +223,14 @@ pub async fn apply_maintenance_create(
     let record = MaintenanceRecord { embedding, ..record };
 
     state.db.insert_maintenance(&record).await?;
+
+    if let Some(expense_id) = record.expense_id {
+        let mut expense = state.db.get_expense_by_id(expense_id).await?;
+        expense.maintenance_id = Some(record.id);
+        expense.updated_at = Utc::now();
+        state.db.update_expense(&expense).await?;
+    }
+
     Ok(record)
 }
 
@@ -222,18 +248,41 @@ pub async fn apply_maintenance_patch(
         }
     }
 
+    let current = state.db.get_maintenance_by_id(id).await?;
+    if current.expense_id.is_some() && parsed.cost.is_some() {
+        return Err(AppError::BadRequest(
+            "cost is managed by the linked expense".into(),
+        ));
+    }
+
+    let mut cost = parsed.cost;
+    if let Some(expense_id) = parsed.expense_id {
+        let expense = state.db.get_expense_by_id(expense_id).await
+            .map_err(|_| AppError::BadRequest("unknown expense".into()))?;
+        if expense.amount.is_some() {
+            cost = expense.amount;
+        }
+    }
+
     let updated = state.db.update_maintenance_metadata(
         id,
         parsed.service_date,
         parsed.category,
         parsed.description,
-        parsed.cost,
+        cost,
         parsed.odometer,
         parsed.vendor,
         parsed.invoice_ref,
         parsed.blob_ids,
-        None,
+        parsed.expense_id,
     ).await?;
+
+    if let Some(expense_id) = parsed.expense_id {
+        let mut expense = state.db.get_expense_by_id(expense_id).await?;
+        expense.maintenance_id = Some(updated.id);
+        expense.updated_at = Utc::now();
+        state.db.update_expense(&expense).await?;
+    }
 
     // Refresh embedding best-effort, prepending unit number for searchability.
     if let Ok(unit) = resolve_equipment_unit(state, updated.equipment_type, updated.equipment_id).await {

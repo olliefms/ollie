@@ -149,6 +149,15 @@ async fn create_expense(server: &TestServer, token: &str, category: &str) -> Str
     resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
 }
 
+async fn create_truck(server: &TestServer, token: &str) -> String {
+    let resp = server.post("/fleet/api/v1/trucks")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({ "unit_number": format!("T-{}", uuid::Uuid::new_v4()) }))
+        .await;
+    assert_eq!(resp.status_code(), 201);
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn test_create_and_get_expense() {
     let (server, _d1, _d2, _rx) = test_server().await;
@@ -409,4 +418,73 @@ async fn test_money_fields_require_approve_scope_on_patch() {
         .authorization_bearer(&disp)
         .json(&serde_json::json!({ "amount": 99.0 })).await;
     assert_eq!(r.status_code(), 403);
+}
+
+#[tokio::test]
+async fn test_maintenance_expense_crosslink_and_cost_mirror() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    // Create a truck (copy the minimal truck-create request shape from
+    // tests/integration_test.rs truck tests).
+    let truck_id = create_truck(&server, &token).await; // local helper
+    // Expense with equipment link, then a maintenance record linked to it.
+    let exp_id = {
+        let r = server.post("/fleet/api/v1/expenses")
+            .authorization_bearer(&token)
+            .json(&serde_json::json!({
+                "category": "repair", "equipment_type": "truck", "equipment_id": truck_id,
+            })).await;
+        assert_eq!(r.status_code(), 201);
+        r.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+    };
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "roadside tire replacement",
+            "expense_id": exp_id,
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    let mid = m.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Cross-link written back onto the expense.
+    let e = server.get(&format!("/fleet/api/v1/expenses/{exp_id}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(e.json::<serde_json::Value>()["maintenance_id"], *mid);
+
+    // Review mirrors amount onto maintenance.cost.
+    let r = server.post(&format!("/fleet/api/v1/expenses/{exp_id}/review"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "amount": 612.0, "approved_amount": 612.0, "payment_method": "company"
+        })).await;
+    assert_eq!(r.status_code(), 200);
+    let got = server.get(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(got.json::<serde_json::Value>()["cost"], 612.0);
+
+    // Direct cost edits on a linked maintenance record are rejected.
+    let bad = server.patch(&format!("/fleet/api/v1/maintenance/{mid}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "cost": 1.0 })).await;
+    assert_eq!(bad.status_code(), 400);
+}
+
+#[tokio::test]
+async fn test_warranty_maintenance_needs_no_expense() {
+    let (server, _d1, _d2, _rx) = test_server().await;
+    let token = setup_owner(&server).await;
+    let truck_id = create_truck(&server, &token).await;
+    let m = server.post("/fleet/api/v1/maintenance")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "equipment_type": "truck", "equipment_id": truck_id,
+            "service_date": "2026-07-20", "category": "repair",
+            "description": "warranty turbo replacement", "cost": 0.0,
+        })).await;
+    assert_eq!(m.status_code(), 201);
+    let body: serde_json::Value = m.json();
+    assert_eq!(body["cost"], 0.0);
+    assert!(body["expense_id"].is_null());
 }
