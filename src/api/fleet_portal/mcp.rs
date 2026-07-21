@@ -1238,7 +1238,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "create_maintenance",
-                "description": "Record completed maintenance work on a truck or trailer. `equipment_id` must reference an existing unit of the given `equipment_type`. `service_date` is an ISO date (YYYY-MM-DD). Unknown fields are rejected.",
+                "description": "Record completed maintenance work on a truck or trailer. `equipment_id` must reference an existing unit of the given `equipment_type`. `service_date` is an ISO date (YYYY-MM-DD). `expense_id` links an existing expense record whose amount becomes the maintenance cost — cannot be set together with `cost`. Unknown fields are rejected.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1251,14 +1251,15 @@ fn tools_list() -> Value {
                         "odometer":       { "type": "integer" },
                         "vendor":         { "type": "string" },
                         "invoice_ref":    { "type": "string" },
-                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "expense_id":     { "type": "string", "format": "uuid" }
                     },
                     "required": ["equipment_type", "equipment_id", "service_date", "category", "description"]
                 }
             },
             {
                 "name": "update_maintenance",
-                "description": "Update a maintenance entry's fields. equipment_type/equipment_id are not changeable (delete + recreate to re-link). Unknown fields are rejected.",
+                "description": "Update a maintenance entry's fields. equipment_type/equipment_id are not changeable (delete + recreate to re-link). `expense_id` links an expense record whose amount becomes the maintenance cost (cannot be set together with `cost`); re-linking an already-linked record to a different expense is rejected. Unknown fields are rejected.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1270,7 +1271,8 @@ fn tools_list() -> Value {
                         "odometer":       { "type": "integer" },
                         "vendor":         { "type": "string" },
                         "invoice_ref":    { "type": "string" },
-                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } }
+                        "blob_ids":       { "type": "array", "items": { "type": "string", "format": "uuid" } },
+                        "expense_id":     { "type": "string", "format": "uuid" }
                     },
                     "required": ["maintenance_id"]
                 }
