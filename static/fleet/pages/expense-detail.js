@@ -109,15 +109,16 @@ export async function renderExpenseDetail(id) {
       factRow('Reviewer', escHtml(e.reviewed_by ? 'Fleet user' : '—')),
     ].join('');
 
-    // ── AI suggestions panel ─────────────────────────────────
+    // ── AI suggestions panel (review-only: no-op for read-only viewers) ──
+    const canReview = hasScope('expenses:approve') && !settled;
     const hasSuggestions = e.suggested_amount != null || e.suggested_date
       || e.suggested_vendor || e.suggested_card_last4;
-    const showSuggestions = e.status === 'submitted' && hasSuggestions;
+    const showSuggestions = canReview && e.status === 'submitted' && hasSuggestions;
     let suggestionsHtml = '';
     if (showSuggestions) {
-      const line = (label, valueText, field) => {
+      const line = (label, valueText, field, rawValue = valueText) => {
         const useBtn = field
-          ? `<button class="btn btn--secondary" data-use-suggestion="${escHtml(field)}" data-value="${escHtml(String(valueText))}">Use suggestion</button>`
+          ? `<button class="btn btn--secondary" data-use-suggestion="${escHtml(field)}" data-value="${escHtml(String(rawValue))}">Use suggestion</button>`
           : '';
         return `
           <div class="detail-item">
@@ -128,7 +129,7 @@ export async function renderExpenseDetail(id) {
           </div>`;
       };
       const rows = [];
-      if (e.suggested_amount != null) rows.push(line('Suggested amount', money(e.suggested_amount), 'amount'));
+      if (e.suggested_amount != null) rows.push(line('Suggested amount', money(e.suggested_amount), 'amount', e.suggested_amount));
       if (e.suggested_date) rows.push(line('Suggested date', e.suggested_date, 'expense_date'));
       if (e.suggested_vendor) rows.push(line('Suggested vendor', e.suggested_vendor, 'vendor'));
       if (e.suggested_card_last4) rows.push(line(`Suggested card (••${e.suggested_card_last4})`, `••${e.suggested_card_last4}`, null));
@@ -155,7 +156,6 @@ export async function renderExpenseDetail(id) {
 
     // ── Review form (expenses:approve, hidden when settled) ──
     let reviewHtml = '';
-    const canReview = hasScope('expenses:approve') && !settled;
     if (canReview) {
       const amountVal = e.amount != null ? e.amount : (e.suggested_amount != null ? e.suggested_amount : '');
       const approvedVal = e.approved_amount != null ? e.approved_amount : '';
