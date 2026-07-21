@@ -59,6 +59,7 @@ impl DbClient {
         vendor: Option<String>,
         invoice_ref: Option<String>,
         blob_ids: Option<Vec<Uuid>>,
+        expense_id: Option<Uuid>,
     ) -> Result<MaintenanceRecord, AppError> {
         let mut record = self.get_maintenance_by_id(id).await?;
         if let Some(v) = service_date { record.service_date = v; }
@@ -69,6 +70,7 @@ impl DbClient {
         if let Some(v) = vendor { record.vendor = Some(v); }
         if let Some(v) = invoice_ref { record.invoice_ref = Some(v); }
         if let Some(v) = blob_ids { record.blob_ids = v; }
+        if let Some(v) = expense_id { record.expense_id = Some(v); }
         record.updated_at = Utc::now();
         self.upsert_maintenance(&record).await?;
         Ok(record)
@@ -151,6 +153,7 @@ fn maintenance_to_batch(record: &MaintenanceRecord, embed_dim: usize) -> Result<
     let updated_str = record.updated_at.to_rfc3339();
     let blob_ids_json = serde_json::to_string(&record.blob_ids)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    let expense_id_str = record.expense_id.map(|u| u.to_string());
 
     let embedding_col: Arc<dyn arrow_array::Array> = match &record.embedding {
         Some(v) => {
@@ -180,6 +183,7 @@ fn maintenance_to_batch(record: &MaintenanceRecord, embed_dim: usize) -> Result<
         Arc::new(StringArray::from(vec![created_str.as_str()])),
         Arc::new(StringArray::from(vec![updated_str.as_str()])),
         Arc::new(StringArray::from(vec![blob_ids_json.as_str()])),
+        Arc::new(StringArray::from(vec![expense_id_str.as_deref()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -239,6 +243,9 @@ fn row_to_maintenance(batch: &RecordBatch, i: usize) -> Result<MaintenanceRecord
         vendor: opt_str("vendor"),
         invoice_ref: opt_str("invoice_ref"),
         blob_ids: serde_json::from_str(&str_col("blob_ids")).unwrap_or_default(),
+        expense_id: opt_str("expense_id")
+            .map(|s| s.parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string())))
+            .transpose()?,
         embedding,
         owner_id: i64_col("owner_id"),
         created_at: str_col("created_at").parse()
@@ -298,6 +305,7 @@ mod tests {
             vendor: Some("Acme Diesel".into()),
             invoice_ref: Some("INV-9931".into()),
             blob_ids: vec![],
+            expense_id: None,
             embedding: None,
             owner_id: 0,
             created_at: now,
@@ -336,7 +344,7 @@ mod tests {
             Some(MaintenanceCategory::Brakes),
             Some("front brake pads".into()),
             Some(220.0),
-            None, None, None, None,
+            None, None, None, None, None,
         ).await.unwrap();
         assert_eq!(updated.category, MaintenanceCategory::Brakes);
         assert_eq!(updated.description, "front brake pads");

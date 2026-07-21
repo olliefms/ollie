@@ -1102,7 +1102,21 @@ async fn open_or_create_maintenance(conn: &lancedb::Connection, embed_dim: usize
             conn.create_table("maintenance", reader).execute().await
                 .map_err(|e| AppError::Internal(e.to_string()))
         }
-        Ok(table) => Ok(table),
+        Ok(table) => {
+            let existing = table.schema().await
+                .map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            // SQL type keyword, NEVER the Arrow name (see AGENTS.md recurring-failure lesson).
+            if existing.field_with_name("expense_id").is_err() {
+                transforms.push(("expense_id".into(), "CAST(NULL AS string)".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating maintenance table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("maintenance schema migration failed: {e}")))?;
+            }
+            Ok(table)
+        }
     }
 }
 
@@ -1126,6 +1140,7 @@ pub fn maintenance_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
         Field::new("blob_ids", DataType::Utf8, false),
+        Field::new("expense_id", DataType::Utf8, true),
     ]))
 }
 
@@ -1149,6 +1164,7 @@ fn empty_maintenance_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<Reco
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // created_at
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // updated_at
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // blob_ids
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),   // expense_id
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

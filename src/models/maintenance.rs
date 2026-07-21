@@ -88,6 +88,8 @@ pub struct MaintenanceRecord {
     pub invoice_ref: Option<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
+    #[serde(default)]
+    pub expense_id: Option<Uuid>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -122,6 +124,7 @@ pub struct MaintenanceListItem {
     pub vendor: Option<String>,
     pub invoice_ref: Option<String>,
     pub blob_ids: Vec<Uuid>,
+    pub expense_id: Option<Uuid>,
     pub owner_id: i64,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -142,6 +145,7 @@ impl From<MaintenanceRecord> for MaintenanceListItem {
             vendor: r.vendor,
             invoice_ref: r.invoice_ref,
             blob_ids: r.blob_ids,
+            expense_id: r.expense_id,
             owner_id: r.owner_id,
             created_at: r.created_at,
             score: None,
@@ -203,6 +207,7 @@ mod tests {
             vendor: Some("Acme Diesel".into()),
             invoice_ref: Some("INV-9931".into()),
             blob_ids: vec![],
+            expense_id: None,
             embedding: Some(vec![0.1]),
             owner_id: 0,
             created_at: now,

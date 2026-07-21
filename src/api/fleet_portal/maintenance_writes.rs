@@ -192,6 +192,7 @@ pub async fn apply_maintenance_create(
         vendor: parsed.vendor,
         invoice_ref: parsed.invoice_ref,
         blob_ids: parsed.blob_ids,
+        expense_id: None,
         embedding: None,
         owner_id: 0,
         created_at: now,
@@ -230,6 +231,7 @@ pub async fn apply_maintenance_patch(
         parsed.vendor,
         parsed.invoice_ref,
         parsed.blob_ids,
+        None,
     ).await?;
 
     // Refresh embedding best-effort, prepending unit number for searchability.
