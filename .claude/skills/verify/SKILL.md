@@ -11,8 +11,8 @@ Debug binary is fine (`cargo build -j 2` — cap jobs; 10 parallel LanceDB test-
 links exhaust a 16 GB box). Launch against a throwaway data dir:
 
 ```bash
-env DRIVER_JWT_SECRET="verify-driver-secret-0123456789abcdef" \
-    FLEET_JWT_SECRET="verify-fleet-secret-0123456789abcdef0" \
+env DRIVER_JWT_SECRET="change_me_to_a_random_string_at_least_32_bytes" \
+    FLEET_JWT_SECRET="change_me_to_a_random_string_at_least_32_bytes" \
     DRIVER_RP_ID=localhost DRIVER_RP_ORIGIN=http://localhost:3999 \
     OLLAMA_BASE_URL=http://<ollama-host>:11434 \
     OLLAMA_EMBED_MODEL=nomic-embed-text OLLAMA_SUMMARY_MODEL=llama3.2 \
@@ -21,9 +21,10 @@ env DRIVER_JWT_SECRET="verify-driver-secret-0123456789abcdef" \
     ./target/debug/ollie
 ```
 
-On thor, production Ollama is the `ollama` docker container — find its IP with
-`docker inspect ollama --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'`
-(port 11434 is not published to the host). Readiness: poll `GET /version`.
+Point `OLLAMA_BASE_URL` at whatever Ollama instance you use for local development.
+If it's running in Docker on the same host and isn't published to the host network,
+find its container IP with `docker inspect <container> --format
+'{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}'`. Readiness: poll `GET /version`.
 
 ## Auth
 
