@@ -2,12 +2,14 @@
 use crate::{
     ai::{
         embed::embed_text,
-        extract::{extract_content, fit_image_for_vision, scanned_pdf_page_image, Extractable},
+        expense_fields::extract_expense_fields,
+        extract::{extract_content, fit_image_for_vision, scanned_pdf_page_image, Extractable, MAX_VISION_BYTES},
         summarize::{describe_image, summarize_text},
         OllamaClient,
     },
     db::DbClient,
     error::AppError,
+    models::ExpenseStatus,
     storage::{extract_store::write_extract, BlobStore},
 };
 use chrono::SecondsFormat;
@@ -16,11 +18,6 @@ use uuid::Uuid;
 fn now_z() -> String {
     chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
-
-/// Maximum binary payload sent to the Ollama vision model. Anything larger
-/// overflows moondream's ~8K-token context window and Ollama returns an
-/// opaque 500. ~500 KB binary ≈ 670 KB base64.
-const MAX_VISION_BYTES: usize = 500_000;
 
 pub async fn process_blob(
     id: Uuid,
@@ -41,6 +38,12 @@ pub async fn process_blob(
     if let Err(e) = write_extract(extract_base, &record.checksum, &extractable).await {
         tracing::warn!("failed to write extract cache for {id}: {e}");
     }
+
+    // Kept aside (cloned) so the expense-suggestion hook below still has the
+    // extracted content after the summary/embedding match below consumes its
+    // own copy. Only cloned for blobs tagged as expense receipts.
+    let is_expense_doc = record.tags.iter().any(|t| t == "doctype:expense");
+    let extractable_for_expense = is_expense_doc.then(|| extractable.clone());
 
     let result: Result<(Option<String>, Option<Vec<f32>>), AppError> = async {
         match extractable {
@@ -120,6 +123,27 @@ pub async fn process_blob(
                 tracing::warn!("event append failed for {id} (processing_completed): {e}");
             }
             tracing::info!("pipeline completed for {id}");
+
+            // Expense receipts: stage structured suggestions on any submitted
+            // expense that references this blob. Best-effort — extraction
+            // failure here is never a processing failure.
+            if let Some(content) = &extractable_for_expense {
+                if let Some(fields) = extract_expense_fields(ai, content).await {
+                    if let Ok(expenses) = db.expenses_referencing_blob(id).await {
+                        for e in expenses {
+                            if matches!(e.status, ExpenseStatus::Submitted) {
+                                let _ = db.update_expense_suggestions(
+                                    e.id,
+                                    fields.amount,
+                                    fields.date.clone(),
+                                    fields.vendor.clone(),
+                                    fields.card_last4.clone(),
+                                ).await;
+                            }
+                        }
+                    }
+                }
+            }
         }
         Err(e) => {
             tracing::error!("pipeline failed for {id}: {e}");

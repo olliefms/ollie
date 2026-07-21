@@ -1,5 +1,6 @@
 // src/ai/mod.rs
 pub mod embed;
+pub mod expense_fields;
 pub mod extract;
 pub mod summarize;
 
