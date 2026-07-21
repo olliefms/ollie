@@ -17,6 +17,12 @@ pub enum Extractable {
 /// opaque 500. ~500 KB binary ≈ 670 KB base64.
 pub(crate) const MAX_VISION_BYTES: usize = 500_000;
 
+/// Maximum pixel long edge sent to the vision model. moondream returns an
+/// EMPTY response for full-resolution scans (e.g. 2432×3168) even when the
+/// byte payload is under MAX_VISION_BYTES — the trigger is resolution, not
+/// bytes. (#372)
+pub(crate) const MAX_VISION_DIM: u32 = 1024;
+
 pub fn extract_content(data: &Bytes, mime_type: &str) -> Extractable {
     if mime_type.starts_with("text/")
         || mime_type == "application/json"
@@ -92,19 +98,32 @@ pub fn scanned_pdf_page_image(data: &[u8]) -> Option<Vec<u8>> {
         .filter(|bytes| is_supported_image(bytes))
 }
 
-/// Shrink an image to fit the vision model's payload budget.
+/// Shrink an image to fit the vision model's payload budget — in bytes AND
+/// in pixel dimensions.
 ///
-/// Bytes already within `max_bytes` (and sniffable as a raster image) pass
-/// through untouched. Oversized images are decoded, downscaled to a bounded
-/// long edge, and re-encoded as JPEG; the sizes step down until one fits.
-/// Returns None when the bytes can't be decoded or won't fit even at the
-/// smallest size — callers treat that as "no image available".
-pub fn fit_image_for_vision(bytes: &[u8], max_bytes: usize) -> Option<Vec<u8>> {
+/// Bytes within `max_bytes` whose long edge is within `max_dim` pass through
+/// untouched. Everything else is decoded, downscaled to a bounded long edge,
+/// and re-encoded as JPEG; the sizes step down until one fits. The dimension
+/// cap exists because moondream returns an EMPTY response for full-resolution
+/// scans (e.g. 2432×3168) even when they're under the byte budget — the
+/// failure trigger is resolution, not payload size (#372). Returns None when
+/// the bytes can't be decoded or won't fit even at the smallest size —
+/// callers treat that as "no image available".
+pub fn fit_image_for_vision(bytes: &[u8], max_bytes: usize, max_dim: u32) -> Option<Vec<u8>> {
     if bytes.len() <= max_bytes && is_supported_image(bytes) {
-        return Some(bytes.to_vec());
+        let dims = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()
+            .and_then(|r| r.into_dimensions().ok());
+        if let Some((w, h)) = dims {
+            if w.max(h) <= max_dim {
+                return Some(bytes.to_vec());
+            }
+        }
     }
     let img = image::load_from_memory(bytes).ok()?;
-    for max_dim in [1600u32, 1024, 768] {
+    let steps = if max_dim > 768 { vec![max_dim, 768] } else { vec![max_dim] };
+    for max_dim in steps {
         let resized = if img.width().max(img.height()) > max_dim {
             img.resize(max_dim, max_dim, image::imageops::FilterType::Triangle)
         } else {
@@ -125,7 +144,7 @@ pub fn fit_image_for_vision(bytes: &[u8], max_bytes: usize) -> Option<Vec<u8>> {
     None
 }
 
-fn word_count(s: &str) -> usize {
+pub(crate) fn word_count(s: &str) -> usize {
     s.split_whitespace().count()
 }
 
@@ -276,8 +295,35 @@ mod tests {
     #[test]
     fn test_fit_image_for_vision_passes_small_images_through() {
         let jpeg = tiny_jpeg();
-        let out = fit_image_for_vision(&jpeg, 500_000).unwrap();
+        let out = fit_image_for_vision(&jpeg, 500_000, 1024).unwrap();
         assert_eq!(out, jpeg);
+    }
+
+    #[test]
+    fn test_fit_image_for_vision_downscales_large_dimensions_under_byte_budget() {
+        // A mostly-flat scan-resolution page compresses far below the byte
+        // budget, but its raw pixel dimensions make moondream return an empty
+        // response — it must be downscaled anyway (#372). This mirrors the
+        // production repro: a 2432×3168 phone scan at 490 KB.
+        let img = image::RgbImage::from_fn(2432, 3168, |x, _| {
+            image::Rgb([240 + (x % 7) as u8, 255, 250])
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 75))
+            .unwrap();
+        let flat = buf.into_inner();
+        let max = 500_000;
+        assert!(flat.len() <= max, "fixture must be under the byte budget (got {})", flat.len());
+
+        let out = fit_image_for_vision(&flat, max, 1024).expect("image should be fitted");
+        let decoded = image::load_from_memory(&out).unwrap();
+        assert!(
+            decoded.width().max(decoded.height()) <= 1024,
+            "dimensions must be capped, got {}x{}",
+            decoded.width(),
+            decoded.height()
+        );
     }
 
     #[test]
@@ -297,7 +343,7 @@ mod tests {
         let big = buf.into_inner();
         let max = 500_000;
         assert!(big.len() > max, "fixture must exceed the budget (got {})", big.len());
-        let out = fit_image_for_vision(&big, max).expect("oversized image should be shrunk");
+        let out = fit_image_for_vision(&big, max, 1024).expect("oversized image should be shrunk");
         assert!(out.len() <= max);
         assert!(is_supported_image(&out), "output must be a decodable JPEG");
         assert!(image::load_from_memory(&out).is_ok());
@@ -305,7 +351,7 @@ mod tests {
 
     #[test]
     fn test_fit_image_for_vision_rejects_undecodable_payloads() {
-        assert!(fit_image_for_vision(&vec![0xFFu8; 600_000], 500_000).is_none());
-        assert!(fit_image_for_vision(b"hello", 500_000).is_none());
+        assert!(fit_image_for_vision(&vec![0xFFu8; 600_000], 500_000, 1024).is_none());
+        assert!(fit_image_for_vision(b"hello", 500_000, 1024).is_none());
     }
 }

@@ -1555,7 +1555,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "resummarize_blob",
-                "description": "Re-run the AI pipeline (content extraction → summary → embedding) for one blob. Use for docs whose summary is missing or stale — e.g. scanned PDFs uploaded before scanned-page vision support. The blob is re-queued (status returns to pending) and processed asynchronously; poll get_blob_metadata for status ready. Fails if the blob is already pending or processing.",
+                "description": "Re-run the AI pipeline (content extraction → summary → embedding) for one blob. Use for docs whose summary is missing or stale — e.g. scanned PDFs or document photos uploaded before OCR support. Scanned pages are read OCR-first (tesseract), with a vision-model fallback for non-document images; a doc nothing can read is left ready with no summary (it is never flipped to failed). The blob is re-queued (status returns to pending) and processed asynchronously; poll get_blob_metadata for status ready. Fails if the blob is already pending or processing.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

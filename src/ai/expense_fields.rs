@@ -6,9 +6,17 @@
 use serde::Deserialize;
 
 use crate::ai::{
-    extract::{bytes_to_base64, fit_image_for_vision, scanned_pdf_page_image, Extractable, MAX_VISION_BYTES},
+    extract::{
+        bytes_to_base64, fit_image_for_vision, scanned_pdf_page_image, word_count,
+        Extractable, MAX_VISION_BYTES, MAX_VISION_DIM,
+    },
+    ocr::ocr_image,
     OllamaClient,
 };
+
+/// Minimum OCR word count to trust tesseract output over the vision model —
+/// same gate the summarization pipeline uses (see pipeline/worker.rs, #372).
+const OCR_MIN_WORDS: usize = 20;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SuggestedExpenseFields {
@@ -57,51 +65,59 @@ pub fn parse_expense_json(raw: &str) -> Option<SuggestedExpenseFields> {
     Some(out)
 }
 
+/// Ask the text model to extract fields from receipt text (OCR output, a text
+/// upload, or a scanned PDF's text layer).
+async fn extract_from_text(ai: &OllamaClient, text: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let capped: String = text.chars().take(6000).collect();
+    ai.generate(&ai.summary_model.clone(), &format!("{PROMPT}\n\nReceipt text:\n{capped}"), None)
+        .await
+        .ok()
+}
+
+/// Read a receipt image OCR-first, mirroring the summarization pipeline
+/// (#372): tesseract reads printed receipts far better than the local vision
+/// model, so extract from OCR text when it yields enough words and fall back
+/// to the vision model only for images with no machine-readable text.
+async fn extract_from_image(ai: &OllamaClient, image: Vec<u8>) -> Option<String> {
+    if let Some(text) = ocr_image(&image).await {
+        if word_count(&text) >= OCR_MIN_WORDS {
+            return extract_from_text(ai, &text).await;
+        }
+    }
+    let fitted = tokio::task::spawn_blocking(move || {
+        fit_image_for_vision(&image, MAX_VISION_BYTES, MAX_VISION_DIM)
+    })
+    .await
+    .ok()
+    .flatten()?;
+    ai.generate(&ai.vision_model.clone(), PROMPT, Some(bytes_to_base64(&bytes::Bytes::from(fitted))))
+        .await
+        .ok()
+}
+
 /// Best-effort receipt field extraction. Never errors — any failure along the
 /// way (unsupported content, model call failure, unparseable reply) simply
 /// yields `None` and the caller leaves the expense's suggested_* fields alone.
 pub async fn extract_expense_fields(ai: &OllamaClient, content: &Extractable) -> Option<SuggestedExpenseFields> {
     let raw = match content {
-        Extractable::Text(text) => {
-            if text.trim().is_empty() {
-                return None;
-            }
-            let capped: String = text.chars().take(6000).collect();
-            ai.generate(&ai.summary_model.clone(), &format!("{PROMPT}\n\nReceipt text:\n{capped}"), None)
-                .await
-                .ok()?
-        }
-        Extractable::ImageBytes(bytes) => {
-            let bytes = bytes.clone();
-            let fitted = tokio::task::spawn_blocking(move || fit_image_for_vision(&bytes, MAX_VISION_BYTES))
-                .await
-                .ok()
-                .flatten()?;
-            ai.generate(&ai.vision_model.clone(), PROMPT, Some(bytes_to_base64(&bytes::Bytes::from(fitted))))
-                .await
-                .ok()?
-        }
+        Extractable::Text(text) => extract_from_text(ai, text).await?,
+        Extractable::ImageBytes(bytes) => extract_from_image(ai, bytes.to_vec()).await?,
         Extractable::ScannedPdf(bytes, raw_text) => {
             let bytes = bytes.clone();
-            let page_image = tokio::task::spawn_blocking(move || {
-                scanned_pdf_page_image(&bytes).and_then(|img| fit_image_for_vision(&img, MAX_VISION_BYTES))
-            })
-            .await
-            .ok()
-            .flatten();
-            match page_image {
-                Some(img) => {
-                    ai.generate(&ai.vision_model.clone(), PROMPT, Some(bytes_to_base64(&bytes::Bytes::from(img))))
-                        .await
-                        .ok()?
-                }
-                None if raw_text.trim().is_empty() => return None,
-                None => {
-                    let capped: String = raw_text.chars().take(6000).collect();
-                    ai.generate(&ai.summary_model.clone(), &format!("{PROMPT}\n\nReceipt text:\n{capped}"), None)
-                        .await
-                        .ok()?
-                }
+            let page_image = tokio::task::spawn_blocking(move || scanned_pdf_page_image(&bytes))
+                .await
+                .ok()
+                .flatten();
+            let extracted = match page_image {
+                Some(img) => extract_from_image(ai, img).await,
+                None => None,
+            };
+            match extracted {
+                Some(raw) => raw,
+                None => extract_from_text(ai, raw_text).await?,
             }
         }
         Extractable::Unsupported => return None,

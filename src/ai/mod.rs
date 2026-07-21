@@ -2,6 +2,7 @@
 pub mod embed;
 pub mod expense_fields;
 pub mod extract;
+pub mod ocr;
 pub mod summarize;
 
 use crate::error::AppError;
