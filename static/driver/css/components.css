@@ -362,6 +362,22 @@
   color: var(--color-text-muted);
 }
 
+/* expense status chips */
+.badge--submitted {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+.badge--reviewed {
+  background: var(--color-info-soft);
+  color: var(--color-primary-dark);
+}
+
+.badge--settled {
+  background: var(--color-success-soft);
+  color: var(--color-success);
+}
+
 .trip-card__route {
   font-size: 0.95rem;
   color: var(--color-text);
@@ -864,6 +880,14 @@
   text-align: left;
 }
 
+button.account-row {
+  cursor: pointer;
+}
+
+button.account-row:hover {
+  background: var(--color-bg);
+}
+
 .account-row:first-child {
   border-top: none;
 }
@@ -969,6 +993,22 @@
 .docs-row__delete { background: none; border: none; padding: var(--space-1) var(--space-2); cursor: pointer; min-height: 44px; min-width: 44px; color: var(--color-text-muted); display: inline-flex; align-items: center; justify-content: center; }
 .docs-row__delete svg { width: 20px; height: 20px; }
 .docs-empty { color: var(--color-text-muted); font-size: 0.875rem; text-align: center; padding: var(--space-4); }
+
+/* Expenses list */
+.expenses-body { flex: 1; overflow-y: auto; padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
+.expenses-empty { color: var(--color-text-muted); font-size: 0.875rem; text-align: center; padding: var(--space-4); }
+.expenses-error { color: var(--color-danger); font-size: 0.875rem; text-align: center; padding: var(--space-4); }
+.expense-card { position: relative; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius); padding: var(--space-4); display: flex; flex-direction: column; gap: var(--space-1); }
+.expense-card__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-bottom: var(--space-1); }
+.expense-card__category { font-weight: 600; font-size: 1rem; color: var(--color-text); }
+.expense-card__row { font-size: 0.875rem; color: var(--color-text); }
+.expense-card__approved { color: var(--color-text-muted); }
+.expense-card__note { color: var(--color-text-muted); font-style: italic; }
+.expense-card__money { font-weight: 600; }
+.expense-card__money--reimbursement { color: var(--color-success); }
+.expense-card__money--deduction { color: var(--color-danger); }
+.expense-card__delete { align-self: flex-end; background: none; border: none; padding: var(--space-1) var(--space-2); cursor: pointer; min-height: 44px; min-width: 44px; color: var(--color-text-muted); display: inline-flex; align-items: center; justify-content: center; }
+.expense-card__delete svg { width: 20px; height: 20px; }
 
 .sheet { position: fixed; inset: 0; background: rgba(17,24,39,0.4); display: flex; align-items: flex-end; z-index: 100; }
 .sheet__inner { background: var(--color-surface); border-top-left-radius: var(--radius-lg); border-top-right-radius: var(--radius-lg); padding: var(--space-4); width: 100%; display: flex; flex-direction: column; gap: var(--space-2); padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom)); }

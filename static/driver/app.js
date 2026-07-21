@@ -79,6 +79,16 @@ async function route() {
     return;
   }
 
+  if (path === '/driver/expenses' || path === '/driver/expenses/') {
+    if (!isAuthenticated()) {
+      replaceNavigate('/driver');
+      return;
+    }
+    const { renderExpenses } = await import('./pages/expenses.js');
+    renderExpenses(app);
+    return;
+  }
+
   if (path === '/driver/equipment' || path === '/driver/equipment/') {
     if (!isAuthenticated()) {
       replaceNavigate('/driver');
