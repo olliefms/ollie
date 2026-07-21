@@ -348,7 +348,8 @@ rmcp::elicit_safe!(DestructiveConfirmation);
 fn is_destructive_op(name: &str, args: &Value) -> bool {
     match name {
         "cancel_trip" | "cancel_load" | "delete_load" | "delete_trip" | "delete_driver"
-        | "delete_truck" | "delete_trailer" | "delete_maintenance" | "delete_facility" | "delete_user" => true,
+        | "delete_truck" | "delete_trailer" | "delete_maintenance" | "delete_facility"
+        | "delete_user" | "delete_expense" => true,
         "delete_blob" => args["force"].as_bool() == Some(true),
         _ => false,
     }
@@ -397,6 +398,7 @@ fn destructive_op_description(name: &str) -> &'static str {
         "delete_maintenance" => "permanently delete the maintenance entry",
         "delete_facility" => "delete the facility record",
         "delete_user" => "deactivate the user and revoke their access",
+        "delete_expense" => "permanently delete the expense record",
         "delete_blob" => "delete the blob",
         _ => "perform a destructive action",
     }
@@ -760,6 +762,7 @@ fn annotations_for(name: &str) -> ToolAnnotations {
             | "delete_trailer"
             | "delete_maintenance"
             | "delete_facility"
+            | "delete_expense"
     );
     // update_* set fields to a target value; dispatch/undispatch converge to a
     // status — re-running with the same args is a no-op.
@@ -3475,7 +3478,7 @@ mod tests {
         // #330 parity deletes + cancel_load carry the destructive hint.
         for name in [
             "delete_load", "delete_trip", "delete_driver", "delete_truck",
-            "delete_trailer", "delete_facility", "cancel_load",
+            "delete_trailer", "delete_facility", "cancel_load", "delete_expense",
         ] {
             let a = find(name).annotations.as_ref().unwrap();
             assert_eq!(a.destructive_hint, Some(true), "{name} must be destructive");
@@ -3613,7 +3616,7 @@ mod tests {
         // #330 parity deletes + cancel_load are unconditionally destructive.
         for name in [
             "cancel_load", "delete_load", "delete_trip", "delete_driver",
-            "delete_truck", "delete_trailer", "delete_facility",
+            "delete_truck", "delete_trailer", "delete_facility", "delete_expense",
         ] {
             assert!(is_destructive_op(name, &json!({})), "{name} must be destructive");
         }
