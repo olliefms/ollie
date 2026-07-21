@@ -120,6 +120,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         driver_portal::documents::list_documents,
         driver_portal::documents::get_document_content,
         driver_portal::documents::delete_document,
+        driver_portal::expenses::list_expenses,
+        driver_portal::expenses::delete_expense,
         version::get_version,
     ),
     components(

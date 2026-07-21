@@ -3,6 +3,7 @@ pub mod auth;
 pub mod data;
 pub mod documents;
 pub mod equipment;
+pub mod expenses;
 pub mod jwt;
 pub mod middleware;
 
@@ -42,6 +43,8 @@ pub fn portal_router(state: &AppState) -> Router<AppState> {
         .route("/equipment", get(equipment::get_equipment))
         .route("/equipment/trailer", put(equipment::update_trailer))
         .route("/trailers", get(equipment::list_available_trailers))
+        .route("/expenses", get(expenses::list_expenses))
+        .route("/expenses/{id}", axum_delete(expenses::delete_expense))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             middleware::require_driver_jwt,
