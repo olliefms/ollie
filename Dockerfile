@@ -18,8 +18,12 @@ COPY src ./src
 # Only crates that actually changed recompile — mirroring local incremental
 # builds. The binary is copied out of the cache mount since mounts aren't
 # captured in the image layer.
+# The target cache is keyed to the builder's Debian release: it holds compiled
+# build scripts that the builder must be able to execute, and artifacts from a
+# newer-glibc base crash with "GLIBC_x.yy not found" on an older one. Bump the
+# id suffix whenever the builder base image's Debian release changes.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
+    --mount=type=cache,id=target-bookworm,target=/app/target \
     cargo build --release && cp target/release/ollie /usr/local/bin/ollie
 
 FROM debian:bookworm-slim
