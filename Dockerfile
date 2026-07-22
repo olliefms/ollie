@@ -1,5 +1,11 @@
 # syntax=docker/dockerfile:1
-FROM rust:1.91-slim AS builder
+# The builder MUST be on the same Debian release as the runtime stage below.
+# The unsuffixed rust:*-slim tag silently aliases the newest Debian (trixie,
+# glibc 2.41); a binary linked there can require glibc symbols the bookworm
+# runtime (glibc 2.36) doesn't have — v2.5.0 crash-looped on GLIBC_2.39
+# (pidfd_spawn, pulled in by the tesseract subprocess spawn). Keep the
+# -bookworm suffix in lockstep with the runtime FROM, or move both at once.
+FROM rust:1.91-slim-bookworm AS builder
 
 RUN apt-get update && apt-get install -y pkg-config libssl-dev protobuf-compiler && rm -rf /var/lib/apt/lists/*
 
@@ -12,8 +18,12 @@ COPY src ./src
 # Only crates that actually changed recompile — mirroring local incremental
 # builds. The binary is copied out of the cache mount since mounts aren't
 # captured in the image layer.
+# The target cache is keyed to the builder's Debian release: it holds compiled
+# build scripts that the builder must be able to execute, and artifacts from a
+# newer-glibc base crash with "GLIBC_x.yy not found" on an older one. Bump the
+# id suffix whenever the builder base image's Debian release changes.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
-    --mount=type=cache,target=/app/target \
+    --mount=type=cache,id=target-bookworm,target=/app/target \
     cargo build --release && cp target/release/ollie /usr/local/bin/ollie
 
 FROM debian:bookworm-slim

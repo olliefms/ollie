@@ -87,7 +87,29 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build (local)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: ollie-smoke:candidate
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The binary must be loadable by the runtime image's dynamic linker.
+      # Catches builder/runtime glibc or libssl mismatches (v2.5.0 shipped a
+      # binary requiring GLIBC_2.39 that bookworm's 2.36 loader refused).
+      - name: Smoke test image
+        run: |
+          docker run --rm --entrypoint sh ollie-smoke:candidate -c \
+            'ldd /usr/local/bin/ollie' | tee ldd.out
+          if grep -q "not found" ldd.out; then
+            echo "::error::ollie binary has unresolved libraries or symbol versions in the runtime image"
+            exit 1
+          fi
+
+      - name: Push
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
