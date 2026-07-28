@@ -2,23 +2,17 @@ import { apiFetch, API_BASE, hasScope } from '../utils/api.js';
 import { escHtml, badge, shortId, fmtArrivalWindow } from '../utils/format.js';
 import { setContent, navigate, setTopbarControls } from '../utils/dom.js';
 
+const PAGE_SIZE = 20;
+
 export async function renderTripsView(params = {}) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
-  try {
-    const qs = params.status ? `?status=${encodeURIComponent(params.status)}` : '';
-    const res = await apiFetch(`${API_BASE}/trips${qs}`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const trips = data.items || data.trips || (Array.isArray(data) ? data : []);
 
-    const statusOptions = ['', 'planned', 'assigned', 'dispatched', 'in_transit', 'delivered', 'completed', 'cancelled'];
-    const filterStatus = params.status || '';
-    const selectHtml = `<select class="form-select" id="trip-status-filter">${statusOptions.map(s => `<option value="${s}" ${s === filterStatus ? 'selected' : ''}>${s || 'All Statuses'}</option>`).join('')}</select>`;
+  const status = params.status || '';
+  let loaded = [];
+  let total = null;
+  let hasMore = false;
 
-    const createBtn = hasScope('trips:write')
-      ? `<button class="btn btn--primary" id="new-trip">+ New Trip</button>`
-      : '';
-
+  const buildContent = (trips) => {
     const sorted = [...trips].sort((a, b) => {
       const ta = a.stops && a.stops[0] ? new Date(a.stops[0].scheduled_arrive || 0).getTime() : 0;
       const tb = b.stops && b.stops[0] ? new Date(b.stops[0].scheduled_arrive || 0).getTime() : 0;
@@ -48,24 +42,73 @@ export async function renderTripsView(params = {}) {
       }).join('');
     }
 
-    setTopbarControls((slot) => { slot.innerHTML = `${selectHtml}${createBtn}`; });
-
-    setContent(`
+    return `
       <div class="table-wrapper">
         <table class="data-table">
           <thead><tr><th>Trip #</th><th>Load #</th><th>Status</th><th>Driver</th><th>Route</th><th>Pickup</th><th>Delivery</th></tr></thead>
           <tbody id="trips-tbody">${rows}</tbody>
         </table>
       </div>
-    `);
+      ${hasMore ? `
+        <div style="text-align:center;margin-top:var(--space-3);">
+          <button class="btn btn--secondary" id="trips-load-more">Load more</button>
+        </div>` : ''}
+    `;
+  };
+
+  const fetchPage = async (offset) => {
+    const qs = new URLSearchParams({ limit: PAGE_SIZE, offset });
+    if (status) qs.set('status', status);
+    const res = await apiFetch(`${API_BASE}/trips?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const trips = data.items || data.trips || (Array.isArray(data) ? data : []);
+    total = typeof data.total === 'number' ? data.total : null;
+    loaded = offset === 0 ? trips : loaded.concat(trips);
+    // Without a server total, fall back to "a full page probably means more".
+    // An empty page always stops.
+    hasMore = trips.length === 0 ? false
+      : total !== null ? loaded.length < total
+      : trips.length === PAGE_SIZE;
+  };
+
+  const render = () => {
+    setContent(buildContent(loaded));
+
+    document.getElementById('trips-load-more')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try {
+        await fetchPage(loaded.length);
+        render();
+      } catch (err) {
+        if (err.message !== 'Unauthorized — please sign in again.') {
+          setContent(`<div class="state-error">Failed to load trips: ${escHtml(err.message)}</div>`);
+        }
+      }
+    });
+
+    document.querySelectorAll('#trips-tbody tr[data-trip-id]').forEach(row => {
+      row.addEventListener('click', () => navigate('trip-detail', { id: row.dataset.tripId }));
+    });
+  };
+
+  try {
+    await fetchPage(0);
+    render();
+
+    const statusOptions = ['', 'planned', 'assigned', 'dispatched', 'in_transit', 'delivered', 'completed', 'cancelled'];
+    const selectHtml = `<select class="form-select" id="trip-status-filter">${statusOptions.map(s => `<option value="${s}" ${s === status ? 'selected' : ''}>${s || 'All Statuses'}</option>`).join('')}</select>`;
+
+    const createBtn = hasScope('trips:write')
+      ? `<button class="btn btn--primary" id="new-trip">+ New Trip</button>`
+      : '';
+
+    setTopbarControls((slot) => { slot.innerHTML = `${selectHtml}${createBtn}`; });
 
     document.getElementById('new-trip')?.addEventListener('click', () => navigate('trip-new'));
 
     const filterEl = document.getElementById('trip-status-filter');
     if (filterEl) filterEl.addEventListener('change', () => navigate('trips', { status: filterEl.value }));
-    document.querySelectorAll('#trips-tbody tr[data-trip-id]').forEach(row => {
-      row.addEventListener('click', () => navigate('trip-detail', { id: row.dataset.tripId }));
-    });
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load trips: ${escHtml(err.message)}</div>`);

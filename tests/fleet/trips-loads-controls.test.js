@@ -229,3 +229,99 @@ describe('loads pagination', () => {
     expect(main).toContain('Showing the most recent 2000 of 2500 loads');
   }, 20_000);
 });
+
+function tripRows(count, startAt = 0) {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `t${startAt + i}`,
+    trip_number: `T-${startAt + i}`,
+    load_number: `L-${startAt + i}`,
+    status: 'planned',
+    driver_name: 'Dana',
+    stops: [{ name: 'A', scheduled_arrive: '2026-07-01T12:00:00Z' }, { name: 'B' }],
+  }));
+}
+
+describe('trips pagination', () => {
+  it('requests a bounded page and appends the next one on Load more', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 20, total: 30, items: tripRows(20) }));
+
+    const { renderTripsView } = await import('../../static/fleet/pages/trips.js');
+    await renderTripsView({});
+    await Promise.resolve();
+
+    const firstUrl = fetchMock.mock.calls.at(-1)[0];
+    expect(firstUrl).toContain('limit=20');
+    expect(firstUrl).toContain('offset=0');
+
+    const moreBtn = document.getElementById('trips-load-more');
+    expect(moreBtn).toBeTruthy();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 10, total: 30, items: tripRows(10, 20) }));
+    moreBtn.click();
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('offset=20');
+    const main = document.getElementById('main-content').innerHTML;
+    expect(main).toContain('T-0');
+    expect(main).toContain('T-25');
+    expect((main.match(/data-trip-id=/g) || []).length).toBe(30);
+    expect(document.getElementById('trips-load-more')).toBeFalsy();
+  });
+
+  it('shows no Load more when the first page is the whole result set', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 3, total: 3, items: tripRows(3) }));
+
+    const { renderTripsView } = await import('../../static/fleet/pages/trips.js');
+    await renderTripsView({});
+    await Promise.resolve();
+
+    expect(document.getElementById('trips-load-more')).toBeFalsy();
+  });
+
+  it('stops paging on an empty page even when total says more', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 20, total: 100, items: tripRows(20) }));
+
+    const { renderTripsView } = await import('../../static/fleet/pages/trips.js');
+    await renderTripsView({});
+    await Promise.resolve();
+
+    const moreBtn = document.getElementById('trips-load-more');
+    expect(moreBtn).toBeTruthy();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 0, total: 100, items: [] }));
+    moreBtn.click();
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(document.getElementById('trips-load-more')).toBeFalsy();
+  });
+
+  it('carries the status filter on every page fetch', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 20, total: 25, items: tripRows(20) }));
+
+    const { renderTripsView } = await import('../../static/fleet/pages/trips.js');
+    await renderTripsView({ status: 'dispatched' });
+    await Promise.resolve();
+
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('status=dispatched');
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 5, total: 25, items: tripRows(5, 20) }));
+    document.getElementById('trips-load-more').click();
+    await new Promise(r => setTimeout(r, 0));
+
+    const nextUrl = fetchMock.mock.calls.at(-1)[0];
+    expect(nextUrl).toContain('status=dispatched');
+    expect(nextUrl).toContain('offset=20');
+  });
+});

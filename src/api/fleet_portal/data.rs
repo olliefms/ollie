@@ -92,6 +92,10 @@ pub struct FleetTripListItem {
 
 #[derive(serde::Serialize)]
 pub struct FleetTripListResponse {
+    /// Count of items on this page.
+    pub returned: usize,
+    /// Full matching count, independent of limit/offset.
+    pub total: usize,
     pub items: Vec<FleetTripListItem>,
 }
 
@@ -543,6 +547,8 @@ pub struct ListTripsQuery {
     pub load_number: Option<String>,
     pub pay_period_start: Option<String>,
     pub pay_period_end: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[utoipa::path(
@@ -554,9 +560,11 @@ pub struct ListTripsQuery {
         ("status" = Option<String>, Query, description = "Filter by status"),
         ("pay_period_start" = Option<String>, Query, description = "Only trips with pay_period_start >= this ISO date"),
         ("pay_period_end" = Option<String>, Query, description = "Only trips with pay_period_end <= this ISO date"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 100, max 1000)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "List of trips (enriched with driver/truck names)"),
+        (status = 200, description = "Page of trips (enriched with driver/truck names), newest first, with `total` matching count"),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
@@ -568,8 +576,8 @@ pub async fn list_trips(
     Query(q): Query<ListTripsQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:read")?;
-    let items = build_trip_list_items(&state, q).await?;
-    Ok(Json(FleetTripListResponse { items }))
+    let (total, items) = build_trip_list_items(&state, q).await?;
+    Ok(Json(FleetTripListResponse { returned: items.len(), total, items }))
 }
 
 #[utoipa::path(
@@ -600,35 +608,33 @@ pub async fn create_trip_handler(
 }
 
 /// Shared list-trips builder used by the HTTP handler and the MCP `list_trips` tool.
-/// Applies `trip_number` / `load_number` filters (post-query for trip_number, two-step
-/// lookup for load_number), enriches with driver/truck/trailer names, and projects a
-/// flat `origin_facility_name` from the previous trip's last stop facility.
+/// Applies all filters in the DB query (two-step lookup for load_number), paginates
+/// with the shared limit/offset clamps (so only the requested page is enriched),
+/// enriches with driver/truck/trailer names, and projects a flat
+/// `origin_facility_name` from the previous trip's last stop facility.
+/// Returns `(total_matching, page)`.
 pub async fn build_trip_list_items(
     state: &AppState,
     q: ListTripsQuery,
-) -> Result<Vec<FleetTripListItem>, AppError> {
+) -> Result<(usize, Vec<FleetTripListItem>), AppError> {
     // Resolve `load_number` → `load_id` if provided; if no such load exists, return [].
     let load_id_filter = if let Some(ln) = &q.load_number {
         match state.db.get_load_by_number(ln).await {
             Ok(load) => Some(load.id),
-            Err(AppError::NotFound) => return Ok(Vec::new()),
+            Err(AppError::NotFound) => return Ok((0, Vec::new())),
             Err(e) => return Err(e),
         }
     } else {
         q.load_id
     };
 
-    let trips = state.db.list_trips(
-        load_id_filter, q.driver_id, q.status.as_deref(),
+    let limit = q.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let offset = q.offset.unwrap_or(0);
+    let (total, trips) = state.db.list_trips_page(
+        load_id_filter, q.driver_id, q.status.as_deref(), q.trip_number.as_deref(),
         q.pay_period_start.as_deref(), q.pay_period_end.as_deref(),
+        limit, offset,
     ).await?;
-
-    // Apply `trip_number` filter post-fetch (case-sensitive exact match).
-    let trips: Vec<_> = if let Some(tn) = &q.trip_number {
-        trips.into_iter().filter(|t| &t.trip_number == tn).collect()
-    } else {
-        trips
-    };
 
     let mut driver_ids = std::collections::HashSet::new();
     let mut truck_ids  = std::collections::HashSet::new();
@@ -694,7 +700,7 @@ pub async fn build_trip_list_items(
             item
         })
         .collect();
-    Ok(items)
+    Ok((total, items))
 }
 
 #[utoipa::path(

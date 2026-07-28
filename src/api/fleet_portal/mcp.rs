@@ -2132,6 +2132,7 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
 }
 
 async fn tool_list_trips(state: &AppState, args: &Value) -> Result<Value, String> {
+    let offset = cursor_offset(args)?;
     let q = super::data::ListTripsQuery {
         load_id: parse_uuid_opt(args, "load_id")?,
         driver_id: parse_uuid_opt(args, "driver_id")?,
@@ -2140,15 +2141,12 @@ async fn tool_list_trips(state: &AppState, args: &Value) -> Result<Value, String
         load_number: args["load_number"].as_str().map(|s| s.to_string()),
         pay_period_start: args["pay_period_start"].as_str().map(|s| s.to_string()),
         pay_period_end: args["pay_period_end"].as_str().map(|s| s.to_string()),
+        limit: Some(PAGE_SIZE),
+        offset: Some(offset),
     };
-    let offset = cursor_offset(args)?;
-    // build_trip_list_items materializes the full matching set (a pre-existing
-    // shared-path constraint — it has no limit/offset; the REST trips list uses it
-    // too), so this is O(N) per page regardless of page size. Acceptable for now;
-    // pushing limit/offset into that helper is the proper fix when trip counts grow.
-    let all = super::data::build_trip_list_items(state, q).await
+    let (total, page) = super::data::build_trip_list_items(state, q).await
         .map_err(|e| e.to_string())?;
-    let (page, returned, total) = paginate_slice(all, offset, PAGE_SIZE);
+    let returned = page.len();
     Ok(mcp_content(paged(page, returned, total, offset)))
 }
 
