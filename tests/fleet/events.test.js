@@ -131,6 +131,72 @@ describe('renderEventsView header', () => {
     const main = document.getElementById('main-content').innerHTML;
     expect(main).not.toContain('page-title');
     expect(document.getElementById('events-list')).toBeTruthy();
+    const { clearEventsRefresh } = await import('../../static/fleet/pages/events.js');
+    clearEventsRefresh();
+    vi.restoreAllMocks();
+  });
+});
+
+describe('renderEventsView pagination', () => {
+  beforeEach(() => {
+    document.body.innerHTML =
+      '<div id="topbar-controls"></div><div id="main-content"></div><div id="refresh-indicator"></div>';
+    localStorage.clear();
+  });
+
+  function eventPage(count, startAt = 0) {
+    return Array.from({ length: count }, (_, i) => ({
+      ...base,
+      id: `ev${startAt + i}`,
+      subject: `Event ${startAt + i}`,
+      occurred_at: new Date(Date.now() - (startAt + i) * 60_000).toISOString(),
+    }));
+  }
+
+  it('requests a bounded page and loads older events on demand', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: eventPage(20) }) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: eventPage(5, 20) }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { saveToken } = await import('../../static/fleet/utils/auth.js');
+    saveToken('test-token');
+
+    const { renderEventsView, clearEventsRefresh } = await import('../../static/fleet/pages/events.js');
+    await renderEventsView();
+    await Promise.resolve();
+
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('limit=20');
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('offset=0');
+
+    const moreBtn = document.getElementById('events-load-more');
+    expect(moreBtn).toBeTruthy();
+
+    moreBtn.click();
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('offset=20');
+    const html = document.getElementById('events-list').innerHTML;
+    expect((html.match(/data-event-id=/g) || []).length).toBe(25);
+    expect(document.getElementById('events-load-more')).toBeFalsy();
+
+    clearEventsRefresh();
+    vi.restoreAllMocks();
+  });
+
+  it('hides Load more when the first page is short', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true, status: 200, json: async () => ({ items: eventPage(3) }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { saveToken } = await import('../../static/fleet/utils/auth.js');
+    saveToken('test-token');
+
+    const { renderEventsView, clearEventsRefresh } = await import('../../static/fleet/pages/events.js');
+    await renderEventsView();
+    await Promise.resolve();
+
+    expect(document.getElementById('events-load-more')).toBeFalsy();
+    clearEventsRefresh();
     vi.restoreAllMocks();
   });
 });

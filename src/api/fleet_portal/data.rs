@@ -33,6 +33,11 @@ use crate::services::trip_lifecycle::{
     AssignTripRequest, CheckCallRequest, StopArriveRequest, StopDepartRequest, StopLateRequest,
 };
 
+/// Default/max page size for the fleet list endpoints below that don't already
+/// define their own (loads/blobs/events use a 20/100 default set elsewhere).
+const DEFAULT_LIST_LIMIT: usize = 100;
+const MAX_LIST_LIMIT: usize = 1000;
+
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct FleetTripListItem {
     pub id: uuid::Uuid,
@@ -108,7 +113,10 @@ pub struct DispatchLoadListItem {
 
 #[derive(serde::Serialize)]
 pub struct DispatchLoadListResponse {
+    /// Kept as-is for backward compat — historically carried the total
+    /// matching count, not the page size. Prefer `total` in new callers.
     pub returned: usize,
+    pub total: usize,
     pub items: Vec<DispatchLoadListItem>,
 }
 
@@ -227,7 +235,7 @@ pub async fn list_loads(
         offset,
     ).await?;
     let enriched = enrich_loads(&state, items).await;
-    Ok(Json(DispatchLoadListResponse { returned: total, items: enriched }))
+    Ok(Json(DispatchLoadListResponse { returned: total, total, items: enriched }))
 }
 
 #[utoipa::path(
@@ -1131,6 +1139,8 @@ pub async fn check_call(
 #[derive(Deserialize)]
 pub struct ListDriversQuery {
     pub status: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[utoipa::path(
@@ -1138,6 +1148,8 @@ pub struct ListDriversQuery {
     path = "/fleet/api/v1/drivers",
     params(
         ("status" = Option<String>, Query, description = "Filter by status"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 100, max 1000)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
     ),
     responses(
         (status = 200, description = "List of drivers", body = DriverListResponse),
@@ -1152,7 +1164,9 @@ pub async fn list_drivers(
     Query(q): Query<ListDriversQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("drivers:read")?;
-    let (total, items) = state.db.list_drivers(q.status.as_deref(), 100, 0).await?;
+    let limit = q.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let offset = q.offset.unwrap_or(0);
+    let (total, items) = state.db.list_drivers(q.status.as_deref(), limit, offset).await?;
     Ok(Json(DriverListResponse { returned: total, items }))
 }
 
@@ -1185,6 +1199,8 @@ pub async fn get_driver(
 #[derive(Deserialize)]
 pub struct ListTrucksQuery {
     pub status: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[utoipa::path(
@@ -1192,6 +1208,8 @@ pub struct ListTrucksQuery {
     path = "/fleet/api/v1/trucks",
     params(
         ("status" = Option<String>, Query, description = "Filter by status"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 100, max 1000)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
     ),
     responses(
         (status = 200, description = "List of trucks", body = TruckListResponse),
@@ -1206,7 +1224,9 @@ pub async fn list_trucks(
     Query(q): Query<ListTrucksQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trucks:read")?;
-    let (total, items) = state.db.list_trucks(q.status.as_deref(), 100, 0).await?;
+    let limit = q.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let offset = q.offset.unwrap_or(0);
+    let (total, items) = state.db.list_trucks(q.status.as_deref(), limit, offset).await?;
     Ok(Json(TruckListResponse { returned: total, items }))
 }
 
@@ -1239,6 +1259,8 @@ pub async fn get_truck(
 #[derive(Deserialize)]
 pub struct ListTrailersQuery {
     pub status: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[utoipa::path(
@@ -1246,6 +1268,8 @@ pub struct ListTrailersQuery {
     path = "/fleet/api/v1/trailers",
     params(
         ("status" = Option<String>, Query, description = "Filter by status"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 100, max 1000)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
     ),
     responses(
         (status = 200, description = "List of trailers", body = TrailerListResponse),
@@ -1260,7 +1284,9 @@ pub async fn list_trailers(
     Query(q): Query<ListTrailersQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trailers:read")?;
-    let (total, items) = state.db.list_trailers(q.status.as_deref(), None, 100, 0).await?;
+    let limit = q.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let offset = q.offset.unwrap_or(0);
+    let (total, items) = state.db.list_trailers(q.status.as_deref(), None, limit, offset).await?;
     Ok(Json(TrailerListResponse { returned: total, items }))
 }
 
@@ -1295,6 +1321,8 @@ pub struct ListMaintenanceQuery {
     pub equipment_type: Option<String>,
     pub equipment_id: Option<uuid::Uuid>,
     pub category: Option<String>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[utoipa::path(
@@ -1304,6 +1332,8 @@ pub struct ListMaintenanceQuery {
         ("equipment_type" = Option<String>, Query, description = "Filter by equipment type (truck/trailer)"),
         ("equipment_id" = Option<Uuid>, Query, description = "Filter by equipment UUID"),
         ("category" = Option<String>, Query, description = "Filter by category"),
+        ("limit" = Option<usize>, Query, description = "Max results (default 100, max 1000)"),
+        ("offset" = Option<usize>, Query, description = "Pagination offset"),
     ),
     responses(
         (status = 200, description = "List of maintenance entries", body = MaintenanceListResponse),
@@ -1318,13 +1348,15 @@ pub async fn list_maintenance(
     Query(q): Query<ListMaintenanceQuery>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("maintenance:read")?;
+    let limit = q.limit.unwrap_or(DEFAULT_LIST_LIMIT).min(MAX_LIST_LIMIT);
+    let offset = q.offset.unwrap_or(0);
     let equipment_id = q.equipment_id.map(|id| id.to_string());
     let (total, items) = state.db.list_maintenance(
         q.equipment_type.as_deref(),
         equipment_id.as_deref(),
         q.category.as_deref(),
-        100,
-        0,
+        limit,
+        offset,
     ).await?;
     Ok(Json(MaintenanceListResponse { returned: total, items }))
 }

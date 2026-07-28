@@ -21,8 +21,15 @@ describe('matchRoute', () => {
   it('returns notfound for an unknown path', () => {
     expect(matchRoute('/fleet/nope/x/y')).toEqual({ name: 'notfound', params: {} });
   });
-  it('ignores a trailing query string', () => {
-    expect(matchRoute('/fleet/loads?status=planned')).toEqual({ name: 'loads', params: { query: 'status=planned' } });
+  it('decomposes a trailing query string into named params', () => {
+    expect(matchRoute('/fleet/loads?status=planned')).toEqual({ name: 'loads', params: { status: 'planned' } });
+    expect(matchRoute('/fleet/documents?name=rate+con&offset=20'))
+      .toEqual({ name: 'documents', params: { name: 'rate con', offset: '20' } });
+  });
+
+  it('keeps the path id alongside query params', () => {
+    expect(matchRoute('/fleet/loads/abc-123?status=planned'))
+      .toEqual({ name: 'load-detail', params: { id: 'abc-123', status: 'planned' } });
   });
 
   it('matches terminal new/edit/detail in the right precedence', () => {

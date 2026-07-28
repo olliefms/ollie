@@ -1,5 +1,5 @@
 // Route table: each entry maps a name to a path regex. Detail routes capture id.
-// `query` (raw query string) is surfaced in params when present.
+// Query-string pairs are surfaced as named params (see matchRoute).
 export const ROUTES = [
   { name: 'home',            re: /^\/fleet\/home$/ },
   { name: 'loads',           re: /^\/fleet\/loads$/ },
@@ -56,8 +56,10 @@ export function matchRoute(rawPath) {
     const m = path.match(r.re);
     if (m) {
       const params = {};
+      if (query) {
+        for (const [k, v] of new URLSearchParams(query)) params[k] = v;
+      }
       if (r.id) params.id = m[1];
-      if (query) params.query = query;
       return { name: r.name, params };
     }
   }

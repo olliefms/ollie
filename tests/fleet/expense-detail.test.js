@@ -6,6 +6,13 @@ function jsonResponse(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
 
+// Flush pending promise chains (fetch → json → re-render) across a real
+// macrotask boundary, since a chain of several microtasks needs more than
+// a couple of `await Promise.resolve()` to fully settle.
+function flushAsync() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 async function seedScopes(fetchMock, scopes) {
   const { loadMe } = await import('../../static/fleet/utils/api.js');
   fetchMock.mockResolvedValueOnce(jsonResponse({
@@ -85,6 +92,140 @@ describe('renderExpenseDetail — suggestion amount button', () => {
     btn.click();
 
     expect(input.value).toBe('120.5');
+  });
+});
+
+// Mock that also handles the review POST, routing the parsed body to
+// reviewHandler and recording every call on fetchMock.mock.calls.
+function reviewMock(expense, scopes, reviewHandler) {
+  return vi.fn((url, opts) => {
+    if (opts && opts.method === 'POST' && url.includes('/review')) {
+      return Promise.resolve(reviewHandler(JSON.parse(opts.body)));
+    }
+    if (url.includes('/expenses/')) return Promise.resolve(jsonResponse(expense));
+    return Promise.resolve(jsonResponse({
+      fleet_user_id: 'u1', name: 'Test', email: 't@x.com', role: 'owner',
+      effective_scopes: scopes,
+    }));
+  });
+}
+
+function reviewPostCalls(fetchMock) {
+  return fetchMock.mock.calls.filter(([url, opts]) => opts && opts.method === 'POST' && url.includes('/review'));
+}
+
+describe('renderExpenseDetail — Approve all / Reject all one-click review', () => {
+  it('approve-all with a suggested amount + selected payment method saves in one click', async () => {
+    const fetchMock = reviewMock(SUGGESTED_EXPENSE, ['expenses:read', 'expenses:approve'], () => jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock, ['expenses:read', 'expenses:approve']);
+
+    const { renderExpenseDetail } = await import('../../static/fleet/pages/expense-detail.js');
+    await renderExpenseDetail('e1');
+    await Promise.resolve();
+
+    // Harness caveat: happy-dom mis-reports select.value when `selected`
+    // comes from innerHTML — set it explicitly.
+    document.getElementById('review-method').value = 'company';
+
+    document.getElementById('review-approve-all').click();
+    await flushAsync();
+
+    const calls = reviewPostCalls(fetchMock);
+    expect(calls.length).toBe(1);
+    const body = JSON.parse(calls[0][1].body);
+    expect(body.amount).toBe(120.5);
+    expect(body.approved_amount).toBe(body.amount);
+  });
+
+  it('reject-all posts approved_amount 0 while keeping the resolved amount', async () => {
+    const fetchMock = reviewMock(SUGGESTED_EXPENSE, ['expenses:read', 'expenses:approve'], () => jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock, ['expenses:read', 'expenses:approve']);
+
+    const { renderExpenseDetail } = await import('../../static/fleet/pages/expense-detail.js');
+    await renderExpenseDetail('e1');
+    await Promise.resolve();
+
+    document.getElementById('review-method').value = 'company';
+
+    document.getElementById('review-reject-all').click();
+    await flushAsync();
+
+    const calls = reviewPostCalls(fetchMock);
+    expect(calls.length).toBe(1);
+    const body = JSON.parse(calls[0][1].body);
+    expect(body.amount).toBe(120.5);
+    expect(body.approved_amount).toBe(0);
+  });
+
+  it('with no amount and no suggestion, shows a specific message and issues no request', async () => {
+    // Amount starts populated (so the button is enabled at render), no
+    // suggested_amount exists as a fallback.
+    const expense = { ...SUGGESTED_EXPENSE, amount: 50, suggested_amount: null };
+    const fetchMock = reviewMock(expense, ['expenses:read', 'expenses:approve'], () => jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock, ['expenses:read', 'expenses:approve']);
+
+    const { renderExpenseDetail } = await import('../../static/fleet/pages/expense-detail.js');
+    await renderExpenseDetail('e1');
+    await Promise.resolve();
+
+    // User clears the amount they were given, leaving nothing to resolve.
+    document.getElementById('review-amount').value = '';
+    document.getElementById('review-method').value = 'company';
+
+    document.getElementById('review-approve-all').click();
+    await Promise.resolve();
+
+    expect(reviewPostCalls(fetchMock).length).toBe(0);
+    const errEl = document.getElementById('review-error');
+    expect(errEl.hidden).toBe(false);
+    expect(errEl.textContent).toBe('No amount available — enter an amount first');
+  });
+
+  it('with an amount but no payment method, fills fields, blocks the save, and focuses the select', async () => {
+    const expense = { ...SUGGESTED_EXPENSE, amount: 75, suggested_amount: null };
+    const fetchMock = reviewMock(expense, ['expenses:read', 'expenses:approve'], () => jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock, ['expenses:read', 'expenses:approve']);
+
+    const { renderExpenseDetail } = await import('../../static/fleet/pages/expense-detail.js');
+    await renderExpenseDetail('e1');
+    await Promise.resolve();
+
+    const methodEl = document.getElementById('review-method');
+    expect(methodEl.value).toBe('');
+
+    document.getElementById('review-approve-all').click();
+    await Promise.resolve();
+
+    expect(reviewPostCalls(fetchMock).length).toBe(0);
+    expect(document.getElementById('review-amount').value).toBe('75');
+    expect(document.getElementById('review-approved').value).toBe('75');
+    const errEl = document.getElementById('review-error');
+    expect(errEl.hidden).toBe(false);
+    expect(errEl.textContent).toBe('Select a payment method to approve');
+    expect(document.activeElement).toBe(methodEl);
+  });
+
+  it('disables approve-all/reject-all with a title hint when there is no amount and no suggestion', async () => {
+    const expense = { ...SUGGESTED_EXPENSE, amount: null, suggested_amount: null };
+    const fetchMock = urlMock(expense, ['expenses:read', 'expenses:approve']);
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock, ['expenses:read', 'expenses:approve']);
+
+    const { renderExpenseDetail } = await import('../../static/fleet/pages/expense-detail.js');
+    await renderExpenseDetail('e1');
+    await Promise.resolve();
+
+    const approveBtn = document.getElementById('review-approve-all');
+    const rejectBtn = document.getElementById('review-reject-all');
+    expect(approveBtn.disabled).toBe(true);
+    expect(rejectBtn.disabled).toBe(true);
+    expect(approveBtn.title).toBe('No amount available — enter an amount first');
+    expect(approveBtn.getAttribute('type')).toBe('button');
+    expect(rejectBtn.getAttribute('type')).toBe('button');
   });
 });
 

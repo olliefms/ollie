@@ -62,6 +62,9 @@ function isOwn(e) {
   return !!uid && e.submitted_by === `fleet_user:${uid}`;
 }
 
+const NO_AMOUNT_MSG = 'No amount available — enter an amount first';
+const NO_METHOD_MSG = 'Select a payment method to approve';
+
 export async function renderExpenseDetail(id) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
   try {
@@ -165,6 +168,8 @@ export async function renderExpenseDetail(id) {
       const methodOpts = PAYMENT_METHOD_OPTIONS
         .map(o => `<option value="${escHtml(o.value)}" ${o.value === e.payment_method ? 'selected' : ''}>${escHtml(o.label)}</option>`)
         .join('');
+      const noAmountAvailable = amountVal === '' && e.suggested_amount == null;
+      const allBtnAttrs = noAmountAvailable ? ` disabled title="${escHtml(NO_AMOUNT_MSG)}"` : '';
       reviewHtml = `
         <div class="detail-card">
           <div class="detail-card__title">Review</div>
@@ -194,8 +199,8 @@ export async function renderExpenseDetail(id) {
             <textarea class="form-input" id="review-note">${escHtml(String(noteVal))}</textarea>
           </div>
           <div class="form-panel__actions">
-            <button class="btn btn--secondary" id="review-approve-all">Approve all</button>
-            <button class="btn btn--secondary" id="review-reject-all">Reject all</button>
+            <button class="btn btn--secondary" id="review-approve-all" type="button"${allBtnAttrs}>Approve all</button>
+            <button class="btn btn--secondary" id="review-reject-all" type="button"${allBtnAttrs}>Reject all</button>
             <button class="btn btn--primary" id="review-save">Save review</button>
           </div>
         </div>`;
@@ -238,13 +243,41 @@ export async function renderExpenseDetail(id) {
     // Review actions.
     if (canReview) {
       const amountEl = document.getElementById('review-amount');
+      const dateEl = document.getElementById('review-date');
+      const vendorEl = document.getElementById('review-vendor');
       const approvedEl = document.getElementById('review-approved');
-      document.getElementById('review-approve-all').addEventListener('click', () => {
-        approvedEl.value = amountEl.value;
-      });
-      document.getElementById('review-reject-all').addEventListener('click', () => {
-        approvedEl.value = '0';
-      });
+      const methodEl = document.getElementById('review-method');
+      const errEl = document.getElementById('review-error');
+      const showErr = (msg) => { errEl.textContent = msg; errEl.hidden = false; };
+
+      // Resolve amount from the input, falling back to the AI suggestion,
+      // and backfill date/vendor from suggestions when those are empty too.
+      const resolveAndBackfill = () => {
+        let amount = amountEl.value;
+        if (!amount && e.suggested_amount != null) {
+          amount = String(e.suggested_amount);
+          amountEl.value = amount;
+        }
+        if (!dateEl.value && e.suggested_date) dateEl.value = e.suggested_date;
+        if (!vendorEl.value && e.suggested_vendor) vendorEl.value = e.suggested_vendor;
+        return amount;
+      };
+
+      const applyAll = (getApproved) => {
+        const amount = resolveAndBackfill();
+        if (!amount) return showErr(NO_AMOUNT_MSG);
+        approvedEl.value = getApproved(amount);
+        if (!methodEl.value) {
+          showErr(NO_METHOD_MSG);
+          methodEl.focus();
+          return;
+        }
+        errEl.hidden = true;
+        return saveReview(id, e);
+      };
+
+      document.getElementById('review-approve-all').addEventListener('click', () => applyAll((amount) => amount));
+      document.getElementById('review-reject-all').addEventListener('click', () => applyAll(() => '0'));
       document.getElementById('review-save').addEventListener('click', () => saveReview(id, e));
     }
 

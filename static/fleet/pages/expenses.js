@@ -1,12 +1,16 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
 import { escHtml } from '../utils/format.js';
-import { setContent } from '../utils/dom.js';
+import { setContent, navigate } from '../utils/dom.js';
 import { renderEntityList } from './_list.js';
 import { money } from '../utils/maintenance-meta.js';
 import {
   EXPENSE_CATEGORY_OPTIONS, PAYMENT_METHOD_OPTIONS,
   expenseCategoryLabel, statusBadge,
 } from '../utils/expense-meta.js';
+
+// The server caps an unbounded list at 100 rows; page in explicit windows so
+// older expenses stay reachable instead of being silently truncated.
+const PAGE_SIZE = 100;
 
 // Status filter: label → ?status= value. '' means all.
 const STATUS_FILTERS = [
@@ -51,13 +55,20 @@ async function loadDrivers() {
 export async function renderExpensesView(params = {}) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
 
+  // `limit` is view state, not a URL filter — Load more grows the window.
+  const limit = Number.parseInt(params.limit, 10) > 0
+    ? Number.parseInt(params.limit, 10)
+    : PAGE_SIZE;
+
   const qs = new URLSearchParams();
   if (params.status) qs.set('status', params.status);
   if (params.category) qs.set('category', params.category);
   if (params.driver_id) qs.set('driver_id', params.driver_id);
   if (params.from) qs.set('from', params.from);
   if (params.to) qs.set('to', params.to);
-  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  qs.set('limit', limit);
+  qs.set('offset', 0);
+  const suffix = `?${qs.toString()}`;
 
   try {
     const drivers = await loadDrivers();
@@ -67,6 +78,7 @@ export async function renderExpensesView(params = {}) {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const items = data.items || (Array.isArray(data) ? data : []);
+    const total = typeof data.total === 'number' ? data.total : items.length;
 
     renderEntityList({
       title: 'Expenses',
@@ -99,7 +111,7 @@ export async function renderExpensesView(params = {}) {
           statusSel.appendChild(opt);
         }
         statusSel.addEventListener('change', () => {
-          renderExpensesView({ ...params, status: statusSel.value || undefined });
+          navigate('expenses', { ...params, status: statusSel.value || undefined });
         });
 
         // ── Category select ────────────────────────────────────
@@ -118,7 +130,7 @@ export async function renderExpensesView(params = {}) {
           catSel.appendChild(opt);
         }
         catSel.addEventListener('change', () => {
-          renderExpensesView({ ...params, category: catSel.value || undefined });
+          navigate('expenses', { ...params, category: catSel.value || undefined });
         });
 
         // ── Driver select ──────────────────────────────────────
@@ -137,7 +149,7 @@ export async function renderExpensesView(params = {}) {
           driverSel.appendChild(opt);
         }
         driverSel.addEventListener('change', () => {
-          renderExpensesView({ ...params, driver_id: driverSel.value || undefined });
+          navigate('expenses', { ...params, driver_id: driverSel.value || undefined });
         });
 
         // ── Date range ─────────────────────────────────────────
@@ -147,7 +159,7 @@ export async function renderExpensesView(params = {}) {
         fromInput.setAttribute('aria-label', 'From date');
         if (params.from) fromInput.value = params.from;
         fromInput.addEventListener('change', () => {
-          renderExpensesView({ ...params, from: fromInput.value || undefined });
+          navigate('expenses', { ...params, from: fromInput.value || undefined });
         });
 
         const toInput = document.createElement('input');
@@ -156,7 +168,7 @@ export async function renderExpensesView(params = {}) {
         toInput.setAttribute('aria-label', 'To date');
         if (params.to) toInput.value = params.to;
         toInput.addEventListener('change', () => {
-          renderExpensesView({ ...params, to: toInput.value || undefined });
+          navigate('expenses', { ...params, to: toInput.value || undefined });
         });
 
         // Insert filters left-to-right ahead of the Create button.
@@ -167,6 +179,21 @@ export async function renderExpensesView(params = {}) {
         controlsEl.insertBefore(statusSel, controlsEl.firstChild);
       },
     });
+
+    if (items.length < total) {
+      const more = document.createElement('div');
+      more.style.textAlign = 'center';
+      more.style.marginTop = 'var(--space-3)';
+      const btn = document.createElement('button');
+      btn.className = 'btn btn--secondary';
+      btn.id = 'expenses-load-more';
+      btn.textContent = `Load more (${items.length} of ${total})`;
+      btn.addEventListener('click', () => {
+        renderExpensesView({ ...params, limit: limit + PAGE_SIZE });
+      });
+      more.appendChild(btn);
+      document.getElementById('main-content').appendChild(more);
+    }
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load expenses: ${escHtml(err.message)}</div>`);

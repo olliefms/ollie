@@ -83,8 +83,15 @@ export function attachEventHandlers(root) {
   });
 }
 
+const PAGE_SIZE = 20;
+
 let attentionOnly = false;
 let eventsRefreshTimer = null;
+// The newest page is re-fetched on every refresh; pages pulled by "Load more"
+// are kept alongside it so older events stay on screen.
+let latestEvents = [];
+let olderEvents = [];
+let hasMore = false;
 
 export function clearEventsRefresh() {
   if (eventsRefreshTimer !== null) {
@@ -93,33 +100,50 @@ export function clearEventsRefresh() {
   }
 }
 
+async function fetchEventsPage(offset) {
+  const res = await apiFetch(`${API_BASE}/events?limit=${PAGE_SIZE}&offset=${offset}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.events || data.items || (Array.isArray(data) ? data : []);
+}
+
+function renderEventsList() {
+  const seen = new Set();
+  const combined = [...latestEvents, ...olderEvents].filter(e => {
+    if (seen.has(e.id)) return false;
+    seen.add(e.id);
+    return true;
+  });
+
+  // Most recent first, using occurred_at
+  const sorted = combined.sort((a, b) =>
+    new Date(b.occurred_at || 0).getTime() - new Date(a.occurred_at || 0).getTime()
+  );
+
+  const visible = applyAttentionFilter(sorted, attentionOnly);
+
+  const listEl = document.getElementById('events-list');
+  if (listEl) {
+    listEl.innerHTML = visible.length === 0
+      ? '<div class="state-empty" style="min-height:120px;">No events found</div>'
+      : eventsListHtml(visible);
+  }
+
+  const moreEl = document.getElementById('events-more');
+  if (moreEl) {
+    moreEl.innerHTML = hasMore
+      ? '<button class="btn btn--secondary" id="events-load-more">Load more</button>'
+      : '';
+    moreEl.querySelector('#events-load-more')?.addEventListener('click', loadOlderEvents);
+  }
+}
+
 async function fetchAndRenderEvents() {
   try {
-    const res = await apiFetch(`${API_BASE}/events`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const events = data.events || data.items || (Array.isArray(data) ? data : []);
-
-    // Most recent first, using occurred_at
-    const sorted = [...events].sort((a, b) =>
-      new Date(b.occurred_at || 0).getTime() - new Date(a.occurred_at || 0).getTime()
-    );
-
-    const visible = applyAttentionFilter(sorted, attentionOnly);
-
+    latestEvents = await fetchEventsPage(0);
+    if (olderEvents.length === 0) hasMore = latestEvents.length === PAGE_SIZE;
     setRefreshIndicator(`Updated ${new Date().toLocaleTimeString()}`);
-
-    const listEl = document.getElementById('events-list');
-    if (visible.length === 0) {
-      if (listEl) {
-        listEl.innerHTML = '<div class="state-empty" style="min-height:120px;">No events found</div>';
-      }
-      return;
-    }
-
-    if (listEl) {
-      listEl.innerHTML = eventsListHtml(visible);
-    }
+    renderEventsList();
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       const listEl = document.getElementById('events-list');
@@ -131,9 +155,25 @@ async function fetchAndRenderEvents() {
   }
 }
 
+async function loadOlderEvents() {
+  try {
+    const page = await fetchEventsPage(PAGE_SIZE + olderEvents.length);
+    olderEvents = olderEvents.concat(page);
+    hasMore = page.length === PAGE_SIZE;
+    renderEventsList();
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      setRefreshIndicator('Error');
+    }
+  }
+}
+
 export async function renderEventsView() {
-  // Reset filter state on each (re)entry so the button matches the rendered list
+  // Reset filter + paging state on each (re)entry so the controls match the list
   attentionOnly = false;
+  latestEvents = [];
+  olderEvents = [];
+  hasMore = false;
 
   // Attention toggle lives in the topbar; the auto-refresh status is already
   // surfaced by the topbar refresh indicator (set in fetchAndRenderEvents).
@@ -146,6 +186,7 @@ export async function renderEventsView() {
     <div class="events-list" id="events-list">
       <div class="state-loading"><div class="spinner"></div></div>
     </div>
+    <div id="events-more" style="text-align:center;margin-top:var(--space-3);"></div>
   `);
 
   // Attach row-expand handler once on the persistent container
@@ -161,7 +202,7 @@ export async function renderEventsView() {
       attentionOnly = !attentionOnly;
       attnBtn.setAttribute('aria-pressed', String(attentionOnly));
       attnBtn.classList.toggle('is-active', attentionOnly);
-      fetchAndRenderEvents();
+      renderEventsList();
     });
   }
 
