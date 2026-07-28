@@ -186,6 +186,32 @@ describe('renderEventsView pagination', () => {
     vi.restoreAllMocks();
   });
 
+  it('keeps the loaded feed and re-enables Load more when a grow fails', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: eventPage(20) }) })
+      .mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({}) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { saveToken } = await import('../../static/fleet/utils/auth.js');
+    saveToken('test-token');
+
+    const { renderEventsView, clearEventsRefresh } = await import('../../static/fleet/pages/events.js');
+    await renderEventsView();
+    await Promise.resolve();
+
+    document.getElementById('events-load-more').click();
+    await new Promise(r => setTimeout(r, 0));
+
+    const html = document.getElementById('events-list').innerHTML;
+    expect(html).not.toContain('state-error');
+    expect((html.match(/data-event-id=/g) || []).length).toBe(20);
+    const btn = document.getElementById('events-load-more');
+    expect(btn).toBeTruthy();
+    expect(btn.disabled).toBe(false);
+
+    clearEventsRefresh();
+    vi.restoreAllMocks();
+  });
+
   it('stops at the server window cap with an explanatory note', async () => {
     const fetchMock = vi.fn().mockImplementation(async (url) => {
       const limit = Number(new URL(url, 'http://x').searchParams.get('limit'));

@@ -140,13 +140,18 @@ async function fetchAndRenderEvents() {
     setRefreshIndicator(`Updated ${new Date().toLocaleTimeString()}`);
     renderEventsList();
   } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
+    if (err.message === 'Unauthorized — please sign in again.') return;
+    if (events.length === 0) {
       const listEl = document.getElementById('events-list');
       if (listEl) {
         listEl.innerHTML = `<div class="state-error" style="min-height:80px;">Failed to load events: ${escHtml(err.message)}</div>`;
       }
-      setRefreshIndicator('Error');
+    } else {
+      // Keep the loaded feed on a transient failure; re-render so a Load
+      // more button disabled mid-flight comes back enabled.
+      renderEventsList();
     }
+    setRefreshIndicator('Error');
   }
 }
 
