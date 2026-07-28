@@ -10,8 +10,21 @@ pub async fn requeue_stale(
 ) -> Result<(), AppError> {
     let ids = db.list_non_ready_ids().await?;
     tracing::info!("requeueing {} stale blobs on startup", ids.len());
-    for id in ids {
-        pipeline_tx.send(PipelineJob::Process(id)).await.map_err(|e| AppError::Internal(e.to_string()))?;
+    for id in &ids {
+        pipeline_tx.send(PipelineJob::Process(*id)).await.map_err(|e| AppError::Internal(e.to_string()))?;
+    }
+
+    // Suggestions-only jobs target already-Ready blobs, so the status sweep
+    // above can never recover them. Blobs already queued for a full pass are
+    // skipped — that pass stages suggestions itself.
+    let queued: std::collections::HashSet<Uuid> = ids.into_iter().collect();
+    let needs_suggestions: Vec<Uuid> = db.list_blob_ids_needing_expense_suggestions().await?
+        .into_iter()
+        .filter(|id| !queued.contains(id))
+        .collect();
+    tracing::info!("requeueing {} blobs for expense suggestions", needs_suggestions.len());
+    for id in needs_suggestions {
+        pipeline_tx.send(PipelineJob::ExpenseSuggestions(id)).await.map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
     let pending_geocode = db.list_pending_geocode_facility_ids().await?;
@@ -34,11 +47,43 @@ mod tests {
     use super::*;
     use crate::{
         db::DbClient,
-        models::{BlobRecord, BlobStatus},
+        models::{BlobRecord, BlobStatus, ExpenseCategory, ExpenseRecord, ExpenseStatus},
     };
     use chrono::Utc;
     use tempfile::TempDir;
     use uuid::Uuid;
+
+    fn ready_blob(checksum: &str) -> BlobRecord {
+        let now = Utc::now();
+        BlobRecord {
+            id: Uuid::new_v4(), owner_id: 0, checksum: checksum.into(),
+            name: "receipt.jpg".into(), mime_type: "image/jpeg".into(), size: 1,
+            status: BlobStatus::Ready, error: None, summary: Some("a receipt".into()),
+            tags: vec!["doctype:expense".into()], embedding: None,
+            created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
+        }
+    }
+
+    fn submitted_expense(blob_id: Uuid) -> ExpenseRecord {
+        let now = Utc::now();
+        ExpenseRecord {
+            id: Uuid::new_v4(),
+            status: ExpenseStatus::Submitted,
+            category: ExpenseCategory::Fuel,
+            driver_id: None, trip_id: None,
+            equipment_type: None, equipment_id: None, maintenance_id: None,
+            blob_ids: vec![blob_id],
+            submitted_by: "driver:test".into(),
+            expense_date: None, vendor: None, amount: None,
+            approved_amount: None, payment_method: None,
+            suggested_amount: None, suggested_date: None,
+            suggested_vendor: None, suggested_card_last4: None,
+            reviewed_by: None, reviewed_at: None, review_note: None,
+            settlement_id: None, embedding: None, owner_id: 0,
+            created_at: now, updated_at: now,
+        }
+    }
 
     #[tokio::test]
     async fn test_requeue_sends_pending_ids_only() {
@@ -70,5 +115,63 @@ mod tests {
         assert_eq!(rx.len(), 1);
         let received = rx.recv().await.unwrap();
         assert_eq!(received, PipelineJob::Process(pending.id));
+    }
+
+    /// A suggestions-only job targets an already-Ready blob, so the non-ready
+    /// status sweep can never recover it. Startup must re-derive it from the
+    /// expense side: a submitted expense with no suggestions gets its receipt
+    /// re-queued, while one that already carries suggestions does not.
+    #[tokio::test]
+    async fn test_requeue_recovers_missing_expense_suggestions() {
+        let dir = TempDir::new().unwrap();
+        let db = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
+
+        let unsuggested_blob = ready_blob("c-unsuggested");
+        let suggested_blob = ready_blob("c-suggested");
+        db.insert(&unsuggested_blob).await.unwrap();
+        db.insert(&suggested_blob).await.unwrap();
+
+        db.insert_expense(&submitted_expense(unsuggested_blob.id)).await.unwrap();
+        let already_suggested = ExpenseRecord {
+            suggested_amount: Some(42.0),
+            ..submitted_expense(suggested_blob.id)
+        };
+        db.insert_expense(&already_suggested).await.unwrap();
+
+        let (tx, rx) = async_channel::bounded(10);
+        let (gtx, _) = async_channel::bounded(10);
+        let (rtx, _) = async_channel::bounded(10);
+        requeue_stale(&db, &tx, &gtx, &rtx).await.unwrap();
+
+        assert_eq!(rx.len(), 1, "only the unsuggested expense's blob should requeue");
+        assert_eq!(
+            rx.recv().await.unwrap(),
+            PipelineJob::ExpenseSuggestions(unsuggested_blob.id)
+        );
+    }
+
+    /// A blob already queued for a full pass must not also get a suggestions
+    /// job — `process_blob` stages suggestions itself, so both would run the
+    /// extraction model twice on the same receipt.
+    #[tokio::test]
+    async fn test_requeue_does_not_double_queue_pending_receipt() {
+        let dir = TempDir::new().unwrap();
+        let db = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
+
+        let pending_blob = BlobRecord {
+            status: BlobStatus::Pending,
+            summary: None,
+            ..ready_blob("c-pending")
+        };
+        db.insert(&pending_blob).await.unwrap();
+        db.insert_expense(&submitted_expense(pending_blob.id)).await.unwrap();
+
+        let (tx, rx) = async_channel::bounded(10);
+        let (gtx, _) = async_channel::bounded(10);
+        let (rtx, _) = async_channel::bounded(10);
+        requeue_stale(&db, &tx, &gtx, &rtx).await.unwrap();
+
+        assert_eq!(rx.len(), 1, "expected exactly one job for the pending receipt");
+        assert_eq!(rx.recv().await.unwrap(), PipelineJob::Process(pending_blob.id));
     }
 }

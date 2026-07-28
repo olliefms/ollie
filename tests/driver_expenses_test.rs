@@ -470,13 +470,15 @@ async fn test_dedup_ready_reupload_queues_expense_suggestions_pass() {
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
         if let Ok(job) = rx.recv().await {
+            // Only the suggestions job is a correct outcome here; a Process job
+            // would be a failure, and the assert below reports it as one.
             let has_expense = match job {
-                ollie::pipeline::PipelineJob::ExpenseSuggestions(id)
-                | ollie::pipeline::PipelineJob::Process(id) => {
+                ollie::pipeline::PipelineJob::ExpenseSuggestions(id) => {
                     db.expenses_referencing_blob(id).await
                         .map(|v| !v.is_empty())
                         .unwrap_or(false)
                 }
+                ollie::pipeline::PipelineJob::Process(_) => false,
             };
             let _ = result_tx.send((job, has_expense));
         }
