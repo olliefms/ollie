@@ -3,6 +3,9 @@ import { escHtml, badge, shortId, fmtArrivalWindow } from '../utils/format.js';
 import { setContent, navigate, setTopbarControls } from '../utils/dom.js';
 
 const PAGE_SIZE = 20;
+// Mirrors LOAD_SCAN_CAP in src/db/load_ops.rs: offsets at or past the cap
+// return empty pages even though `total` still reflects the full count.
+const LOAD_SCAN_CAP = 2000;
 
 export async function renderLoadsView(params = {}) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
@@ -13,6 +16,12 @@ export async function renderLoadsView(params = {}) {
   let hasMore = false;
 
   const buildContent = (loads) => {
+    const capBanner = total !== null && total > LOAD_SCAN_CAP && loads.length >= LOAD_SCAN_CAP
+      ? `<div style="background:var(--color-warning-soft);border:1px solid var(--color-warning);border-radius:var(--radius);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text);">
+           Showing the most recent ${escHtml(String(loads.length))} of ${escHtml(String(total))} loads. Use the status filter to narrow results.
+         </div>`
+      : '';
+
     const sorted = [...loads].sort((a, b) => {
       const ta = a.stops && a.stops[0] ? new Date(a.stops[0].scheduled_arrive || 0).getTime() : 0;
       const tb = b.stops && b.stops[0] ? new Date(b.stops[0].scheduled_arrive || 0).getTime() : 0;
@@ -45,7 +54,7 @@ export async function renderLoadsView(params = {}) {
     }
 
     return `
-      <div class="table-wrapper">
+      ${capBanner}<div class="table-wrapper">
         <table class="data-table">
           <thead>
             <tr>
@@ -78,14 +87,19 @@ export async function renderLoadsView(params = {}) {
     const loads = data.loads || data.items || (Array.isArray(data) ? data : []);
     total = typeof data.total === 'number' ? data.total : null;
     loaded = offset === 0 ? loads : loaded.concat(loads);
-    // Without a server total, fall back to "a full page probably means more".
-    hasMore = total !== null ? loaded.length < total : loads.length === PAGE_SIZE;
+    // Cap the pager at the DB scan ceiling; without a server total, fall back
+    // to "a full page probably means more". An empty page always stops.
+    const reachable = total !== null ? Math.min(total, LOAD_SCAN_CAP) : null;
+    hasMore = loads.length === 0 ? false
+      : reachable !== null ? loaded.length < reachable
+      : loads.length === PAGE_SIZE;
   };
 
   const render = () => {
     setContent(buildContent(loaded));
 
-    document.getElementById('loads-load-more')?.addEventListener('click', async () => {
+    document.getElementById('loads-load-more')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
       try {
         await fetchPage(loaded.length);
         render();

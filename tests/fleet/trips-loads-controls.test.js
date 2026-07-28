@@ -193,4 +193,39 @@ describe('loads pagination', () => {
     expect(document.getElementById('loads-load-more')).toBeFalsy();
     expect(document.getElementById('main-content').innerHTML).not.toContain('Showing the most recent');
   });
+
+  it('stops paging on an empty page even when total says more', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 20, total: 100, items: loadRows(20) }));
+
+    const { renderLoadsView } = await import('../../static/fleet/pages/loads.js');
+    await renderLoadsView({});
+    await Promise.resolve();
+
+    const moreBtn = document.getElementById('loads-load-more');
+    expect(moreBtn).toBeTruthy();
+
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 0, total: 100, items: [] }));
+    moreBtn.click();
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(document.getElementById('loads-load-more')).toBeFalsy();
+  });
+
+  it('caps the pager at the DB scan ceiling and shows the cap banner', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    await seedScopes(fetchMock);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ returned: 2500, total: 2500, items: loadRows(2000) }));
+
+    const { renderLoadsView } = await import('../../static/fleet/pages/loads.js');
+    await renderLoadsView({});
+    await Promise.resolve();
+
+    expect(document.getElementById('loads-load-more')).toBeFalsy();
+    const main = document.getElementById('main-content').innerHTML;
+    expect(main).toContain('Showing the most recent 2000 of 2500 loads');
+  }, 20_000);
 });

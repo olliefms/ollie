@@ -153,10 +153,10 @@ describe('renderEventsView pagination', () => {
     }));
   }
 
-  it('requests a bounded page and loads older events on demand', async () => {
+  it('requests a bounded window and grows it contiguously on Load more', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: eventPage(20) }) })
-      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: eventPage(5, 20) }) });
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ items: eventPage(25) }) });
     vi.stubGlobal('fetch', fetchMock);
     const { saveToken } = await import('../../static/fleet/utils/auth.js');
     saveToken('test-token');
@@ -174,10 +174,42 @@ describe('renderEventsView pagination', () => {
     moreBtn.click();
     await new Promise(r => setTimeout(r, 0));
 
-    expect(fetchMock.mock.calls.at(-1)[0]).toContain('offset=20');
+    // The whole window is refetched from offset 0 with a larger limit, so
+    // events arriving between fetches can never open a gap.
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('limit=40');
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('offset=0');
     const html = document.getElementById('events-list').innerHTML;
     expect((html.match(/data-event-id=/g) || []).length).toBe(25);
     expect(document.getElementById('events-load-more')).toBeFalsy();
+
+    clearEventsRefresh();
+    vi.restoreAllMocks();
+  });
+
+  it('stops at the server window cap with an explanatory note', async () => {
+    const fetchMock = vi.fn().mockImplementation(async (url) => {
+      const limit = Number(new URL(url, 'http://x').searchParams.get('limit'));
+      return { ok: true, status: 200, json: async () => ({ items: eventPage(limit) }) };
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const { saveToken } = await import('../../static/fleet/utils/auth.js');
+    saveToken('test-token');
+
+    const { renderEventsView, clearEventsRefresh } = await import('../../static/fleet/pages/events.js');
+    await renderEventsView();
+    await Promise.resolve();
+
+    for (let i = 0; i < 4; i++) {
+      const btn = document.getElementById('events-load-more');
+      expect(btn).toBeTruthy();
+      btn.click();
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    expect(fetchMock.mock.calls.at(-1)[0]).toContain('limit=100');
+    expect(document.getElementById('events-load-more')).toBeFalsy();
+    expect(document.getElementById('events-more').textContent)
+      .toContain('Showing the 100 most recent events');
 
     clearEventsRefresh();
     vi.restoreAllMocks();
