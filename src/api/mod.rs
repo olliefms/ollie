@@ -222,6 +222,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             fleet_portal::driver_writes::DetachEquipmentBody,
             fleet_portal::driver_writes::DriverEquipmentChange,
             fleet_portal::data::FleetTripListItem,
+            fleet_portal::data::FleetTripListResponse,
             models::terminal::TerminalRecord,
             models::terminal::TerminalListItem,
             models::terminal::CreateTerminalRequest,

@@ -90,7 +90,7 @@ pub struct FleetTripListItem {
     pub geocode_warnings: Vec<String>,
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct FleetTripListResponse {
     /// Count of items on this page.
     pub returned: usize,
@@ -564,7 +564,7 @@ pub struct ListTripsQuery {
         ("offset" = Option<usize>, Query, description = "Pagination offset"),
     ),
     responses(
-        (status = 200, description = "Page of trips (enriched with driver/truck names), newest first, with `total` matching count"),
+        (status = 200, description = "Page of trips (enriched with driver/truck names), newest first, with `total` matching count", body = FleetTripListResponse),
         (status = 401, description = "Unauthorized"),
     ),
     security(("BearerAuth" = [])),
