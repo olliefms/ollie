@@ -139,7 +139,11 @@ pub async fn upload_document(
         "source:driver".into(),
     ];
 
-    let (status_code, record) = if state.store.exists(&checksum).await {
+    // Build and insert the blob record, but don't queue it to the AI pipeline
+    // yet — the worker resolves suggestions for a receipt via
+    // `expenses_referencing_blob`, which silently no-ops if the expense row
+    // below doesn't exist yet. Queueing must happen after the expense insert.
+    let (status_code, record, needs_pipeline) = if state.store.exists(&checksum).await {
         let existing = state.db.get_one_by_checksum(&checksum).await?;
         let (summary, embedding, status) = match existing {
             Some(ref r) => (r.summary.clone(), r.embedding.clone(), BlobStatus::Ready),
@@ -163,10 +167,8 @@ pub async fn upload_document(
             uploaded_by: Some(driver_id),
         };
         state.db.insert(&record).await?;
-        if matches!(status, BlobStatus::Pending) {
-            let _ = state.pipeline_tx.send(record.id).await;
-        }
-        (StatusCode::CREATED, record)
+        let needs_pipeline = matches!(status, BlobStatus::Pending);
+        (StatusCode::CREATED, record, needs_pipeline)
     } else {
         let _ = state.store.write(&data).await?;
         let record = BlobRecord {
@@ -187,8 +189,7 @@ pub async fn upload_document(
             uploaded_by: Some(driver_id),
         };
         state.db.insert(&record).await?;
-        let _ = state.pipeline_tx.send(record.id).await;
-        (StatusCode::ACCEPTED, record)
+        (StatusCode::ACCEPTED, record, true)
     };
 
     if let Some(load_id) = load_id {
@@ -236,6 +237,12 @@ pub async fn upload_document(
         };
         state.db.insert_expense(&expense).await?;
         crate::events::expense_submitted(&state.db, expense.id, Some(expense.submitted_by.clone())).await;
+    }
+
+    // Queue to the AI pipeline last, now that any expense row referencing this
+    // blob is guaranteed to already exist.
+    if needs_pipeline {
+        let _ = state.pipeline_tx.send(record.id).await;
     }
 
     Ok((status_code, Json(record)))

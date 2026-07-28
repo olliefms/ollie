@@ -2,20 +2,27 @@ import { apiFetch, API_BASE } from '../utils/api.js';
 import { escHtml, badge, fmtBytes, fmtDate } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 
+const PAGE_SIZE = 20;
+
 export async function renderDocumentsView(params = {}) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
 
-  const offset = params.offset || 0;
+  // Params arrive as strings from the URL — coerce before doing arithmetic.
+  const offset = Number.parseInt(params.offset, 10) || 0;
   const filterName = params.name || '';
 
   try {
-    const qs = new URLSearchParams({ limit: 20, offset });
+    const qs = new URLSearchParams({ limit: PAGE_SIZE, offset });
     if (filterName) qs.set('name', filterName);
 
     const resp = await apiFetch(`${API_BASE}/blobs?${qs}`);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     const blobs = data.items || [];
+    const total = typeof data.total === 'number' ? data.total : null;
+    const hasMore = total !== null
+      ? offset + blobs.length < total
+      : blobs.length === PAGE_SIZE;
 
     const filterHtml = `
       <div style="display:flex;gap:var(--space-2);margin-bottom:var(--space-3);align-items:center;flex-wrap:wrap;">
@@ -33,7 +40,7 @@ export async function renderDocumentsView(params = {}) {
     `;
 
     let tableHtml = '';
-    if (blobs.length === 0 && offset === 0) {
+    if (blobs.length === 0) {
       tableHtml = '<div class="state-empty">No documents found</div>';
     } else {
       const rows = blobs.map(b => `
@@ -63,7 +70,7 @@ export async function renderDocumentsView(params = {}) {
             <tbody>${rows}</tbody>
           </table>
         </div>
-        ${blobs.length === 20 ? `
+        ${hasMore ? `
           <div style="text-align:center;margin-top:var(--space-3);">
             <button class="btn btn--secondary" id="doc-load-more">Load more</button>
           </div>` : ''}
@@ -80,7 +87,7 @@ export async function renderDocumentsView(params = {}) {
       if (e.key === 'Enter') navigate('documents', { name: e.target.value.trim() });
     });
     document.getElementById('doc-load-more')?.addEventListener('click', () => {
-      navigate('documents', { name: filterName, offset: offset + 20 });
+      navigate('documents', { name: filterName, offset: offset + PAGE_SIZE });
     });
 
     document.querySelectorAll('.doc-row').forEach(row => {

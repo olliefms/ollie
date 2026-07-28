@@ -54,14 +54,16 @@ pub async fn list_blobs(
         let embedding = crate::ai::embed::embed_text(&state.ai, &query_text).await?;
         let items = state.db.search(embedding, q.name.as_deref(), &q.tag, limit).await?;
         let returned = items.len();
-        return Ok(Json(BlobListResponse { returned, items }));
+        // Semantic search has no separate "total matching" concept beyond the
+        // returned top-K, so total mirrors returned here.
+        return Ok(Json(BlobListResponse { returned, total: returned, items }));
     }
 
-    let (_total, items) = state.db
+    let (total, items) = state.db
         .list(q.name.as_deref(), &q.tag, q.missing_summary.unwrap_or(false), limit, offset)
         .await?;
     let returned = items.len();
-    Ok(Json(BlobListResponse { returned, items }))
+    Ok(Json(BlobListResponse { returned, total, items }))
 }
 
 #[utoipa::path(

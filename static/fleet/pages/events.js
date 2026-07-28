@@ -83,8 +83,18 @@ export function attachEventHandlers(root) {
   });
 }
 
+const PAGE_SIZE = 20;
+// Server clamps ?limit= at 100 (list_events in src/api/fleet_portal/data.rs).
+const MAX_WINDOW = 100;
+
 let attentionOnly = false;
 let eventsRefreshTimer = null;
+// Single contiguous window from offset 0, refetched whole on every refresh —
+// new arrivals shift offsets on the append-only table, so pages fetched at
+// different times can open a silent gap. "Load more" grows the window instead.
+let events = [];
+let windowLimit = PAGE_SIZE;
+let hasMore = false;
 
 export function clearEventsRefresh() {
   if (eventsRefreshTimer !== null) {
@@ -93,47 +103,71 @@ export function clearEventsRefresh() {
   }
 }
 
-async function fetchAndRenderEvents() {
-  try {
-    const res = await apiFetch(`${API_BASE}/events`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    const events = data.events || data.items || (Array.isArray(data) ? data : []);
+async function fetchEventsWindow() {
+  const res = await apiFetch(`${API_BASE}/events?limit=${windowLimit}&offset=0`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = await res.json();
+  return data.events || data.items || (Array.isArray(data) ? data : []);
+}
 
-    // Most recent first, using occurred_at
-    const sorted = [...events].sort((a, b) =>
-      new Date(b.occurred_at || 0).getTime() - new Date(a.occurred_at || 0).getTime()
-    );
+function renderEventsList() {
+  const visible = applyAttentionFilter(events, attentionOnly);
 
-    const visible = applyAttentionFilter(sorted, attentionOnly);
+  const listEl = document.getElementById('events-list');
+  if (listEl) {
+    listEl.innerHTML = visible.length === 0
+      ? '<div class="state-empty" style="min-height:120px;">No events found</div>'
+      : eventsListHtml(visible);
+  }
 
-    setRefreshIndicator(`Updated ${new Date().toLocaleTimeString()}`);
-
-    const listEl = document.getElementById('events-list');
-    if (visible.length === 0) {
-      if (listEl) {
-        listEl.innerHTML = '<div class="state-empty" style="min-height:120px;">No events found</div>';
-      }
-      return;
-    }
-
-    if (listEl) {
-      listEl.innerHTML = eventsListHtml(visible);
-    }
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') {
-      const listEl = document.getElementById('events-list');
-      if (listEl) {
-        listEl.innerHTML = `<div class="state-error" style="min-height:80px;">Failed to load events: ${escHtml(err.message)}</div>`;
-      }
-      setRefreshIndicator('Error');
+  const moreEl = document.getElementById('events-more');
+  if (moreEl) {
+    if (hasMore) {
+      moreEl.innerHTML = '<button class="btn btn--secondary" id="events-load-more">Load more</button>';
+      moreEl.querySelector('#events-load-more')?.addEventListener('click', loadOlderEvents);
+    } else if (events.length >= MAX_WINDOW) {
+      moreEl.innerHTML = `<div style="color:var(--color-text-muted);font-size:var(--text-sm);">Showing the ${MAX_WINDOW} most recent events</div>`;
+    } else {
+      moreEl.innerHTML = '';
     }
   }
 }
 
+async function fetchAndRenderEvents() {
+  try {
+    events = await fetchEventsWindow();
+    hasMore = events.length === windowLimit && windowLimit < MAX_WINDOW;
+    setRefreshIndicator(`Updated ${new Date().toLocaleTimeString()}`);
+    renderEventsList();
+  } catch (err) {
+    if (err.message === 'Unauthorized — please sign in again.') return;
+    if (events.length === 0) {
+      const listEl = document.getElementById('events-list');
+      if (listEl) {
+        listEl.innerHTML = `<div class="state-error" style="min-height:80px;">Failed to load events: ${escHtml(err.message)}</div>`;
+      }
+    } else {
+      // Keep the loaded feed on a transient failure; re-render so a Load
+      // more button disabled mid-flight comes back enabled.
+      renderEventsList();
+    }
+    setRefreshIndicator('Error');
+  }
+}
+
+async function loadOlderEvents() {
+  const btn = document.getElementById('events-load-more');
+  if (btn) btn.disabled = true;
+  windowLimit = Math.min(windowLimit + PAGE_SIZE, MAX_WINDOW);
+  await fetchAndRenderEvents();
+}
+
 export async function renderEventsView() {
-  // Reset filter state on each (re)entry so the button matches the rendered list
+  // Reset filter + paging state on each (re)entry so the controls match the list
   attentionOnly = false;
+  events = [];
+  windowLimit = PAGE_SIZE;
+  hasMore = false;
 
   // Attention toggle lives in the topbar; the auto-refresh status is already
   // surfaced by the topbar refresh indicator (set in fetchAndRenderEvents).
@@ -146,6 +180,7 @@ export async function renderEventsView() {
     <div class="events-list" id="events-list">
       <div class="state-loading"><div class="spinner"></div></div>
     </div>
+    <div id="events-more" style="text-align:center;margin-top:var(--space-3);"></div>
   `);
 
   // Attach row-expand handler once on the persistent container
@@ -161,7 +196,7 @@ export async function renderEventsView() {
       attentionOnly = !attentionOnly;
       attnBtn.setAttribute('aria-pressed', String(attentionOnly));
       attnBtn.classList.toggle('is-active', attentionOnly);
-      fetchAndRenderEvents();
+      renderEventsList();
     });
   }
 

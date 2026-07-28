@@ -2,17 +2,23 @@ import { apiFetch, API_BASE, hasScope } from '../utils/api.js';
 import { escHtml, badge, shortId, fmtArrivalWindow } from '../utils/format.js';
 import { setContent, navigate, setTopbarControls } from '../utils/dom.js';
 
+const PAGE_SIZE = 20;
+// Mirrors LOAD_SCAN_CAP in src/db/load_ops.rs: offsets at or past the cap
+// return empty pages even though `total` still reflects the full count.
 const LOAD_SCAN_CAP = 2000;
 
 export async function renderLoadsView(params = {}) {
   setContent('<div class="state-loading"><div class="spinner"></div></div>');
 
-  let initialStatus = params.status || '';
+  const status = params.status || '';
+  let loaded = [];
+  let total = null;
+  let hasMore = false;
 
-  const buildContent = (loads, filterStatus, capTotal = null) => {
-    const capBanner = capTotal !== null
+  const buildContent = (loads) => {
+    const capBanner = total !== null && total > LOAD_SCAN_CAP && loads.length >= LOAD_SCAN_CAP
       ? `<div style="background:var(--color-warning-soft);border:1px solid var(--color-warning);border-radius:var(--radius);padding:var(--space-3) var(--space-4);margin-bottom:var(--space-4);font-size:var(--text-sm);color:var(--color-text);">
-           Showing the most recent ${escHtml(String(loads.length))} of ${escHtml(String(capTotal))} loads. Use the status filter to narrow results.
+           Showing the most recent ${escHtml(String(loads.length))} of ${escHtml(String(total))} loads. Use the status filter to narrow results.
          </div>`
       : '';
 
@@ -65,60 +71,83 @@ export async function renderLoadsView(params = {}) {
           </tbody>
         </table>
       </div>
+      ${hasMore ? `
+        <div style="text-align:center;margin-top:var(--space-3);">
+          <button class="btn btn--secondary" id="loads-load-more">Load more</button>
+        </div>` : ''}
     `;
   };
 
-  const fetchAndRender = async (status) => {
-    try {
-      const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-      const res = await apiFetch(`${API_BASE}/loads${qs}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const loads = data.loads || data.items || (Array.isArray(data) ? data : []);
-      const returned = typeof data.returned === 'number' ? data.returned : null;
-      // The server caps scans at LOAD_SCAN_CAP (2000). Only show the cap
-      // banner when we're actually at that ceiling — otherwise it fires on
-      // every normal paginated result where total exceeds page size.
-      const capTotal = returned !== null && returned >= LOAD_SCAN_CAP ? returned : null;
-      setContent(buildContent(loads, status, capTotal));
-
-      const statusOptions = [
-        '', 'planned', 'assigned', 'dispatched', 'in_transit',
-        'delivered', 'invoiced', 'settled', 'cancelled',
-      ];
-      const filterStatus = status || '';
-      const selectHtml = `
-        <select class="form-select" id="status-filter">
-          ${statusOptions.map(s =>
-            `<option value="${s}" ${s === filterStatus ? 'selected' : ''}>${s || 'All Statuses'}</option>`
-          ).join('')}
-        </select>
-      `;
-      const createBtn = hasScope('loads:write')
-        ? `<button class="btn btn--primary" id="new-load">+ New Load</button>`
-        : '';
-      setTopbarControls((slot) => { slot.innerHTML = `${selectHtml}${createBtn}`; });
-
-      document.getElementById('new-load')?.addEventListener('click', () => navigate('load-new'));
-
-      const filterEl = document.getElementById('status-filter');
-      if (filterEl) {
-        filterEl.addEventListener('change', () => {
-          navigate('loads', { status: filterEl.value });
-        });
-      }
-
-      document.querySelectorAll('#loads-tbody tr[data-load-id]').forEach(row => {
-        row.addEventListener('click', () => {
-          navigate('load-detail', { id: row.dataset.loadId });
-        });
-      });
-    } catch (err) {
-      if (err.message !== 'Unauthorized — please sign in again.') {
-        setContent(`<div class="state-error">Failed to load data: ${escHtml(err.message)}</div>`);
-      }
-    }
+  const fetchPage = async (offset) => {
+    const qs = new URLSearchParams({ limit: PAGE_SIZE, offset });
+    if (status) qs.set('status', status);
+    const res = await apiFetch(`${API_BASE}/loads?${qs}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const loads = data.loads || data.items || (Array.isArray(data) ? data : []);
+    total = typeof data.total === 'number' ? data.total : null;
+    loaded = offset === 0 ? loads : loaded.concat(loads);
+    // Cap the pager at the DB scan ceiling; without a server total, fall back
+    // to "a full page probably means more". An empty page always stops.
+    const reachable = total !== null ? Math.min(total, LOAD_SCAN_CAP) : null;
+    hasMore = loads.length === 0 ? false
+      : reachable !== null ? loaded.length < reachable
+      : loads.length === PAGE_SIZE;
   };
 
-  await fetchAndRender(initialStatus);
+  const render = () => {
+    setContent(buildContent(loaded));
+
+    document.getElementById('loads-load-more')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      try {
+        await fetchPage(loaded.length);
+        render();
+      } catch (err) {
+        if (err.message !== 'Unauthorized — please sign in again.') {
+          setContent(`<div class="state-error">Failed to load data: ${escHtml(err.message)}</div>`);
+        }
+      }
+    });
+
+    document.querySelectorAll('#loads-tbody tr[data-load-id]').forEach(row => {
+      row.addEventListener('click', () => {
+        navigate('load-detail', { id: row.dataset.loadId });
+      });
+    });
+  };
+
+  try {
+    await fetchPage(0);
+    render();
+
+    const statusOptions = [
+      '', 'planned', 'assigned', 'dispatched', 'in_transit',
+      'delivered', 'invoiced', 'settled', 'cancelled',
+    ];
+    const selectHtml = `
+      <select class="form-select" id="status-filter">
+        ${statusOptions.map(s =>
+          `<option value="${s}" ${s === status ? 'selected' : ''}>${s || 'All Statuses'}</option>`
+        ).join('')}
+      </select>
+    `;
+    const createBtn = hasScope('loads:write')
+      ? `<button class="btn btn--primary" id="new-load">+ New Load</button>`
+      : '';
+    setTopbarControls((slot) => { slot.innerHTML = `${selectHtml}${createBtn}`; });
+
+    document.getElementById('new-load')?.addEventListener('click', () => navigate('load-new'));
+
+    const filterEl = document.getElementById('status-filter');
+    if (filterEl) {
+      filterEl.addEventListener('change', () => {
+        navigate('loads', { status: filterEl.value });
+      });
+    }
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      setContent(`<div class="state-error">Failed to load data: ${escHtml(err.message)}</div>`);
+    }
+  }
 }

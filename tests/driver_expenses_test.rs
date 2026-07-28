@@ -362,3 +362,80 @@ async fn test_driver_cannot_see_or_delete_others() {
 
     let _ = trip_b; // used only to construct driver B's own trip context
 }
+
+/// Same as `setup()`, but returns the pipeline receiver instead of dropping
+/// it. Used below to prove code order: a background task blocked on
+/// `rx.recv()` is only woken once the handler actually calls
+/// `pipeline_tx.send`, so whatever DB state exists at that wakeup reflects
+/// everything the handler executed before the send — including, if correctly
+/// ordered, the expense-row insert.
+async fn setup_rendezvous_pipeline() -> (TestServer, AppState, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>) {
+    let blob_dir = TempDir::new().unwrap();
+    let db_dir = TempDir::new().unwrap();
+    std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
+    std::env::set_var("DRIVER_RP_ID", "localhost");
+    std::env::set_var("DRIVER_RP_ORIGIN", "http://localhost:3000");
+    std::env::set_var("FLEET_JWT_SECRET", "test-fleet_user-secret-must-be-32b");
+
+    let config = Arc::new(Config::from_env().unwrap());
+    let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
+    let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
+    let ai = Arc::new(OllamaClient::new(
+        "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
+    ));
+    let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
+    let ors = Arc::new(ollie::routing::RoutingClient::new(""));
+    let (pipeline_tx, rx) = async_channel::bounded(1);
+    let (geocoding_tx, _grx) = async_channel::bounded(100);
+    let (routing_tx, _rrx) = async_channel::bounded(100);
+    let rp_origin = Url::parse("http://localhost:3000").unwrap();
+    let webauthn = Arc::new(
+        WebauthnBuilder::new("localhost", &rp_origin).unwrap().build().unwrap(),
+    );
+    let auth_challenge_store = Arc::new(dashmap::DashMap::new());
+    let reg_challenge_store = Arc::new(dashmap::DashMap::new());
+
+    let state = AppState {
+        db, store, ai, geocoding, ors,
+        pipeline_tx, geocoding_tx, routing_tx, config,
+        webauthn, auth_challenge_store, reg_challenge_store,
+    };
+    let server = TestServer::new(api::router(state.clone())).unwrap();
+    (server, state, blob_dir, db_dir, rx)
+}
+
+/// Regression test for the pipeline-ordering bug: `upload_document` used to
+/// queue the receipt blob to the AI pipeline before inserting the expense row
+/// that references it, so a worker racing ahead of the handler would find no
+/// expense to attach suggestions to (`expenses_referencing_blob` silently
+/// no-ops). With a zero-capacity pipeline channel, `pipeline_tx.send` blocks
+/// until this test's receiver task picks up the message — so if the receiver
+/// observes the blob id *before* the expense row exists in the DB, the
+/// handler queued too early.
+#[tokio::test]
+async fn test_expense_row_exists_before_blob_is_queued_to_pipeline() {
+    let (server, state, _b, _d, rx) = setup_rendezvous_pipeline().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let db = state.db.clone();
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if let Ok(blob_id) = rx.recv().await {
+            let has_expense = db.expenses_referencing_blob(blob_id).await
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+            let _ = result_tx.send(has_expense);
+        }
+    });
+
+    let upload = upload_expense(&server, &driver_token, &trip_id, Some("fuel")).await;
+    let sc = upload.status_code().as_u16();
+    assert!(sc == 201 || sc == 202, "got {sc}");
+
+    let expense_already_existed = result_rx.await
+        .expect("receiver task must observe exactly one queued blob id");
+    assert!(
+        expense_already_existed,
+        "blob was queued to the pipeline before its expense row was inserted"
+    );
+}

@@ -7,12 +7,25 @@
 
 import { navigate as routerNavigate } from '../router.js';
 
+// Serialize the listed params onto a path so list filters/pagination survive
+// pushState, Back, reload and bookmarking. The router decomposes the query
+// string back into named params.
+function withQuery(path, params, keys) {
+  const qs = new URLSearchParams();
+  for (const k of keys) {
+    const v = params ? params[k] : undefined;
+    if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+  }
+  const s = qs.toString();
+  return s ? `${path}?${s}` : path;
+}
+
 // Map a legacy view name (+ params) to a /fleet path, so view code can keep
 // calling navigate('load-detail', { id }) and entity pages can use the same
 // helper for create/edit/detail routes.
 export const VIEW_PATHS = {
   home: () => '/fleet/home',
-  loads: () => '/fleet/loads',
+  loads: (p) => withQuery('/fleet/loads', p, ['status']),
   'load-new': () => '/fleet/loads/new',
   'load-edit': (p) => `/fleet/loads/${p.id}/edit`,
   'load-detail': (p) => `/fleet/loads/${p.id}`,
@@ -20,12 +33,12 @@ export const VIEW_PATHS = {
   'driver-new': () => '/fleet/drivers/new',
   'driver-detail': (p) => `/fleet/drivers/${p.id}`,
   'driver-edit': (p) => `/fleet/drivers/${p.id}/edit`,
-  trips: () => '/fleet/trips',
+  trips: (p) => withQuery('/fleet/trips', p, ['status']),
   'trip-new': () => '/fleet/trips/new',
   'trip-edit': (p) => `/fleet/trips/${p.id}/edit`,
   'trip-detail': (p) => `/fleet/trips/${p.id}`,
   events: () => '/fleet/events',
-  documents: () => '/fleet/documents',
+  documents: (p) => withQuery('/fleet/documents', p, ['name', 'offset']),
   document: (p) => `/fleet/documents/${p.id}`,
   terminals: () => '/fleet/terminals',
   'terminal-new': () => '/fleet/terminals/new',
@@ -39,7 +52,7 @@ export const VIEW_PATHS = {
   'trailer-new': () => '/fleet/trailers/new',
   'trailer-detail': (p) => `/fleet/trailers/${p.id}`,
   'trailer-edit': (p) => `/fleet/trailers/${p.id}/edit`,
-  maintenance: () => '/fleet/maintenance',
+  maintenance: (p) => withQuery('/fleet/maintenance', p, ['equipment_type', 'equipment_id', 'category']),
   'maintenance-new': (p) => {
     if (!p || !p.equipment_type) return '/fleet/maintenance/new';
     const qs = new URLSearchParams({
@@ -51,7 +64,7 @@ export const VIEW_PATHS = {
   },
   'maintenance-detail': (p) => `/fleet/maintenance/${p.id}`,
   'maintenance-edit': (p) => `/fleet/maintenance/${p.id}/edit`,
-  expenses: () => '/fleet/expenses',
+  expenses: (p) => withQuery('/fleet/expenses', p, ['status', 'category', 'driver_id', 'from', 'to']),
   'expense-new': (p) => {
     if (!p || Object.keys(p).length === 0) return '/fleet/expenses/new';
     const qs = new URLSearchParams();

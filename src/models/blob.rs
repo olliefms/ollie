@@ -133,6 +133,7 @@ impl From<BlobRecord> for BlobListItem {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BlobListResponse {
     pub returned: usize,
+    pub total: usize,
     pub items: Vec<BlobListItem>,
 }
 
