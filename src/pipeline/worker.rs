@@ -106,6 +106,49 @@ async fn summarize_image_payload(
     }
 }
 
+/// Stage structured receipt suggestions on any *submitted* expense that
+/// references this blob. Best-effort — any failure leaves the expense's
+/// suggested_* fields alone and never affects blob status.
+async fn apply_expense_suggestions(
+    id: Uuid,
+    db: &DbClient,
+    ai: &OllamaClient,
+    content: &Extractable,
+) {
+    if let Some(fields) = extract_expense_fields(ai, content).await {
+        if let Ok(expenses) = db.expenses_referencing_blob(id).await {
+            for e in expenses {
+                if matches!(e.status, ExpenseStatus::Submitted) {
+                    let _ = db.update_expense_suggestions(
+                        e.id,
+                        fields.amount,
+                        fields.date.clone(),
+                        fields.vendor.clone(),
+                        fields.card_last4.clone(),
+                    ).await;
+                }
+            }
+        }
+    }
+}
+
+/// Suggestions-only pass for an already-Ready blob (`PipelineJob::ExpenseSuggestions`):
+/// a dedup re-upload of an expense receipt copies the summary/embedding from
+/// the existing record at upload time, so the full pass would only waste model
+/// calls — but the new expense row still needs its receipt fields extracted.
+pub async fn stage_expense_suggestions(
+    id: Uuid,
+    db: &DbClient,
+    store: &BlobStore,
+    ai: &OllamaClient,
+) -> Result<(), AppError> {
+    let record = db.get_by_id(id).await?;
+    let data = store.read(&record.checksum).await?;
+    let extractable = extract_content(&data, &record.mime_type);
+    apply_expense_suggestions(id, db, ai, &extractable).await;
+    Ok(())
+}
+
 pub async fn process_blob(
     id: Uuid,
     db: &DbClient,
@@ -221,21 +264,7 @@ pub async fn process_blob(
             // expense that references this blob. Best-effort — extraction
             // failure here is never a processing failure.
             if let Some(content) = &extractable_for_expense {
-                if let Some(fields) = extract_expense_fields(ai, content).await {
-                    if let Ok(expenses) = db.expenses_referencing_blob(id).await {
-                        for e in expenses {
-                            if matches!(e.status, ExpenseStatus::Submitted) {
-                                let _ = db.update_expense_suggestions(
-                                    e.id,
-                                    fields.amount,
-                                    fields.date.clone(),
-                                    fields.vendor.clone(),
-                                    fields.card_last4.clone(),
-                                ).await;
-                            }
-                        }
-                    }
-                }
+                apply_expense_suggestions(id, db, ai, content).await;
             }
         }
         Err(e) => {

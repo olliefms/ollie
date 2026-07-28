@@ -132,7 +132,7 @@ pub(crate) async fn ingest_blob(
         };
         state.db.insert(&record).await?;
         if matches!(record.status, BlobStatus::Pending) {
-            state.pipeline_tx.send(record.id).await
+            state.pipeline_tx.send(crate::pipeline::PipelineJob::Process(record.id)).await
                 .map_err(|e| AppError::Internal(e.to_string()))?;
         }
         Ok((StatusCode::CREATED, record))
@@ -145,7 +145,7 @@ pub(crate) async fn ingest_blob(
             visibility, uploaded_by: None,
         };
         state.db.insert(&record).await?;
-        state.pipeline_tx.send(record.id).await
+        state.pipeline_tx.send(crate::pipeline::PipelineJob::Process(record.id)).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok((StatusCode::ACCEPTED, record))
     }

@@ -125,6 +125,31 @@ impl DbClient {
         Ok((total, items))
     }
 
+    /// Blob ids to re-run receipt-field extraction for on startup: every still
+    /// *submitted* expense that carries no suggestions at all and references a
+    /// blob. A suggestions-only pipeline job targets an already-Ready blob, so
+    /// `list_non_ready_ids` can never recover one — without this sweep a crash
+    /// between a dedup upload's enqueue and the worker picking it up would lose
+    /// the pass permanently. An expense whose receipt genuinely yields nothing
+    /// is retried on each boot; that is bounded by the unreviewed-expense count
+    /// and is cheaper than a schema migration to record the attempt.
+    pub async fn list_blob_ids_needing_expense_suggestions(&self) -> Result<Vec<Uuid>, AppError> {
+        let stream = self.expense_table.query()
+            .only_if("status = 'submitted'")
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut seen = std::collections::HashSet::new();
+        Ok(batches_to_expenses(collect_stream(stream).await?)?
+            .into_iter()
+            .filter(|e| e.suggested_amount.is_none()
+                && e.suggested_date.is_none()
+                && e.suggested_vendor.is_none()
+                && e.suggested_card_last4.is_none())
+            .filter_map(|e| e.blob_ids.first().copied())
+            .filter(|id| seen.insert(*id))
+            .collect())
+    }
+
     pub async fn expenses_referencing_blob(&self, blob_id: Uuid) -> Result<Vec<ExpenseRecord>, AppError> {
         let id_str = blob_id.to_string();
         let stream = self.expense_table.query()

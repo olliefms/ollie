@@ -240,9 +240,20 @@ pub async fn upload_document(
     }
 
     // Queue to the AI pipeline last, now that any expense row referencing this
-    // blob is guaranteed to already exist.
-    if needs_pipeline {
-        let _ = state.pipeline_tx.send(record.id).await;
+    // blob is guaranteed to already exist. A deduplicated blob that is already
+    // Ready skips the full pass (its summary/embedding were copied above), but
+    // when this upload created an expense row it still needs a
+    // suggestions-only pass — otherwise a re-uploaded receipt never gets
+    // suggested_amount/vendor/date and review falls back to manual entry.
+    let job = if needs_pipeline {
+        Some(crate::pipeline::PipelineJob::Process(record.id))
+    } else if doctype == "expense" {
+        Some(crate::pipeline::PipelineJob::ExpenseSuggestions(record.id))
+    } else {
+        None
+    };
+    if let Some(job) = job {
+        let _ = state.pipeline_tx.send(job).await;
     }
 
     Ok((status_code, Json(record)))
