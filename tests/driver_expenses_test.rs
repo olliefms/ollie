@@ -369,7 +369,7 @@ async fn test_driver_cannot_see_or_delete_others() {
 /// `pipeline_tx.send`, so whatever DB state exists at that wakeup reflects
 /// everything the handler executed before the send — including, if correctly
 /// ordered, the expense-row insert.
-async fn setup_rendezvous_pipeline() -> (TestServer, AppState, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>) {
+async fn setup_rendezvous_pipeline() -> (TestServer, AppState, TempDir, TempDir, async_channel::Receiver<ollie::pipeline::PipelineJob>) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
@@ -420,7 +420,7 @@ async fn test_expense_row_exists_before_blob_is_queued_to_pipeline() {
     let db = state.db.clone();
     let (result_tx, result_rx) = tokio::sync::oneshot::channel();
     tokio::spawn(async move {
-        if let Ok(blob_id) = rx.recv().await {
+        if let Ok(ollie::pipeline::PipelineJob::Process(blob_id)) = rx.recv().await {
             let has_expense = db.expenses_referencing_blob(blob_id).await
                 .map(|v| !v.is_empty())
                 .unwrap_or(false);
@@ -437,5 +437,103 @@ async fn test_expense_row_exists_before_blob_is_queued_to_pipeline() {
     assert!(
         expense_already_existed,
         "blob was queued to the pipeline before its expense row was inserted"
+    );
+}
+
+/// Regression test for the dedup path: re-uploading a receipt whose bytes are
+/// already in the store copies the existing summary/embedding and marks the
+/// new blob Ready, so it must NOT be queued for a full pipeline pass — but the
+/// expense row created by this upload still needs suggestions. The handler
+/// must queue a suggestions-only job (`PipelineJob::ExpenseSuggestions`) for
+/// the NEW blob id, after the expense row exists. Before this fix the dedup
+/// path queued nothing, so a re-uploaded receipt deterministically got no
+/// suggested_amount/vendor/date and Approve All fell back to manual entry.
+#[tokio::test]
+async fn test_dedup_ready_reupload_queues_expense_suggestions_pass() {
+    let (server, state, _b, _d, rx) = setup_rendezvous_pipeline().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    // First upload of the receipt bytes: new blob, full pipeline pass queued.
+    let first = upload_expense(&server, &driver_token, &trip_id, Some("fuel")).await;
+    assert_eq!(first.status_code().as_u16(), 202);
+    let first_blob_id: uuid::Uuid =
+        first.json::<serde_json::Value>()["id"].as_str().unwrap().parse().unwrap();
+    match rx.recv().await.unwrap() {
+        ollie::pipeline::PipelineJob::Process(id) => assert_eq!(id, first_blob_id),
+        other => panic!("first upload must queue a full pass, got {other:?}"),
+    }
+
+    // Second upload of the SAME bytes: dedup path, blob comes back Ready.
+    // The receiver task records what job arrives and whether the new expense
+    // row already existed at that moment.
+    let db = state.db.clone();
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        if let Ok(job) = rx.recv().await {
+            let has_expense = match job {
+                ollie::pipeline::PipelineJob::ExpenseSuggestions(id)
+                | ollie::pipeline::PipelineJob::Process(id) => {
+                    db.expenses_referencing_blob(id).await
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false)
+                }
+            };
+            let _ = result_tx.send((job, has_expense));
+        }
+    });
+
+    let second = upload_expense(&server, &driver_token, &trip_id, Some("fuel")).await;
+    assert_eq!(second.status_code().as_u16(), 201, "identical bytes must dedup");
+    let second_blob_id: uuid::Uuid =
+        second.json::<serde_json::Value>()["id"].as_str().unwrap().parse().unwrap();
+    assert_ne!(second_blob_id, first_blob_id, "dedup still creates a distinct blob record");
+
+    let (job, expense_already_existed) = result_rx.await
+        .expect("dedup expense upload must queue exactly one pipeline job");
+    assert_eq!(
+        job,
+        ollie::pipeline::PipelineJob::ExpenseSuggestions(second_blob_id),
+        "dedup path must queue a suggestions-only pass for the new blob"
+    );
+    assert!(
+        expense_already_existed,
+        "suggestions job was queued before the expense row was inserted"
+    );
+}
+
+/// A dedup re-upload that is NOT an expense (no expense row created) has
+/// nothing to suggest and must queue no pipeline work at all.
+#[tokio::test]
+async fn test_dedup_ready_non_expense_reupload_queues_nothing() {
+    let (server, state, _b, _d, rx) = setup_rendezvous_pipeline().await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let form = |bytes: &[u8]| {
+        axum_test::multipart::MultipartForm::new()
+            .add_text("doctype", "pod")
+            .add_part(
+                "file",
+                axum_test::multipart::Part::bytes(bytes.to_vec())
+                    .file_name("pod.txt")
+                    .mime_type("text/plain"),
+            )
+    };
+    let first = server
+        .post(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .multipart(form(b"pod-bytes"))
+        .await;
+    assert_eq!(first.status_code().as_u16(), 202);
+    assert!(matches!(rx.recv().await.unwrap(), ollie::pipeline::PipelineJob::Process(_)));
+
+    let second = server
+        .post(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .multipart(form(b"pod-bytes"))
+        .await;
+    assert_eq!(second.status_code().as_u16(), 201);
+    assert!(
+        rx.try_recv().is_err(),
+        "non-expense dedup upload must not queue any pipeline job"
     );
 }

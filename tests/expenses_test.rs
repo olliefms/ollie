@@ -21,7 +21,7 @@ async fn test_server_with_state() -> (
     TestServer,
     TempDir,
     TempDir,
-    async_channel::Receiver<uuid::Uuid>,
+    async_channel::Receiver<ollie::pipeline::PipelineJob>,
     AppState,
 ) {
     let blob_dir = TempDir::new().unwrap();
@@ -79,7 +79,7 @@ async fn create_dispatcher_and_login(server: &TestServer, owner: &str) -> String
     login.json::<serde_json::Value>()["token"].as_str().unwrap().to_string()
 }
 
-async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>) {
+async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver<ollie::pipeline::PipelineJob>) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");

@@ -31,7 +31,7 @@ pub struct AppState {
     pub ai: Arc<OllamaClient>,
     pub geocoding: Arc<GeocodingClient>,
     pub ors: Arc<RoutingClient>,
-    pub pipeline_tx: async_channel::Sender<Uuid>,
+    pub pipeline_tx: async_channel::Sender<pipeline::PipelineJob>,
     pub geocoding_tx: async_channel::Sender<Uuid>,
     pub routing_tx: async_channel::Sender<Uuid>,
     pub config: Arc<Config>,

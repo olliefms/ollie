@@ -2866,7 +2866,7 @@ async fn tool_resummarize_blob(state: &AppState, args: &Value) -> Result<Value, 
     state.db.mark_pending(id).await.map_err(|e| e.to_string())?;
     state
         .pipeline_tx
-        .send(id)
+        .send(crate::pipeline::PipelineJob::Process(id))
         .await
         .map_err(|e| format!("failed to enqueue blob for processing: {e}"))?;
     Ok(mcp_content(serde_json::json!({
@@ -3404,7 +3404,11 @@ mod tests {
             .unwrap();
         assert_eq!(out["queued"], json!(true));
         assert_eq!(out["status"], json!("pending"));
-        assert_eq!(pipeline_rx.try_recv().unwrap(), id, "blob id must be enqueued");
+        assert_eq!(
+            pipeline_rx.try_recv().unwrap(),
+            crate::pipeline::PipelineJob::Process(id),
+            "blob id must be enqueued for a full pass"
+        );
 
         let persisted = state.db.get_by_id(id).await.unwrap();
         assert_eq!(persisted.status, crate::models::BlobStatus::Pending);

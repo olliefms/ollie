@@ -1,17 +1,17 @@
 // src/pipeline/recovery.rs
-use crate::{db::DbClient, error::AppError};
+use crate::{db::DbClient, error::AppError, pipeline::PipelineJob};
 use uuid::Uuid;
 
 pub async fn requeue_stale(
     db: &DbClient,
-    pipeline_tx: &async_channel::Sender<Uuid>,
+    pipeline_tx: &async_channel::Sender<PipelineJob>,
     geocoding_tx: &async_channel::Sender<Uuid>,
     routing_tx: &async_channel::Sender<Uuid>,
 ) -> Result<(), AppError> {
     let ids = db.list_non_ready_ids().await?;
     tracing::info!("requeueing {} stale blobs on startup", ids.len());
     for id in ids {
-        pipeline_tx.send(id).await.map_err(|e| AppError::Internal(e.to_string()))?;
+        pipeline_tx.send(PipelineJob::Process(id)).await.map_err(|e| AppError::Internal(e.to_string()))?;
     }
 
     let pending_geocode = db.list_pending_geocode_facility_ids().await?;
@@ -69,6 +69,6 @@ mod tests {
         requeue_stale(&db, &tx, &gtx, &rtx).await.unwrap();
         assert_eq!(rx.len(), 1);
         let received = rx.recv().await.unwrap();
-        assert_eq!(received, pending.id);
+        assert_eq!(received, PipelineJob::Process(pending.id));
     }
 }

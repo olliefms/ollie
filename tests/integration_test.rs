@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use webauthn_rs::prelude::{Url, WebauthnBuilder};
 
-async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>) {
+async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver<ollie::pipeline::PipelineJob>) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
@@ -55,7 +55,7 @@ async fn test_server() -> (TestServer, TempDir, TempDir, async_channel::Receiver
     (server, blob_dir, db_dir, rx)
 }
 
-async fn test_server_with_state() -> (TestServer, TempDir, TempDir, async_channel::Receiver<uuid::Uuid>, AppState) {
+async fn test_server_with_state() -> (TestServer, TempDir, TempDir, async_channel::Receiver<ollie::pipeline::PipelineJob>, AppState) {
     let blob_dir = TempDir::new().unwrap();
     let db_dir = TempDir::new().unwrap();
     std::env::set_var("DRIVER_JWT_SECRET", "test-driver-jwt-secret-that-is-long-enough");
