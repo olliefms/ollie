@@ -514,8 +514,11 @@ forbidden (403).
   expense_id; unlinking is not supported (delete + recreate).
 
 ### List vs. search counts
-  GET list endpoints return a `returned` field. Without ?s= it is the total matching
-  count (for pagination); with ?s=<query> it is the number of items in this response.
+  Paginated GET list endpoints return `total` — the full matching count, independent of
+  limit/offset. Prefer it for pagination. The older `returned` field is not uniform: it
+  is the number of items in this response on blobs, expenses, trips, facilities and
+  events, and the total matching count on drivers, trucks, trailers, maintenance and
+  loads. With ?s=<query> it is always the number of items in this response.
 
 ## Driver portal — /driver/api/v1 (driver app only)
 

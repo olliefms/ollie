@@ -69,6 +69,13 @@ impl DbClient {
     /// Paginated variant for the fleet list views (REST + MCP). Returns
     /// `(total_matching, page)` sorted by `created_at` DESC. `trip_number` is an
     /// exact match applied in the DB filter so `total` stays correct.
+    ///
+    /// The scan itself is uncapped, like the sibling driver/truck/trailer ops:
+    /// LanceDB has no ORDER BY, so every matching row is fetched and sorted in
+    /// memory before the page is taken. Pagination bounds what callers enrich and
+    /// return, not what the DB reads — this stays O(N) per request. `list_loads`
+    /// caps its scan (`LOAD_SCAN_CAP`) because load volume grows fastest; add the
+    /// equivalent here, with the matching UI cap handling, if trips get that large.
     #[allow(clippy::too_many_arguments)]
     pub async fn list_trips_page(
         &self,
