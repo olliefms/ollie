@@ -33,7 +33,11 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           # Only allow well-formed version tags as the checkout ref.
-          echo "$TAG" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$' || {
+          # Must be [[ =~ ]], not `grep -q`: grep matches per LINE, so a multi-line
+          # input passes and its newlines then terminate the GITHUB_OUTPUT heredoc
+          # below early. Bash compiles the ERE without REG_NEWLINE, so ^ and $ bind
+          # to the whole string. Keep the right-hand side unquoted (#382).
+          [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::tag '$TAG' is not a valid version tag (expected vX.Y.Z)"; exit 1; }
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -67,23 +71,54 @@ jobs:
             type=semver,pattern={{major}}
             type=edge,branch=main
 
-      # Manual dispatch: derive the same semver tag set from the input.
-      - name: Compute tags (manual dispatch)
+      # Manual dispatch: derive the same semver tag set AND OCI labels from the input.
+      # metadata-action is skipped on this path, so both have to be produced by hand.
+      - name: Compute tags and labels (manual dispatch)
         id: manual
         if: github.event_name == 'workflow_dispatch'
         env:
           TAG: ${{ inputs.tag }}
           IMG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           V="${TAG#v}"            # 2.0.0
           MAJOR="${V%%.*}"        # 2
           MINOR="${V%.*}"         # 2.0
+
+          # Only move :latest when the dispatched tag really is the newest release.
+          # Re-publishing an older tag (the documented use case) would otherwise
+          # silently downgrade every consumer pulling :latest (#384). Match the
+          # release shape exactly so prereleases (v2.0.0-rc1) and odd tags (vnext)
+          # never win versionsort and freeze :latest permanently.
+          # `|| true` keeps a no-match grep from tripping `bash -e`.
+          NEWEST="$(git tag -l 'v[0-9]*' --sort=-v:refname \
+            | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)"
+          if [ "$NEWEST" = "v$V" ]; then
+            LATEST_TAG="$IMG:latest"
+          else
+            LATEST_TAG=""
+            echo "::notice::$TAG is not the newest release (${NEWEST:-none}); leaving :latest alone"
+          fi
+
+          REVISION="$(git rev-parse HEAD)"
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Compute everything above this block: a stray echo inside the group
+          # would be written into GITHUB_OUTPUT and corrupt the heredoc.
           {
             echo "tags<<EOF"
             echo "$IMG:$V"
             echo "$IMG:$MINOR"
             echo "$IMG:$MAJOR"
-            echo "$IMG:latest"
+            if [ -n "$LATEST_TAG" ]; then echo "$LATEST_TAG"; fi
+            echo "EOF"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.source=$REPO_URL"
+            echo "org.opencontainers.image.url=$REPO_URL"
+            echo "org.opencontainers.image.title=${GITHUB_REPOSITORY##*/}"
+            echo "org.opencontainers.image.revision=$REVISION"
+            echo "org.opencontainers.image.version=$V"
+            echo "org.opencontainers.image.created=$CREATED"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -115,7 +150,11 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # A skipped step's outputs are '' (falsy), so each || picks the path that ran.
+          # labels must fall back too: without it the dispatch path pushes with no
+          # OCI labels, which drops provenance and can unlink the GHCR package from
+          # the repo (org.opencontainers.image.source is what GHCR links on) (#383).
           tags: ${{ steps.meta.outputs.tags || steps.manual.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: ${{ steps.meta.outputs.labels || steps.manual.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
