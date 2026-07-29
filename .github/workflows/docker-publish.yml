@@ -102,24 +102,30 @@ jobs:
             git tag -l "$1" --sort=-v:refname | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true
           }
 
+          NEWEST_ALL="$(newest_release 'v[0-9]*')"
+          NEWEST_MAJOR="$(newest_release "v$MAJOR.*")"
+          NEWEST_MINOR="$(newest_release "v$MINOR.*")"
+
+          # Name the release that keeps each held track, so a surprising hold is
+          # diagnosable straight from the run log rather than by re-deriving it.
           LATEST_TAG=""; MAJOR_TAG=""; MINOR_TAG=""; HELD=""
-          if [ "$(newest_release 'v[0-9]*')" = "v$V" ]; then
+          if [ "$NEWEST_ALL" = "v$V" ]; then
             LATEST_TAG="$IMG:latest"
           else
-            HELD="$HELD latest"
+            HELD="$HELD latest->${NEWEST_ALL:-none}"
           fi
-          if [ "$(newest_release "v$MAJOR.*")" = "v$V" ]; then
+          if [ "$NEWEST_MAJOR" = "v$V" ]; then
             MAJOR_TAG="$IMG:$MAJOR"
           else
-            HELD="$HELD $MAJOR"
+            HELD="$HELD $MAJOR->${NEWEST_MAJOR:-none}"
           fi
-          if [ "$(newest_release "v$MINOR.*")" = "v$V" ]; then
+          if [ "$NEWEST_MINOR" = "v$V" ]; then
             MINOR_TAG="$IMG:$MINOR"
           else
-            HELD="$HELD $MINOR"
+            HELD="$HELD $MINOR->${NEWEST_MINOR:-none}"
           fi
           if [ -n "$HELD" ]; then
-            echo "::notice::$TAG is not the newest release in these tracks:$HELD - leaving those tags on their current images"
+            echo "::notice::$TAG is not the newest release in these tracks, so each keeps pointing at the release shown:$HELD"
           fi
 
           REVISION="$(git rev-parse HEAD)"
