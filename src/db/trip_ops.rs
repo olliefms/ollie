@@ -57,13 +57,49 @@ impl DbClient {
         pay_period_end: Option<&str>,
     ) -> Result<Vec<TripListItem>, AppError> {
         let filter = build_trip_filter(
-            load_id, driver_id, status, pay_period_start, pay_period_end);
+            load_id, driver_id, status, None, pay_period_start, pay_period_end);
         let mut q = self.trip_table.query();
         if let Some(f) = filter { q = q.only_if(f); }
         let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
         let items: Vec<TripListItem> = batches_to_trips(collect_stream(stream).await?)?
             .into_iter().map(TripListItem::from).collect();
         Ok(items)
+    }
+
+    /// Paginated variant for the fleet list views (REST + MCP). Returns
+    /// `(total_matching, page)` sorted by `created_at` DESC. `trip_number` is an
+    /// exact match applied in the DB filter so `total` stays correct.
+    ///
+    /// The scan itself is uncapped, like the sibling driver/truck/trailer ops:
+    /// LanceDB has no ORDER BY, so every matching row is fetched and sorted in
+    /// memory before the page is taken. Pagination bounds what callers enrich and
+    /// return, not what the DB reads — this stays O(N) per request. `list_loads`
+    /// caps its scan (`LOAD_SCAN_CAP`) because load volume grows fastest; add the
+    /// equivalent here, with the matching UI cap handling, if trips get that large.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn list_trips_page(
+        &self,
+        load_id: Option<Uuid>,
+        driver_id: Option<Uuid>,
+        status: Option<&str>,
+        trip_number: Option<&str>,
+        pay_period_start: Option<&str>,
+        pay_period_end: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> Result<(usize, Vec<TripListItem>), AppError> {
+        let filter = build_trip_filter(
+            load_id, driver_id, status, trip_number, pay_period_start, pay_period_end);
+        let total = self.trip_table.count_rows(filter.clone()).await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut q = self.trip_table.query();
+        if let Some(f) = filter { q = q.only_if(f); }
+        let stream = q.execute().await.map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut records = batches_to_trips(collect_stream(stream).await?)?;
+        records.sort_by_key(|r| std::cmp::Reverse(r.created_at));
+        let items: Vec<TripListItem> = records.into_iter()
+            .skip(offset).take(limit).map(TripListItem::from).collect();
+        Ok((total, items))
     }
 
     async fn upsert_trip(&self, record: &TripRecord) -> Result<(), AppError> {
@@ -537,6 +573,7 @@ fn build_trip_filter(
     load_id: Option<Uuid>,
     driver_id: Option<Uuid>,
     status: Option<&str>,
+    trip_number: Option<&str>,
     pay_period_start: Option<&str>,
     pay_period_end: Option<&str>,
 ) -> Option<String> {
@@ -544,6 +581,7 @@ fn build_trip_filter(
     if let Some(id) = load_id { parts.push(format!("load_id = '{id}'")); }
     if let Some(id) = driver_id { parts.push(format!("driver_id = '{id}'")); }
     if let Some(s) = status { parts.push(format!("status = '{}'", s.replace('\'', "''"))); }
+    if let Some(tn) = trip_number { parts.push(format!("trip_number = '{}'", tn.replace('\'', "''"))); }
     // ISO date strings compare lexicographically.
     if let Some(x) = pay_period_start {
         parts.push(format!("pay_period_start >= '{}'", x.replace('\'', "''")));
@@ -652,6 +690,35 @@ mod tests {
         assert_eq!(updated.load_number.as_deref(), Some("9821550"));
         let untouched = db.get_trip(unrelated.id).await.unwrap();
         assert_eq!(untouched.load_number.as_deref(), Some("LD-2026-0002"));
+    }
+
+    #[tokio::test]
+    async fn test_list_trips_page_windows_sort_and_trip_number_filter() {
+        let (db, _dir) = test_db().await;
+        let base = chrono::Utc::now();
+        for i in 0..5u32 {
+            let mut trip = sample_trip();
+            trip.trip_number = format!("T-2026-010{i}");
+            trip.created_at = base + chrono::Duration::seconds(i as i64);
+            db.insert_trip(&trip).await.unwrap();
+        }
+
+        let (total, page1) = db.list_trips_page(None, None, None, None, None, None, 2, 0).await.unwrap();
+        assert_eq!(total, 5);
+        assert_eq!(page1.len(), 2);
+        // Newest first — the highest-suffix trip was created last.
+        assert_eq!(page1[0].trip_number, "T-2026-0104");
+        assert_eq!(page1[1].trip_number, "T-2026-0103");
+
+        let (_, page3) = db.list_trips_page(None, None, None, None, None, None, 2, 4).await.unwrap();
+        assert_eq!(page3.len(), 1);
+        assert_eq!(page3[0].trip_number, "T-2026-0100");
+
+        let (tn_total, tn_items) = db.list_trips_page(
+            None, None, None, Some("T-2026-0102"), None, None, 100, 0).await.unwrap();
+        assert_eq!(tn_total, 1);
+        assert_eq!(tn_items.len(), 1);
+        assert_eq!(tn_items[0].trip_number, "T-2026-0102");
     }
 
     #[tokio::test]
