@@ -93,6 +93,25 @@ function openDialog({ title, body, actions, onOpen }) {
   });
 }
 
+/** Run a caller's `validate` and normalize its answer to an error string or null.
+ *
+ *  Guarded because `read()` runs inside a DOM event handler: an exception thrown
+ *  by `validate` would escape, leave the dialog's promise unresolved, and kill both
+ *  OK and Enter — a permanently frozen dialog with nothing on screen explaining it.
+ *  That is the failure this component exists to prevent, so a broken validator
+ *  becomes a visible message rather than a dead dialog. A non-string truthy return
+ *  is treated as "invalid" rather than rendered as "[object Object]". */
+function runValidate(validate, values) {
+  let problem;
+  try {
+    problem = validate(values);
+  } catch (err) {
+    return `Could not validate: ${err.message}`;
+  }
+  if (!problem) return null;
+  return typeof problem === 'string' ? problem : 'That value is not valid.';
+}
+
 function messageNode(message) {
   const p = document.createElement('p');
   p.className = 'dialog__message';
@@ -170,7 +189,7 @@ export function promptFields({
       }
       out[spec.name] = text;
     }
-    const problem = validate ? validate(out) : null;
+    const problem = validate ? runValidate(validate, out) : null;
     if (problem) {
       error.textContent = problem;
       error.hidden = false;

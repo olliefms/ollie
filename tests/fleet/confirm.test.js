@@ -150,6 +150,43 @@ describe('promptFields', () => {
     await expect(pending).resolves.toEqual({ n: '42' });
   });
 
+  // A throwing validator must not strand the dialog: read() runs in a DOM event
+  // handler, so an escaping exception would leave the promise unresolved and make
+  // OK and Enter dead with nothing on screen.
+  it('surfaces a throwing validate instead of freezing the dialog', async () => {
+    const pending = promptFields({
+      title: 'Broken',
+      fields: [{ name: 'a', label: 'A' }],
+      validate: () => { throw new TypeError('cannot read x of undefined'); },
+    });
+    inputFor('a').value = 'anything';
+    buttonLabelled('OK').click();
+
+    expect(overlay()).not.toBeNull();
+    expect(document.querySelector('.dialog__error').textContent)
+      .toContain('cannot read x of undefined');
+
+    // The dialog is still alive and dismissible, not wedged.
+    press('Escape');
+    await expect(pending).resolves.toBeNull();
+  });
+
+  it('treats a non-string truthy validate result as invalid, not as text', async () => {
+    const pending = promptFields({
+      title: 'Odd',
+      fields: [{ name: 'a', label: 'A' }],
+      validate: () => ({ ok: false }),
+    });
+    inputFor('a').value = 'x';
+    buttonLabelled('OK').click();
+    const err = document.querySelector('.dialog__error');
+    expect(err.hidden).toBe(false);
+    expect(err.textContent).not.toContain('object Object');
+
+    press('Escape');
+    await expect(pending).resolves.toBeNull();
+  });
+
   it('names the offending field when a required one is blank', async () => {
     const pending = promptFields({
       title: 'Check call',
