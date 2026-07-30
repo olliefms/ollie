@@ -3751,6 +3751,30 @@ mod tests {
             "assign_driver must not advertise an ambiguous bare 'id'");
     }
 
+    /// `advertise_id_alias` inserts the alias into `properties`, so if a tool already
+    /// declared that key as a genuinely different parameter it would be silently
+    /// overwritten and callers would start sending a UUID where something else was
+    /// expected. No tool does today; this pins it.
+    #[test]
+    fn no_aliased_id_key_collides_with_a_real_parameter() {
+        for t in tools_list()["tools"].as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let Some((canonical, alias)) = id_arg_alias(name) else { continue };
+            let props = t["inputSchema"]["properties"].as_object();
+            let declares = |k: &str| props.is_some_and(|p| p.contains_key(k));
+            assert!(
+                declares(canonical),
+                "{name}: alias table names '{canonical}' as canonical but the schema \
+                 doesn't declare it — the table and the schema have drifted"
+            );
+            assert!(
+                !declares(alias),
+                "{name}: schema already declares '{alias}' as a real parameter; \
+                 advertise_id_alias would overwrite it"
+            );
+        }
+    }
+
     /// `destructiveHint` is now the only confirmation signal the server offers, so
     /// every tool that destroys or retires a record must carry it. A tool missing
     /// from this list gets auto-confirmed by clients that gate on the hint.
