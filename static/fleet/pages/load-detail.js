@@ -3,7 +3,8 @@ import {
   escHtml, badge, shortId, fmtDate, fmtArrivalWindow,
   fmtBytes, fmtUSD, fmtMiles,
 } from '../utils/format.js';
-import { setContent, navigate, goBack } from '../utils/dom.js';
+import { setContent, navigate, goBack, withPending } from '../utils/dom.js';
+import { confirmAction, confirmTyped, promptText } from '../components/confirm.js';
 
 const PRE_DELIVERY = ['planned', 'assigned', 'dispatched', 'in_transit'];
 
@@ -304,21 +305,17 @@ export async function renderLoadDetail(id) {
       navigate('load-edit', { id });
     });
 
-    document.getElementById('load-action-cancel')?.addEventListener('click', () => {
-      cancelLoad(statusEl, id);
-    });
+    // Each handler awaits its request behind `withPending`, so the button shows a
+    // spinner and the row is locked instead of the page appearing to hang.
+    const onAction = (btnId, run) => {
+      const btn = document.getElementById(btnId);
+      btn?.addEventListener('click', () => run(btn));
+    };
 
-    document.getElementById('load-action-invoice')?.addEventListener('click', () => {
-      invoiceLoad(statusEl, id);
-    });
-
-    document.getElementById('load-action-settle')?.addEventListener('click', () => {
-      settleLoad(statusEl, id);
-    });
-
-    document.getElementById('load-action-delete')?.addEventListener('click', () => {
-      deleteLoad(statusEl, id, load.load_number);
-    });
+    onAction('load-action-cancel', btn => cancelLoad(statusEl, id, btn));
+    onAction('load-action-invoice', btn => invoiceLoad(statusEl, id, btn));
+    onAction('load-action-settle', btn => settleLoad(statusEl, id, btn));
+    onAction('load-action-delete', btn => deleteLoad(statusEl, id, load.load_number, btn));
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') {
       setContent(`<div class="state-error">Failed to load data: ${escHtml(err.message)}</div>`);
@@ -332,66 +329,102 @@ function showError(statusEl, text) {
   statusEl.textContent = text;
 }
 
-async function cancelLoad(statusEl, id) {
-  const reason = window.prompt('Cancel reason (optional):');
+function clearError(statusEl) {
+  statusEl.hidden = true;
+  statusEl.textContent = '';
+}
+
+/**
+ * POST a load action and re-render on success. Any failure — HTTP error, network
+ * fault, or the request timeout in apiFetch — lands in the page's status alert
+ * rather than leaving the control silently pending.
+ */
+async function runLoadAction(statusEl, btn, { path, label, body, onSuccess }) {
+  clearError(statusEl);
+  try {
+    return await withPending(btn, async () => {
+      const res = await apiFetch(path, {
+        method: 'POST',
+        body: JSON.stringify(body || {}),
+      });
+      if (res.ok) { onSuccess(); return; }
+      const data = await res.json().catch(() => ({}));
+      showError(statusEl, data.error || `${label} failed (HTTP ${res.status}).`);
+    });
+  } catch (err) {
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      showError(statusEl, `${label} failed: ${err.message}`);
+    }
+  }
+}
+
+async function cancelLoad(statusEl, id, btn) {
+  const reason = await promptText({
+    title: 'Cancel load',
+    message: 'Cancelling releases the load. Any assigned trip must be cancelled separately.',
+    label: 'Cancel reason (optional)',
+    confirmLabel: 'Cancel load',
+    danger: true,
+  });
   if (reason === null) return;
-  try {
-    const body = reason ? { reason } : {};
-    const res = await apiFetch(`${API_BASE}/loads/${id}/cancel`, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
-    if (res.ok) { renderLoadDetail(id); return; }
-    const data = await res.json().catch(() => ({}));
-    showError(statusEl, data.error || `Cancel failed (HTTP ${res.status}).`);
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') showError(statusEl, `Cancel failed: ${err.message}`);
-  }
+  await runLoadAction(statusEl, btn, {
+    path: `${API_BASE}/loads/${id}/cancel`,
+    label: 'Cancel',
+    body: reason ? { reason } : {},
+    onSuccess: () => renderLoadDetail(id),
+  });
 }
 
-async function invoiceLoad(statusEl, id) {
-  const invoiceNumber = window.prompt('Invoice number (optional):');
+async function invoiceLoad(statusEl, id, btn) {
+  const invoiceNumber = await promptText({
+    title: 'Invoice load',
+    label: 'Invoice number (optional)',
+    confirmLabel: 'Invoice',
+  });
   if (invoiceNumber === null) return;
+  await runLoadAction(statusEl, btn, {
+    path: `${API_BASE}/loads/${id}/invoice`,
+    label: 'Invoice',
+    body: invoiceNumber ? { invoice_number: invoiceNumber } : {},
+    onSuccess: () => renderLoadDetail(id),
+  });
+}
+
+async function settleLoad(statusEl, id, btn) {
+  const ok = await confirmAction({
+    title: 'Settle load',
+    message: 'Settle this load? This cannot be undone.',
+    confirmLabel: 'Settle',
+  });
+  if (!ok) return;
+  await runLoadAction(statusEl, btn, {
+    path: `${API_BASE}/loads/${id}/settle`,
+    label: 'Settle',
+    onSuccess: () => renderLoadDetail(id),
+  });
+}
+
+async function deleteLoad(statusEl, id, loadNumber, btn) {
+  const expected = loadNumber || 'DELETE';
+  const confirmed = await confirmTyped({
+    title: 'Delete load',
+    message: loadNumber
+      ? `Permanently delete load "${loadNumber}"? This cannot be undone.`
+      : 'Permanently delete this load? This cannot be undone.',
+    expected,
+  });
+  if (!confirmed) return;
+  clearError(statusEl);
   try {
-    const body = invoiceNumber ? { invoice_number: invoiceNumber } : {};
-    const res = await apiFetch(`${API_BASE}/loads/${id}/invoice`, {
-      method: 'POST',
-      body: JSON.stringify(body),
+    await withPending(btn, async () => {
+      const res = await apiFetch(`${API_BASE}/loads/${id}`, { method: 'DELETE' });
+      if (res.ok || res.status === 204) { navigate('loads'); return; }
+      const data = await res.json().catch(() => ({}));
+      showError(statusEl, data.error || `Delete failed (HTTP ${res.status}).`);
     });
-    if (res.ok) { renderLoadDetail(id); return; }
-    const data = await res.json().catch(() => ({}));
-    showError(statusEl, data.error || `Invoice failed (HTTP ${res.status}).`);
   } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') showError(statusEl, `Invoice failed: ${err.message}`);
-  }
-}
-
-async function settleLoad(statusEl, id) {
-  if (!confirm('Settle this load? This cannot be undone.')) return;
-  try {
-    const res = await apiFetch(`${API_BASE}/loads/${id}/settle`, { method: 'POST' });
-    if (res.ok) { renderLoadDetail(id); return; }
-    const data = await res.json().catch(() => ({}));
-    showError(statusEl, data.error || `Settle failed (HTTP ${res.status}).`);
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') showError(statusEl, `Settle failed: ${err.message}`);
-  }
-}
-
-async function deleteLoad(statusEl, id, loadNumber) {
-  const label = loadNumber || 'DELETE';
-  const prompt = loadNumber
-    ? `Permanently delete load "${loadNumber}"? This cannot be undone.\nType the load number to confirm:`
-    : 'Permanently delete this load? This cannot be undone.\nType DELETE to confirm:';
-  const typed = window.prompt(prompt);
-  if (typed === null) return;
-  if (typed !== label) { showError(statusEl, 'Load number did not match — delete cancelled.'); return; }
-  try {
-    const res = await apiFetch(`${API_BASE}/loads/${id}`, { method: 'DELETE' });
-    if (res.ok || res.status === 204) { navigate('loads'); return; }
-    const data = await res.json().catch(() => ({}));
-    showError(statusEl, data.error || `Delete failed (HTTP ${res.status}).`);
-  } catch (err) {
-    if (err.message !== 'Unauthorized — please sign in again.') showError(statusEl, `Delete failed: ${err.message}`);
+    if (err.message !== 'Unauthorized — please sign in again.') {
+      showError(statusEl, `Delete failed: ${err.message}`);
+    }
   }
 }

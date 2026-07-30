@@ -1,6 +1,7 @@
 import { apiFetch } from '../utils/api.js';
 import { escHtml, fmtDate } from '../utils/format.js';
-import { setContent, navigate } from '../utils/dom.js';
+import { setContent, navigate, withPending } from '../utils/dom.js';
+import { confirmAction } from '../components/confirm.js';
 
 const API_KEYS_BASE = '/fleet/api-keys';
 
@@ -102,14 +103,27 @@ export async function renderAccountView() {
 
     document.querySelectorAll('.ak-revoke').forEach(btn => {
       btn.addEventListener('click', async () => {
-        if (!confirm('Revoke this API key? Integrations using it will stop working immediately.')) return;
+        const ok = await confirmAction({
+          title: 'Revoke API key',
+          message: 'Revoke this API key? Integrations using it will stop working immediately.',
+          confirmLabel: 'Revoke',
+          danger: true,
+        });
+        if (!ok) return;
         try {
-          const r = await apiFetch(`${API_KEYS_BASE}/${btn.dataset.keyId}`, { method: 'DELETE' });
-          if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
-          navigate('account');
+          await withPending(btn, async () => {
+            const r = await apiFetch(`${API_KEYS_BASE}/${btn.dataset.keyId}`, { method: 'DELETE' });
+            if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+            navigate('account');
+          });
         } catch (err) {
           if (err.message !== 'Unauthorized — please sign in again.') {
-            alert(`Revoke failed: ${err.message}`);
+            const statusEl = document.getElementById('ak-create-status');
+            if (statusEl) {
+              statusEl.hidden = false;
+              statusEl.className = 'alert alert--error';
+              statusEl.textContent = `Revoke failed: ${err.message}`;
+            }
           }
         }
       });

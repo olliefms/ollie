@@ -42,7 +42,7 @@ export async function renderMaintenanceDetail(id) {
 
 // Hard delete: the entry is removed entirely.
 async function deleteMaintenance(statusEl, id) {
-  if (!confirmDelete('this maintenance entry')) return;
+  if (!await confirmDelete('this maintenance entry')) return;
   try {
     const res = await apiFetch(`${API_BASE}/maintenance/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('maintenance'); return; }

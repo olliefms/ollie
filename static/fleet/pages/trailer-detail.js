@@ -48,7 +48,7 @@ export async function renderTrailerDetail(id) {
 
 // Soft delete: backend sets status = Inactive (hides from active lists).
 async function deleteTrailer(statusEl, id, unit) {
-  if (!confirmDelete(`trailer "${unit}"`)) return;
+  if (!await confirmDelete(`trailer "${unit}"`)) return;
   try {
     const res = await apiFetch(`${API_BASE}/trailers/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('trailers'); return; }

@@ -2,7 +2,7 @@ import { apiFetch, API_BASE } from '../utils/api.js';
 import { badge, escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 import { renderDetailPage, detailLink } from './_detail.js';
-import { confirmDelete } from '../components/confirm.js';
+import { confirmDelete, promptText } from '../components/confirm.js';
 
 const RATE_FIELDS = [
   { key: 'loaded_rate_per_mile', label: 'Loaded Rate / Mile', money: true },
@@ -103,7 +103,12 @@ function showStatus(statusEl, kind, text) {
 }
 
 async function setPin(statusEl, id) {
-  const pin = window.prompt('Set a new driver PIN (digits):');
+  const pin = await promptText({
+    title: 'Set driver PIN',
+    label: 'New PIN (digits)',
+    confirmLabel: 'Set PIN',
+    required: true,
+  });
   if (pin == null || pin === '') return;
   try {
     const res = await apiFetch(`${API_BASE}/drivers/${encodeURIComponent(id)}/pin`, {
@@ -121,7 +126,7 @@ async function setPin(statusEl, id) {
 
 // Soft delete: backend sets status = Inactive (hides from active lists/pickers).
 async function deleteDriver(statusEl, id, name) {
-  if (!confirmDelete(`driver "${name}"`)) return;
+  if (!await confirmDelete(`driver "${name}"`)) return;
   try {
     const res = await apiFetch(`${API_BASE}/drivers/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('drivers'); return; }

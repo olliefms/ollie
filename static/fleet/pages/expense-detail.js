@@ -364,7 +364,7 @@ async function saveReview(id, e) {
 }
 
 async function deleteExpense(statusEl, id) {
-  if (!confirmDelete('this expense')) return;
+  if (!await confirmDelete('this expense')) return;
   try {
     const res = await apiFetch(`${API_BASE}/expenses/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('expenses'); return; }

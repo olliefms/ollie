@@ -2,6 +2,7 @@ import { apiFetch, API_BASE } from '../utils/api.js';
 import { escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 import { renderDetailPage } from './_detail.js';
+import { confirmAction } from '../components/confirm.js';
 
 const money = v => (v != null ? `$${Number(v).toFixed(2)}` : '—');
 
@@ -39,7 +40,12 @@ export async function renderTerminalDetail(id) {
 // Terminal delete is a guarded permanent delete: the backend refuses with 409
 // if the terminal is the default or has assigned drivers. Surface that message.
 async function deleteTerminal(statusEl, id, name) {
-  if (!confirm(`Permanently delete terminal "${name}"? This cannot be undone, and is refused if any driver still references it.`)) return;
+  if (!await confirmAction({
+    title: 'Delete terminal',
+    message: `Permanently delete terminal "${name}"? This cannot be undone, and is refused if any driver still references it.`,
+    confirmLabel: 'Delete',
+    danger: true,
+  })) return;
   try {
     const res = await apiFetch(`${API_BASE}/terminals/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('terminals'); return; }

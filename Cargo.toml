@@ -47,8 +47,7 @@ bcrypt = "0.15"
 dashmap = "5"
 rand = "0.8"
 url = "2"
-rmcp = { version = "1.7", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "tower", "elicitation", "schemars"] }
-schemars = "1"
+rmcp = { version = "1.7", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "tower"] }
 
 [dev-dependencies]
 axum-test = "17"

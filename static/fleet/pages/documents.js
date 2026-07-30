@@ -117,7 +117,11 @@ export async function renderDocumentsView(params = {}) {
       uploadBtn.disabled = true;
 
       try {
-        const res = await apiFetch(`${API_BASE}/blobs`, { method: 'POST', body: fd });
+        // An upload's duration scales with the file, so it opts out of the default
+        // request deadline; the button stays disabled and the status line reports.
+        const res = await apiFetch(`${API_BASE}/blobs`, {
+          method: 'POST', body: fd, timeoutMs: 0,
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         statusEl.className = 'alert alert--info';
         statusEl.textContent = `Uploaded ${file.name}.`;

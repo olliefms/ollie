@@ -99,6 +99,40 @@ export function setContent(html) {
   document.getElementById('main-content').innerHTML = html;
 }
 
+/**
+ * Run an async action with visible pending state on the button that triggered it:
+ * the button is disabled and shows a spinner for the duration, and every button in
+ * the same action row is disabled so a stuck request can't be double-fired.
+ * Always restores the original state, including when `fn` throws.
+ *
+ * Together with the request timeout in `apiFetch`, this is what keeps a slow or
+ * hung backend legible: the control shows it is working, then either completes or
+ * reports an error — it never leaves the page looking frozen.
+ */
+export async function withPending(button, fn) {
+  if (!button) return fn();
+  const row = button.parentElement;
+  const siblings = row ? [...row.querySelectorAll('button')] : [button];
+  const wasDisabled = new Map(siblings.map(b => [b, b.disabled]));
+  // Keep the original nodes and put them back verbatim — no markup round-trip.
+  const label = [...button.childNodes];
+
+  const spinner = document.createElement('span');
+  spinner.className = 'spinner spinner--inline';
+  const pendingText = document.createTextNode('Working…');
+
+  for (const b of siblings) b.disabled = true;
+  button.replaceChildren(spinner, pendingText);
+  button.setAttribute('aria-busy', 'true');
+  try {
+    return await fn();
+  } finally {
+    button.replaceChildren(...label);
+    button.removeAttribute('aria-busy');
+    for (const b of siblings) b.disabled = wasDisabled.get(b) ?? false;
+  }
+}
+
 /** Set the topbar refresh indicator text. */
 export function setRefreshIndicator(msg) {
   const el = document.getElementById('refresh-indicator');

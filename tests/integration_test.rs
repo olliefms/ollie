@@ -5420,6 +5420,19 @@ fn sse_json(body: &str) -> serde_json::Value {
 /// Open an MCP session: `initialize` then the `notifications/initialized` ack.
 /// Returns the `Mcp-Session-Id` the server assigned (used on subsequent calls).
 async fn mcp_session(server: &axum_test::TestServer, token: &str) -> String {
+    mcp_session_with_caps(server, token, serde_json::json!({})).await
+}
+
+/// Same as `mcp_session` but lets the caller declare client capabilities in
+/// `initialize`. Every other MCP test declares `{}`, which is exactly why the
+/// server-side elicitation hang (a destructive tool awaiting a server→client
+/// `elicitation/create` that the transport can never deliver) was invisible to
+/// the suite: the server skipped the round-trip for capability-less clients.
+async fn mcp_session_with_caps(
+    server: &axum_test::TestServer,
+    token: &str,
+    capabilities: serde_json::Value,
+) -> String {
     let resp = server
         .post("/fleet/mcp")
         .add_header(header::ACCEPT, "application/json, text/event-stream")
@@ -5428,7 +5441,7 @@ async fn mcp_session(server: &axum_test::TestServer, token: &str) -> String {
             "jsonrpc": "2.0", "id": 0, "method": "initialize",
             "params": {
                 "protocolVersion": "2025-06-18",
-                "capabilities": {},
+                "capabilities": capabilities,
                 "clientInfo": { "name": "ollie-test", "version": "1.0" }
             }
         }))
@@ -9122,4 +9135,272 @@ async fn test_mcp_maintenance_crud() {
         "maintenance_id": id
     })).await;
     assert_eq!(deleted["deleted"], true);
+}
+
+// ── Cancel over an established, elicitation-capable MCP session ─────────────────────────────────────────
+
+/// Send a tool call on an existing session, failing the test rather than hanging
+/// if the server never produces a reply. The primary bug this guards was an
+/// unbounded await, so a plain `.await` here would hang the suite instead of
+/// failing it.
+async fn mcp_call_on_session(
+    server: &axum_test::TestServer,
+    token: &str,
+    session: &str,
+    name: &str,
+    args: serde_json::Value,
+) -> serde_json::Value {
+    let body = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        mcp_rpc(server, token, session, "tools/call",
+            serde_json::json!({ "name": name, "arguments": args })),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("MCP {name} did not return within 10s on an established session"));
+    assert!(body["error"].is_null(), "MCP {name} error: {:?}", body["error"]);
+    body["result"].clone()
+}
+
+/// Decode a tool result's JSON payload from its text content block.
+fn mcp_result_payload(result: &serde_json::Value, name: &str) -> serde_json::Value {
+    let text = result["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("MCP {name} content[0].text missing: {result:?}"));
+    serde_json::from_str(text).expect("inner JSON parse")
+}
+
+/// Regression: `cancel_trip` / `cancel_load` must return promptly on a long-lived
+/// session whose client declared `elicitation` support, after other tool calls have
+/// already flowed over it. Previously the server issued a server→client
+/// `elicitation/create` and awaited it with no timeout; rmcp routes server requests
+/// only onto the standalone GET SSE stream, so for a client that never opened one
+/// the request was silently dropped and the tool call hung forever — before the DB
+/// write, leaving the record untouched. A single-call test on a capability-less
+/// session cannot catch this; this drives a multi-call session first.
+#[tokio::test]
+async fn test_mcp_cancel_returns_promptly_on_established_elicitation_session() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mcp_cx@example.com", "password-mcp-cx").await;
+    let fac = create_test_facility(&server, "MCP Cancel Dock", "Tulsa, OK").await;
+    let load_id = create_test_load(&server, &fac).await;
+
+    let session = mcp_session_with_caps(
+        &server, &token,
+        serde_json::json!({ "elicitation": {} }),
+    ).await;
+
+    // Warm the session with several ordinary calls, as a real client would.
+    let trip = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "create_trip",
+            serde_json::json!({ "load_id": load_id })).await,
+        "create_trip",
+    );
+    let trip_id = trip["id"].as_str().unwrap().to_string();
+    mcp_call_on_session(&server, &token, &session, "get_load",
+        serde_json::json!({ "id": load_id })).await;
+    mcp_call_on_session(&server, &token, &session, "list_trips", serde_json::json!({})).await;
+    mcp_call_on_session(&server, &token, &session, "get_trip",
+        serde_json::json!({ "id": trip_id })).await;
+
+    // The two calls that used to hang until the client's own timeout.
+    let cancelled_trip = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "cancel_trip",
+            serde_json::json!({ "trip_id": trip_id })).await,
+        "cancel_trip",
+    );
+    assert_eq!(cancelled_trip["status"], "cancelled",
+        "cancel_trip must apply, not just return");
+
+    let cancelled_load = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "cancel_load",
+            serde_json::json!({ "id": load_id, "reason": "customer cancelled" })).await,
+        "cancel_load",
+    );
+    assert_eq!(cancelled_load["status"], "cancelled");
+    assert_eq!(cancelled_load["cancellation_reason"], "customer cancelled");
+
+    // The session is still healthy afterward.
+    let after = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "get_load",
+            serde_json::json!({ "id": load_id })).await,
+        "get_load",
+    );
+    assert_eq!(after["status"], "cancelled");
+}
+
+/// `update_load` must not silently swallow `status` / `cancellation_reason`: a 200
+/// with an unchanged record reads as "applied" to any caller.
+#[tokio::test]
+async fn test_mcp_update_load_rejects_status_fields() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mcp_uls@example.com", "password-mcp-uls").await;
+    let fac = create_test_facility(&server, "MCP UL Dock", "Ada, OK").await;
+    let load_id = create_test_load(&server, &fac).await;
+
+    let session = mcp_session(&server, &token).await;
+    let result = mcp_call_on_session(&server, &token, &session, "update_load",
+        serde_json::json!({ "id": load_id, "status": "cancelled",
+                            "cancellation_reason": "nope" })).await;
+
+    assert_eq!(result["isError"], true, "update_load must reject status: {result:?}");
+    let msg = result["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains("cancel_load"), "error should name the right tool: {msg}");
+
+    let load = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "get_load",
+            serde_json::json!({ "id": load_id })).await,
+        "get_load",
+    );
+    assert_eq!(load["status"], "planned");
+    assert!(load["cancellation_reason"].is_null());
+}
+
+/// The id argument name was inconsistent across tools (`id` on cancel_load,
+/// `trip_id` on cancel_trip). Both spellings are now accepted everywhere.
+#[tokio::test]
+async fn test_mcp_id_param_aliases_accepted() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let token = fleet_user_login(&server, "mcp_alias@example.com", "password-mcp-alias").await;
+    let fac = create_test_facility(&server, "MCP Alias Dock", "Enid, OK").await;
+    let load_id = create_test_load(&server, &fac).await;
+    let session = mcp_session(&server, &token).await;
+
+    // `load_id` where the schema documents `id`.
+    let load = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "get_load",
+            serde_json::json!({ "load_id": load_id })).await,
+        "get_load",
+    );
+    assert_eq!(load["id"], load_id);
+
+    // `id` where the schema documents `load_id`.
+    let doctor = mcp_call_on_session(&server, &token, &session, "load_doctor",
+        serde_json::json!({ "id": load_id })).await;
+    assert_ne!(doctor["isError"], true, "load_doctor with `id` failed: {doctor:?}");
+    assert_eq!(mcp_result_payload(&doctor, "load_doctor")["resource_id"], load_id);
+
+    // `id` where the schema documents `trip_id`.
+    let trip = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "create_trip",
+            serde_json::json!({ "load_id": load_id })).await,
+        "create_trip",
+    );
+    let trip_id = trip["id"].as_str().unwrap().to_string();
+    let cancelled = mcp_result_payload(
+        &mcp_call_on_session(&server, &token, &session, "cancel_trip",
+            serde_json::json!({ "id": trip_id })).await,
+        "cancel_trip",
+    );
+    assert_eq!(cancelled["status"], "cancelled");
+
+    // A genuinely missing id names the tool and echoes the keys it did receive.
+    let missing = mcp_call_on_session(&server, &token, &session, "get_trip",
+        serde_json::json!({ "trip_number": "T-9999" })).await;
+    assert_eq!(missing["isError"], true);
+    let msg = missing["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains("get_trip"), "error should name the tool: {msg}");
+    assert!(msg.contains("trip_number"), "error should echo received keys: {msg}");
+}
+
+/// A load whose only trip has been unassigned is no longer held by any trip, so
+/// its denormalized status must fall back to planned.
+#[tokio::test]
+async fn test_unassign_recomputes_load_status() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let fac = create_test_facility(&server, "Unassign Load Dock", "Bixby, OK").await;
+    let load_id = create_test_load(&server, &fac).await;
+
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "Recompute Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "T-RC1" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // driver + truck promotes the trip straight to Assigned, which is the state
+    // the production report started from.
+    let trip = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "load_id": load_id, "driver_id": driver_id,
+                                   "truck_id": truck_id }))
+        .await
+        .json::<serde_json::Value>();
+    let trip_id = trip["id"].as_str().unwrap().to_string();
+    assert_eq!(trip["status"], "assigned");
+
+    let load = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(load["status"], "assigned", "trip assignment should cascade the load to assigned");
+
+    let unassign = server.post(&format!("/fleet/api/v1/trips/{trip_id}/unassign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(unassign.status_code(), 200);
+
+    let load_after = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(load_after["status"], "planned",
+        "no trip holds the load after unassign, so it must fall back to planned");
+}
+
+/// A load whose only holding trip is cancelled has nothing holding it, so it must
+/// fall back to planned — including from `dispatched`. The guard originally only
+/// fired on `assigned`, stranding a dispatched load at `dispatched` forever.
+#[tokio::test]
+async fn test_cancelling_the_only_trip_releases_a_dispatched_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let fac = create_test_facility(&server, "Dispatched Release Dock", "Owasso, OK").await;
+    let load_id = create_test_load(&server, &fac).await;
+
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "Dispatched Release Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "T-DR1" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "load_id": load_id, "driver_id": driver_id,
+                                   "truck_id": truck_id }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let dispatch = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    let load = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(load["status"], "dispatched", "dispatch should cascade to the load");
+
+    let cancel = server.post(&format!("/fleet/api/v1/trips/{trip_id}/cancel"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(cancel.status_code(), 200);
+
+    let after = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "planned",
+        "no trip holds the load after cancelling its only dispatched trip");
 }

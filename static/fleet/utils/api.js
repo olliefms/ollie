@@ -24,17 +24,50 @@ export async function tryRefresh() {
   }
 }
 
+// ─── Request timeout ─────────────────────────────────────────
+// No request may hang forever: a stuck backend must surface as an error the page
+// can render, not as a control that never comes back. Callers can override per
+// request with `timeoutMs` (0 or null disables, for uploads).
+export const DEFAULT_TIMEOUT_MS = 30000;
+export const TIMEOUT_MESSAGE = 'Request timed out — the server did not respond. Please try again.';
+
+/** Run `fetch` with an abort-based deadline, translating an abort into a
+ *  recognizable error rather than a bare DOMException.
+ *
+ *  A caller-supplied `signal` is rejected rather than merged: forwarding it would
+ *  detach the deadline (the timer would abort a controller the request isn't
+ *  listening to) and the "cannot hang" guarantee would quietly stop holding —
+ *  the same silent-failure shape this deadline exists to prevent. A caller that
+ *  needs its own cancellation passes `timeoutMs: 0` and owns the lifecycle. */
+async function fetchWithTimeout(path, init, timeoutMs) {
+  if (!timeoutMs) return fetch(path, init);
+  if (init.signal) {
+    throw new Error('apiFetch: pass timeoutMs: 0 to supply your own AbortSignal');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(path, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (controller.signal.aborted) throw new Error(TIMEOUT_MESSAGE);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── API fetch wrapper ───────────────────────────────────────
 export async function apiFetch(path, options = {}) {
   const token = getToken();
   const isFormData = options.body instanceof FormData;
+  const { timeoutMs = DEFAULT_TIMEOUT_MS, ...init } = options;
   const headers = {
     ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(options.headers || {}),
   };
 
-  const res = await fetch(path, { ...options, headers });
+  const res = await fetchWithTimeout(path, { ...init, headers }, timeoutMs);
 
   if (res.status === 401) {
     const refreshed = await tryRefresh();
@@ -45,7 +78,7 @@ export async function apiFetch(path, options = {}) {
         ...(newToken ? { Authorization: `Bearer ${newToken}` } : {}),
         ...(options.headers || {}),
       };
-      const retry = await fetch(path, { ...options, headers: retryHeaders });
+      const retry = await fetchWithTimeout(path, { ...init, headers: retryHeaders }, timeoutMs);
       if (retry.status !== 401) return retry;
     }
     clearToken();

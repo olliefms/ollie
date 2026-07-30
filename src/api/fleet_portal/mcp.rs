@@ -13,9 +13,16 @@
 // receive no auth context and enforce none themselves.
 //
 // Transport config (see `mcp_service`): stateful Streamable HTTP. An `initialize`
-// POST opens a session (returned in the Mcp-Session-Id header) and responses
-// stream back as text/event-stream — the server→client channel that resource
-// subscriptions (#299) and elicitation (#300) build on.
+// POST opens a session (returned in the Mcp-Session-Id header) and each request's
+// response streams back as text/event-stream.
+//
+// Every message this server sends is a reply to a client request, delivered on the
+// stream that carried it. We issue no server→client requests and push no
+// notifications: resources (#299) are listable and readable, not subscribable
+// (`enable_resources` alone — `subscribe` / `list_changed` are separate opt-ins we
+// don't take). That matters because rmcp delivers server→client *requests* only on
+// the standalone GET stream, which most clients never open — read the
+// destructive-op confirmation note below before adding any.
 
 use std::sync::Arc;
 
@@ -115,11 +122,6 @@ impl ServerHandler for OllieMcp {
         // parseable id — those tools then treat the caller as least-privileged.
         let caller_id = fleet_user_caller_id(&context);
         let args = Value::Object(request.arguments.unwrap_or_default());
-        // Destructive ops ask the user to confirm via elicitation when the client
-        // supports it; clients that don't degrade to the prior behavior (#300).
-        if let Some(declined) = confirm_destructive(&request.name, &args, &context.peer).await {
-            return Ok(declined);
-        }
         match handle_tool_call(&self.state, &request.name, &args, &scopes, caller_id).await {
             // Emit the payload as structuredContent (typed, schema-checkable) AND a
             // backward-compatible JSON text block, per MCP 2025-06-18 (#293). Blob-
@@ -326,95 +328,27 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
 }
 
 // ---------------------------------------------------------------------------
-// Elicitation (MCP `elicitation`, #300)
+// Destructive-op confirmation
 //
-// Before a destructive op (cancel_trip, delete_blob force=true) the server asks
-// the user to confirm — but only when the client declared elicitation support.
-// Clients without it degrade to the prior behavior (the op runs as before), so
-// existing integrations don't break. This is the one wired flow; disambiguating
-// equipment selection etc. are tracked as follow-ups.
+// Confirmation is the CLIENT's job, driven by the `destructiveHint` annotation
+// each such tool carries (see `annotations_for`). The server does NOT ask.
+//
+// #300 originally wired a server→client `elicitation/create` round-trip in front
+// of every destructive tool, gated on the client declaring elicitation support.
+// That hung `cancel_trip`/`cancel_load` indefinitely in production: rmcp routes
+// every server→client REQUEST onto the session's standalone GET SSE stream
+// (`resolve_outbound_channel`: `Request(_) => OutboundChannel::Common`), never
+// onto the POST's own response stream. A client that declares the capability but
+// never opens that GET stream therefore never receives the request — the send
+// error is swallowed inside rmcp's `CachedTx` — and `peer.elicit()` (which
+// applies no timeout) awaits a reply that can never arrive. The await sits ahead
+// of `handle_tool_call`, so the record isn't even touched.
+//
+// Any reintroduction must not put an unbounded server→client round-trip on the
+// tool-call path, and must be exercised by a test whose client declares the
+// capability — every pre-existing MCP test sent `capabilities: {}`, which is why
+// this shipped unnoticed.
 // ---------------------------------------------------------------------------
-
-/// Structured response the client returns for a destructive-action confirmation.
-#[derive(serde::Deserialize, schemars::JsonSchema)]
-struct DestructiveConfirmation {
-    /// Set true to proceed with the destructive action.
-    confirm: bool,
-}
-rmcp::elicit_safe!(DestructiveConfirmation);
-
-/// Which tool calls warrant a destructive-action confirmation: cancelling a trip,
-/// and force-deleting a blob (a non-force delete already errors on attachments).
-fn is_destructive_op(name: &str, args: &Value) -> bool {
-    match name {
-        "cancel_trip" | "cancel_load" | "delete_load" | "delete_trip" | "delete_driver"
-        | "delete_truck" | "delete_trailer" | "delete_maintenance" | "delete_facility"
-        | "delete_user" | "delete_expense" => true,
-        "delete_blob" => args["force"].as_bool() == Some(true),
-        _ => false,
-    }
-}
-
-/// Returns `Some(isError result)` if a destructive op must NOT proceed (the user
-/// declined, cancelled, or confirmation was unavailable from a supporting client);
-/// `None` to proceed (confirmed, or the client doesn't support elicitation).
-async fn confirm_destructive(
-    name: &str,
-    args: &Value,
-    peer: &rmcp::service::Peer<RoleServer>,
-) -> Option<CallToolResult> {
-    if !is_destructive_op(name, args) {
-        return None;
-    }
-    // Graceful fallback: a client that didn't declare elicitation gets the prior
-    // behavior (proceed without a round-trip).
-    if peer.supported_elicitation_modes().is_empty() {
-        return None;
-    }
-    let message = format!(
-        "Confirm {name} ({})? This permanently changes fleet data and cannot be undone.",
-        destructive_op_description(name)
-    );
-    // rmcp owns the elicit transport/deserialization; map its outcome to a simple
-    // "did the user confirm?" and let `destructive_decision` (unit-tested) decide.
-    let confirmed = match peer.elicit::<DestructiveConfirmation>(message).await {
-        Ok(Some(c)) => Some(c.confirm),
-        // No content / declined / cancelled / transport error.
-        _ => None,
-    };
-    destructive_decision(name, confirmed)
-}
-
-/// Short human description of a destructive op, used in the confirmation prompt.
-fn destructive_op_description(name: &str) -> &'static str {
-    match name {
-        "cancel_trip" => "cancel the trip",
-        "cancel_load" => "cancel the load",
-        "delete_load" => "delete the load record",
-        "delete_trip" => "delete the trip record",
-        "delete_driver" => "deactivate the driver and revoke their access",
-        "delete_truck" => "deactivate the truck",
-        "delete_trailer" => "deactivate the trailer",
-        "delete_maintenance" => "permanently delete the maintenance entry",
-        "delete_facility" => "delete the facility record",
-        "delete_user" => "deactivate the user and revoke their access",
-        "delete_expense" => "permanently delete the expense record",
-        "delete_blob" => "delete the blob",
-        _ => "perform a destructive action",
-    }
-}
-
-/// Decide whether a destructive op may proceed given the confirmation outcome:
-/// `Some(true)` = explicitly confirmed → proceed (`None`); anything else (declined,
-/// no content, error) → abort with an isError result.
-fn destructive_decision(name: &str, confirmed: Option<bool>) -> Option<CallToolResult> {
-    if confirmed == Some(true) {
-        return None;
-    }
-    Some(CallToolResult::error(vec![Content::text(format!(
-        "{name} was not performed: destructive-action confirmation was declined or unavailable."
-    ))]))
-}
 
 // ---------------------------------------------------------------------------
 // Resources (MCP `resources` capability, #299)
@@ -624,8 +558,10 @@ async fn completion_values(
 ///
 /// Stateful mode (the full Streamable HTTP transport): an `initialize` POST opens
 /// a session (returned in the `Mcp-Session-Id` response header), and responses
-/// stream back as `text/event-stream`. This is what unblocks server→client
-/// messages for resource subscriptions (#299) and elicitation (#300).
+/// stream back as `text/event-stream`. Nothing in the tool layer depends on the
+/// session beyond this — cursors carry their own offset and the server never
+/// initiates traffic (see the module header) — so this is simply the transport's
+/// full mode rather than a requirement we impose.
 ///
 /// `sse_keep_alive` is disabled so each request's response stream terminates as
 /// soon as its single JSON-RPC reply is delivered, instead of being held open by
@@ -654,10 +590,22 @@ fn tool_catalog() -> Vec<Tool> {
         .into_iter()
         .filter_map(|t| {
             let name = t["name"].as_str()?.to_string();
-            let description = t["description"].as_str().unwrap_or("").to_string();
+            let mut description = t["description"].as_str().unwrap_or("").to_string();
             let mut schema = t["inputSchema"].as_object().cloned().unwrap_or_default();
             if PAGINATED_LIST_TOOLS.contains(&name.as_str()) {
                 advertise_cursor(&mut schema);
+            }
+            // Advertise the accepted id spelling. Accepting the alias silently isn't
+            // enough: a client that builds its call strictly from the declared
+            // schema — the normal case — would only ever see the canonical key, so
+            // the historical `id` vs `<entity>_id` split would still cost it a
+            // failed call before the alias could rescue anything. Derived from
+            // `id_arg_alias` so the advertised contract can't drift from behavior.
+            if let Some((canonical, alias)) = id_arg_alias(&name) {
+                advertise_id_alias(&mut schema, canonical, alias);
+                description.push_str(&format!(
+                    " The record id may be given as `{canonical}` or `{alias}`."
+                ));
             }
             let mut tool = Tool::new(name.clone(), description, Arc::new(schema))
                 .with_title(title_case(&name))
@@ -739,10 +687,50 @@ fn advertise_cursor(schema: &mut serde_json::Map<String, Value>) {
     }
 }
 
+/// Declare a tool's aliased record-id key alongside its canonical one, so the
+/// advertised schema matches what `normalize_id_args` actually accepts.
+///
+/// The alias is added to `properties` but deliberately NOT to `required`: exactly
+/// one of the two must be present, which JSON Schema can only express as an
+/// `anyOf`/`oneOf` over `required` — a shape some clients handle poorly. Leaving
+/// the canonical key as the sole `required` entry keeps the schema simple and
+/// steers callers to the documented spelling, while the alias stays discoverable
+/// as a valid property rather than an undeclared extra.
+fn advertise_id_alias(
+    schema: &mut serde_json::Map<String, Value>,
+    canonical: &str,
+    alias: &str,
+) {
+    let canonical_prop = schema
+        .get("properties")
+        .and_then(|p| p.get(canonical))
+        .cloned();
+    let props = schema
+        .entry("properties")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(props) = props.as_object_mut() {
+        // Mirror the canonical property's type/format so the alias validates
+        // identically; fall back to a plain UUID string if it wasn't declared.
+        let mut prop = canonical_prop
+            .unwrap_or_else(|| serde_json::json!({ "type": "string", "format": "uuid" }));
+        if let Some(obj) = prop.as_object_mut() {
+            obj.insert(
+                "description".to_string(),
+                Value::String(format!("Alias for `{canonical}`; either key is accepted.")),
+            );
+        }
+        props.insert(alias.to_string(), prop);
+    }
+}
+
 /// Behavioral hints for a tool (MCP `annotations`). Advisory only — the server
 /// still enforces its own guards; these just let clients gate/auto-confirm calls
 /// and let the agent reason about safety. Reviewed against actual tool behavior:
 /// `*_doctor` tools can apply repairs, so they are NOT marked read-only.
+///
+/// `destructiveHint` is the sole confirmation mechanism for destructive tools —
+/// the server no longer asks (see the destructive-op confirmation note above) —
+/// so every destructive tool must appear in the list below.
 fn annotations_for(name: &str) -> ToolAnnotations {
     if name.starts_with("list_") || name.starts_with("get_") || name == "search_blobs" {
         // Pure reads. destructive/idempotent hints are meaningless when read-only.
@@ -763,6 +751,7 @@ fn annotations_for(name: &str) -> ToolAnnotations {
             | "delete_maintenance"
             | "delete_facility"
             | "delete_expense"
+            | "delete_user"
     );
     // update_* set fields to a target value; dispatch/undispatch converge to a
     // status — re-running with the same args is a no-op.
@@ -1814,6 +1803,88 @@ fn parse_uuid(args: &Value, key: &str) -> Result<Uuid, String> {
     s.parse::<Uuid>().map_err(|_| format!("invalid UUID for field '{key}': {s}"))
 }
 
+/// The two accepted spellings of a tool's record-id argument: `(key the handler
+/// reads, alias also accepted)`.
+///
+/// The id parameter name grew inconsistent as tools were added — `get_load` and
+/// `cancel_load` take `id` while `cancel_trip` and `load_doctor` take `trip_id` /
+/// `load_id`, so the two halves of one operation disagreed — and callers burned
+/// calls guessing. Every single-record tool now accepts either spelling.
+///
+/// Multi-id tools (`assign_driver`, `attach_equipment`, `detach_equipment`) are
+/// absent on purpose: a bare `id` there is ambiguous between the trip and the
+/// resource being attached.
+fn id_arg_alias(tool: &str) -> Option<(&'static str, &'static str)> {
+    let pair = match tool {
+        "cancel_trip" | "complete_trip" | "dispatch_trip" | "undispatch_trip"
+        | "unassign_driver" | "update_trip" | "trip_doctor" | "recalculate_trip_miles"
+        | "stop_arrive" | "stop_depart" | "stop_late" | "check_call" => ("trip_id", "id"),
+        "get_trip" | "delete_trip" => ("id", "trip_id"),
+        "load_doctor" => ("load_id", "id"),
+        "get_load" | "update_load" | "cancel_load" | "invoice_load" | "settle_load"
+        | "delete_load" => ("id", "load_id"),
+        "get_truck" | "update_truck" | "delete_truck" => ("truck_id", "id"),
+        "get_trailer" | "update_trailer" | "delete_trailer" => ("trailer_id", "id"),
+        "get_expense" | "update_expense" | "review_expense" | "delete_expense" => {
+            ("expense_id", "id")
+        }
+        "get_facility" | "update_facility" | "delete_facility" | "facility_doctor" => {
+            ("facility_id", "id")
+        }
+        "get_maintenance" | "update_maintenance" | "delete_maintenance" => {
+            ("maintenance_id", "id")
+        }
+        "get_driver" | "update_driver" | "delete_driver" | "set_driver_pin" => ("id", "driver_id"),
+        "get_user" | "update_user" | "delete_user" | "reset_user_password" => ("id", "user_id"),
+        "get_blob_url" | "get_blob_metadata" | "update_blob" | "resummarize_blob"
+        | "delete_blob" => ("id", "blob_id"),
+        _ => return None,
+    };
+    Some(pair)
+}
+
+/// Copy an aliased record id onto the key the handler reads, so `{"id": …}` and
+/// `{"trip_id": …}` are interchangeable. Returns `None` when nothing needs
+/// rewriting (no alias for this tool, canonical key already present, or the alias
+/// absent too) so the common path doesn't clone the arguments.
+fn normalize_id_args(tool: &str, args: &Value) -> Option<Value> {
+    let (canonical, alias) = id_arg_alias(tool)?;
+    let obj = args.as_object()?;
+    if obj.contains_key(canonical) {
+        return None;
+    }
+    let aliased = obj.get(alias)?.clone();
+    let mut out = obj.clone();
+    out.insert(canonical.to_string(), aliased);
+    Some(Value::Object(out))
+}
+
+/// Argument-shape errors from `parse_uuid` name only the offending field, which is
+/// slow to diagnose across a tool call: the caller can't tell which tool rejected
+/// the call, what it actually sent, or which spellings are accepted. Attach all
+/// three. Values are never echoed — only key names.
+fn explain_arg_error(tool: &str, args: &Value, msg: String) -> String {
+    const ARG_ERROR_PREFIXES: [&str; 3] = [
+        "missing or non-string field",
+        "invalid UUID for field",
+        "field '",
+    ];
+    if !ARG_ERROR_PREFIXES.iter().any(|p| msg.starts_with(p)) {
+        return msg;
+    }
+    let mut keys: Vec<&str> = args
+        .as_object()
+        .map(|m| m.keys().map(String::as_str).collect())
+        .unwrap_or_default();
+    keys.sort_unstable();
+    let received = if keys.is_empty() { "none".to_string() } else { keys.join(", ") };
+    let accepted = match id_arg_alias(tool) {
+        Some((canonical, alias)) => format!(" ({tool} accepts '{canonical}' or '{alias}')"),
+        None => String::new(),
+    };
+    format!("{tool}: {msg}{accepted} — received keys: {received}")
+}
+
 fn parse_uuid_opt(args: &Value, key: &str) -> Result<Option<Uuid>, String> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
@@ -1839,6 +1910,10 @@ async fn handle_tool_call(
     scopes: &[String],
     caller_id: Option<Uuid>,
 ) -> Result<Value, ToolError> {
+    // Accept either spelling of a record-id argument before dispatch, so handlers
+    // keep reading one key.
+    let normalized = normalize_id_args(name, args);
+    let args = normalized.as_ref().unwrap_or(args);
     let result: Result<Value, String> = match name {
         "list_loads" => tool_list_loads(state, args).await,
         "get_load" => tool_get_load(state, args).await,
@@ -1918,7 +1993,7 @@ async fn handle_tool_call(
         "delete_user" => tool_delete_user(state, args).await,
         _ => return Err(ToolError::Unknown),
     };
-    result.map_err(ToolError::Domain)
+    result.map_err(|e| ToolError::Domain(explain_arg_error(name, args, e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -2069,11 +2144,35 @@ async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, Strin
     Ok(mcp_content(record))
 }
 
+/// Lifecycle fields a caller might reasonably expect `update_load` to set, mapped
+/// to the tool that actually owns the transition. `UpdateLoadRequest` has no such
+/// fields, so serde silently dropped them and the tool answered 200 with an
+/// unchanged record — which reads as "applied". Reject explicitly instead: status
+/// changes must go through the lifecycle tools, which enforce the state machine
+/// and emit the corresponding event.
+fn unsettable_load_field(key: &str) -> Option<&'static str> {
+    match key {
+        "status" => Some("use cancel_load / invoice_load / settle_load, or the trip lifecycle tools"),
+        "cancellation_reason" => Some("use cancel_load, which takes a `reason`"),
+        "invoice_number" | "invoice_date" => Some("use invoice_load"),
+        _ => None,
+    }
+}
+
 async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, String> {
     use crate::models::UpdateLoadRequest;
     use crate::api::loads::resolve_stops_pub;
 
     let id = parse_uuid(args, "id")?;
+
+    let unsettable = args
+        .as_object()
+        .and_then(|obj| obj.keys().find_map(|k| unsettable_load_field(k).map(|r| (k, r))));
+    if let Some((key, remedy)) = unsettable {
+        return Err(format!(
+            "update_load cannot set '{key}': {remedy}. No fields were changed."
+        ));
+    }
 
     let req: UpdateLoadRequest = serde_json::from_value(args.clone())
         .map_err(|e| format!("invalid update_load arguments: {e}"))?;
@@ -3284,7 +3383,7 @@ mod tests {
             "update_blob must be advertised in the tool catalog"
         );
         // update_* converge to a target value → not read-only, not destructive.
-        assert!(!is_destructive_op("update_blob", &json!({ "tags": [] })));
+        assert_ne!(annotations_for("update_blob").destructive_hint, Some(true));
     }
 
     #[tokio::test]
@@ -3383,7 +3482,7 @@ mod tests {
             "resummarize_blob must be advertised in the tool catalog"
         );
         // Regenerates AI output; doesn't destroy user data.
-        assert!(!is_destructive_op("resummarize_blob", &json!({})));
+        assert_ne!(annotations_for("resummarize_blob").destructive_hint, Some(true));
     }
 
     #[tokio::test]
@@ -3613,37 +3712,89 @@ mod tests {
         assert!(blob_resource_links("upload_blob", &json!({ "url": "https://x" }), &json!({})).is_empty());
     }
 
+    /// Accepting an aliased id silently isn't enough — a client that builds its call
+    /// from the declared schema must be able to SEE that either spelling works.
     #[test]
-    fn destructive_ops_require_confirmation() {
-        // cancel_trip is always destructive; delete_blob only when force=true.
-        assert!(is_destructive_op("cancel_trip", &json!({})));
-        // #330 parity deletes + cancel_load are unconditionally destructive.
-        for name in [
-            "cancel_load", "delete_load", "delete_trip", "delete_driver",
-            "delete_truck", "delete_trailer", "delete_facility", "delete_expense",
+    fn aliased_id_keys_are_advertised_in_the_catalog() {
+        let catalog = tool_catalog();
+        let find = |n: &str| catalog.iter().find(|t| t.name == n).expect(n);
+
+        for (tool, canonical, alias) in [
+            ("cancel_trip", "trip_id", "id"),
+            ("cancel_load", "id", "load_id"),
+            ("load_doctor", "load_id", "id"),
+            ("get_truck", "truck_id", "id"),
         ] {
-            assert!(is_destructive_op(name, &json!({})), "{name} must be destructive");
+            let t = find(tool);
+            let props = t.input_schema["properties"].as_object()
+                .unwrap_or_else(|| panic!("{tool} has no properties"));
+            assert!(props.contains_key(canonical), "{tool} must declare '{canonical}'");
+            assert!(props.contains_key(alias), "{tool} must declare alias '{alias}'");
+            // Only the canonical key stays required, so callers are steered to it.
+            let required: Vec<&str> = t.input_schema["required"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            assert!(required.contains(&canonical), "{tool} must require '{canonical}'");
+            assert!(!required.contains(&alias), "{tool} must not require alias '{alias}'");
+            assert!(t.description.as_deref().unwrap_or("").contains(alias),
+                "{tool} description must mention the '{alias}' alias");
         }
-        assert!(is_destructive_op("delete_blob", &json!({ "force": true })));
-        assert!(!is_destructive_op("delete_blob", &json!({ "force": false })));
-        assert!(!is_destructive_op("delete_blob", &json!({})));
-        // non-destructive tools are never gated.
-        assert!(!is_destructive_op("list_loads", &json!({})));
-        assert!(!is_destructive_op("update_trip", &json!({ "force": true })));
+
+        // The alias mirrors the canonical property's shape so it validates the same.
+        let ct = find("cancel_trip");
+        assert_eq!(ct.input_schema["properties"]["id"]["type"], "string");
+        assert_eq!(ct.input_schema["properties"]["id"]["format"], "uuid");
+
+        // A multi-id tool is deliberately excluded — a bare `id` there is ambiguous.
+        let ad = find("assign_driver");
+        assert!(!ad.input_schema["properties"].as_object().unwrap().contains_key("id"),
+            "assign_driver must not advertise an ambiguous bare 'id'");
     }
 
+    /// `advertise_id_alias` inserts the alias into `properties`, so if a tool already
+    /// declared that key as a genuinely different parameter it would be silently
+    /// overwritten and callers would start sending a UUID where something else was
+    /// expected. No tool does today; this pins it.
     #[test]
-    fn destructive_decision_only_proceeds_on_explicit_confirm() {
-        // Explicit confirmation proceeds (no rejection result).
-        assert!(destructive_decision("cancel_trip", Some(true)).is_none());
+    fn no_aliased_id_key_collides_with_a_real_parameter() {
+        for t in tools_list()["tools"].as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            let Some((canonical, alias)) = id_arg_alias(name) else { continue };
+            let props = t["inputSchema"]["properties"].as_object();
+            let declares = |k: &str| props.is_some_and(|p| p.contains_key(k));
+            assert!(
+                declares(canonical),
+                "{name}: alias table names '{canonical}' as canonical but the schema \
+                 doesn't declare it — the table and the schema have drifted"
+            );
+            assert!(
+                !declares(alias),
+                "{name}: schema already declares '{alias}' as a real parameter; \
+                 advertise_id_alias would overwrite it"
+            );
+        }
+    }
 
-        // Decline, no-content, and error outcomes all abort with an isError result.
-        for outcome in [Some(false), None] {
-            let reject = destructive_decision("delete_blob", outcome)
-                .unwrap_or_else(|| panic!("outcome {outcome:?} must abort"));
-            assert_eq!(reject.is_error, Some(true));
-            let text = reject.content[0].as_text().map(|t| t.text.clone()).unwrap_or_default();
-            assert!(text.contains("not performed"), "abort message: {text}");
+    /// `destructiveHint` is now the only confirmation signal the server offers, so
+    /// every tool that destroys or retires a record must carry it. A tool missing
+    /// from this list gets auto-confirmed by clients that gate on the hint.
+    #[test]
+    fn every_destructive_tool_carries_the_destructive_hint() {
+        for name in [
+            "cancel_trip", "cancel_load", "delete_blob", "delete_load", "delete_trip",
+            "delete_driver", "delete_truck", "delete_trailer", "delete_maintenance",
+            "delete_facility", "delete_expense", "delete_user",
+            // Releasing a driver/equipment from a trip discards the assignment.
+            "unassign_driver", "detach_equipment",
+        ] {
+            let a = annotations_for(name);
+            assert_eq!(a.destructive_hint, Some(true), "{name} must carry destructiveHint");
+            assert_eq!(a.read_only_hint, Some(false), "{name} is not read-only");
+        }
+        // Additive and converging writes must NOT be flagged destructive.
+        for name in ["create_load", "update_trip", "dispatch_trip", "review_expense"] {
+            assert_ne!(annotations_for(name).destructive_hint, Some(true),
+                "{name} must not be flagged destructive");
         }
     }
 
