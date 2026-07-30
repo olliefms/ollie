@@ -319,16 +319,26 @@ no longer read by `Config`.
 
 ## Running Tests
 
+Run these from the root of the checkout you are actually working in, so cargo resolves
+`Cargo.toml` from the current directory:
+
 ```bash
 # All tests (unit + integration)
-cargo test --manifest-path /Users/jimp7508/src/ollie/Cargo.toml
+cargo test
 
 # Integration tests only
-cargo test --manifest-path /Users/jimp7508/src/ollie/Cargo.toml --test integration_test
+cargo test --test integration_test
 
 # Single test
-cargo test --manifest-path /Users/jimp7508/src/ollie/Cargo.toml test_upload_returns_202
+cargo test test_upload_returns_202
 ```
+
+**Never pin `--manifest-path` to an absolute path.** These commands previously hardcoded
+`--manifest-path /Users/…/src/ollie/Cargo.toml`, which silently tests the **primary checkout**
+no matter where you invoke it. In a git worktree — the default for the release skills and for
+parallel sessions — that means your changes go unverified while the suite passes green against
+untouched code. If you need to be explicit, pass a path relative to the checkout root
+(`--manifest-path ./Cargo.toml`).
 
 After any change: run `cargo test`, `cargo clippy`, `cargo build` before committing.
 
