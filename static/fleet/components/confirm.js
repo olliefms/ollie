@@ -130,7 +130,9 @@ export function confirmDelete(what) {
  *  field name (values trimmed), or `null` if the user dismissed — matching
  *  `prompt()`'s "null means cancelled" contract so callers keep that check.
  *  One dialog for the whole form beats a chain of one-field prompts. */
-export function promptFields({ title, message = '', fields, confirmLabel = 'OK', danger = false }) {
+export function promptFields({
+  title, message = '', fields, confirmLabel = 'OK', danger = false, validate,
+}) {
   const body = document.createElement('div');
   if (message) body.appendChild(messageNode(message));
 
@@ -167,6 +169,13 @@ export function promptFields({ title, message = '', fields, confirmLabel = 'OK',
         return undefined;
       }
       out[spec.name] = text;
+    }
+    const problem = validate ? validate(out) : null;
+    if (problem) {
+      error.textContent = problem;
+      error.hidden = false;
+      inputs[0]?.input.focus();
+      return undefined;
     }
     return out;
   };
@@ -215,18 +224,24 @@ export async function promptText({
   return result === null ? null : result.value;
 }
 
-/** Type-the-name-to-confirm gate for irreversible deletes. Resolves true only
- *  when the typed text matches `expected` exactly. */
+/** Type-the-name-to-confirm gate for irreversible deletes. Resolves true only when
+ *  the typed text matches `expected` exactly.
+ *
+ *  A mismatch is reported inside the dialog and leaves it open, so the caller only
+ *  ever sees `true` (matched) or `false` (dismissed) and needs no mismatch branch.
+ *  Deliberately not "resolve false on mismatch": that made a typo and a deliberate
+ *  cancel indistinguishable, so a user who mistyped got a silent no-op. */
 export async function confirmTyped({ title, message, expected, confirmLabel = 'Delete' }) {
-  const typed = await promptText({
+  const result = await promptFields({
     title,
     message,
-    label: `Type "${expected}" to confirm`,
     confirmLabel,
-    required: true,
     danger: true,
+    fields: [{ name: 'typed', label: `Type "${expected}" to confirm`, required: true }],
+    validate: ({ typed }) =>
+      (typed === expected ? null : `That doesn't match "${expected}" — check for typos.`),
   });
-  return typed === expected;
+  return result !== null;
 }
 
 /** Pick one of `options` ({ value, label }) by name. Resolves the chosen value,

@@ -343,13 +343,16 @@ pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppEr
     }
 
     // Same holding-trip rule as `unassign`: a leftover *planned* sibling trip
-    // doesn't hold the load, so it must not pin the load at `assigned`. A load
-    // already Planned needs no move (and Planned -> Planned is not a transition).
+    // doesn't hold the load, so it must not pin the load at `assigned`. Cancelling
+    // reaches here from Assigned OR Dispatched — a dispatched load whose only trip
+    // is cancelled has nothing holding it either, and covering only Assigned left
+    // it stranded at `dispatched`. A load already Planned needs no move (and
+    // Planned -> Planned is not a transition).
     if let Some(load_id) = existing.load_id {
         let holding = state.db.count_load_holding_trips(load_id).await.unwrap_or(1);
         if holding == 0 {
             if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                if load.status == LoadStatus::Assigned {
+                if matches!(load.status, LoadStatus::Assigned | LoadStatus::Dispatched) {
                     demote_released_load(state, load_id, LoadStatus::Planned).await;
                 }
             }

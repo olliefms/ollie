@@ -150,6 +150,28 @@ describe('apiFetch request deadline', () => {
     expect(fetchMock.mock.calls[0][1].signal).toBeUndefined();
   });
 
+  // Forwarding a caller's signal would detach the deadline, so it's refused loudly
+  // rather than silently disabling the timeout.
+  it('refuses a caller-supplied signal while a deadline is active', async () => {
+    saveToken('tok');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(apiFetch(`${API_BASE}/loads`, { signal: new AbortController().signal }))
+      .rejects.toThrow('timeoutMs: 0');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('allows a caller-supplied signal when the deadline is opted out', async () => {
+    saveToken('tok');
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const signal = new AbortController().signal;
+    await apiFetch(`${API_BASE}/blobs`, { signal, timeoutMs: 0 });
+    expect(fetchMock.mock.calls[0][1].signal).toBe(signal);
+  });
+
   it('does not leak `timeoutMs` into the fetch init', async () => {
     saveToken('tok');
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));

@@ -134,6 +134,22 @@ describe('promptFields', () => {
     await expect(pending).resolves.toEqual({ location: 'Tulsa, OK', notes: 'running 30 late' });
   });
 
+  it('keeps the dialog open when a custom validate rejects', async () => {
+    const pending = promptFields({
+      title: 'Pick a number',
+      fields: [{ name: 'n', label: 'Number' }],
+      validate: ({ n }) => (/^\d+$/.test(n) ? null : 'Digits only.'),
+    });
+    inputFor('n').value = 'abc';
+    buttonLabelled('OK').click();
+    expect(overlay()).not.toBeNull();
+    expect(document.querySelector('.dialog__error').textContent).toBe('Digits only.');
+
+    inputFor('n').value = '42';
+    buttonLabelled('OK').click();
+    await expect(pending).resolves.toEqual({ n: '42' });
+  });
+
   it('names the offending field when a required one is blank', async () => {
     const pending = promptFields({
       title: 'Check call',
@@ -147,16 +163,36 @@ describe('promptFields', () => {
 });
 
 describe('confirmTyped', () => {
-  it('resolves true only on an exact match', async () => {
+  it('resolves true on an exact match', async () => {
     const ok = confirmTyped({ title: 'Delete', message: 'M', expected: 'LD-2026-0001' });
-    inputFor('value').value = 'LD-2026-0001';
+    inputFor('typed').value = 'LD-2026-0001';
     buttonLabelled('Delete').click();
     await expect(ok).resolves.toBe(true);
+  });
 
-    const bad = confirmTyped({ title: 'Delete', message: 'M', expected: 'LD-2026-0001' });
-    inputFor('value').value = 'ld-2026-0001';
+  // A mismatch used to resolve false, which the caller could not tell apart from a
+  // deliberate cancel — so a mistyped load number produced a silent no-op. It now
+  // reports inside the dialog and stays open.
+  it('reports a mismatch in the dialog instead of silently resolving false', async () => {
+    const pending = confirmTyped({ title: 'Delete', message: 'M', expected: 'LD-2026-0001' });
+    inputFor('typed').value = 'ld-2026-0001';
     buttonLabelled('Delete').click();
-    await expect(bad).resolves.toBe(false);
+
+    expect(overlay()).not.toBeNull();
+    const err = document.querySelector('.dialog__error');
+    expect(err.hidden).toBe(false);
+    expect(err.textContent).toContain('LD-2026-0001');
+
+    // Correcting the typo then succeeds, without reopening the dialog.
+    inputFor('typed').value = 'LD-2026-0001';
+    buttonLabelled('Delete').click();
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it('resolves false when dismissed', async () => {
+    const pending = confirmTyped({ title: 'Delete', message: 'M', expected: 'X' });
+    press('Escape');
+    await expect(pending).resolves.toBe(false);
   });
 });
 

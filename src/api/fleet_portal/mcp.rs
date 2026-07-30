@@ -590,10 +590,22 @@ fn tool_catalog() -> Vec<Tool> {
         .into_iter()
         .filter_map(|t| {
             let name = t["name"].as_str()?.to_string();
-            let description = t["description"].as_str().unwrap_or("").to_string();
+            let mut description = t["description"].as_str().unwrap_or("").to_string();
             let mut schema = t["inputSchema"].as_object().cloned().unwrap_or_default();
             if PAGINATED_LIST_TOOLS.contains(&name.as_str()) {
                 advertise_cursor(&mut schema);
+            }
+            // Advertise the accepted id spelling. Accepting the alias silently isn't
+            // enough: a client that builds its call strictly from the declared
+            // schema — the normal case — would only ever see the canonical key, so
+            // the historical `id` vs `<entity>_id` split would still cost it a
+            // failed call before the alias could rescue anything. Derived from
+            // `id_arg_alias` so the advertised contract can't drift from behavior.
+            if let Some((canonical, alias)) = id_arg_alias(&name) {
+                advertise_id_alias(&mut schema, canonical, alias);
+                description.push_str(&format!(
+                    " The record id may be given as `{canonical}` or `{alias}`."
+                ));
             }
             let mut tool = Tool::new(name.clone(), description, Arc::new(schema))
                 .with_title(title_case(&name))
@@ -672,6 +684,42 @@ fn advertise_cursor(schema: &mut serde_json::Map<String, Value>) {
                 "description": "Opaque pagination cursor from a prior response's nextCursor; omit for the first page. Absence of nextCursor means the list is complete."
             }),
         );
+    }
+}
+
+/// Declare a tool's aliased record-id key alongside its canonical one, so the
+/// advertised schema matches what `normalize_id_args` actually accepts.
+///
+/// The alias is added to `properties` but deliberately NOT to `required`: exactly
+/// one of the two must be present, which JSON Schema can only express as an
+/// `anyOf`/`oneOf` over `required` — a shape some clients handle poorly. Leaving
+/// the canonical key as the sole `required` entry keeps the schema simple and
+/// steers callers to the documented spelling, while the alias stays discoverable
+/// as a valid property rather than an undeclared extra.
+fn advertise_id_alias(
+    schema: &mut serde_json::Map<String, Value>,
+    canonical: &str,
+    alias: &str,
+) {
+    let canonical_prop = schema
+        .get("properties")
+        .and_then(|p| p.get(canonical))
+        .cloned();
+    let props = schema
+        .entry("properties")
+        .or_insert_with(|| serde_json::json!({}));
+    if let Some(props) = props.as_object_mut() {
+        // Mirror the canonical property's type/format so the alias validates
+        // identically; fall back to a plain UUID string if it wasn't declared.
+        let mut prop = canonical_prop
+            .unwrap_or_else(|| serde_json::json!({ "type": "string", "format": "uuid" }));
+        if let Some(obj) = prop.as_object_mut() {
+            obj.insert(
+                "description".to_string(),
+                Value::String(format!("Alias for `{canonical}`; either key is accepted.")),
+            );
+        }
+        props.insert(alias.to_string(), prop);
     }
 }
 
@@ -3662,6 +3710,45 @@ mod tests {
         // non-blob tools and upload_blob produce no links.
         assert!(blob_resource_links("list_loads", &json!({ "items": [] }), &json!({})).is_empty());
         assert!(blob_resource_links("upload_blob", &json!({ "url": "https://x" }), &json!({})).is_empty());
+    }
+
+    /// Accepting an aliased id silently isn't enough — a client that builds its call
+    /// from the declared schema must be able to SEE that either spelling works.
+    #[test]
+    fn aliased_id_keys_are_advertised_in_the_catalog() {
+        let catalog = tool_catalog();
+        let find = |n: &str| catalog.iter().find(|t| t.name == n).expect(n);
+
+        for (tool, canonical, alias) in [
+            ("cancel_trip", "trip_id", "id"),
+            ("cancel_load", "id", "load_id"),
+            ("load_doctor", "load_id", "id"),
+            ("get_truck", "truck_id", "id"),
+        ] {
+            let t = find(tool);
+            let props = t.input_schema["properties"].as_object()
+                .unwrap_or_else(|| panic!("{tool} has no properties"));
+            assert!(props.contains_key(canonical), "{tool} must declare '{canonical}'");
+            assert!(props.contains_key(alias), "{tool} must declare alias '{alias}'");
+            // Only the canonical key stays required, so callers are steered to it.
+            let required: Vec<&str> = t.input_schema["required"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                .unwrap_or_default();
+            assert!(required.contains(&canonical), "{tool} must require '{canonical}'");
+            assert!(!required.contains(&alias), "{tool} must not require alias '{alias}'");
+            assert!(t.description.as_deref().unwrap_or("").contains(alias),
+                "{tool} description must mention the '{alias}' alias");
+        }
+
+        // The alias mirrors the canonical property's shape so it validates the same.
+        let ct = find("cancel_trip");
+        assert_eq!(ct.input_schema["properties"]["id"]["type"], "string");
+        assert_eq!(ct.input_schema["properties"]["id"]["format"], "uuid");
+
+        // A multi-id tool is deliberately excluded — a bare `id` there is ambiguous.
+        let ad = find("assign_driver");
+        assert!(!ad.input_schema["properties"].as_object().unwrap().contains_key("id"),
+            "assign_driver must not advertise an ambiguous bare 'id'");
     }
 
     /// `destructiveHint` is now the only confirmation signal the server offers, so

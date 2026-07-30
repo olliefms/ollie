@@ -32,13 +32,22 @@ export const DEFAULT_TIMEOUT_MS = 30000;
 export const TIMEOUT_MESSAGE = 'Request timed out — the server did not respond. Please try again.';
 
 /** Run `fetch` with an abort-based deadline, translating an abort into a
- *  recognizable error rather than a bare DOMException. */
+ *  recognizable error rather than a bare DOMException.
+ *
+ *  A caller-supplied `signal` is rejected rather than merged: forwarding it would
+ *  detach the deadline (the timer would abort a controller the request isn't
+ *  listening to) and the "cannot hang" guarantee would quietly stop holding —
+ *  the same silent-failure shape this deadline exists to prevent. A caller that
+ *  needs its own cancellation passes `timeoutMs: 0` and owns the lifecycle. */
 async function fetchWithTimeout(path, init, timeoutMs) {
   if (!timeoutMs) return fetch(path, init);
+  if (init.signal) {
+    throw new Error('apiFetch: pass timeoutMs: 0 to supply your own AbortSignal');
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(path, { ...init, signal: init.signal || controller.signal });
+    return await fetch(path, { ...init, signal: controller.signal });
   } catch (err) {
     if (controller.signal.aborted) throw new Error(TIMEOUT_MESSAGE);
     throw err;

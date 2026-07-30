@@ -9352,3 +9352,55 @@ async fn test_unassign_recomputes_load_status() {
     assert_eq!(load_after["status"], "planned",
         "no trip holds the load after unassign, so it must fall back to planned");
 }
+
+/// A load whose only holding trip is cancelled has nothing holding it, so it must
+/// fall back to planned — including from `dispatched`. The guard originally only
+/// fired on `assigned`, stranding a dispatched load at `dispatched` forever.
+#[tokio::test]
+async fn test_cancelling_the_only_trip_releases_a_dispatched_load() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let owner_token = setup_owner(&server).await;
+    let fac = create_test_facility(&server, "Dispatched Release Dock", "Owasso, OK").await;
+    let load_id = create_test_load(&server, &fac).await;
+
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "Dispatched Release Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "T-DR1" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_id = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "load_id": load_id, "driver_id": driver_id,
+                                   "truck_id": truck_id }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let dispatch = server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(dispatch.status_code(), 200);
+
+    let load = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(load["status"], "dispatched", "dispatch should cascade to the load");
+
+    let cancel = server.post(&format!("/fleet/api/v1/trips/{trip_id}/cancel"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(cancel.status_code(), 200);
+
+    let after = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await
+        .json::<serde_json::Value>();
+    assert_eq!(after["status"], "planned",
+        "no trip holds the load after cancelling its only dispatched trip");
+}

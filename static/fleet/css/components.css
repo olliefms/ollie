@@ -754,7 +754,9 @@
 
 /* ===== Dialogs =====
    Promise-based replacements for native confirm()/prompt(), which block the
-   renderer's main thread while open. */
+   renderer's main thread while open. Geometry follows the "Dialogs / modals"
+   spec in docs/DESIGN.md: surface 1, 1px border, 12px radius, --shadow-popover,
+   rgba(17,24,39,0.4) backdrop. */
 .dialog-overlay {
   position: fixed;
   inset: 0;
@@ -763,14 +765,15 @@
   align-items: center;
   justify-content: center;
   padding: var(--space-4);
-  background: rgba(17, 24, 39, 0.45);
+  background: rgba(17, 24, 39, 0.4);
 }
 
 .dialog {
   width: 100%;
   max-width: 420px;
   padding: var(--space-5);
-  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
   box-shadow: var(--shadow-popover);
 }
