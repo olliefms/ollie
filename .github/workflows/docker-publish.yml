@@ -2,7 +2,9 @@
 # Build and publish the Ollie container image to GitHub Container Registry (GHCR).
 # - version tags (v*) -> semver tags (e.g. 2.0.0, 2.0, 2) + latest
 # - pushes to main    -> edge
-# - manual dispatch   -> (re)build an existing tag and publish its semver tags
+# - manual dispatch   -> (re)build an existing tag; always publishes the exact
+#                        version, and moves 2.0 / 2 / latest only when that tag is
+#                        the newest release in each of those tracks
 name: Docker
 
 on:
@@ -12,7 +14,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing git tag to build and publish (e.g. v2.0.0). Publishes version, major.minor, major, and latest."
+        description: "Existing git tag to build and publish (e.g. v2.0.0). Always publishes the exact version; major.minor, major, and latest move only if this tag is the newest release in that track."
         required: true
 
 permissions:
@@ -33,7 +35,11 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           # Only allow well-formed version tags as the checkout ref.
-          echo "$TAG" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$' || {
+          # Must be [[ =~ ]], not `grep -q`: grep matches per LINE, so a multi-line
+          # input passes and its newlines then terminate the GITHUB_OUTPUT heredoc
+          # below early. Bash compiles the ERE without REG_NEWLINE, so ^ and $ bind
+          # to the whole string. Keep the right-hand side unquoted (#382).
+          [[ "$TAG" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::tag '$TAG' is not a valid version tag (expected vX.Y.Z)"; exit 1; }
 
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -67,23 +73,80 @@ jobs:
             type=semver,pattern={{major}}
             type=edge,branch=main
 
-      # Manual dispatch: derive the same semver tag set from the input.
-      - name: Compute tags (manual dispatch)
+      # Manual dispatch: derive the same semver tag set AND OCI labels from the input.
+      # metadata-action is skipped on this path, so both have to be produced by hand.
+      - name: Compute tags and labels (manual dispatch)
         id: manual
         if: github.event_name == 'workflow_dispatch'
         env:
           TAG: ${{ inputs.tag }}
           IMG: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           V="${TAG#v}"            # 2.0.0
           MAJOR="${V%%.*}"        # 2
           MINOR="${V%.*}"         # 2.0
+
+          # A dispatch re-publishes an EXISTING tag, so it can run out of order —
+          # that is the documented use case. Every MOVING tag must therefore only be
+          # repointed when this release is the newest in that tag's own track, or a
+          # rebuild of an old version silently downgrades whoever is pinned to it
+          # (#384). This is not hypothetical here: v2.5.0 shipped an unbootable image
+          # and v2.5.1 fixed it, so dispatching v2.5.0 must not drag :2 or :2.5 back
+          # onto the crash-looping build. The immutable :X.Y.Z tag always publishes.
+          #
+          # The grep keeps prereleases (v2.0.0-rc1) and odd tags (vnext) from winning
+          # versionsort and freezing a track forever; `|| true` keeps a no-match grep
+          # from tripping `bash -e` (the default GHA shell has no pipefail).
+          newest_release() {
+            git tag -l "$1" --sort=-v:refname | grep -m1 -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true
+          }
+
+          NEWEST_ALL="$(newest_release 'v[0-9]*')"
+          NEWEST_MAJOR="$(newest_release "v$MAJOR.*")"
+          NEWEST_MINOR="$(newest_release "v$MINOR.*")"
+
+          # Name the release that keeps each held track, so a surprising hold is
+          # diagnosable straight from the run log rather than by re-deriving it.
+          LATEST_TAG=""; MAJOR_TAG=""; MINOR_TAG=""; HELD=""
+          if [ "$NEWEST_ALL" = "v$V" ]; then
+            LATEST_TAG="$IMG:latest"
+          else
+            HELD="$HELD latest->${NEWEST_ALL:-none}"
+          fi
+          if [ "$NEWEST_MAJOR" = "v$V" ]; then
+            MAJOR_TAG="$IMG:$MAJOR"
+          else
+            HELD="$HELD $MAJOR->${NEWEST_MAJOR:-none}"
+          fi
+          if [ "$NEWEST_MINOR" = "v$V" ]; then
+            MINOR_TAG="$IMG:$MINOR"
+          else
+            HELD="$HELD $MINOR->${NEWEST_MINOR:-none}"
+          fi
+          if [ -n "$HELD" ]; then
+            echo "::notice::$TAG is not the newest release in these tracks, so each keeps pointing at the release shown:$HELD"
+          fi
+
+          REVISION="$(git rev-parse HEAD)"
+          CREATED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          # Compute everything above this block: a stray echo inside the group
+          # would be written into GITHUB_OUTPUT and corrupt the heredoc.
           {
             echo "tags<<EOF"
             echo "$IMG:$V"
-            echo "$IMG:$MINOR"
-            echo "$IMG:$MAJOR"
-            echo "$IMG:latest"
+            if [ -n "$MINOR_TAG" ];  then echo "$MINOR_TAG";  fi
+            if [ -n "$MAJOR_TAG" ];  then echo "$MAJOR_TAG";  fi
+            if [ -n "$LATEST_TAG" ]; then echo "$LATEST_TAG"; fi
+            echo "EOF"
+            echo "labels<<EOF"
+            echo "org.opencontainers.image.source=$REPO_URL"
+            echo "org.opencontainers.image.url=$REPO_URL"
+            echo "org.opencontainers.image.title=${GITHUB_REPOSITORY##*/}"
+            echo "org.opencontainers.image.revision=$REVISION"
+            echo "org.opencontainers.image.version=$V"
+            echo "org.opencontainers.image.created=$CREATED"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
@@ -115,7 +178,11 @@ jobs:
           context: .
           platforms: linux/amd64
           push: true
+          # A skipped step's outputs are '' (falsy), so each || picks the path that ran.
+          # labels must fall back too: without it the dispatch path pushes with no
+          # OCI labels, which drops provenance and can unlink the GHCR package from
+          # the repo (org.opencontainers.image.source is what GHCR links on) (#383).
           tags: ${{ steps.meta.outputs.tags || steps.manual.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          labels: ${{ steps.meta.outputs.labels || steps.manual.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
