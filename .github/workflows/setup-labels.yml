@@ -50,10 +50,6 @@ jobs:
           create "work:ready-for-review" "6E40C9" "Agent work complete — awaiting human review"
           create "work:blocked"          "FBCA04" "Work blocked on external input or decision"
 
-          # review:* (Phase 2+)
-          create "review:approved"           "0E8A16" "Reviewer approved — ready to merge"
-          create "review:changes-requested"  "D4C5F9" "Changes required before merge"
-
           # circuit breaker
           create "pause:agents" "B60205" "Circuit breaker — all agent automation skips while present"
 

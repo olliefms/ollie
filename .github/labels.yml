@@ -7,7 +7,6 @@
 #   kind:*      — varied by severity
 #   trust:*     — green spectrum
 #   work:*      — blue (Phase 2+)
-#   review:*    — purple (Phase 2+)
 #   pause:*     — red
 
 labels:
@@ -91,15 +90,6 @@ labels:
   - name: "work:blocked"
     color: "FBCA04"
     description: "Work blocked on external input or decision"
-
-  # ── review:* (Phase 2+) ──────────────────────────────────────────────────
-  - name: "review:approved"
-    color: "0E8A16"
-    description: "Reviewer approved — ready to merge"
-
-  - name: "review:changes-requested"
-    color: "D4C5F9"
-    description: "Changes required before merge"
 
   # ── circuit breaker ───────────────────────────────────────────────────────
   - name: "pause:agents"
