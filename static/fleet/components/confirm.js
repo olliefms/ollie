@@ -106,7 +106,9 @@ function runValidate(validate, values) {
   try {
     problem = validate(values);
   } catch (err) {
-    return `Could not validate: ${err.message}`;
+    // `err` need not be an Error — `throw null` would make `err.message` throw
+    // again from inside this catch, escaping the guard entirely.
+    return `Could not validate: ${err?.message ?? String(err)}`;
   }
   if (!problem) return null;
   return typeof problem === 'string' ? problem : 'That value is not valid.';

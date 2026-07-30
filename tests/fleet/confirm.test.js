@@ -171,6 +171,24 @@ describe('promptFields', () => {
     await expect(pending).resolves.toBeNull();
   });
 
+  // Containment has to be total: reading `.message` off a nullish thrown value
+  // would throw again from inside the catch and escape anyway.
+  it('contains a validate that throws a nullish value', async () => {
+    const pending = promptFields({
+      title: 'Nullish',
+      fields: [{ name: 'a', label: 'A' }],
+      validate: () => { throw null; },
+    });
+    inputFor('a').value = 'x';
+    expect(() => buttonLabelled('OK').click()).not.toThrow();
+
+    expect(overlay()).not.toBeNull();
+    expect(document.querySelector('.dialog__error').hidden).toBe(false);
+
+    press('Escape');
+    await expect(pending).resolves.toBeNull();
+  });
+
   it('treats a non-string truthy validate result as invalid, not as text', async () => {
     const pending = promptFields({
       title: 'Odd',
