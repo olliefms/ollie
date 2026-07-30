@@ -7,7 +7,6 @@
 #   kind:*      — varied by severity
 #   trust:*     — green spectrum
 #   work:*      — blue (Phase 2+)
-#   review:*    — purple (Phase 2+)
 #   pause:*     — red
 
 labels:
