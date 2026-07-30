@@ -1,9 +1,20 @@
 # Agent Automation Architecture
 
-**Status:** Design — pre-implementation
+**Status:** Design — partially implemented; Review stage withdrawn
 **Scope:** Ollie repository (generalizable to other projects)
 **Author:** Jim (ergophobe)
-**Last revised:** May 2026
+**Last revised:** July 2026
+
+> **Review stage withdrawn (2026-07-30).** The Review workflow
+> (`.github/workflows/claude-code-review.yml`) shipped in shadow mode and was
+> removed. Pre-merge review is done interactively with the local `/code-review`
+> skill instead, which covers the same shippability bar with the operator in the
+> loop, so the CI agent was redundant. Consequently there is **no** Phase 3
+> auto-merge path, and the `review:*` label family is retired.
+>
+> Triage (`triage.yml`), the trust list, and the `pause:agents` circuit breaker
+> are unaffected and remain live. The review-stage material below is retained as
+> design history, not as a description of current CI.
 
 ---
 

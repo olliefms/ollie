@@ -92,15 +92,6 @@ labels:
     color: "FBCA04"
     description: "Work blocked on external input or decision"
 
-  # ── review:* (Phase 2+) ──────────────────────────────────────────────────
-  - name: "review:approved"
-    color: "0E8A16"
-    description: "Reviewer approved — ready to merge"
-
-  - name: "review:changes-requested"
-    color: "D4C5F9"
-    description: "Changes required before merge"
-
   # ── circuit breaker ───────────────────────────────────────────────────────
   - name: "pause:agents"
     color: "B60205"
