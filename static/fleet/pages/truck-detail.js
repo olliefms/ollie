@@ -43,7 +43,7 @@ export async function renderTruckDetail(id) {
 
 // Soft delete: backend sets status = Inactive (hides from active lists).
 async function deleteTruck(statusEl, id, unit) {
-  if (!confirmDelete(`truck "${unit}"`)) return;
+  if (!await confirmDelete(`truck "${unit}"`)) return;
   try {
     const res = await apiFetch(`${API_BASE}/trucks/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('trucks'); return; }

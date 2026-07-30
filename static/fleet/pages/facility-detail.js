@@ -2,7 +2,7 @@ import { apiFetch, API_BASE } from '../utils/api.js';
 import { badge, escHtml } from '../utils/format.js';
 import { setContent, navigate } from '../utils/dom.js';
 import { renderDetailPage } from './_detail.js';
-import { confirmDelete } from '../components/confirm.js';
+import { confirmDelete, confirmTyped } from '../components/confirm.js';
 
 function contactsHtml(contacts) {
   if (!contacts || !contacts.length) return '—';
@@ -65,7 +65,7 @@ function showError(statusEl, text) {
 
 // Tier 1 — soft archive (reversible). Default delete.
 async function archive(statusEl, id, name) {
-  if (!confirmDelete(`facility "${name}"`)) return;
+  if (!await confirmDelete(`facility "${name}"`)) return;
   try {
     const res = await apiFetch(`${API_BASE}/facilities/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('facilities'); return; }
@@ -90,9 +90,12 @@ async function reactivate(statusEl, id) {
 // Tier 2 — permanent purge. Type the name to confirm; backend refuses with 409
 // + an enumerated referrer list when any load stop references the facility.
 async function permanentDelete(statusEl, id, name) {
-  const typed = window.prompt(`Permanently delete "${name}"? This cannot be undone.\nType the facility name to confirm:`);
-  if (typed == null) return;
-  if (typed !== name) { showError(statusEl, 'Name did not match — permanent delete cancelled.'); return; }
+  const confirmed = await confirmTyped({
+    title: 'Permanently delete facility',
+    message: `Permanently delete "${name}"? This cannot be undone.`,
+    expected: name,
+  });
+  if (!confirmed) return;
   try {
     const res = await apiFetch(`${API_BASE}/facilities/${encodeURIComponent(id)}/permanent`, { method: 'DELETE' });
     if (res.ok || res.status === 204) { navigate('facilities'); return; }

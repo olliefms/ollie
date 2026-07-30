@@ -359,6 +359,21 @@ impl DbClient {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
+    /// Trips that currently *hold* this load — i.e. carry resources committed to
+    /// it. Deliberately narrower than `count_active_trips_for_load`, which also
+    /// counts `planned` trips: a planned trip blocks deleting the load (it still
+    /// references it) but does not justify keeping the load at `assigned`. Use
+    /// this to decide the load's denormalized status, and the wider count to guard
+    /// deletes.
+    pub async fn count_load_holding_trips(&self, load_id: Uuid) -> Result<usize, AppError> {
+        let id_str = load_id.to_string();
+        let filter = format!(
+            "load_id = '{id_str}' AND status IN ('assigned', 'dispatched', 'in_transit')"
+        );
+        self.trip_table.count_rows(Some(filter)).await
+            .map_err(|e| AppError::Internal(e.to_string()))
+    }
+
     pub async fn get_last_trip_for_driver(&self, driver_id: Uuid) -> Result<Option<TripRecord>, AppError> {
         let id_str = driver_id.to_string();
         let stream = self.trip_table.query()

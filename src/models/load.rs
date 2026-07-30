@@ -83,6 +83,13 @@ impl LoadStatus {
             (Self::Dispatched | Self::InTransit, Self::Delivered) => true,
             (Self::Delivered, Self::Invoiced) => true,
             (Self::Invoiced, Self::Settled) => true,
+            // Release edges — the exact inverses of the two assignment steps above.
+            // A load's status is denormalized from its trips, so when a trip is
+            // unassigned or undispatched the load must be able to follow it back
+            // down; without these the lifecycle's demote attempt was rejected and
+            // the load kept claiming `assigned` with no trip holding it.
+            (Self::Assigned, Self::Planned) => true,
+            (Self::Dispatched, Self::Assigned) => true,
             // Cancel only from pre-delivery states; delivered/invoiced/settled are terminal
             (Self::Planned | Self::Assigned | Self::Dispatched | Self::InTransit, Self::Cancelled) => true,
             _ => false,

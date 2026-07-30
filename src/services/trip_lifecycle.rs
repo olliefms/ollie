@@ -14,6 +14,25 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+/// Walk a load's denormalized status back down after its trips released it.
+/// Best-effort like the resource cascades — a stale load status must not fail the
+/// trip operation the caller asked for — but the failure is logged rather than
+/// discarded: a silently swallowed `Assigned -> Planned` rejection is exactly what
+/// left production loads claiming `assigned` with no trip holding them.
+async fn demote_released_load(state: &AppState, load_id: Uuid, target: LoadStatus) {
+    let label = target.as_str();
+    if let Err(e) = state
+        .db
+        .transition_load_status(load_id, target, None, None, None)
+        .await
+    {
+        tracing::warn!(
+            %load_id, target = label, error = %e,
+            "load status not demoted after its trip was released"
+        );
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct AssignTripRequest {
     pub driver_id: Uuid,
@@ -171,12 +190,16 @@ pub async fn unassign(state: &AppState, trip_id: Uuid) -> Result<TripRecord, App
         }
     }
 
+    // The trip is back to Planned, so it no longer holds the load. Count only
+    // holding trips (assigned/dispatched/in_transit) — counting planned ones would
+    // include the trip we just released, leaving the load stuck at `assigned` with
+    // nothing actually holding it.
     if let Some(load_id) = existing.load_id {
-        let active = state.db.count_active_trips_for_load(load_id).await.unwrap_or(1);
-        if active == 0 {
+        let holding = state.db.count_load_holding_trips(load_id).await.unwrap_or(1);
+        if holding == 0 {
             if let Ok(load) = state.db.get_load_by_id(load_id).await {
                 if load.status == LoadStatus::Assigned {
-                    let _ = state.db.transition_load_status(load_id, LoadStatus::Planned, None, None, None).await;
+                    demote_released_load(state, load_id, LoadStatus::Planned).await;
                 }
             }
         }
@@ -290,7 +313,7 @@ pub async fn undispatch(state: &AppState, trip_id: Uuid) -> Result<TripRecord, A
             if !any_dispatched {
                 if let Ok(load) = state.db.get_load_by_id(load_id).await {
                     if load.status == LoadStatus::Dispatched {
-                        let _ = state.db.transition_load_status(load_id, LoadStatus::Assigned, None, None, None).await;
+                        demote_released_load(state, load_id, LoadStatus::Assigned).await;
                     }
                 }
             }
@@ -319,12 +342,15 @@ pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppEr
         let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
     }
 
+    // Same holding-trip rule as `unassign`: a leftover *planned* sibling trip
+    // doesn't hold the load, so it must not pin the load at `assigned`. A load
+    // already Planned needs no move (and Planned -> Planned is not a transition).
     if let Some(load_id) = existing.load_id {
-        let active = state.db.count_active_trips_for_load(load_id).await.unwrap_or(1);
-        if active == 0 {
+        let holding = state.db.count_load_holding_trips(load_id).await.unwrap_or(1);
+        if holding == 0 {
             if let Ok(load) = state.db.get_load_by_id(load_id).await {
-                if load.status == LoadStatus::Planned || load.status == LoadStatus::Assigned {
-                    let _ = state.db.transition_load_status(load_id, LoadStatus::Planned, None, None, None).await;
+                if load.status == LoadStatus::Assigned {
+                    demote_released_load(state, load_id, LoadStatus::Planned).await;
                 }
             }
         }

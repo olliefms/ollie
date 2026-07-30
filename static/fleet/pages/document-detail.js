@@ -1,6 +1,7 @@
 import { apiFetch, API_BASE } from '../utils/api.js';
 import { escHtml, badge, fmtBytes, fmtDate } from '../utils/format.js';
-import { setContent, goBack } from '../utils/dom.js';
+import { setContent, goBack, withPending } from '../utils/dom.js';
+import { confirmAction } from '../components/confirm.js';
 
 // Object-URL lifecycle for the inline preview. renderRoute() calls
 // revokeActiveObjectUrl() on every navigation so blob URLs don't leak.
@@ -83,20 +84,29 @@ export async function renderDocumentDetailView(id) {
 
     document.getElementById('doc-back').addEventListener('click', goBack);
 
-    document.getElementById('doc-download').addEventListener('click', async () => {
+    const downloadBtn = document.getElementById('doc-download');
+    downloadBtn.addEventListener('click', async () => {
       try {
-        const fileResp = await apiFetch(`${API_BASE}/blob/${id}`);
-        if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
-        const blob = await fileResp.blob();
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = doc.name || 'document';
-        a.click();
-        URL.revokeObjectURL(url);
+        await withPending(downloadBtn, async () => {
+          // A document download has no size bound, so it opts out of the default
+          // request deadline rather than aborting a legitimately slow transfer.
+          const fileResp = await apiFetch(`${API_BASE}/blob/${id}`, { timeoutMs: 0 });
+          if (!fileResp.ok) throw new Error(`HTTP ${fileResp.status}`);
+          const blob = await fileResp.blob();
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = doc.name || 'document';
+          a.click();
+          URL.revokeObjectURL(url);
+        });
       } catch (err) {
         if (err.message !== 'Unauthorized — please sign in again.') {
-          alert(`Download failed: ${err.message}`);
+          await confirmAction({
+            title: 'Download failed',
+            message: err.message,
+            confirmLabel: 'OK',
+          });
         }
       }
     });

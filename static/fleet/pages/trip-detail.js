@@ -3,6 +3,9 @@ import {
   escHtml, badge, shortId, fmtDate, fmtArrivalWindow, fmtMiles,
 } from '../utils/format.js';
 import { setContent, navigate, goBack } from '../utils/dom.js';
+import {
+  confirmAction, confirmTyped, promptText, promptFields, chooseOption,
+} from '../components/confirm.js';
 
 // Status → allowed transitions (mirrors the backend lifecycle).
 const CAN_ASSIGN     = (s) => s === 'planned';
@@ -25,14 +28,17 @@ function padSeconds(t) {
   return /T\d{2}:\d{2}$/.test(t) ? `${t}:00` : t;
 }
 
-// Browser datetime-local prompt → naive string. Returns null if cancelled.
-function promptNaiveDatetime(label) {
-  const def = nowNaive().slice(0, 16); // YYYY-MM-DDTHH:MM for the prompt default
-  const v = window.prompt(`${label} (YYYY-MM-DDTHH:MM):`, def);
-  if (v === null) return null;
-  const trimmed = v.trim();
-  if (!trimmed) return null;
-  return padSeconds(trimmed);
+// Datetime dialog → naive string. Returns null if cancelled or left blank.
+async function promptNaiveDatetime(label) {
+  const def = nowNaive().slice(0, 16); // YYYY-MM-DDTHH:MM for the default
+  const v = await promptText({
+    title: label,
+    label: `${label} (YYYY-MM-DDTHH:MM)`,
+    value: def,
+    confirmLabel: 'Save',
+  });
+  if (v === null || !v) return null;
+  return padSeconds(v);
 }
 
 export async function renderTripDetail(id) {
@@ -232,11 +238,15 @@ async function assignTrip(statusEl, id) {
       fetchList('trucks', ['items']),
       fetchList('trailers', ['items']),
     ]);
-    const driverId = pickFrom('driver', drivers, (d) => d.name || d.id);
+    const driverId = await pickFrom('driver', drivers, (d) => d.name || d.id);
     if (driverId === null) return;
-    const truckId = pickFrom('truck', trucks, (t) => t.unit_number || t.id);
+    const truckId = await pickFrom('truck', trucks, (t) => t.unit_number || t.id);
     if (truckId === null) return;
-    const trailerInput = window.prompt('Trailer unit numbers (comma-separated, optional):', '');
+    const trailerInput = await promptText({
+      title: 'Attach trailers',
+      label: 'Trailer unit numbers (comma-separated, optional)',
+      confirmLabel: 'Assign',
+    });
     if (trailerInput === null) return;
     const trailerIds = resolveTrailerIds(trailerInput, trailers);
 
@@ -250,21 +260,22 @@ async function assignTrip(statusEl, id) {
   }
 }
 
-// Prompt for one id from a list by index. Returns the id, or null if cancelled.
-function pickFrom(label, items, labelFn) {
+// Pick one id from a list. Returns the id, or null if cancelled or none exist.
+// A real select beats the old numbered-menu prompt: no invalid input to reject.
+async function pickFrom(label, items, labelFn) {
   if (items.length === 0) {
-    window.alert(`No ${label}s available.`);
+    await confirmAction({
+      title: `No ${label}s available`,
+      message: `There are no ${label}s to assign. Create one first.`,
+      confirmLabel: 'OK',
+    });
     return null;
   }
-  const menu = items.map((it, i) => `${i + 1}. ${labelFn(it)}`).join('\n');
-  const raw = window.prompt(`Select a ${label} by number:\n${menu}`, '1');
-  if (raw === null) return null;
-  const n = parseInt(raw.trim(), 10);
-  if (!Number.isInteger(n) || n < 1 || n > items.length) {
-    window.alert(`Invalid ${label} selection.`);
-    return null;
-  }
-  return items[n - 1].id;
+  return chooseOption({
+    title: `Select a ${label}`,
+    label: label.charAt(0).toUpperCase() + label.slice(1),
+    options: items.map((it) => ({ value: it.id, label: labelFn(it) })),
+  });
 }
 
 function resolveTrailerIds(input, trailers) {
@@ -292,7 +303,7 @@ async function fetchList(path, keys) {
 }
 
 async function stopTime(statusEl, id, seq, action, field, label) {
-  const dt = promptNaiveDatetime(label);
+  const dt = await promptNaiveDatetime(label);
   if (dt === null) return;
   try {
     const res = await apiFetch(`${API_BASE}/trips/${id}/stops/${seq}/${action}`, {
@@ -306,13 +317,18 @@ async function stopTime(statusEl, id, seq, action, field, label) {
 }
 
 async function stopLate(statusEl, id, seq) {
-  const eta = window.prompt('ETA (YYYY-MM-DDTHH:MM, optional):', '');
-  if (eta === null) return;
-  const notes = window.prompt('Notes (optional):', '');
-  if (notes === null) return;
+  const values = await promptFields({
+    title: 'Mark stop late',
+    confirmLabel: 'Mark late',
+    fields: [
+      { name: 'eta', label: 'ETA (YYYY-MM-DDTHH:MM, optional)' },
+      { name: 'notes', label: 'Notes (optional)' },
+    ],
+  });
+  if (values === null) return;
   const body = {};
-  if (eta.trim()) body.eta = padSeconds(eta.trim());
-  if (notes.trim()) body.notes = notes.trim();
+  if (values.eta) body.eta = padSeconds(values.eta);
+  if (values.notes) body.notes = values.notes;
   try {
     const res = await apiFetch(`${API_BASE}/trips/${id}/stops/${seq}/late`, {
       method: 'POST',
@@ -327,16 +343,19 @@ async function stopLate(statusEl, id, seq) {
 }
 
 async function checkCall(statusEl, id) {
-  const location = window.prompt('Location:', '');
-  if (location === null) return;
-  if (!location.trim()) { showError(statusEl, 'Check call requires a location.'); return; }
-  const notes = window.prompt('Notes (optional):', '');
-  if (notes === null) return;
-  const eta = window.prompt('ETA to next stop (YYYY-MM-DDTHH:MM, optional):', '');
-  if (eta === null) return;
-  const body = { location: location.trim() };
-  if (notes.trim()) body.notes = notes.trim();
-  if (eta.trim()) body.eta_next_stop = padSeconds(eta.trim());
+  const values = await promptFields({
+    title: 'Check call',
+    confirmLabel: 'Record',
+    fields: [
+      { name: 'location', label: 'Location', required: true },
+      { name: 'notes', label: 'Notes (optional)' },
+      { name: 'eta', label: 'ETA to next stop (YYYY-MM-DDTHH:MM, optional)' },
+    ],
+  });
+  if (values === null) return;
+  const body = { location: values.location };
+  if (values.notes) body.notes = values.notes;
+  if (values.eta) body.eta_next_stop = padSeconds(values.eta);
   try {
     const res = await apiFetch(`${API_BASE}/trips/${id}/check-call`, {
       method: 'POST',
@@ -364,15 +383,22 @@ async function recalcMiles(statusEl, id) {
 
 async function deleteTrip(statusEl, id, status, tripNumber) {
   if (status === 'cancelled') {
-    const label = tripNumber || 'DELETE';
-    const prompt = tripNumber
-      ? `Permanently delete trip "${tripNumber}"? This cannot be undone.\nType the trip number to confirm:`
-      : 'Permanently delete this trip? This cannot be undone.\nType DELETE to confirm:';
-    const typed = window.prompt(prompt);
-    if (typed === null) return;
-    if (typed !== label) { showError(statusEl, 'Trip number did not match — delete cancelled.'); return; }
+    const confirmed = await confirmTyped({
+      title: 'Permanently delete trip',
+      message: tripNumber
+        ? `Permanently delete trip "${tripNumber}"? This cannot be undone.`
+        : 'Permanently delete this trip? This cannot be undone.',
+      expected: tripNumber || 'DELETE',
+    });
+    if (!confirmed) return;
   } else {
-    if (!confirm('Cancel this trip? It can be permanently deleted afterwards once cancelled.')) return;
+    const ok = await confirmAction({
+      title: 'Cancel trip',
+      message: 'Cancel this trip? It can be permanently deleted afterwards once cancelled.',
+      confirmLabel: 'Cancel trip',
+      danger: true,
+    });
+    if (!ok) return;
   }
   try {
     const res = await apiFetch(`${API_BASE}/trips/${id}`, { method: 'DELETE' });
