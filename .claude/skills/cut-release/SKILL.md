@@ -37,9 +37,18 @@ Triage as in `/work-issue`. Hard cap of 2 iterations; blockers still standing at
 
 ## Bump the version — including this repo's hidden stamps
 
-Update the manifest version (`Cargo.toml` `[package] version`, `package.json` `"version"`, or `pyproject.toml`), then refresh the lockfile so it matches (`cargo build`, `npm install`, etc.).
+`Cargo.toml` `[package] version` is the **only** version manifest in this repo — `package.json` has no `version` field, so don't go looking for one. Bump it, then `cargo build` to refresh `Cargo.lock`.
 
-**Then update the version-coupled asset stamps**, which live outside the manifest and must match the release version. Issue and sprint PRs are explicitly told not to touch these, so setting them is *your* job. In this repo that's the driver PWA cache stamp — `CACHE_NAME = 'ollie-vX.Y.Z'` in `static/driver/sw.js` and the `?v=X.Y.Z` query stamps in `static/driver/*.html`. Grep the previous version string to find every occurrence; a missed stamp ships a stale service worker.
+**Then update the version-coupled asset stamps**, which live outside the manifest and must match the release version. Issue and sprint PRs are explicitly told not to touch these, so setting them is *your* job. There are **two** static surfaces, and they are not symmetric:
+
+- **Driver PWA** — `CACHE_NAME = 'ollie-vX.Y.Z'` in `static/driver/sw.js`, plus the `?v=X.Y.Z` stamps in `static/driver/*.html` *and* in the `STATIC_ASSETS` array inside `sw.js`. These are load-bearing: the service worker precaches that exact list, so a missed stamp ships a stale SW.
+- **Fleet SPA** — the `?v=X.Y.Z` stamps in `static/fleet/index.html` (currently `base.css`, `components.css`, `app.js`). Fleet has **no** service worker.
+
+Bump the stamps only on the surface whose files actually changed (`git diff <last-tag>..HEAD -- static/driver static/fleet`); leaving an untouched surface at its older version is correct and expected — driver sat at 2.5.0 through the v2.5.1 release.
+
+Grep the previous version string to find every occurrence: `grep -rn "X.Y.Z" static/`.
+
+**Fleet's stamps are belt-and-braces, not the safety net.** Only three files are stamped, and a query string does not propagate through `app.js`'s relative `import` specifiers — so everything under `static/fleet/{pages,components,utils}/` is fetched unversioned. Correctness comes instead from the `Cache-Control: no-cache` layer on the fleet `ServeDir` (`src/api/mod.rs`), which forces an If-Modified-Since revalidation on every asset. If you ever see that layer removed, a fleet release is unsafe no matter how the stamps look — see `tests/fleet_static_cache_test.rs`. Issue #291 tracks replacing the whole manual-stamp scheme with server-injected versions.
 
 Commit the bump (`chore: bump to vX.Y.Z`) and push to main.
 
@@ -58,6 +67,7 @@ Generate from `git log <last-tag>..HEAD`, grouped by type, referencing the issue
 | Tagging before bumping | Tag points at the bump commit — bump first, tag second. |
 | Pushing the tag as `vX.Y.Z` | Use `refs/tags/vX.Y.Z`, or git may push a branch. |
 | Forgetting the PWA cache stamps | Grep the old version string; `sw.js` + `?v=` stamps must match the manifest. |
+| Bumping only the driver stamps | Fleet has its own `?v=` stamps in `static/fleet/index.html`. Check both surfaces. |
 | Cross-PR Opus on a one-PR release | Skip it — already reviewed at merge. |
 | Looping Opus past 2 iterations | Escalate, same rule as `/work-issue`. |
 | Tagging a red tree | Hard stop. Fix on main first. |

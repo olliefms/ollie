@@ -17,10 +17,12 @@ pub mod trucks;
 
 use crate::{models, AppState};
 use axum::{
+    http::{header, HeaderValue},
     response::IntoResponse,
     routing::get,
     Router,
 };
+use tower::Layer as _;
 use utoipa::OpenApi;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
 
@@ -565,11 +567,26 @@ pub fn router(state: AppState) -> Router {
             "static/driver/index.html",
         ));
 
-    // Static file serving for the fleet SPA; SPA fallback to index.html
-    let fleet_static = tower_http::services::ServeDir::new("static/fleet")
-        .fallback(tower_http::services::ServeFile::new(
-            "static/fleet/index.html",
-        ));
+    // Static file serving for the fleet SPA; SPA fallback to index.html.
+    //
+    // `no-cache` is load-bearing, not hygiene: the `?v=` stamps in index.html
+    // cover only three files and don't propagate through app.js's relative
+    // `import` specifiers, so pages/, components/, and utils/ are all fetched
+    // unversioned. Without forced revalidation a deploy can pair a fresh
+    // router.js with a cached utils/dom.js. See AGENTS.md and
+    // tests/fleet_static_cache_test.rs. Driver is exempt — its SW owns caching.
+    //
+    // Layered onto the service, not a nesting Router: a `fallback_service`
+    // mounted with `nest()` 404s the bare `/fleet/` entry point.
+    let fleet_static = tower_http::set_header::SetResponseHeaderLayer::overriding(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache"),
+    )
+    .layer(
+        tower_http::services::ServeDir::new("static/fleet").fallback(
+            tower_http::services::ServeFile::new("static/fleet/index.html"),
+        ),
+    );
 
     Router::new()
         .route("/openapi.json", get(openapi_json))
