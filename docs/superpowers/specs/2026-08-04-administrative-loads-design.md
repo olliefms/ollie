@@ -36,10 +36,14 @@ Affected records at time of writing (all `planned`):
 
 Three facts discovered during design that shape the work:
 
-1. **`load_doctor` needs no change.** `src/services/doctors/load.rs` checks only
-   facility geocoding, scheduled windows, actual ordering, timezones, and rate sums.
-   It has no trip-related checks, and every stop check iterates `load.stops` and
-   no-ops on an empty list. There is nothing to relax.
+1. **`load_doctor` needs no change**, though not for the reason originally assumed.
+   Its stop checks iterate `load.stops` and no-op on an empty list, and its rate
+   check is kind-agnostic. PR #408 (see Dependencies) adds the first trip-aware
+   check, `load.status_matches_trips` — but it is doubly closed to administrative
+   loads: it early-returns unless the load is `Dispatched | InTransit`, which an
+   administrative load never enters, and its predicate
+   `load_trips_all_delivered` returns `false` on an empty survivor set, which is
+   what a trip-free load always has. Nothing to relax, nothing to exempt.
 
 2. **These loads are re-queued for ORS routing on every startup.**
    `list_loads_needing_routing` (`src/db/load_ops.rs:259`) selects
@@ -213,6 +217,9 @@ accepted cost is that omitting stops on a freight load stays silent.
 - `build_load_filter` coverage for each filter including `facility_id`.
 - `tool_list_loads` passes each argument through to the DB layer.
 - A status transition emits the corresponding `load.*` event.
+- `load_doctor` reports no `load.status_matches_trips` finding for an administrative
+  load. It cannot today (finding 1), so this is regression insurance against a later
+  loosening of that check's status gate.
 - Vitest for the `canInvoice` gate and `ROUTE_BASE.load`.
 
 ## Acceptance
@@ -230,14 +237,40 @@ settle_load(id=...)
 `list_loads` filtered to unsettled statuses no longer returns the paid guarantee.
 `list_loads(tags=["guarantee"])` returns only tagged loads.
 
+## Dependencies
+
+**PR #408** (`fix(trips): load stranded in in_transit when a sibling trip is
+cancelled or completed`, closes #395) is open and in code review. It lands first.
+Three things it changes that this design assumes:
+
+- `models::trip::load_trips_all_delivered` becomes the single "has this load
+  delivered" predicate — cancelled trips dropped, `Delivered | Completed` accepted,
+  `false` on an empty survivor set. The last clause is what keeps trip-free
+  administrative loads out of the new doctor check.
+- `load_doctor` gains `load.status_matches_trips` and its first auto-apply,
+  `advance_load_to_delivered`, guarded by `uncovered_delivery_stops`. See finding 1
+  for why administrative loads fall outside it.
+- `tool_load_doctor` establishes the pattern for a stricter-than-tool scope check:
+  `scope_granted(scopes, "loads:write")` inside the handler, where the args are
+  visible. That is the precedent the deferred `set_load_status` should follow.
+
+Expected overlap is in `AGENTS.md` (both append an invariant) and possibly the
+`load_doctor` module doc comment. The regions touched in `mcp.rs` are disjoint —
+#408 edits the scope table, the `load_doctor` schema, and its handler; this work
+edits the `list_loads` schema, `tool_list_loads`, and `create_load`'s `required`
+list. Rebase on `main` once #408 merges rather than branching from it.
+
 ## Out of scope
 
 - **Issue #395** — load stranded in `in_transit` when a sibling trip is cancelled or
-  completed. Already filed, already in progress, and load 4819063 has already been
-  repaired by manual LanceDB surgery.
+  completed. Fixed by PR #408; load 4819063 was already repaired by manual LanceDB
+  surgery beforehand.
 - **`set_load_status`** — a guarded, forward-only, actor-logged status setter for
-  back-office correction. Becomes its own issue stacked on #395; it cannot be added
-  to #395 while that work is in flight.
+  back-office correction. Its own issue, stacked on #395, which cannot absorb it
+  while that work is in flight. Note that #408 narrows what remains: the
+  `dispatched`/`in_transit`-strand repair now has a supported path via
+  `load_doctor apply=true`, so the residual case is generic correction of a load
+  whose status disagrees with reality for some *other* reason.
 - **Issue #396** — carrier settlement statement entity. Adjacent to the bookkeeping
   motivation but a different record type.
 - **`load_doctor`** — needs no change, per finding 1.
