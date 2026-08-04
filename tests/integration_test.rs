@@ -5425,12 +5425,13 @@ async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    // Reproduce the stranded shape. The trip runs its stops for real, so the
-    // actuals land on the load's stops through the normal cascade — but the load
-    // is parked at `assigned`, which neither load-status cascade will move
+    // Reproduce the stranded shape. The trip runs its stops for real, but the
+    // load is parked at `assigned`, which neither load-status cascade will move
     // (`Dispatched -> InTransit` and `InTransit -> Delivered` are the only two).
     // That is the "cascade never fired" condition; the load is then walked up to
-    // the in_transit it was stranded at.
+    // the in_transit it was stranded at. The trip's own delivery stop is at the
+    // load's delivery facility, so the doctor's coverage check is satisfied and
+    // the fix stays auto-applyable.
     let lid: uuid::Uuid = load_id.parse().unwrap();
     let tid: uuid::Uuid = trip_id.parse().unwrap();
     state.db.transition_load_status(lid, ollie::models::LoadStatus::Assigned, None, None, None)
@@ -5492,6 +5493,122 @@ async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({ "invoice_number": "STRAND-1" })).await;
     assert_eq!(inv.status_code(), 200, "#395: repaired load must be invoiceable");
+}
+
+async fn create_trip_on_load(
+    server: &axum_test::TestServer, auth: &str, load_id: &str, stops: serde_json::Value,
+) -> String {
+    let resp = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, auth)
+        .json(&serde_json::json!({ "load_id": load_id, "stops": stops }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "trip create: {}", resp.text());
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+/// #395 — the deliver-then-cancel ordering, driven entirely through the real
+/// APIs. Leg 1 hands off at the relay point and delivers; leg 2, which was to
+/// run the relay -> consignee half, is cancelled while still planned. Every
+/// *live* trip has now delivered, so `load.status_matches_trips` fires — but
+/// the load's delivery stop was never reached, and `delivered` has no reverse
+/// edge, so the fix must be held for a human rather than auto-applied.
+#[tokio::test]
+async fn test_load_doctor_holds_the_fix_when_a_cancelled_leg_left_a_stop_unserved() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "doctor395b@example.com", "password-doctor395b").await;
+    let auth = format!("Bearer {token}");
+    let shipper = create_test_facility(&server, "Relay Shipper", "Akron, OH").await;
+    let relay = create_test_facility(&server, "Relay Yard", "Gary, IN").await;
+    let consignee = create_test_facility(&server, "Relay Consignee", "Omaha, NE").await;
+
+    let load_id = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "customer_name": "Relay Co",
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                  "facility_id": shipper, "scheduled_arrive": "2026-08-01T08:00:00",
+                  "timezone": "America/New_York" },
+                { "sequence": 2, "stop_type": "delivery", "service_type": "live_unload",
+                  "facility_id": consignee, "scheduled_arrive": "2026-08-02T16:00:00",
+                  "timezone": "America/Chicago" }
+            ],
+            "rate_items": []
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let leg1 = create_trip_on_load(&server, &auth, &load_id, serde_json::json!([
+        { "sequence": 1, "stop_type": "pickup", "facility_id": shipper,
+          "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/New_York" },
+        { "sequence": 2, "stop_type": "relay", "facility_id": relay,
+          "scheduled_arrive": "2026-08-01T20:00:00", "timezone": "America/Chicago" }
+    ])).await;
+    // Leg 2 exists (planned) before leg 1 delivers, so leg 1's cascade correctly
+    // leaves the load in_transit — it is the *cancel* that strands it.
+    let leg2 = create_trip_on_load(&server, &auth, &load_id, serde_json::json!([
+        { "sequence": 1, "stop_type": "pickup", "facility_id": relay,
+          "scheduled_arrive": "2026-08-02T06:00:00", "timezone": "America/Chicago" },
+        { "sequence": 2, "stop_type": "delivery", "facility_id": consignee,
+          "scheduled_arrive": "2026-08-02T16:00:00", "timezone": "America/Chicago" }
+    ])).await;
+
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Relay Driver" })).await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "unit_number": "TRK-RELAY" })).await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    server.post(&format!("/fleet/api/v1/trips/{leg1}/assign"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id, "trailer_ids": [] }))
+        .await;
+    server.post(&format!("/fleet/api/v1/trips/{leg1}/dispatch"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    for (seq, arrive, depart) in [
+        (1, "2026-08-01T08:05:00", "2026-08-01T09:00:00"),
+        (2, "2026-08-01T20:05:00", "2026-08-01T21:00:00"),
+    ] {
+        server.post(&format!("/fleet/api/v1/trips/{leg1}/stops/{seq}/arrive"))
+            .add_header(header::AUTHORIZATION, &auth)
+            .json(&serde_json::json!({ "actual_arrive": arrive })).await;
+        server.post(&format!("/fleet/api/v1/trips/{leg1}/stops/{seq}/depart"))
+            .add_header(header::AUTHORIZATION, &auth)
+            .json(&serde_json::json!({ "actual_depart": depart })).await;
+    }
+
+    let lid: uuid::Uuid = load_id.parse().unwrap();
+    assert_eq!(
+        state.db.get_load_by_id(lid).await.unwrap().status,
+        ollie::models::LoadStatus::InTransit,
+        "a still-planned leg 2 must keep the load in_transit",
+    );
+
+    let cancelled = server.post(&format!("/fleet/api/v1/trips/{leg2}/cancel"))
+        .add_header(header::AUTHORIZATION, &auth).await;
+    assert_eq!(cancelled.status_code(), 200, "cancel leg 2: {}", cancelled.text());
+    assert_eq!(
+        state.db.get_load_by_id(lid).await.unwrap().status,
+        ollie::models::LoadStatus::InTransit,
+        "cancelling the last blocking leg strands the load — no cascade re-runs",
+    );
+
+    let report = mcp_call(&server, &token, "load_doctor",
+        serde_json::json!({ "load_id": load_id, "apply": true })).await;
+    let f = report["findings"].as_array().unwrap().iter()
+        .find(|f| f["check"] == "load.status_matches_trips")
+        .expect("#395: the strand is still worth surfacing");
+    assert_eq!(f["fix"]["safe_to_auto_apply"], serde_json::json!(false),
+        "#395: an uncovered delivery stop must hold the fix: {f}");
+    assert!(report["applied"].as_array().unwrap().is_empty(),
+        "applied: {:?}", report["applied"]);
+    assert_eq!(
+        state.db.get_load_by_id(lid).await.unwrap().status,
+        ollie::models::LoadStatus::InTransit,
+        "#395: the load must not be advanced past a stop nobody served",
+    );
 }
 
 // ── Task 5: MCP create_trip/update_trip/recalculate_trip_miles + filters ───────

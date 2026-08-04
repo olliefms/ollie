@@ -20,8 +20,8 @@
 //!   `status` rather than filling a `None`. That is allowed only because the
 //!   move is forward-only, idempotent, and guarded by the state machine — and
 //!   only when a second, independent signal agrees the move is earned (see
-//!   `unserved_delivery_stops`). Where it doesn't, the disagreement is reported
-//!   as a conflict and the caller decides, exactly as above.
+//!   `uncovered_delivery_stops`). Where it doesn't, the disagreement is
+//!   reported as a conflict and the caller decides, exactly as above.
 //! - **No cross-resource cascade.** trip_doctor does not silently call
 //!   load_doctor or facility_doctor. It *reports* "facility X failed checks
 //!   — recommend facility_doctor"; the caller composes.

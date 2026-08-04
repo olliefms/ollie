@@ -12,7 +12,10 @@ use uuid::Uuid;
 
 use crate::{
     error::AppError,
-    models::{load_trips_all_delivered, LoadRecord, LoadStatus, StopType},
+    models::{
+        load_trips_all_delivered, LoadRecord, LoadStatus, StopType, TripRecord, TripStatus,
+        TripStop, TripStopType,
+    },
     AppState,
 };
 
@@ -138,7 +141,7 @@ async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report:
         .iter()
         .map(|t| format!("{} ({})", t.trip_number, t.status.as_str()))
         .collect();
-    let conflicts = unserved_delivery_stops(load);
+    let conflicts = uncovered_delivery_stops(load, &trips);
     let safe_to_auto_apply = conflicts.is_empty();
     report.push(Finding {
         check: "load.status_matches_trips".into(),
@@ -161,34 +164,44 @@ async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report:
     });
 }
 
-/// Delivery stops the load's own record says were never served, as
-/// `ProposedFix` conflicts.
+/// Load delivery stops that no surviving trip ever visited, as `ProposedFix`
+/// conflicts.
 ///
-/// "Every live trip has delivered" is necessary but not sufficient: cancelling
-/// the one *planned* trip that covered the back half of a relay also leaves the
-/// load with nothing but delivered trips, and advancing it would claim freight
-/// reached a stop nobody visited. `Delivered` has no reverse edge
-/// (`can_transition_to` only allows `Delivered -> Invoiced`), so a wrong
-/// auto-apply is as unrecoverable as the strand it was meant to fix.
+/// "Every live trip has delivered" is necessary but not sufficient. On a relay,
+/// deliver leg 1 and then cancel the still-`Planned` leg 2 and the predicate
+/// holds while the load's delivery stop was never reached — advancing the load
+/// would claim freight arrived somewhere nobody went, and `Delivered` has no
+/// reverse edge (`can_transition_to` only allows `Delivered -> Invoiced`), so a
+/// wrong auto-apply is as unrecoverable as the strand it was meant to fix. It
+/// also makes the load invoiceable and settleable.
 ///
-/// The trip cascade writes `actual_depart` through to the linked load stop, so
-/// a load carrying actuals on some stops but not its deliveries is actively
-/// contradicting the trips, and the fix is held for a human. A load with *no*
-/// stop actuals at all is a different case: `load_stop_index` is only populated
-/// when a trip derives its stops from the load (`apply_trip_create` in
-/// `src/api/trips.rs`), so a trip created with explicit stops never cascades
-/// actuals down and the load has nothing to say either way. Treating that
-/// silence as a conflict would make the repair path inert for most real loads,
-/// so absence of signal is not evidence of an unserved stop.
-fn unserved_delivery_stops(load: &LoadRecord) -> Vec<String> {
-    let carries_actuals = load.stops.iter()
-        .any(|s| s.actual_arrive.is_some() || s.actual_depart.is_some());
-    if !carries_actuals {
+/// The corroborating signal is the trips' own stops, matched to the load's by
+/// facility. That works on exactly the multi-trip loads this is guarding: it
+/// deliberately does *not* use the load's `actual_depart` values, because those
+/// only exist when `load_stop_index` is populated, and `apply_trip_create`
+/// (`src/api/trips.rs`) sets it only for a trip that derives *every* stop from
+/// the load — which a relay leg by definition cannot do. Corroborating on
+/// actuals would therefore go quiet on precisely the loads at risk.
+///
+/// A trip stop with no `facility_id` can't be matched and might be the one that
+/// covers an otherwise-unmatched load stop, so that is absence of signal, not
+/// evidence: report the strand, leave the fix applyable.
+fn uncovered_delivery_stops(load: &LoadRecord, trips: &[TripRecord]) -> Vec<String> {
+    let live_deliveries: Vec<&TripStop> = trips.iter()
+        .filter(|t| t.status != TripStatus::Cancelled)
+        .flat_map(|t| t.stops.iter())
+        .filter(|s| s.stop_type == TripStopType::Delivery)
+        .collect();
+    if live_deliveries.iter().any(|s| s.facility_id.is_none()) {
         return Vec::new();
     }
     load.stops.iter()
-        .filter(|s| s.stop_type == StopType::Delivery && s.actual_depart.is_none())
-        .map(|s| format!("stop[{}] has no actual_depart — it was never served", s.sequence))
+        .filter(|ls| ls.stop_type == StopType::Delivery)
+        .filter(|ls| !live_deliveries.iter().any(|ts| ts.facility_id == Some(ls.facility_id)))
+        .map(|ls| format!(
+            "stop[{}] (facility {}) is not covered by any delivered trip — it was never served",
+            ls.sequence, ls.facility_id,
+        ))
         .collect()
 }
 

@@ -73,16 +73,26 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now()
 }
 
-fn load_stop(seq: u32, stop_type: StopType, actual_depart: Option<&str>) -> Stop {
+/// Fixed facilities so a load stop and the trip stop that serves it can be
+/// matched — that pairing is the signal `load_doctor` corroborates against.
+fn pickup_facility() -> Uuid {
+    Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap()
+}
+
+fn delivery_facility() -> Uuid {
+    Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap()
+}
+
+fn load_stop(seq: u32, stop_type: StopType, facility_id: Uuid) -> Stop {
     Stop {
         sequence: seq,
         stop_type,
         service_type: ServiceType::LiveLoad,
-        facility_id: Uuid::new_v4(),
+        facility_id,
         scheduled_arrive: "2026-05-22T08:00:00".into(),
         scheduled_arrive_end: None,
-        actual_arrive: actual_depart.map(|_| "2026-05-22T09:00:00".into()),
-        actual_depart: actual_depart.map(str::to_string),
+        actual_arrive: None,
+        actual_depart: None,
         expected_dwell_minutes: None,
         detention_free_minutes: None,
         detention_grace_minutes: None,
@@ -94,25 +104,16 @@ fn load_stop(seq: u32, stop_type: StopType, actual_depart: Option<&str>) -> Stop
     }
 }
 
-/// The load's own record of what happened: pickup served, delivery served —
-/// the corroborating signal `load_doctor` requires before it will auto-advance.
-fn served_stops() -> Vec<Stop> {
+/// Pickup at one facility, delivery at another — the ordinary single-leg load.
+fn freight_stops() -> Vec<Stop> {
     vec![
-        load_stop(1, StopType::Pickup, Some("2026-05-22T09:30:00")),
-        load_stop(2, StopType::Delivery, Some("2026-05-22T10:30:00")),
-    ]
-}
-
-/// Same load, but the delivery stop was never reached.
-fn unserved_delivery_stops() -> Vec<Stop> {
-    vec![
-        load_stop(1, StopType::Pickup, Some("2026-05-22T09:30:00")),
-        load_stop(2, StopType::Delivery, None),
+        load_stop(1, StopType::Pickup, pickup_facility()),
+        load_stop(2, StopType::Delivery, delivery_facility()),
     ]
 }
 
 fn load(id: Uuid, status: LoadStatus) -> LoadRecord {
-    load_with_stops(id, status, served_stops())
+    load_with_stops(id, status, freight_stops())
 }
 
 fn load_with_stops(id: Uuid, status: LoadStatus, stops: Vec<Stop>) -> LoadRecord {
@@ -140,11 +141,11 @@ fn load_with_stops(id: Uuid, status: LoadStatus, stops: Vec<Stop>) -> LoadRecord
     }
 }
 
-fn stop(seq: u32, stop_type: TripStopType) -> TripStop {
+fn stop(seq: u32, stop_type: TripStopType, facility_id: Option<Uuid>) -> TripStop {
     TripStop {
         sequence: seq,
         stop_type,
-        facility_id: None,
+        facility_id,
         name: Some("Yard".into()),
         address: None,
         load_stop_index: None,
@@ -201,7 +202,19 @@ fn trip(id: Uuid, number: &str, load_id: Uuid, status: TripStatus, stops: Vec<Tr
 /// Pickup at sequence 2, delivery at 3 — non-1-based per AGENTS.md, so a 0-based
 /// vs 1-based index mixup in the cascade stays visible.
 fn loaded_stops() -> Vec<TripStop> {
-    vec![stop(2, TripStopType::Pickup), stop(3, TripStopType::Delivery)]
+    vec![
+        stop(2, TripStopType::Pickup, Some(pickup_facility())),
+        stop(3, TripStopType::Delivery, Some(delivery_facility())),
+    ]
+}
+
+/// A relay leg that hands off rather than delivering — it covers none of the
+/// load's delivery stops.
+fn relay_leg_stops() -> Vec<TripStop> {
+    vec![
+        stop(2, TripStopType::Pickup, Some(pickup_facility())),
+        stop(3, TripStopType::Relay, Some(Uuid::new_v4())),
+    ]
 }
 
 /// Drive the delivering trip's final stop and return the load's resulting status.
@@ -357,22 +370,18 @@ async fn load_doctor_apply_advances_a_stranded_load_to_delivered() {
     assert!(again.applied.is_empty());
 }
 
-/// The deliver-then-cancel ordering: leg 1 delivered its half, leg 2 was still
-/// `Planned` when it got cancelled, so the load's delivery stop was never
-/// served. Every live trip *has* delivered, so the finding fires — but
-/// advancing the load would claim freight reached a stop nobody visited, and
-/// `Delivered` has no reverse edge. The fix must be reported-and-held, not
-/// auto-applied.
+/// The deliver-then-cancel ordering: leg 1 handed off at the relay point, leg 2
+/// was still `Planned` when it got cancelled, so the load's delivery stop was
+/// never reached. Every *live* trip has delivered, so the finding fires — but
+/// advancing the load would claim freight arrived somewhere nobody went, and
+/// `Delivered` has no reverse edge. The fix must be reported-and-held.
 #[tokio::test]
-async fn load_doctor_will_not_auto_advance_a_load_with_an_unserved_delivery_stop() {
+async fn load_doctor_will_not_auto_advance_a_load_with_an_uncovered_delivery_stop() {
     let (state, _b, _d) = test_state().await;
     let lid = Uuid::new_v4();
+    state.db.insert_load(&load(lid, LoadStatus::InTransit)).await.unwrap();
     state.db
-        .insert_load(&load_with_stops(lid, LoadStatus::InTransit, unserved_delivery_stops()))
-        .await
-        .unwrap();
-    state.db
-        .insert_trip(&trip(Uuid::new_v4(), "T-2026-0090", lid, TripStatus::Delivered, loaded_stops()))
+        .insert_trip(&trip(Uuid::new_v4(), "T-2026-0090", lid, TripStatus::Delivered, relay_leg_stops()))
         .await
         .unwrap();
     state.db
@@ -384,7 +393,7 @@ async fn load_doctor_will_not_auto_advance_a_load_with_an_unserved_delivery_stop
     let f = finding(&report, "load.status_matches_trips")
         .expect("the strand is still worth surfacing");
     let fix = f.fix.as_ref().unwrap();
-    assert!(!fix.safe_to_auto_apply, "an unserved delivery stop must hold the fix");
+    assert!(!fix.safe_to_auto_apply, "an uncovered delivery stop must hold the fix");
     assert_eq!(fix.conflicts.len(), 1, "conflicts: {:?}", fix.conflicts);
     assert!(fix.conflicts[0].contains("stop[2]"), "conflicts: {:?}", fix.conflicts);
     assert!(report.applied.is_empty(), "applied: {:?}", report.applied);
@@ -393,25 +402,25 @@ async fn load_doctor_will_not_auto_advance_a_load_with_an_unserved_delivery_stop
     assert_eq!(
         state.db.get_load_by_id(lid).await.unwrap().status,
         LoadStatus::InTransit,
-        "#395: apply must not advance a load whose delivery stop was never served",
+        "#395: apply must not advance a load whose delivery stop was never covered",
     );
 }
 
-/// A trip created with explicit stops never gets a `load_stop_index`, so its
-/// actuals never cascade down and the load's own stops stay blank. That silence
-/// is absence of signal, not evidence of an unserved stop — treating it as a
-/// conflict would make the repair path inert for most real loads.
+/// A trip stop with no `facility_id` can't be matched to a load stop, and might
+/// be the very stop that covers it. That is absence of signal, not evidence of
+/// an unserved stop — treating it as a conflict would make the repair path
+/// inert for every trip whose stops were entered without facilities.
 #[tokio::test]
-async fn load_doctor_applies_when_the_load_stops_carry_no_actuals_at_all() {
+async fn load_doctor_applies_when_trip_stops_name_no_facility() {
     let (state, _b, _d) = test_state().await;
     let lid = Uuid::new_v4();
-    let blank = vec![
-        load_stop(1, StopType::Pickup, None),
-        load_stop(2, StopType::Delivery, None),
+    state.db.insert_load(&load(lid, LoadStatus::InTransit)).await.unwrap();
+    let unmatchable = vec![
+        stop(2, TripStopType::Pickup, None),
+        stop(3, TripStopType::Delivery, None),
     ];
-    state.db.insert_load(&load_with_stops(lid, LoadStatus::InTransit, blank)).await.unwrap();
     state.db
-        .insert_trip(&trip(Uuid::new_v4(), "T-2026-0100", lid, TripStatus::Delivered, loaded_stops()))
+        .insert_trip(&trip(Uuid::new_v4(), "T-2026-0100", lid, TripStatus::Delivered, unmatchable))
         .await
         .unwrap();
 
