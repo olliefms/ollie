@@ -98,7 +98,7 @@ impl DbClient {
         cancellation_reason: Option<String>,
     ) -> Result<LoadRecord, AppError> {
         let mut record = self.get_load_by_id(id).await?;
-        if !record.status.can_transition_to(&new_status) {
+        if !record.can_transition_to(&new_status) {
             return Err(AppError::Conflict(format!(
                 "cannot transition from '{}' to '{}'",
                 record.status.as_str(), new_status.as_str()
@@ -624,5 +624,32 @@ mod tests {
     fn test_build_load_filter_invalid_to_returns_bad_request() {
         let result = build_load_filter(None, None, &[], None, Some("not-a-date"));
         assert!(matches!(result, Err(AppError::BadRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn test_administrative_load_walks_planned_to_settled() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&load).await.unwrap();
+
+        db.transition_load_status(
+            load.id, LoadStatus::Invoiced,
+            Some("JQL-4581461".into()), Some("2026-07-29".into()), None,
+        ).await.unwrap();
+        db.transition_load_status(load.id, LoadStatus::Settled, None, None, None).await.unwrap();
+
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.status, LoadStatus::Settled);
+        assert_eq!(fetched.invoice_number.as_deref(), Some("JQL-4581461"));
+    }
+
+    #[tokio::test]
+    async fn test_freight_load_still_cannot_invoice_from_planned() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+        let err = db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None).await;
+        assert!(matches!(err, Err(AppError::Conflict(_))));
     }
 }

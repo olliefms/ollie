@@ -345,6 +345,26 @@ impl LoadRecord {
     pub fn total_rate_usd(&self) -> f64 {
         self.rate_items.iter().map(|r| r.amount_usd).sum()
     }
+
+    /// Kind-aware transition policy.
+    ///
+    /// `LoadStatus::can_transition_to` stays a pure status machine; the one edge
+    /// that depends on the *load* rather than on its status alone lives here.
+    ///
+    /// An administrative load has no trip and never will (see the guard in
+    /// `apply_trip_create`), so the trip-driven route to `Delivered` is
+    /// unreachable and the load would sit in `planned` forever. It invoices
+    /// straight from `planned` instead. It deliberately does **not** get
+    /// `Planned -> Delivered`: a load that never moved was never delivered, and
+    /// `Delivered` has no reverse edge to walk back from.
+    pub fn can_transition_to(&self, next: &LoadStatus) -> bool {
+        if self.kind == LoadKind::Administrative
+            && matches!((&self.status, next), (LoadStatus::Planned, LoadStatus::Invoiced))
+        {
+            return true;
+        }
+        self.status.can_transition_to(next)
+    }
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -523,6 +543,58 @@ mod tests {
         assert!(!LoadStatus::Cancelled.can_transition_to(&LoadStatus::Planned));
         assert!(!LoadStatus::Planned.can_transition_to(&LoadStatus::Delivered));
         assert!(!LoadStatus::Planned.can_transition_to(&LoadStatus::Dispatched));
+    }
+
+    fn load_of_kind(kind: LoadKind, status: LoadStatus) -> LoadRecord {
+        LoadRecord {
+            id: uuid::Uuid::new_v4(), load_number: "JQL-4581461".into(),
+            owner_id: 0, status, kind,
+            customer_name: "Landstar".into(), customer_ref: None,
+            stops: vec![], rate_items: vec![], commodity: None,
+            weight_lbs: None, miles: None, notes: None, tags: vec![],
+            blob_ids: vec![], invoice_number: None, invoice_date: None,
+            cancellation_reason: None, embedding: None,
+            created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_administrative_load_invoices_from_planned() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Planned);
+        assert!(load.can_transition_to(&LoadStatus::Invoiced));
+    }
+
+    #[test]
+    fn test_freight_load_cannot_invoice_from_planned() {
+        let load = load_of_kind(LoadKind::Freight, LoadStatus::Planned);
+        assert!(!load.can_transition_to(&LoadStatus::Invoiced));
+    }
+
+    #[test]
+    fn test_administrative_load_is_never_delivered() {
+        // A load that never moved was never delivered. `invoiced` is the honest
+        // first stop, so the trip-shaped edge stays closed.
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Planned);
+        assert!(!load.can_transition_to(&LoadStatus::Delivered));
+    }
+
+    #[test]
+    fn test_administrative_load_settles_from_invoiced() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Invoiced);
+        assert!(load.can_transition_to(&LoadStatus::Settled));
+    }
+
+    #[test]
+    fn test_administrative_load_can_still_be_cancelled() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Planned);
+        assert!(load.can_transition_to(&LoadStatus::Cancelled));
+    }
+
+    #[test]
+    fn test_administrative_load_cannot_skip_back_from_settled() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Settled);
+        assert!(!load.can_transition_to(&LoadStatus::Invoiced));
+        assert!(!load.can_transition_to(&LoadStatus::Planned));
     }
 
     #[test]
