@@ -269,7 +269,7 @@ impl DbClient {
     pub async fn list_loads_needing_routing(&self) -> Result<Vec<Uuid>, AppError> {
         // loads with no miles and non-terminal status
         let stream = self.load_table.query()
-            .only_if("miles IS NULL AND status NOT IN ('delivered','invoiced','settled','cancelled')")
+            .only_if("miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled')")
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(batches_to_loads(collect_stream(stream).await?)?
@@ -279,7 +279,7 @@ impl DbClient {
     pub async fn list_unrouted_loads_for_facility(&self, facility_id: Uuid) -> Result<Vec<Uuid>, AppError> {
         let fac_str = facility_id.to_string();
         let filter = format!(
-            "miles IS NULL AND status NOT IN ('delivered','invoiced','settled','cancelled') AND stops LIKE '%\"{}\"%'",
+            "miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled') AND stops LIKE '%\"{}\"%'",
             fac_str
         );
         let stream = self.load_table.query()
@@ -688,5 +688,22 @@ mod tests {
             Some(load.id), None, Some("load.invoiced"), None, None, 10, 0,
         ).await.unwrap();
         assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_administrative_loads_are_not_queued_for_routing() {
+        let (db, _dir) = test_db().await;
+
+        let freight = sample_load();          // miles: None, status: Planned
+        db.insert_load(&freight).await.unwrap();
+        let mut admin = sample_load();
+        admin.id = uuid::Uuid::new_v4();
+        admin.load_number = "JQL-4581461".into();
+        admin.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&admin).await.unwrap();
+
+        let queued = db.list_loads_needing_routing().await.unwrap();
+        assert!(queued.contains(&freight.id));
+        assert!(!queued.contains(&admin.id), "administrative loads have no stops to route");
     }
 }

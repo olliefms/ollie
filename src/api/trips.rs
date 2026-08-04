@@ -43,7 +43,18 @@ pub(crate) async fn apply_trip_create(
 
     // Fetch load once — used for stop derivation, loaded_miles, and load_number
     let load = if let Some(load_id) = body.load_id {
-        Some(state.db.get_load_by_id(load_id).await?)
+        let load = state.db.get_load_by_id(load_id).await?;
+        // An administrative load represents revenue with no truck behind it.
+        // Attaching a trip would put false mileage, false stop actuals and a
+        // false driver assignment into the operational record — the exact thing
+        // the kind exists to avoid.
+        if load.kind == crate::models::LoadKind::Administrative {
+            return Err(AppError::UnprocessableEntity(format!(
+                "load {load_id} is administrative (no-trip) and cannot have a trip. \
+                 Change its kind to 'freight' first, or invoice it directly."
+            )));
+        }
+        Some(load)
     } else {
         None
     };

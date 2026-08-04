@@ -24,7 +24,7 @@ use crate::{
         TrailerListResponse,
         TruckListResponse,
         EventListResponse, EventResponse,
-        LoadStatus,
+        LoadKind, LoadStatus,
     },
     api::loads::{ListLoadsQuery, resolve_stops_pub},
 };
@@ -340,7 +340,7 @@ pub async fn create_load(
 
     state.db.insert_load(&record).await?;
 
-    if record.miles.is_none() {
+    if record.miles.is_none() && record.kind != LoadKind::Administrative {
         let _ = state.routing_tx.try_send(record.id);
     }
 
@@ -408,7 +408,7 @@ pub async fn update_load(
         embedding,
     ).await?;
 
-    if stops_provided && body.miles.is_none() {
+    if stops_provided && body.miles.is_none() && updated.kind != LoadKind::Administrative {
         state.db.clear_load_miles(id).await?;
         updated.miles = None;
         let _ = state.routing_tx.try_send(id);
@@ -419,7 +419,7 @@ pub async fn update_load(
     }
 
     if let Some(k) = body.kind {
-        updated = state.db.update_load_kind(id, k).await?;
+        updated = apply_load_kind_change(&state, id, k).await?;
     }
 
     let response = build_load_detail(&state, updated).await?;
@@ -1858,6 +1858,37 @@ pub async fn count_events_today(
 // ---------------------------------------------------------------------------
 // Internal helpers — mirror build_detail_response from src/api/loads.rs
 // ---------------------------------------------------------------------------
+
+/// Change a load's kind, or explain why it can't move.
+///
+/// Kind is only mutable while the load is still `planned` and has no trips.
+/// Past that, the two models have already diverged: a freight load with trips
+/// cannot become administrative without orphaning them, and an administrative
+/// load that has already invoiced from `planned` used an edge a freight load
+/// never had, so relabelling it would leave a status the freight machine
+/// cannot explain.
+pub(crate) async fn apply_load_kind_change(
+    state: &AppState, id: Uuid, kind: crate::models::LoadKind,
+) -> Result<crate::models::LoadRecord, AppError> {
+    let load = state.db.get_load_by_id(id).await?;
+    if load.kind == kind {
+        return Ok(load);
+    }
+    if load.status != LoadStatus::Planned {
+        return Err(AppError::Conflict(format!(
+            "cannot change kind of a load in '{}' — only a 'planned' load can be reclassified",
+            load.status.as_str(),
+        )));
+    }
+    let trips = state.db.list_trips_for_load(id).await.unwrap_or_default();
+    if !trips.is_empty() {
+        return Err(AppError::Conflict(format!(
+            "cannot change kind: load has {} trip(s). Cancel or detach them first.",
+            trips.len(),
+        )));
+    }
+    state.db.update_load_kind(id, kind).await
+}
 
 pub async fn build_load_detail(
     state: &AppState,

@@ -2167,7 +2167,7 @@ async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, Strin
 
     state.db.insert_load(&record).await.map_err(|e| e.to_string())?;
 
-    if record.miles.is_none() {
+    if record.miles.is_none() && record.kind != crate::models::LoadKind::Administrative {
         let _ = state.routing_tx.try_send(record.id);
     }
 
@@ -2247,7 +2247,7 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
         embedding,
     ).await.map_err(|e| e.to_string())?;
 
-    if stops_provided && req.miles.is_none() {
+    if stops_provided && req.miles.is_none() && updated.kind != crate::models::LoadKind::Administrative {
         state.db.clear_load_miles(id).await.map_err(|e| e.to_string())?;
         updated.miles = None;
         let _ = state.routing_tx.try_send(id);
@@ -2258,7 +2258,7 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
     }
 
     if let Some(k) = req.kind {
-        updated = state.db.update_load_kind(id, k).await.map_err(|e| e.to_string())?;
+        updated = super::data::apply_load_kind_change(state, id, k).await.map_err(|e| e.to_string())?;
     }
 
     Ok(mcp_content(updated))
