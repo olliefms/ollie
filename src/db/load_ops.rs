@@ -104,12 +104,14 @@ impl DbClient {
                 record.status.as_str(), new_status.as_str()
             )));
         }
+        let from = record.status.as_str().to_string();
         record.status = new_status;
         if let Some(v) = invoice_number { record.invoice_number = Some(v); }
         if let Some(v) = invoice_date { record.invoice_date = Some(v); }
         if let Some(v) = cancellation_reason { record.cancellation_reason = Some(v); }
         record.updated_at = Utc::now();
         self.upsert_load(&record).await?;
+        crate::events::on_load_status_changed(self, id, &from, record.status.as_str()).await;
         Ok(record)
     }
 
@@ -651,5 +653,20 @@ mod tests {
         db.insert_load(&load).await.unwrap();
         let err = db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None).await;
         assert!(matches!(err, Err(AppError::Conflict(_))));
+    }
+
+    #[tokio::test]
+    async fn test_transition_emits_load_event() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&load).await.unwrap();
+
+        db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None).await.unwrap();
+
+        let (_total, events) = db.query_events(
+            Some(load.id), None, Some("load.invoiced"), None, None, 10, 0,
+        ).await.unwrap();
+        assert_eq!(events.len(), 1);
     }
 }
