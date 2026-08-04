@@ -42,7 +42,8 @@ use rmcp::{
     },
     service::RequestContext,
     transport::streamable_http_server::{
-        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+        session::local::{LocalSessionManager, SessionConfig},
+        StreamableHttpServerConfig, StreamableHttpService,
     },
     ErrorData as McpError, RoleServer,
 };
@@ -565,21 +566,45 @@ async fn completion_values(
 /// initiates traffic (see the module header) — so this is simply the transport's
 /// full mode rather than a requirement we impose.
 ///
-/// `sse_keep_alive` is disabled so each request's response stream terminates as
-/// soon as its single JSON-RPC reply is delivered, instead of being held open by
-/// periodic pings. DNS-rebinding host allow-listing is disabled because the only
-/// client contract is a `Bearer` token over a public domain (no browser/cookie
-/// ambient authority), and the default allow-list (loopback only) would 403 every
-/// production request.
+/// SSE keep-alive is left at the rmcp default (15 s pings) so a stream that is
+/// waiting — a slow tool call, or the standalone GET stream — keeps producing
+/// bytes and is not reaped by an intermediary's idle timeout. DNS-rebinding host
+/// allow-listing is disabled because the only client contract is a `Bearer`
+/// token over a public domain (no browser/cookie ambient authority), and the
+/// default allow-list (loopback only) would 403 every production request.
 pub fn mcp_service(state: &AppState) -> StreamableHttpService<OllieMcp, LocalSessionManager> {
     let state = state.clone();
+    // Both rmcp config structs are `#[non_exhaustive]`, so they can only be
+    // built by mutating a default.
+    let mut sessions = LocalSessionManager::default();
+    sessions.session_config = mcp_session_config();
     StreamableHttpService::new(
         move || Ok(OllieMcp::new(state.clone())),
-        Arc::new(LocalSessionManager::default()),
-        StreamableHttpServerConfig::default()
-            .with_sse_keep_alive(None)
-            .disable_allowed_hosts(),
+        Arc::new(sessions),
+        StreamableHttpServerConfig::default().disable_allowed_hosts(),
     )
+}
+
+/// How long an MCP session survives with no requests on it.
+///
+/// rmcp's default is **5 minutes**, which is a safety net sized for a session
+/// that gets one burst of calls, not for a conversational client: an agent that
+/// spends five minutes reading, thinking, or calling some other tool comes back
+/// to a session the server has already torn down, and every later request on it
+/// fails. The client reports that as "MCP server disconnected" and — with no way
+/// to re-dial mid-session — the agent loses the whole tool surface until its
+/// session is restarted. rmcp logs the expiry at `debug` on its own target, so
+/// under `RUST_LOG=ollie=info` nothing appears in our logs either.
+///
+/// Matched to the OAuth access-token TTL instead: a session cannot usefully
+/// outlive the bearer token that opened it, and that is also the upper bound on
+/// how long a session orphaned by a silently dropped connection can linger.
+const MCP_SESSION_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8 * 3600);
+
+fn mcp_session_config() -> SessionConfig {
+    let mut config = SessionConfig::default();
+    config.keep_alive = Some(MCP_SESSION_IDLE_TIMEOUT);
+    config
 }
 
 /// The full tool catalogue as rmcp `Tool`s, derived from the hand-authored
@@ -3307,6 +3332,17 @@ mod tests {
     };
     use std::sync::Arc;
     use tempfile::TempDir;
+
+    /// rmcp's 5-minute default tears a session down while a conversational
+    /// client is still using it. An rmcp bump must not silently restore it.
+    #[test]
+    fn test_mcp_session_outlives_a_quiet_conversation() {
+        let idle = mcp_session_config().keep_alive.expect("sessions must still expire eventually");
+        assert!(
+            idle >= std::time::Duration::from_secs(3600),
+            "an MCP session must survive an hour of silence, got {idle:?}"
+        );
+    }
 
     async fn test_state() -> (AppState, TempDir, TempDir) {
         let blob_dir = TempDir::new().unwrap();

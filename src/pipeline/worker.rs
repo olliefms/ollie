@@ -67,6 +67,72 @@ fn embeddable_source<'a>(summary: &'a str, fallback: &'a str) -> Option<&'a str>
     }
 }
 
+/// Run content extraction on the blocking pool.
+///
+/// `extract_content` is sync CPU work, and for PDFs it hands the bytes to
+/// `pdf-extract`, which panics (rather than erroring) on malformed input. On the
+/// worker task that panic kills the worker; on the blocking pool it comes back
+/// as a `JoinError` this can report per blob. `None` means "the extractor died
+/// on these bytes" — the caller decides what that costs.
+async fn extract_off_task(data: bytes::Bytes, mime_type: String) -> Option<Extractable> {
+    tokio::task::spawn_blocking(move || extract_content(&data, &mime_type)).await.ok()
+}
+
+/// End a `Process` pass that died, without degrading a blob that is already good.
+///
+/// `mark_failed` leaves `summary`/`embedding` in place but moves the blob out of
+/// `ready`, and `db.search` filters on `status = 'ready'` — so failing a blob
+/// that already carries a summary (a manual `update_blob` backfill, or an
+/// earlier successful run) silently drops it out of semantic search. A reprocess
+/// must never degrade an already-good blob (#372), so this leaves the record in
+/// the same state the "nothing recovered" branch of `process_blob` does, and
+/// only marks failed when there is nothing worth keeping. The
+/// `processing_completed` event it writes carries the `error` as well as
+/// `summary_source: preserved`, so a preserved-after-panic run can be told apart
+/// from a clean one.
+///
+/// A blob that is already `Ready` is left completely alone: the pass had
+/// finished and the panic came from the best-effort expense-suggestion hook that
+/// runs after `mark_ready`, so there is nothing to repair and a second
+/// `processing_completed` event would misreport a run that actually succeeded.
+pub(crate) async fn fail_without_degrading(
+    id: Uuid,
+    db: &DbClient,
+    ai: &OllamaClient,
+    error: String,
+) -> Result<(), AppError> {
+    let record = db.get_by_id(id).await?;
+    if record.status == crate::models::BlobStatus::Ready {
+        tracing::error!("{error} for {id} after the pass had completed; blob left ready");
+        return Ok(());
+    }
+    if record.summary.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        tracing::error!("{error} for {id}; preserving existing summary");
+        db.mark_ready(id, record.summary.clone(), record.embedding.clone()).await?;
+        if let Err(e) = db.append_event(
+            "blob", id, "processing_completed",
+            Some(serde_json::json!({
+                "summary_source": SummarySource::Preserved.as_str(),
+                "error": error,
+            })),
+            Some("pipeline"), &now_z(), Some(ai),
+        ).await {
+            tracing::warn!("event append failed for {id} (processing_completed): {e}");
+        }
+        return Ok(());
+    }
+    tracing::error!("pipeline failed for {id}: {error}");
+    db.mark_failed(id, error.clone()).await?;
+    if let Err(e) = db.append_event(
+        "blob", id, "processing_failed",
+        Some(serde_json::json!({ "error": error })),
+        Some("pipeline"), &now_z(), Some(ai),
+    ).await {
+        tracing::warn!("event append failed for {id} (processing_failed): {e}");
+    }
+    Ok(())
+}
+
 /// Summarize a document page / image payload, OCR-first.
 ///
 /// Local vision models cannot reliably read document scans (moondream returns
@@ -144,7 +210,12 @@ pub async fn stage_expense_suggestions(
 ) -> Result<(), AppError> {
     let record = db.get_by_id(id).await?;
     let data = store.read(&record.checksum).await?;
-    let extractable = extract_content(&data, &record.mime_type);
+    // Best-effort pass over a blob that is already Ready: an extractor panic
+    // costs the suggestions, nothing else, so it must not touch blob status.
+    let Some(extractable) = extract_off_task(data, record.mime_type.clone()).await else {
+        tracing::error!("content extraction panicked for {id}; no expense suggestions staged");
+        return Ok(());
+    };
     apply_expense_suggestions(id, db, ai, &extractable).await;
     Ok(())
 }
@@ -163,7 +234,14 @@ pub async fn process_blob(
 
     let record = db.get_by_id(id).await?;
     let data = store.read(&record.checksum).await?;
-    let extractable = extract_content(&data, &record.mime_type);
+    let Some(extractable) = extract_off_task(data, record.mime_type.clone()).await else {
+        // Extractor panicked on these bytes. That is a failure of this blob, not
+        // of the pipeline — end the pass so it leaves Processing and can be
+        // re-queued once the input (or the extractor) changes.
+        return fail_without_degrading(
+            id, db, ai, "content extraction panicked on these bytes".to_string(),
+        ).await;
+    };
 
     if let Err(e) = write_extract(extract_base, &record.checksum, &extractable).await {
         tracing::warn!("failed to write extract cache for {id}: {e}");
@@ -287,6 +365,73 @@ pub async fn process_blob(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{BlobRecord, BlobStatus};
+    use tempfile::TempDir;
+
+    async fn blob_in_processing(summary: Option<&str>) -> (DbClient, OllamaClient, Uuid, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let db = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
+        let now = chrono::Utc::now();
+        let record = BlobRecord {
+            id: Uuid::new_v4(), owner_id: 0, checksum: "abc123".into(),
+            name: "scan.pdf".into(), mime_type: "application/pdf".into(), size: 42,
+            status: BlobStatus::Processing, error: None,
+            summary: summary.map(str::to_string),
+            tags: vec![], embedding: None, created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
+        };
+        db.insert(&record).await.unwrap();
+        // Unreachable Ollama: event embedding is best-effort and must not matter here.
+        let ai = OllamaClient::new("http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream");
+        (db, ai, record.id, dir)
+    }
+
+    /// A pass that dies must not drop a blob that already reads well out of
+    /// search — `db.search` filters on `status = 'ready'` (#372).
+    #[tokio::test]
+    async fn test_failed_pass_preserves_an_existing_summary() {
+        let (db, ai, id, _dir) = blob_in_processing(Some("a good summary")).await;
+        fail_without_degrading(id, &db, &ai, "extractor panicked".into()).await.unwrap();
+
+        let record = db.get_by_id(id).await.unwrap();
+        assert_eq!(record.status, BlobStatus::Ready);
+        assert_eq!(record.summary.as_deref(), Some("a good summary"));
+    }
+
+    #[tokio::test]
+    async fn test_failed_pass_marks_failed_when_there_is_nothing_to_keep() {
+        let (db, ai, id, _dir) = blob_in_processing(None).await;
+        fail_without_degrading(id, &db, &ai, "extractor panicked".into()).await.unwrap();
+
+        let record = db.get_by_id(id).await.unwrap();
+        assert_eq!(record.status, BlobStatus::Failed);
+        assert_eq!(record.error.as_deref(), Some("extractor panicked"));
+    }
+
+    /// A panic in the best-effort expense hook fires after the pass already
+    /// completed — there is nothing to repair, and the blob must not be rewritten.
+    #[tokio::test]
+    async fn test_failed_pass_leaves_an_already_ready_blob_alone() {
+        let (db, ai, id, _dir) = blob_in_processing(Some("a good summary")).await;
+        db.mark_ready(id, Some("a good summary".into()), None).await.unwrap();
+        let before = db.get_by_id(id).await.unwrap();
+
+        fail_without_degrading(id, &db, &ai, "panicked after mark_ready".into()).await.unwrap();
+
+        let after = db.get_by_id(id).await.unwrap();
+        assert_eq!(after.status, BlobStatus::Ready);
+        assert_eq!(after.summary.as_deref(), Some("a good summary"));
+        assert_eq!(after.updated_at, before.updated_at, "the record must not be rewritten");
+    }
+
+    /// Whitespace is not a summary — it must not rescue a blob from failure.
+    #[tokio::test]
+    async fn test_failed_pass_ignores_a_whitespace_summary() {
+        let (db, ai, id, _dir) = blob_in_processing(Some("   \n\t ")).await;
+        fail_without_degrading(id, &db, &ai, "extractor panicked".into()).await.unwrap();
+
+        assert_eq!(db.get_by_id(id).await.unwrap().status, BlobStatus::Failed);
+    }
 
     #[test]
     fn test_embeddable_source_prefers_summary() {

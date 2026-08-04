@@ -125,6 +125,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         driver_portal::expenses::list_expenses,
         driver_portal::expenses::delete_expense,
         version::get_version,
+        version::get_health,
     ),
     components(
         schemas(
@@ -253,6 +254,8 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             fleet_portal::auth::SetupRequest,
             fleet_portal::auth::SetupStatusResponse,
             version::VersionResponse,
+            version::HealthResponse,
+            version::PipelineHealth,
         )
     ),
     modifiers(&SecurityAddon),
@@ -260,7 +263,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         title = "ollie API",
         version = "1.0.0",
         description = "RAG-enabled blob store and freight load management API. \
-            All endpoints require Bearer auth except /openapi.json, /llms.txt, and /version."
+            All endpoints require Bearer auth except /openapi.json, /llms.txt, /version, and /healthz."
     ),
     tags(
         (name = "meta", description = "Server metadata endpoints (unauthenticated)"),
@@ -320,7 +323,7 @@ fleet REST API where no tool exists for an operation.
   Fleet MCP / REST        Authorization: Bearer <JWT>          (POST /fleet/auth/login with email+password, or a fleet_user API key)
   Driver portal           Authorization: Bearer <JWT>          (driver passkey or PIN auth)
 
-Public, no auth: GET /version, GET /openapi.json, GET /llms.txt.
+Public, no auth: GET /version, GET /healthz, GET /openapi.json, GET /llms.txt.
 Missing or incorrect credentials return 401. Fleet login locks out after 5
 failed attempts (15 min × 2^(failures-5), capped at 24h; 423 with locked_until).
 
@@ -592,6 +595,7 @@ pub fn router(state: AppState) -> Router {
         .route("/openapi.json", get(openapi_json))
         .route("/llms.txt", get(llms_txt))
         .route("/version", get(version::get_version))
+        .route("/healthz", get(version::get_health))
         .merge(fleet_user_auth)
         .merge(fleet_user_public)
         .merge(driver_portal)

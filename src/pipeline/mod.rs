@@ -6,6 +6,7 @@ pub mod routing;
 pub mod worker;
 
 use crate::{ai::OllamaClient, db::DbClient, error::AppError, storage::BlobStore};
+use futures::FutureExt;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -56,6 +57,23 @@ pub fn enqueue(tx: &async_channel::Sender<PipelineJob>, job: PipelineJob) -> Res
     }
 }
 
+/// Run one job so a panic in it cannot escape into the worker loop.
+///
+/// The blob pipeline runs third-party parsers over arbitrary uploaded bytes,
+/// and those panic rather than error on malformed input (`pdf-extract` and the
+/// image decoders both do). A panic unwinds the whole worker *task*, dropping
+/// its receiver — and with `PIPELINE_WORKERS` defaulting to 1 that is the last
+/// receiver, so the channel closes and every later `enqueue` fails with
+/// "sending into a closed channel" for the lifetime of the process while the
+/// HTTP server carries on serving. One poisoned upload must cost one blob, not
+/// the pipeline.
+async fn run_job<F>(fut: F) -> Result<Result<(), AppError>, ()>
+where
+    F: std::future::Future<Output = Result<(), AppError>>,
+{
+    std::panic::AssertUnwindSafe(fut).catch_unwind().await.map_err(|_| ())
+}
+
 pub fn spawn_pipeline(
     workers: usize,
     db: Arc<DbClient>,
@@ -75,16 +93,49 @@ pub fn spawn_pipeline(
         tokio::spawn(async move {
             tracing::info!("pipeline worker {i} started");
             while let Ok(job) = rx.recv().await {
-                let (id, result) = match job {
-                    PipelineJob::Process(id) => {
-                        (id, worker::process_blob(id, &db, &store, &ai, &extract_base).await)
+                let (PipelineJob::Process(id) | PipelineJob::ExpenseSuggestions(id)) = job;
+                let result = run_job(async {
+                    match job {
+                        PipelineJob::Process(id) => {
+                            worker::process_blob(id, &db, &store, &ai, &extract_base).await
+                        }
+                        PipelineJob::ExpenseSuggestions(id) => {
+                            worker::stage_expense_suggestions(id, &db, &store, &ai).await
+                        }
                     }
-                    PipelineJob::ExpenseSuggestions(id) => {
-                        (id, worker::stage_expense_suggestions(id, &db, &store, &ai).await)
+                })
+                .await;
+                match result {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::error!("worker {i} error for {id}: {e}"),
+                    Err(()) => {
+                        // The panic itself is already on stderr via the default
+                        // hook; what matters here is that the worker lives and
+                        // the blob does not sit in Processing for ever.
+                        //
+                        // Only a full `Process` pass owns blob status. An
+                        // `ExpenseSuggestions` pass runs over a blob that is
+                        // already Ready and must never touch it (#380) — a
+                        // panic there costs the suggestions, nothing else. The
+                        // recovery itself runs through `run_job` too, so a
+                        // panic in *it* cannot kill the worker either.
+                        match job {
+                            PipelineJob::Process(id) => {
+                                tracing::error!("worker {i} panicked on {id}; worker survives, ending the pass");
+                                let recovery = worker::fail_without_degrading(
+                                    id, &db, &ai, "pipeline worker panicked".into(),
+                                );
+                                match run_job(recovery).await {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(e)) => tracing::error!("could not end the failed pass for {id}: {e}"),
+                                    Err(()) => tracing::error!("recovery for {id} panicked too"),
+                                }
+                            }
+                            PipelineJob::ExpenseSuggestions(id) => {
+                                tracing::error!("worker {i} panicked staging expense suggestions for {id}; worker survives, blob status untouched");
+                            }
+                        }
                     }
-                };
-                if let Err(e) = result {
-                    tracing::error!("worker {i} error for {id}: {e}");
                 }
             }
             tracing::info!("pipeline worker {i} stopped");
@@ -111,8 +162,10 @@ pub fn spawn_geocoding_pipeline(
         tokio::spawn(async move {
             tracing::info!("geocoding worker {i} started");
             while let Ok(id) = rx.recv().await {
-                if let Err(e) = geocoding::process_facility_geocoding(id, &db, &geocoding, &ai, &routing_tx).await {
-                    tracing::error!("geocoding worker {i} error for {id}: {e}");
+                match run_job(geocoding::process_facility_geocoding(id, &db, &geocoding, &ai, &routing_tx)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::error!("geocoding worker {i} error for {id}: {e}"),
+                    Err(()) => tracing::error!("geocoding worker {i} panicked on {id}; worker survives"),
                 }
             }
         });
@@ -134,8 +187,10 @@ pub fn spawn_routing_pipeline(
         tokio::spawn(async move {
             tracing::info!("routing worker {i} started");
             while let Ok(id) = rx.recv().await {
-                if let Err(e) = routing::process_load_routing(id, &db, &ors).await {
-                    tracing::error!("routing worker {i} error for {id}: {e}");
+                match run_job(routing::process_load_routing(id, &db, &ors)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::error!("routing worker {i} error for {id}: {e}"),
+                    Err(()) => tracing::error!("routing worker {i} panicked on {id}; worker survives"),
                 }
             }
         });
@@ -164,6 +219,15 @@ mod tests {
     /// A closed channel means every worker is gone — no amount of waiting will
     /// queue anything, so the caller must hear about it rather than get a 202
     /// that claims work was scheduled.
+    /// A panicking job must not unwind the worker loop — that is what closes the
+    /// channel and takes the whole pipeline down until the next restart.
+    #[tokio::test]
+    async fn test_run_job_contains_a_panic() {
+        assert!(run_job(async { panic!("pdf-extract style panic") }).await.is_err());
+        assert!(run_job(async { Ok(()) }).await.unwrap().is_ok());
+        assert!(run_job(async { Err(AppError::Internal("boom".into())) }).await.unwrap().is_err());
+    }
+
     #[tokio::test]
     async fn test_enqueue_errors_when_closed() {
         let (tx, rx) = async_channel::bounded::<PipelineJob>(1);
