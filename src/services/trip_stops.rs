@@ -10,7 +10,7 @@
 //! downstream of `db.update_trip_stop` lives here.
 
 use crate::events;
-use crate::models::{LoadStatus, TripRecord, TripStatus, TripStopType};
+use crate::models::{load_trips_all_delivered, LoadStatus, TripRecord, TripStatus, TripStopType};
 use crate::{error::AppError, AppState};
 use uuid::Uuid;
 
@@ -59,8 +59,9 @@ pub async fn record_stop_arrive(
 ///   trip that stop is the first `Pickup`; for a non-freight trip (a
 ///   repositioning/empty/maintenance move with no pickup) it is the first stop.
 /// * Final stop depart on an `InTransit` trip → trip becomes `Delivered`, the
-///   load follows when all of its trips are `Delivered`, and the driver's next
-///   `Assigned` trip is auto-dispatched.
+///   load follows when every one of its live trips has delivered (see
+///   [`load_trips_all_delivered`]), and the driver's next `Assigned` trip is
+///   auto-dispatched.
 ///
 /// A single-stop non-freight trip (e.g. one `terminal` stop) advances through
 /// both cascades on the one depart: the first sets `InTransit`, the second
@@ -206,10 +207,16 @@ async fn cascade_start_in_transit(state: &AppState, trip: &TripRecord, seq: u32)
     if let Some(load_id) = trip.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
             if load.status == LoadStatus::Dispatched {
-                let _ = state
+                if let Err(e) = state
                     .db
                     .transition_load_status(load_id, LoadStatus::InTransit, None, None, None)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        %load_id, error = %e,
+                        "load in-transit cascade failed; load stays dispatched"
+                    );
+                }
             }
         }
     }
@@ -233,13 +240,19 @@ async fn cascade_final_stop_delivered(state: &AppState, trip_id: Uuid, seq: u32)
 
     if let Some(load_id) = delivered.load_id {
         if let Ok(trips) = state.db.list_trips_for_load(load_id).await {
-            if trips.iter().all(|t| t.status == TripStatus::Delivered) {
+            if load_trips_all_delivered(&trips) {
                 if let Ok(load) = state.db.get_load_by_id(load_id).await {
                     if load.status == LoadStatus::InTransit {
-                        let _ = state
+                        if let Err(e) = state
                             .db
                             .transition_load_status(load_id, LoadStatus::Delivered, None, None, None)
-                            .await;
+                            .await
+                        {
+                            tracing::warn!(
+                                %load_id, error = %e,
+                                "load delivery cascade failed; load_doctor can walk it forward"
+                            );
+                        }
                     }
                 }
             }

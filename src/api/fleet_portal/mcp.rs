@@ -316,7 +316,9 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "list_blobs" | "search_blobs" | "get_blob_url" | "get_blob_metadata" => "blobs:read",
         "upload_blob" | "update_blob" | "resummarize_blob" => "blobs:write",
         "delete_blob" => "blobs:delete",
-        // load_doctor reads a load's integrity.
+        // load_doctor reads a load's integrity. Its one auto-fix mutates the load,
+        // so `apply=true` additionally requires loads:write — enforced inside
+        // `tool_load_doctor`, where the args are visible.
         "load_doctor" => "loads:read",
         // Users (#331)
         "list_users" | "get_user" => "users:read",
@@ -1447,7 +1449,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "load_doctor",
-                "description": "Diagnose a load's data integrity. Checks: stop facilities geocoded, scheduled windows well-formed, actual_depart > actual_arrive, timezone present when actuals are, rate_items sum matches total. Read-only — surfaces findings; fixes live in facility_doctor or require human reconciliation.",
+                "description": "Diagnose a load's data integrity. Checks: stop facilities geocoded, scheduled windows well-formed, actual_depart > actual_arrive, timezone present when actuals are, rate_items sum matches total, and load status consistent with its trips. With apply=true (requires loads:write) it advances a load stranded at dispatched/in_transit whose every live trip has already delivered to 'delivered', so it can be invoiced and settled — unless one of the load's delivery stops was never visited by any surviving trip, in which case the fix is reported with conflicts and held for a human ('delivered' has no reverse edge). The remaining findings point at facility_doctor or require human reconciliation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1962,7 +1964,7 @@ async fn handle_tool_call(
         "create_facility" => tool_create_facility(state, args).await,
         "update_facility" => tool_update_facility(state, args).await,
         "trip_doctor" => tool_trip_doctor(state, args).await,
-        "load_doctor" => tool_load_doctor(state, args).await,
+        "load_doctor" => tool_load_doctor(state, args, scopes).await,
         "facility_doctor" => tool_facility_doctor(state, args).await,
         "upload_blob" => tool_upload_blob(state, args).await,
         "get_blob_url" => tool_get_blob_url(state, args).await,
@@ -2815,9 +2817,14 @@ async fn tool_trip_doctor(state: &AppState, args: &Value) -> Result<Value, Strin
     Ok(mcp_content(report))
 }
 
-async fn tool_load_doctor(state: &AppState, args: &Value) -> Result<Value, String> {
+async fn tool_load_doctor(state: &AppState, args: &Value, scopes: &[String]) -> Result<Value, String> {
     let load_id = parse_uuid(args, "load_id")?;
     let apply = args["apply"].as_bool().unwrap_or(false);
+    // Diagnosing is a read; applying moves the load's status, so it needs the
+    // write scope even though the tool itself is gated at loads:read.
+    if apply && !crate::models::permission::scope_granted(scopes, "loads:write") {
+        return Err("load_doctor apply=true denied: missing required scope 'loads:write'.".into());
+    }
     let report = crate::services::doctors::load::run(state, load_id, apply)
         .await
         .map_err(|e| e.to_string())?;

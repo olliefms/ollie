@@ -153,6 +153,27 @@ impl TripStatus {
             | (Self::Planned | Self::Assigned | Self::Dispatched, Self::Cancelled)
         )
     }
+
+    /// The trip's freight is off the truck. `Completed` is the normal end state a
+    /// `Delivered` trip moves on to, so anything asking "did this trip finish its
+    /// delivery" must accept both.
+    pub fn is_delivery_complete(&self) -> bool {
+        matches!(self, Self::Delivered | Self::Completed)
+    }
+}
+
+/// Whether a load's trips collectively say the load has been delivered (#395).
+///
+/// Cancelled trips are dead records — a superseded pre-assignment must not
+/// strand the load — so they are filtered out rather than counted against the
+/// check. The survivors must all be `Delivered` *or* `Completed`: on a relay
+/// load, leg 1 is routinely completed before leg 2 delivers, and an equality
+/// check against `Delivered` alone leaves every multi-leg load unable to
+/// cascade. A load with no surviving trips has nothing to deliver, so it is
+/// `false` rather than the vacuously-true `all()` on an empty iterator.
+pub(crate) fn load_trips_all_delivered(trips: &[TripRecord]) -> bool {
+    let mut live = trips.iter().filter(|t| t.status != TripStatus::Cancelled).peekable();
+    live.peek().is_some() && live.all(|t| t.status.is_delivery_complete())
 }
 
 impl std::str::FromStr for TripStatus {
@@ -384,6 +405,90 @@ mod tests {
         assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Planned));
         assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Delivered));
         assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Cancelled));
+    }
+
+    // --- #395 ------------------------------------------------------------
+
+    fn trip_with_status(status: TripStatus) -> TripRecord {
+        let now = chrono::Utc::now();
+        TripRecord {
+            id: Uuid::new_v4(),
+            trip_number: "T-2026-0001".into(),
+            load_id: None,
+            load_number: None,
+            previous_trip_id: None,
+            deadhead_miles: None,
+            loaded_miles: None,
+            total_miles: None,
+            segment_miles: vec![],
+            sequence: 0,
+            driver_id: None,
+            truck_id: None,
+            trailer_ids: vec![],
+            status,
+            stops: vec![],
+            notes: None,
+            blob_ids: vec![],
+            loaded_rate_per_mile: None,
+            deadhead_rate_per_mile: None,
+            extra_stop_fee: None,
+            detention_rate_per_hour: None,
+            free_dwell_minutes: None,
+            settlement_ref: None,
+            pay_period_start: None,
+            pay_period_end: None,
+            driver_pay_snapshot: None,
+            embedding: None,
+            owner_id: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn all_delivered(statuses: &[TripStatus]) -> bool {
+        let trips: Vec<TripRecord> = statuses.iter().cloned().map(trip_with_status).collect();
+        load_trips_all_delivered(&trips)
+    }
+
+    #[test]
+    fn test_load_trips_all_delivered() {
+        use TripStatus::*;
+
+        assert!(all_delivered(&[Delivered]));
+        assert!(all_delivered(&[Delivered, Delivered]));
+        // A cancelled sibling is a dead record — it must not strand the load.
+        assert!(all_delivered(&[Cancelled, Delivered]));
+        // Completed is the normal end state a delivered trip moves on to; a relay
+        // load's earlier leg is routinely completed before the last leg delivers.
+        assert!(all_delivered(&[Completed, Delivered]));
+        assert!(all_delivered(&[Cancelled, Completed, Delivered]));
+        assert!(all_delivered(&[Completed]));
+
+        // Anything still running holds the load.
+        assert!(!all_delivered(&[Delivered, InTransit]));
+        assert!(!all_delivered(&[Delivered, Planned]));
+        assert!(!all_delivered(&[Delivered, Assigned]));
+        assert!(!all_delivered(&[Delivered, Dispatched]));
+
+        // No live trip means nothing delivered — not a vacuous true.
+        assert!(!all_delivered(&[]));
+        assert!(!all_delivered(&[Cancelled]));
+        assert!(!all_delivered(&[Cancelled, Cancelled]));
+    }
+
+    #[test]
+    fn test_is_delivery_complete() {
+        assert!(TripStatus::Delivered.is_delivery_complete());
+        assert!(TripStatus::Completed.is_delivery_complete());
+        for s in [
+            TripStatus::Planned,
+            TripStatus::Assigned,
+            TripStatus::Dispatched,
+            TripStatus::InTransit,
+            TripStatus::Cancelled,
+        ] {
+            assert!(!s.is_delivery_complete(), "{s:?} is not a delivery-complete state");
+        }
     }
 
     #[test]
