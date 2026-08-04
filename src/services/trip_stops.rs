@@ -207,10 +207,16 @@ async fn cascade_start_in_transit(state: &AppState, trip: &TripRecord, seq: u32)
     if let Some(load_id) = trip.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
             if load.status == LoadStatus::Dispatched {
-                let _ = state
+                if let Err(e) = state
                     .db
                     .transition_load_status(load_id, LoadStatus::InTransit, None, None, None)
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        %load_id, error = %e,
+                        "load in-transit cascade failed; load stays dispatched"
+                    );
+                }
             }
         }
     }

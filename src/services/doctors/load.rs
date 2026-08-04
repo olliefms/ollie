@@ -126,9 +126,10 @@ fn check_timezones(load: &LoadRecord, report: &mut DoctorReport) {
 
 /// The load's status is denormalized from its trips. When every live trip has
 /// delivered but the load is still sitting in a pre-delivery status, the
-/// delivery cascade never fired (or was rejected) and the load is stranded —
-/// `invoice` and `settle` both refuse from anything but `delivered`, so there
-/// is no supported way forward without this fix (#395).
+/// delivery cascade never fired (or was rejected) and the load is stranded:
+/// `invoice` only runs from `delivered` and `settle` only from `invoiced`, so
+/// the whole billing chain is out of reach and there is no supported way
+/// forward without this fix (#395).
 async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report: &mut DoctorReport) {
     if !matches!(load.status, LoadStatus::Dispatched | LoadStatus::InTransit) {
         return;
@@ -148,7 +149,7 @@ async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report:
         severity: Severity::Error,
         description: format!(
             "load is '{}' but every live trip has delivered: {}. The load is stranded — \
-             invoice and settle both require 'delivered'.",
+             invoice requires 'delivered', so the billing chain is out of reach.",
             load.status.as_str(),
             summary.join(", "),
         ),

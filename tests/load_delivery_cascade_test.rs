@@ -9,8 +9,9 @@
 //   * a completed earlier leg on a relay load did too — and `Delivered ->
 //     Completed` is the *normal* end state, so every multi-leg load was exposed.
 //
-// A stranded load has no supported way out: `invoice` and `settle` both require
-// `delivered`, and `cancel` is semantically wrong for freight that physically
+// A stranded load has no supported way out: `invoice` runs only from
+// `delivered` and `settle` only from `invoiced`, so the billing chain is out of
+// reach, and `cancel` is semantically wrong for freight that physically
 // delivered. `load_doctor`'s `load.status_matches_trips` check is the repair
 // path for loads stranded before this fix shipped.
 
