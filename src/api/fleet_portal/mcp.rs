@@ -520,7 +520,7 @@ async fn completion_values(
     let candidates: Vec<String> = match req.argument.name.as_str() {
         "customer_name" => state
             .db
-            .list_loads(ctx_status, None, &[], None, None, 500, 0)
+            .list_loads(ctx_status, None, &[], None, None, None, 500, 0)
             .await
             .map_err(internal)?
             .1
@@ -823,12 +823,16 @@ fn tools_list() -> Value {
         "tools": [
             {
                 "name": "list_loads",
-                "description": "List loads. Optional filters: status (planned/assigned/dispatched/in_transit/delivered/invoiced/settled/cancelled), facility_id (UUID).",
+                "description": "List loads. Optional filters, all ANDed together: status, customer (substring), tags (a load must carry every tag given), facility_id (loads with a stop at that facility), from/to (created_at bounds, ISO 8601).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "status": { "type": "string", "enum": ["planned","assigned","dispatched","in_transit","delivered","invoiced","settled","cancelled"] },
-                        "facility_id": { "type": "string", "format": "uuid" }
+                        "customer": { "type": "string", "description": "Substring match on customer name." },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Load must carry every tag listed." },
+                        "facility_id": { "type": "string", "format": "uuid" },
+                        "from": { "type": "string", "description": "created_at >= this RFC 3339 datetime." },
+                        "to": { "type": "string", "description": "created_at <= this RFC 3339 datetime." }
                     }
                 }
             },
@@ -2084,16 +2088,22 @@ fn paginate_slice<T>(all: Vec<T>, offset: usize, page: usize) -> (Vec<T>, usize,
 
 async fn tool_list_loads(state: &AppState, args: &Value) -> Result<Value, String> {
     let status = args["status"].as_str();
+    let customer = args["customer"].as_str();
+    let from = args["from"].as_str();
+    let to = args["to"].as_str();
+    let tags: Vec<String> = args["tags"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let facility_id = match args.get("facility_id") {
+        Some(Value::String(s)) => Some(
+            s.parse::<uuid::Uuid>().map_err(|_| "facility_id must be a UUID".to_string())?,
+        ),
+        _ => None,
+    };
     let offset = cursor_offset(args)?;
 
     let (total, items) = state.db.list_loads(
-        status,
-        None, // customer
-        &[],  // tags
-        None, // from
-        None, // to
-        PAGE_SIZE,
-        offset,
+        status, customer, &tags, facility_id, from, to, PAGE_SIZE, offset,
     ).await.map_err(|e| e.to_string())?;
 
     let returned = items.len();

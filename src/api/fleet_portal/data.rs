@@ -233,6 +233,7 @@ pub async fn list_loads(
         q.status.as_deref(),
         q.customer.as_deref(),
         &q.tag,
+        q.facility_id,
         q.from.as_deref(),
         q.to.as_deref(),
         limit,

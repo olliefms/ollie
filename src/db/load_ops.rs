@@ -164,12 +164,15 @@ impl DbClient {
         status_filter: Option<&str>,
         customer_filter: Option<&str>,
         tag_filter: &[String],
+        facility_filter: Option<Uuid>,
         from_date: Option<&str>,
         to_date: Option<&str>,
         limit: usize,
         offset: usize,
     ) -> Result<(usize, Vec<LoadListItem>), AppError> {
-        let filter = build_load_filter(status_filter, customer_filter, tag_filter, from_date, to_date)?;
+        let filter = build_load_filter(
+            status_filter, customer_filter, tag_filter, facility_filter, from_date, to_date,
+        )?;
         let total = self.load_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut q = self.load_table.query().limit(LOAD_SCAN_CAP);
@@ -187,9 +190,12 @@ impl DbClient {
         status_filter: Option<&str>,
         customer_filter: Option<&str>,
         tag_filter: &[String],
+        facility_filter: Option<Uuid>,
         limit: usize,
     ) -> Result<Vec<LoadListItem>, AppError> {
-        let filter = build_load_filter(status_filter, customer_filter, tag_filter, None, None)?;
+        let filter = build_load_filter(
+            status_filter, customer_filter, tag_filter, facility_filter, None, None,
+        )?;
         let mut q = self.load_table.query()
             .nearest_to(embedding)
             .map_err(|e| AppError::Internal(e.to_string()))?
@@ -418,7 +424,8 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
 
 fn build_load_filter(
     status: Option<&str>, customer: Option<&str>,
-    tags: &[String], from: Option<&str>, to: Option<&str>,
+    tags: &[String], facility_id: Option<Uuid>,
+    from: Option<&str>, to: Option<&str>,
 ) -> Result<Option<String>, AppError> {
     let mut parts: Vec<String> = Vec::new();
     // Escape single quotes to prevent SQL injection in LanceDB filter strings
@@ -430,6 +437,9 @@ fn build_load_filter(
     for tag in tags {
         let tag = tag.replace('\'', "''");
         parts.push(format!("tags LIKE '%\"{tag}\"%'"));
+    }
+    if let Some(f) = facility_id {
+        parts.push(format!("stops LIKE '%\"{f}\"%'"));
     }
     if let Some(f) = from {
         chrono::DateTime::parse_from_rfc3339(f)
@@ -498,6 +508,53 @@ mod tests {
         db.insert_load(&load).await.unwrap();
         let fetched = db.get_load_by_id(load.id).await.unwrap();
         assert_eq!(fetched.kind, crate::models::LoadKind::Freight);
+    }
+
+    #[tokio::test]
+    async fn test_list_loads_filters_by_tag() {
+        let (db, _dir) = test_db().await;
+        let mut tagged = sample_load();
+        tagged.tags = vec!["guarantee".into(), "no-trip".into()];
+        db.insert_load(&tagged).await.unwrap();
+        let mut other = sample_load();
+        other.id = uuid::Uuid::new_v4();
+        other.tags = vec!["flatbed".into()];
+        db.insert_load(&other).await.unwrap();
+
+        let (total, items) = db.list_loads(
+            None, None, &["guarantee".to_string()], None, None, None, 20, 0,
+        ).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(items[0].id, tagged.id);
+    }
+
+    #[tokio::test]
+    async fn test_list_loads_filters_by_facility() {
+        let (db, _dir) = test_db().await;
+        let fac = uuid::Uuid::new_v4();
+        let mut at_facility = sample_load();
+        at_facility.stops = vec![crate::models::Stop {
+            sequence: 1,
+            stop_type: crate::models::StopType::Pickup,
+            service_type: crate::models::ServiceType::LiveLoad,
+            facility_id: fac,
+            scheduled_arrive: "2026-07-29T08:00:00".into(),
+            scheduled_arrive_end: None, actual_arrive: None, actual_depart: None,
+            expected_dwell_minutes: None, detention_free_minutes: None,
+            detention_grace_minutes: None, notes: None, blob_ids: vec![],
+            timezone: Some("America/Chicago".into()),
+            actual_arrive_utc: None, actual_depart_utc: None,
+        }];
+        db.insert_load(&at_facility).await.unwrap();
+        let mut elsewhere = sample_load();
+        elsewhere.id = uuid::Uuid::new_v4();
+        db.insert_load(&elsewhere).await.unwrap();
+
+        let (total, items) = db.list_loads(
+            None, None, &[], Some(fac), None, None, 20, 0,
+        ).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(items[0].id, at_facility.id);
     }
 
     #[tokio::test]
@@ -630,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_build_load_filter_valid_dates() {
-        let filter = build_load_filter(None, None, &[], Some("2026-01-01T00:00:00Z"), Some("2026-12-31T23:59:59Z")).unwrap();
+        let filter = build_load_filter(None, None, &[], None, Some("2026-01-01T00:00:00Z"), Some("2026-12-31T23:59:59Z")).unwrap();
         let f = filter.unwrap();
         assert!(f.contains("created_at >= '2026-01-01T00:00:00Z'"));
         assert!(f.contains("created_at <= '2026-12-31T23:59:59Z'"));
@@ -638,13 +695,13 @@ mod tests {
 
     #[test]
     fn test_build_load_filter_invalid_from_returns_bad_request() {
-        let result = build_load_filter(None, None, &[], Some("' OR 1=1--"), None);
+        let result = build_load_filter(None, None, &[], None, Some("' OR 1=1--"), None);
         assert!(matches!(result, Err(AppError::BadRequest(_))));
     }
 
     #[test]
     fn test_build_load_filter_invalid_to_returns_bad_request() {
-        let result = build_load_filter(None, None, &[], None, Some("not-a-date"));
+        let result = build_load_filter(None, None, &[], None, None, Some("not-a-date"));
         assert!(matches!(result, Err(AppError::BadRequest(_))));
     }
 
