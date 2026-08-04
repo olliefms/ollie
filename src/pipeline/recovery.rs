@@ -2,6 +2,31 @@
 use crate::{db::DbClient, error::AppError, pipeline::PipelineJob};
 use uuid::Uuid;
 
+/// Emit a progress line every this many jobs handed to a pipeline. Past a
+/// channel's capacity a send only completes when a worker takes a job, so this
+/// rate tracks the drain rate — without it `requeueing N stale blobs on startup`
+/// is the last word an operator gets for hours (#404).
+const PROGRESS_EVERY: usize = 50;
+
+/// Feed `jobs` into `tx`, logging progress. Every one of these queues is bounded
+/// and every one can wedge for hours, so they all report.
+async fn drain_into<T: Copy>(
+    tx: &async_channel::Sender<T>,
+    jobs: &[T],
+    label: &str,
+) -> Result<(), AppError> {
+    let total = jobs.len();
+    tracing::info!("requeueing {total} {label} on startup");
+    for (i, job) in jobs.iter().enumerate() {
+        tx.send(*job).await.map_err(|e| AppError::Internal(e.to_string()))?;
+        let done = i + 1;
+        if done % PROGRESS_EVERY == 0 || done == total {
+            tracing::info!("{label} requeue: {done}/{total} accepted");
+        }
+    }
+    Ok(())
+}
+
 pub async fn requeue_stale(
     db: &DbClient,
     pipeline_tx: &async_channel::Sender<PipelineJob>,
@@ -9,35 +34,25 @@ pub async fn requeue_stale(
     routing_tx: &async_channel::Sender<Uuid>,
 ) -> Result<(), AppError> {
     let ids = db.list_non_ready_ids().await?;
-    tracing::info!("requeueing {} stale blobs on startup", ids.len());
-    for id in &ids {
-        pipeline_tx.send(PipelineJob::Process(*id)).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    }
+    let jobs: Vec<PipelineJob> = ids.iter().map(|id| PipelineJob::Process(*id)).collect();
+    drain_into(pipeline_tx, &jobs, "stale blobs").await?;
 
     // Suggestions-only jobs target already-Ready blobs, so the status sweep
     // above can never recover them. Blobs already queued for a full pass are
     // skipped — that pass stages suggestions itself.
     let queued: std::collections::HashSet<Uuid> = ids.into_iter().collect();
-    let needs_suggestions: Vec<Uuid> = db.list_blob_ids_needing_expense_suggestions().await?
+    let needs_suggestions: Vec<PipelineJob> = db.list_blob_ids_needing_expense_suggestions().await?
         .into_iter()
         .filter(|id| !queued.contains(id))
+        .map(PipelineJob::ExpenseSuggestions)
         .collect();
-    tracing::info!("requeueing {} blobs for expense suggestions", needs_suggestions.len());
-    for id in needs_suggestions {
-        pipeline_tx.send(PipelineJob::ExpenseSuggestions(id)).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    }
+    drain_into(pipeline_tx, &needs_suggestions, "blobs for expense suggestions").await?;
 
     let pending_geocode = db.list_pending_geocode_facility_ids().await?;
-    tracing::info!("requeueing {} facilities for geocoding", pending_geocode.len());
-    for id in pending_geocode {
-        geocoding_tx.send(id).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    }
+    drain_into(geocoding_tx, &pending_geocode, "facilities for geocoding").await?;
 
     let pending_routing = db.list_loads_needing_routing().await?;
-    tracing::info!("requeueing {} loads for routing", pending_routing.len());
-    for id in pending_routing {
-        routing_tx.send(id).await.map_err(|e| AppError::Internal(e.to_string()))?;
-    }
+    drain_into(routing_tx, &pending_routing, "loads for routing").await?;
 
     Ok(())
 }

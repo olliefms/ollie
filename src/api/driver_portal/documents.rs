@@ -253,7 +253,10 @@ pub async fn upload_document(
         None
     };
     if let Some(job) = job {
-        let _ = state.pipeline_tx.send(job).await;
+        // Ignored deliberately, as it was before `enqueue` existed: the document
+        // is already stored and the driver's upload should not fail on a pipeline
+        // that is down. Startup recovery re-derives the job from DB status.
+        let _ = crate::pipeline::enqueue(&state.pipeline_tx, job);
     }
 
     Ok((status_code, Json(record)))
