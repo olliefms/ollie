@@ -91,6 +91,22 @@ async fn create_bare_load(
     resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
 }
 
+async fn create_test_facility(server: &TestServer, token: &str, name: &str, address: &str) -> String {
+    server.post("/fleet/api/v1/facilities")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "name": name, "address": address }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+fn stop_json(fac_id: &str, scheduled_arrive: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+        "facility_id": fac_id, "scheduled_arrive": scheduled_arrive,
+        "timezone": "America/Chicago"
+    })
+}
+
 #[tokio::test]
 async fn test_trip_cannot_be_created_against_an_administrative_load() {
     let (server, _state, _d1, _d2, _rx) = setup().await;
@@ -129,4 +145,102 @@ async fn test_kind_cannot_change_once_the_load_has_left_planned() {
         .json(&serde_json::json!({ "kind": "freight" }))
         .await;
     assert_eq!(resp.status_code(), 409, "body: {}", resp.text());
+}
+
+#[tokio::test]
+async fn test_kind_cannot_change_while_the_load_has_trips() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let fac_id = create_test_facility(&server, &token, "Trip Guard Dock", "Chicago, IL").await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "load_number": "4581464",
+            "customer_name": "Landstar",
+            "stops": [stop_json(&fac_id, "2026-06-01T08:00:00")],
+            "kind": "freight",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let load_id = resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Attach a trip to the load through the real API — this is the state
+    // apply_load_kind_change's "load has trips" branch must catch.
+    let trip_resp = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201, "trip create failed: {}", trip_resp.text());
+
+    // Reclassifying now would orphan the trip — the guard must reject it.
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "kind": "administrative" }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body: {}", resp.text());
+    assert!(
+        resp.text().contains("trip"),
+        "the error should name the reason (trips) so the caller knows why: {}",
+        resp.text(),
+    );
+}
+
+#[tokio::test]
+async fn test_kind_flip_to_administrative_does_not_clear_miles_via_routing_guard() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let fac_id = create_test_facility(&server, &token, "Regression Dock", "Dallas, TX").await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "load_number": "4581465",
+            "customer_name": "Landstar",
+            "stops": [stop_json(&fac_id, "2026-06-01T08:00:00")],
+            "kind": "freight",
+            "miles": 250.0,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let body = resp.json::<serde_json::Value>();
+    let load_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["miles"], 250.0, "sanity: load starts with a known mileage");
+
+    // Single update: change the stops AND flip kind to administrative in the
+    // same request. The routing-enqueue guard must see the POST-change kind
+    // (administrative), not the pre-change one, so it must not treat this as
+    // a still-freight load that needs its miles cleared and re-routed.
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "stops": [stop_json(&fac_id, "2026-06-02T08:00:00")],
+            "kind": "administrative",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["kind"], "administrative");
+    // Observable consequence of the ordering bug: the routing-enqueue block
+    // both clears miles and (mis-)queues the load for ORS routing under one
+    // `if`. We can't observe the routing channel directly (setup()'s
+    // receiver is wired to the pipeline channel, not the routing one, and
+    // the routing receiver is dropped inside setup() so try_send is always
+    // a silent no-op either way) — but the miles field is DB-observable and
+    // driven by the exact same guard, so it stands in for "was queued".
+    assert_eq!(
+        body["miles"], 250.0,
+        "an administrative load's miles must survive a stops-changing update — reading the \
+         PRE-change kind would treat this as still-freight and wipe miles on its way to \
+         (incorrectly) queuing the load for ORS routing",
+    );
+
+    let refetched = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(refetched.status_code(), 200);
+    assert_eq!(
+        refetched.json::<serde_json::Value>()["miles"], 250.0,
+        "miles must not have been cleared at the DB layer either",
+    );
 }

@@ -408,18 +408,18 @@ pub async fn update_load(
         embedding,
     ).await?;
 
-    if stops_provided && body.miles.is_none() && updated.kind != LoadKind::Administrative {
-        state.db.clear_load_miles(id).await?;
-        updated.miles = None;
-        let _ = state.routing_tx.try_send(id);
-    }
-
     if let Some(ln) = body.load_number {
         updated = state.db.update_load_number(id, ln).await?;
     }
 
     if let Some(k) = body.kind {
         updated = apply_load_kind_change(&state, id, k).await?;
+    }
+
+    if stops_provided && body.miles.is_none() && updated.kind != LoadKind::Administrative {
+        state.db.clear_load_miles(id).await?;
+        updated.miles = None;
+        let _ = state.routing_tx.try_send(id);
     }
 
     let response = build_load_detail(&state, updated).await?;
@@ -1868,7 +1868,7 @@ pub async fn count_events_today(
 /// never had, so relabelling it would leave a status the freight machine
 /// cannot explain.
 pub(crate) async fn apply_load_kind_change(
-    state: &AppState, id: Uuid, kind: crate::models::LoadKind,
+    state: &AppState, id: Uuid, kind: LoadKind,
 ) -> Result<crate::models::LoadRecord, AppError> {
     let load = state.db.get_load_by_id(id).await?;
     if load.kind == kind {
@@ -1880,7 +1880,7 @@ pub(crate) async fn apply_load_kind_change(
             load.status.as_str(),
         )));
     }
-    let trips = state.db.list_trips_for_load(id).await.unwrap_or_default();
+    let trips = state.db.list_trips_for_load(id).await?;
     if !trips.is_empty() {
         return Err(AppError::Conflict(format!(
             "cannot change kind: load has {} trip(s). Cancel or detach them first.",

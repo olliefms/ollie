@@ -2247,18 +2247,18 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
         embedding,
     ).await.map_err(|e| e.to_string())?;
 
-    if stops_provided && req.miles.is_none() && updated.kind != crate::models::LoadKind::Administrative {
-        state.db.clear_load_miles(id).await.map_err(|e| e.to_string())?;
-        updated.miles = None;
-        let _ = state.routing_tx.try_send(id);
-    }
-
     if let Some(ln) = req.load_number {
         updated = state.db.update_load_number(id, ln).await.map_err(|e| e.to_string())?;
     }
 
     if let Some(k) = req.kind {
         updated = super::data::apply_load_kind_change(state, id, k).await.map_err(|e| e.to_string())?;
+    }
+
+    if stops_provided && req.miles.is_none() && updated.kind != crate::models::LoadKind::Administrative {
+        state.db.clear_load_miles(id).await.map_err(|e| e.to_string())?;
+        updated.miles = None;
+        let _ = state.routing_tx.try_send(id);
     }
 
     Ok(mcp_content(updated))
