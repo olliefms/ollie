@@ -5402,8 +5402,9 @@ async fn test_load_doctor_flags_ungeocoded_facility() {
 /// #395 — end-to-end over MCP: a load stranded in `in_transit` while its only
 /// trip already delivered is detected by `load_doctor` and walked forward by
 /// `apply=true`, which is the only supported repair path (`invoice` runs only
-/// from `delivered`, so the billing chain is unreachable from `in_transit`). Unit coverage of the checks themselves lives
-/// in `tests/load_delivery_cascade_test.rs`.
+/// from `delivered`, so the billing chain is unreachable from `in_transit`).
+/// Unit coverage of the checks themselves lives in
+/// `tests/load_delivery_cascade_test.rs`.
 #[tokio::test]
 async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
