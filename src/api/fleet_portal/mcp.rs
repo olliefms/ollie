@@ -1449,7 +1449,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "load_doctor",
-                "description": "Diagnose a load's data integrity. Checks: stop facilities geocoded, scheduled windows well-formed, actual_depart > actual_arrive, timezone present when actuals are, rate_items sum matches total, and load status consistent with its trips. With apply=true (requires loads:write) it advances a load stranded at dispatched/in_transit whose every live trip has already delivered to 'delivered', so it can be invoiced and settled. The remaining findings point at facility_doctor or require human reconciliation.",
+                "description": "Diagnose a load's data integrity. Checks: stop facilities geocoded, scheduled windows well-formed, actual_depart > actual_arrive, timezone present when actuals are, rate_items sum matches total, and load status consistent with its trips. With apply=true (requires loads:write) it advances a load stranded at dispatched/in_transit whose every live trip has already delivered to 'delivered', so it can be invoiced and settled — unless the load's own stops say a delivery was never served, in which case the fix is reported with conflicts and held for a human ('delivered' has no reverse edge). The remaining findings point at facility_doctor or require human reconciliation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {

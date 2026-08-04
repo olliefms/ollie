@@ -171,7 +171,7 @@ impl TripStatus {
 /// check against `Delivered` alone leaves every multi-leg load unable to
 /// cascade. A load with no surviving trips has nothing to deliver, so it is
 /// `false` rather than the vacuously-true `all()` on an empty iterator.
-pub fn load_trips_all_delivered(trips: &[TripRecord]) -> bool {
+pub(crate) fn load_trips_all_delivered(trips: &[TripRecord]) -> bool {
     let mut live = trips.iter().filter(|t| t.status != TripStatus::Cancelled).peekable();
     live.peek().is_some() && live.all(|t| t.status.is_delivery_complete())
 }

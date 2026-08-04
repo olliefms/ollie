@@ -16,7 +16,7 @@
 
 use ollie::models::trip::TripStopType;
 use ollie::models::{
-    LoadRecord, LoadStatus, TripRecord, TripStatus, TripStop,
+    LoadRecord, LoadStatus, ServiceType, Stop, StopType, TripRecord, TripStatus, TripStop,
 };
 use ollie::services::doctors;
 use ollie::services::trip_stops;
@@ -73,7 +73,49 @@ fn now() -> chrono::DateTime<chrono::Utc> {
     chrono::Utc::now()
 }
 
+fn load_stop(seq: u32, stop_type: StopType, actual_depart: Option<&str>) -> Stop {
+    Stop {
+        sequence: seq,
+        stop_type,
+        service_type: ServiceType::LiveLoad,
+        facility_id: Uuid::new_v4(),
+        scheduled_arrive: "2026-05-22T08:00:00".into(),
+        scheduled_arrive_end: None,
+        actual_arrive: actual_depart.map(|_| "2026-05-22T09:00:00".into()),
+        actual_depart: actual_depart.map(str::to_string),
+        expected_dwell_minutes: None,
+        detention_free_minutes: None,
+        detention_grace_minutes: None,
+        notes: None,
+        blob_ids: vec![],
+        timezone: Some("America/New_York".into()),
+        actual_arrive_utc: None,
+        actual_depart_utc: None,
+    }
+}
+
+/// The load's own record of what happened: pickup served, delivery served —
+/// the corroborating signal `load_doctor` requires before it will auto-advance.
+fn served_stops() -> Vec<Stop> {
+    vec![
+        load_stop(1, StopType::Pickup, Some("2026-05-22T09:30:00")),
+        load_stop(2, StopType::Delivery, Some("2026-05-22T10:30:00")),
+    ]
+}
+
+/// Same load, but the delivery stop was never reached.
+fn unserved_delivery_stops() -> Vec<Stop> {
+    vec![
+        load_stop(1, StopType::Pickup, Some("2026-05-22T09:30:00")),
+        load_stop(2, StopType::Delivery, None),
+    ]
+}
+
 fn load(id: Uuid, status: LoadStatus) -> LoadRecord {
+    load_with_stops(id, status, served_stops())
+}
+
+fn load_with_stops(id: Uuid, status: LoadStatus, stops: Vec<Stop>) -> LoadRecord {
     LoadRecord {
         id,
         load_number: "4819063".into(),
@@ -81,7 +123,7 @@ fn load(id: Uuid, status: LoadStatus) -> LoadRecord {
         status,
         customer_name: "Acme Freight".into(),
         customer_ref: None,
-        stops: vec![],
+        stops,
         rate_items: vec![],
         commodity: None,
         weight_lbs: None,
@@ -313,6 +355,71 @@ async fn load_doctor_apply_advances_a_stranded_load_to_delivered() {
     let again = doctors::load::run(&state, lid, true).await.unwrap();
     assert!(finding(&again, "load.status_matches_trips").is_none());
     assert!(again.applied.is_empty());
+}
+
+/// The deliver-then-cancel ordering: leg 1 delivered its half, leg 2 was still
+/// `Planned` when it got cancelled, so the load's delivery stop was never
+/// served. Every live trip *has* delivered, so the finding fires — but
+/// advancing the load would claim freight reached a stop nobody visited, and
+/// `Delivered` has no reverse edge. The fix must be reported-and-held, not
+/// auto-applied.
+#[tokio::test]
+async fn load_doctor_will_not_auto_advance_a_load_with_an_unserved_delivery_stop() {
+    let (state, _b, _d) = test_state().await;
+    let lid = Uuid::new_v4();
+    state.db
+        .insert_load(&load_with_stops(lid, LoadStatus::InTransit, unserved_delivery_stops()))
+        .await
+        .unwrap();
+    state.db
+        .insert_trip(&trip(Uuid::new_v4(), "T-2026-0090", lid, TripStatus::Delivered, loaded_stops()))
+        .await
+        .unwrap();
+    state.db
+        .insert_trip(&trip(Uuid::new_v4(), "T-2026-0091", lid, TripStatus::Cancelled, loaded_stops()))
+        .await
+        .unwrap();
+
+    let report = doctors::load::run(&state, lid, true).await.unwrap();
+    let f = finding(&report, "load.status_matches_trips")
+        .expect("the strand is still worth surfacing");
+    let fix = f.fix.as_ref().unwrap();
+    assert!(!fix.safe_to_auto_apply, "an unserved delivery stop must hold the fix");
+    assert_eq!(fix.conflicts.len(), 1, "conflicts: {:?}", fix.conflicts);
+    assert!(fix.conflicts[0].contains("stop[2]"), "conflicts: {:?}", fix.conflicts);
+    assert!(report.applied.is_empty(), "applied: {:?}", report.applied);
+    assert!(report.skipped_due_to_conflict.iter().any(|c| c == "load.status_matches_trips"));
+
+    assert_eq!(
+        state.db.get_load_by_id(lid).await.unwrap().status,
+        LoadStatus::InTransit,
+        "#395: apply must not advance a load whose delivery stop was never served",
+    );
+}
+
+/// A trip created with explicit stops never gets a `load_stop_index`, so its
+/// actuals never cascade down and the load's own stops stay blank. That silence
+/// is absence of signal, not evidence of an unserved stop — treating it as a
+/// conflict would make the repair path inert for most real loads.
+#[tokio::test]
+async fn load_doctor_applies_when_the_load_stops_carry_no_actuals_at_all() {
+    let (state, _b, _d) = test_state().await;
+    let lid = Uuid::new_v4();
+    let blank = vec![
+        load_stop(1, StopType::Pickup, None),
+        load_stop(2, StopType::Delivery, None),
+    ];
+    state.db.insert_load(&load_with_stops(lid, LoadStatus::InTransit, blank)).await.unwrap();
+    state.db
+        .insert_trip(&trip(Uuid::new_v4(), "T-2026-0100", lid, TripStatus::Delivered, loaded_stops()))
+        .await
+        .unwrap();
+
+    let report = doctors::load::run(&state, lid, true).await.unwrap();
+    let fix = finding(&report, "load.status_matches_trips").unwrap().fix.as_ref().unwrap();
+    assert!(fix.conflicts.is_empty(), "conflicts: {:?}", fix.conflicts);
+    assert!(fix.safe_to_auto_apply);
+    assert_eq!(state.db.get_load_by_id(lid).await.unwrap().status, LoadStatus::Delivered);
 }
 
 #[tokio::test]

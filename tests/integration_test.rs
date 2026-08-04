@@ -5425,17 +5425,38 @@ async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
         .await
         .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
-    // Reproduce the stranded shape by walking both records along their own legal
-    // transitions: the load ends at in_transit, the trip at delivered, and
-    // nothing is left to fire the cascade.
+    // Reproduce the stranded shape. The trip runs its stops for real, so the
+    // actuals land on the load's stops through the normal cascade — but the load
+    // is parked at `assigned`, which neither load-status cascade will move
+    // (`Dispatched -> InTransit` and `InTransit -> Delivered` are the only two).
+    // That is the "cascade never fired" condition; the load is then walked up to
+    // the in_transit it was stranded at.
     let lid: uuid::Uuid = load_id.parse().unwrap();
     let tid: uuid::Uuid = trip_id.parse().unwrap();
-    for s in [ollie::models::TripStatus::Assigned, ollie::models::TripStatus::Dispatched,
-              ollie::models::TripStatus::InTransit, ollie::models::TripStatus::Delivered] {
+    state.db.transition_load_status(lid, ollie::models::LoadStatus::Assigned, None, None, None)
+        .await.unwrap();
+    for s in [ollie::models::TripStatus::Assigned, ollie::models::TripStatus::Dispatched] {
         state.db.transition_trip_status(tid, s).await.unwrap();
     }
-    for s in [ollie::models::LoadStatus::Assigned, ollie::models::LoadStatus::Dispatched,
-              ollie::models::LoadStatus::InTransit] {
+    for (seq, arrive, depart) in [
+        (1, "2026-08-01T08:05:00", "2026-08-01T09:00:00"),
+        (2, "2026-08-01T16:05:00", "2026-08-01T17:00:00"),
+    ] {
+        let arrived = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/{seq}/arrive"))
+            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&serde_json::json!({ "actual_arrive": arrive })).await;
+        assert_eq!(arrived.status_code(), 200, "fixture arrive {seq}: {}", arrived.text());
+        let departed = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/{seq}/depart"))
+            .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .json(&serde_json::json!({ "actual_depart": depart })).await;
+        assert_eq!(departed.status_code(), 200, "fixture depart {seq}: {}", departed.text());
+    }
+    assert_eq!(
+        state.db.get_trip(tid).await.unwrap().status,
+        ollie::models::TripStatus::Delivered,
+        "fixture: the trip must have delivered for real",
+    );
+    for s in [ollie::models::LoadStatus::Dispatched, ollie::models::LoadStatus::InTransit] {
         state.db.transition_load_status(lid, s, None, None, None).await.unwrap();
     }
 

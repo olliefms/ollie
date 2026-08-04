@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 use crate::{
     error::AppError,
-    models::{load_trips_all_delivered, LoadRecord, LoadStatus},
+    models::{load_trips_all_delivered, LoadRecord, LoadStatus, StopType},
     AppState,
 };
 
@@ -30,7 +30,7 @@ pub async fn run(state: &AppState, load_id: Uuid, apply: bool) -> Result<DoctorR
     check_status_matches_trips(state, &load, &mut report).await;
 
     if apply {
-        apply_safe_fixes(state, &load, &mut report).await;
+        apply_safe_fixes(state, &load, &mut report).await?;
     }
 
     report.classify_findings();
@@ -138,6 +138,8 @@ async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report:
         .iter()
         .map(|t| format!("{} ({})", t.trip_number, t.status.as_str()))
         .collect();
+    let conflicts = unserved_delivery_stops(load);
+    let safe_to_auto_apply = conflicts.is_empty();
     report.push(Finding {
         check: "load.status_matches_trips".into(),
         severity: Severity::Error,
@@ -153,10 +155,41 @@ async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report:
                 "transition the load '{}' -> 'delivered', the cascade the trips already earned",
                 load.status.as_str(),
             ),
-            conflicts: Vec::new(),
-            safe_to_auto_apply: true,
+            conflicts,
+            safe_to_auto_apply,
         }),
     });
+}
+
+/// Delivery stops the load's own record says were never served, as
+/// `ProposedFix` conflicts.
+///
+/// "Every live trip has delivered" is necessary but not sufficient: cancelling
+/// the one *planned* trip that covered the back half of a relay also leaves the
+/// load with nothing but delivered trips, and advancing it would claim freight
+/// reached a stop nobody visited. `Delivered` has no reverse edge
+/// (`can_transition_to` only allows `Delivered -> Invoiced`), so a wrong
+/// auto-apply is as unrecoverable as the strand it was meant to fix.
+///
+/// The trip cascade writes `actual_depart` through to the linked load stop, so
+/// a load carrying actuals on some stops but not its deliveries is actively
+/// contradicting the trips, and the fix is held for a human. A load with *no*
+/// stop actuals at all is a different case: `load_stop_index` is only populated
+/// when a trip derives its stops from the load (`apply_trip_create` in
+/// `src/api/trips.rs`), so a trip created with explicit stops never cascades
+/// actuals down and the load has nothing to say either way. Treating that
+/// silence as a conflict would make the repair path inert for most real loads,
+/// so absence of signal is not evidence of an unserved stop.
+fn unserved_delivery_stops(load: &LoadRecord) -> Vec<String> {
+    let carries_actuals = load.stops.iter()
+        .any(|s| s.actual_arrive.is_some() || s.actual_depart.is_some());
+    if !carries_actuals {
+        return Vec::new();
+    }
+    load.stops.iter()
+        .filter(|s| s.stop_type == StopType::Delivery && s.actual_depart.is_none())
+        .map(|s| format!("stop[{}] has no actual_depart — it was never served", s.sequence))
+        .collect()
 }
 
 fn check_rate_sum(load: &LoadRecord, report: &mut DoctorReport) {
@@ -179,7 +212,9 @@ fn check_rate_sum(load: &LoadRecord, report: &mut DoctorReport) {
 // Auto-apply
 // ---------------------------------------------------------------------------
 
-async fn apply_safe_fixes(state: &AppState, load: &LoadRecord, report: &mut DoctorReport) {
+async fn apply_safe_fixes(
+    state: &AppState, load: &LoadRecord, report: &mut DoctorReport,
+) -> Result<(), AppError> {
     let to_apply: Vec<String> = report.findings.iter()
         .filter_map(|f| match &f.fix {
             Some(fix) if fix.safe_to_auto_apply => Some(f.check.clone()),
@@ -189,17 +224,14 @@ async fn apply_safe_fixes(state: &AppState, load: &LoadRecord, report: &mut Doct
 
     for check_id in to_apply {
         match check_id.as_str() {
+            // A failure here surfaces to the caller rather than being logged and
+            // dropped: `apply=true` returning a report that looks like a success
+            // is the same silent-failure shape #395 was about.
             "load.status_matches_trips" => {
-                match state.db
+                state.db
                     .transition_load_status(load.id, LoadStatus::Delivered, None, None, None)
-                    .await
-                {
-                    Ok(_) => report.applied.push(check_id),
-                    Err(e) => tracing::warn!(
-                        load_id = %load.id, error = %e,
-                        "load_doctor: advance_load_to_delivered failed"
-                    ),
-                }
+                    .await?;
+                report.applied.push(check_id);
             }
             _ => {
                 // Defensive: a finding marked safe_to_auto_apply has no wired-up
@@ -208,4 +240,6 @@ async fn apply_safe_fixes(state: &AppState, load: &LoadRecord, report: &mut Doct
             }
         }
     }
+
+    Ok(())
 }
