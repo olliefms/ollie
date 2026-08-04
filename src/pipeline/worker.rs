@@ -67,6 +67,17 @@ fn embeddable_source<'a>(summary: &'a str, fallback: &'a str) -> Option<&'a str>
     }
 }
 
+/// Run content extraction on the blocking pool.
+///
+/// `extract_content` is sync CPU work, and for PDFs it hands the bytes to
+/// `pdf-extract`, which panics (rather than erroring) on malformed input. On the
+/// worker task that panic kills the worker; on the blocking pool it comes back
+/// as a `JoinError` this can report per blob. `None` means "the extractor died
+/// on these bytes" — the caller decides what that costs.
+async fn extract_off_task(data: bytes::Bytes, mime_type: String) -> Option<Extractable> {
+    tokio::task::spawn_blocking(move || extract_content(&data, &mime_type)).await.ok()
+}
+
 /// Summarize a document page / image payload, OCR-first.
 ///
 /// Local vision models cannot reliably read document scans (moondream returns
@@ -144,7 +155,12 @@ pub async fn stage_expense_suggestions(
 ) -> Result<(), AppError> {
     let record = db.get_by_id(id).await?;
     let data = store.read(&record.checksum).await?;
-    let extractable = extract_content(&data, &record.mime_type);
+    // Best-effort pass over a blob that is already Ready: an extractor panic
+    // costs the suggestions, nothing else, so it must not touch blob status.
+    let Some(extractable) = extract_off_task(data, record.mime_type.clone()).await else {
+        tracing::error!("content extraction panicked for {id}; no expense suggestions staged");
+        return Ok(());
+    };
     apply_expense_suggestions(id, db, ai, &extractable).await;
     Ok(())
 }
@@ -163,7 +179,22 @@ pub async fn process_blob(
 
     let record = db.get_by_id(id).await?;
     let data = store.read(&record.checksum).await?;
-    let extractable = extract_content(&data, &record.mime_type);
+    let Some(extractable) = extract_off_task(data, record.mime_type.clone()).await else {
+        // Extractor panicked on these bytes. That is a failure of this blob, not
+        // of the pipeline — mark it so it leaves Processing and can be re-queued
+        // once the input (or the extractor) changes.
+        let err = "content extraction panicked on these bytes".to_string();
+        tracing::error!("pipeline failed for {id}: {err}");
+        db.mark_failed(id, err.clone()).await?;
+        if let Err(ev_err) = db.append_event(
+            "blob", id, "processing_failed",
+            Some(serde_json::json!({ "error": err })),
+            Some("pipeline"), &now_z(), Some(ai),
+        ).await {
+            tracing::warn!("event append failed for {id} (processing_failed): {ev_err}");
+        }
+        return Ok(());
+    };
 
     if let Err(e) = write_extract(extract_base, &record.checksum, &extractable).await {
         tracing::warn!("failed to write extract cache for {id}: {e}");
