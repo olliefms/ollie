@@ -92,11 +92,12 @@ async fn create_bare_load(
 }
 
 async fn create_test_facility(server: &TestServer, token: &str, name: &str, address: &str) -> String {
-    server.post("/fleet/api/v1/facilities")
+    let resp = server.post("/fleet/api/v1/facilities")
         .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
         .json(&serde_json::json!({ "name": name, "address": address }))
-        .await
-        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+        .await;
+    assert_eq!(resp.status_code(), 201, "create facility failed: {}", resp.text());
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
 }
 
 fn stop_json(fac_id: &str, scheduled_arrive: &str) -> serde_json::Value {
@@ -242,5 +243,109 @@ async fn test_kind_flip_to_administrative_does_not_clear_miles_via_routing_guard
     assert_eq!(
         refetched.json::<serde_json::Value>()["miles"], 250.0,
         "miles must not have been cleared at the DB layer either",
+    );
+}
+
+#[tokio::test]
+async fn test_kind_flip_to_freight_does_clear_miles_via_routing_guard() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let fac_id = create_test_facility(&server, &token, "Mirror Dock", "Dallas, TX").await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "load_number": "4581466",
+            "customer_name": "Landstar",
+            "stops": [],
+            "kind": "administrative",
+            "miles": 250.0,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let body = resp.json::<serde_json::Value>();
+    let load_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["miles"], 250.0, "sanity: load starts with a known mileage");
+
+    // Mirror of the freight->administrative regression above: flip an
+    // administrative load to freight in the same PUT that supplies new
+    // stops. Now the post-change kind IS freight, so the routing-enqueue
+    // guard must fire — miles get cleared for re-routing.
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "stops": [stop_json(&fac_id, "2026-06-02T08:00:00")],
+            "kind": "freight",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
+    let body = resp.json::<serde_json::Value>();
+    assert_eq!(body["kind"], "freight");
+    assert_eq!(
+        body["miles"], serde_json::Value::Null,
+        "a load flipped to freight with new stops must have its stale miles cleared \
+         so it gets re-routed",
+    );
+
+    let refetched = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(refetched.status_code(), 200);
+    assert_eq!(
+        refetched.json::<serde_json::Value>()["miles"], serde_json::Value::Null,
+        "miles must be cleared at the DB layer too",
+    );
+}
+
+#[tokio::test]
+async fn test_rejected_kind_change_does_not_write_stops() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let fac_id = create_test_facility(&server, &token, "Partial Write Dock", "Chicago, IL").await;
+    let other_fac_id = create_test_facility(&server, &token, "Other Dock", "Atlanta, GA").await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "load_number": "4581467",
+            "customer_name": "Landstar",
+            "stops": [stop_json(&fac_id, "2026-06-01T08:00:00")],
+            "kind": "freight",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let load_id = resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Give the load a trip so the kind-change guard will reject.
+    let trip_resp = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201, "trip create failed: {}", trip_resp.text());
+
+    // Single PUT: new stops AND a kind change that must be rejected. The
+    // stops write must not land — if it did, the load would be left with
+    // new stops, stale miles, and no routing re-queue: silent inconsistency.
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "stops": [stop_json(&other_fac_id, "2026-06-02T08:00:00")],
+            "kind": "administrative",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body: {}", resp.text());
+
+    let refetched = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(refetched.status_code(), 200);
+    let stops = refetched.json::<serde_json::Value>()["stops"].clone();
+    assert_eq!(
+        stops.as_array().map(|a| a.len()), Some(1),
+        "the rejected kind change must not have left the new stops written: {stops}",
+    );
+    assert_eq!(
+        stops[0]["facility_id"], fac_id,
+        "stops must remain the original facility, not the one from the rejected update: {stops}",
     );
 }

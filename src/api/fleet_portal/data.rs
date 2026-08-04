@@ -368,6 +368,11 @@ pub async fn update_load(
     Json(body): Json<UpdateLoadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:write")?;
+
+    if let Some(k) = body.kind {
+        validate_load_kind_change(&state, id, k).await?;
+    }
+
     let stops_provided = body.stops.is_some();
     let stops = match body.stops {
         Some(inputs) => Some(resolve_stops_pub(&state, inputs).await?),
@@ -1867,12 +1872,12 @@ pub async fn count_events_today(
 /// load that has already invoiced from `planned` used an edge a freight load
 /// never had, so relabelling it would leave a status the freight machine
 /// cannot explain.
-pub(crate) async fn apply_load_kind_change(
+pub(crate) async fn validate_load_kind_change(
     state: &AppState, id: Uuid, kind: LoadKind,
-) -> Result<crate::models::LoadRecord, AppError> {
+) -> Result<(), AppError> {
     let load = state.db.get_load_by_id(id).await?;
     if load.kind == kind {
-        return Ok(load);
+        return Ok(());
     }
     if load.status != LoadStatus::Planned {
         return Err(AppError::Conflict(format!(
@@ -1887,6 +1892,13 @@ pub(crate) async fn apply_load_kind_change(
             trips.len(),
         )));
     }
+    Ok(())
+}
+
+pub(crate) async fn apply_load_kind_change(
+    state: &AppState, id: Uuid, kind: LoadKind,
+) -> Result<crate::models::LoadRecord, AppError> {
+    validate_load_kind_change(state, id, kind).await?;
     state.db.update_load_kind(id, kind).await
 }
 

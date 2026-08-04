@@ -2207,6 +2207,10 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
     let req: UpdateLoadRequest = serde_json::from_value(args.clone())
         .map_err(|e| format!("invalid update_load arguments: {e}"))?;
 
+    if let Some(k) = req.kind {
+        super::data::validate_load_kind_change(state, id, k).await.map_err(|e| e.to_string())?;
+    }
+
     let stops_provided = req.stops.is_some();
     let stops = match req.stops {
         Some(inputs) => Some(resolve_stops_pub(state, inputs).await.map_err(|e| e.to_string())?),
