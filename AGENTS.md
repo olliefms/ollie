@@ -299,7 +299,9 @@ the bytes directly; either way the payload is summarized **OCR-first** (#372):
 vision path. `OLLIE_TESSERACT_BIN` overrides the binary path (used by tests as a fake-OCR
 hook). The `processing_completed` event payload records `summary_source`
 (`text|ocr|vision|pdf_text|preserved|none` — `preserved` = the run yielded nothing and the
-blob's existing summary was kept).
+blob's existing summary was kept). A run that *died* and kept the existing summary
+(`fail_without_degrading`) also records `preserved`, plus an `error` key on the same event —
+that key is what tells the two apart.
 
 ## Environment Variables
 

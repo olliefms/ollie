@@ -78,15 +78,23 @@ async fn extract_off_task(data: bytes::Bytes, mime_type: String) -> Option<Extra
     tokio::task::spawn_blocking(move || extract_content(&data, &mime_type)).await.ok()
 }
 
-/// End a failed `Process` pass without degrading a blob that is already good.
+/// End a `Process` pass that died, without degrading a blob that is already good.
 ///
 /// `mark_failed` leaves `summary`/`embedding` in place but moves the blob out of
 /// `ready`, and `db.search` filters on `status = 'ready'` — so failing a blob
 /// that already carries a summary (a manual `update_blob` backfill, or an
 /// earlier successful run) silently drops it out of semantic search. A reprocess
-/// must never degrade an already-good blob (#372), so this preserves it exactly
-/// as the "nothing recovered" branch of `process_blob` does, and only marks
-/// failed when there is nothing worth keeping.
+/// must never degrade an already-good blob (#372), so this leaves the record in
+/// the same state the "nothing recovered" branch of `process_blob` does, and
+/// only marks failed when there is nothing worth keeping. The
+/// `processing_completed` event it writes carries the `error` as well as
+/// `summary_source: preserved`, so a preserved-after-panic run can be told apart
+/// from a clean one.
+///
+/// A blob that is already `Ready` is left completely alone: the pass had
+/// finished and the panic came from the best-effort expense-suggestion hook that
+/// runs after `mark_ready`, so there is nothing to repair and a second
+/// `processing_completed` event would misreport a run that actually succeeded.
 pub(crate) async fn fail_without_degrading(
     id: Uuid,
     db: &DbClient,
@@ -94,6 +102,10 @@ pub(crate) async fn fail_without_degrading(
     error: String,
 ) -> Result<(), AppError> {
     let record = db.get_by_id(id).await?;
+    if record.status == crate::models::BlobStatus::Ready {
+        tracing::error!("{error} for {id} after the pass had completed; blob left ready");
+        return Ok(());
+    }
     if record.summary.as_deref().is_some_and(|s| !s.trim().is_empty()) {
         tracing::error!("{error} for {id}; preserving existing summary");
         db.mark_ready(id, record.summary.clone(), record.embedding.clone()).await?;
@@ -394,6 +406,22 @@ mod tests {
         let record = db.get_by_id(id).await.unwrap();
         assert_eq!(record.status, BlobStatus::Failed);
         assert_eq!(record.error.as_deref(), Some("extractor panicked"));
+    }
+
+    /// A panic in the best-effort expense hook fires after the pass already
+    /// completed — there is nothing to repair, and the blob must not be rewritten.
+    #[tokio::test]
+    async fn test_failed_pass_leaves_an_already_ready_blob_alone() {
+        let (db, ai, id, _dir) = blob_in_processing(Some("a good summary")).await;
+        db.mark_ready(id, Some("a good summary".into()), None).await.unwrap();
+        let before = db.get_by_id(id).await.unwrap();
+
+        fail_without_degrading(id, &db, &ai, "panicked after mark_ready".into()).await.unwrap();
+
+        let after = db.get_by_id(id).await.unwrap();
+        assert_eq!(after.status, BlobStatus::Ready);
+        assert_eq!(after.summary.as_deref(), Some("a good summary"));
+        assert_eq!(after.updated_at, before.updated_at, "the record must not be rewritten");
     }
 
     /// Whitespace is not a summary — it must not rescue a blob from failure.

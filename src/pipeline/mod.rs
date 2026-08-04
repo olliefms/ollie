@@ -125,8 +125,10 @@ pub fn spawn_pipeline(
                                 let recovery = worker::fail_without_degrading(
                                     id, &db, &ai, "pipeline worker panicked".into(),
                                 );
-                                if !matches!(run_job(recovery).await, Ok(Ok(()))) {
-                                    tracing::error!("could not end the failed pass for {id}");
+                                match run_job(recovery).await {
+                                    Ok(Ok(())) => {}
+                                    Ok(Err(e)) => tracing::error!("could not end the failed pass for {id}: {e}"),
+                                    Err(()) => tracing::error!("recovery for {id} panicked too"),
                                 }
                             }
                             PipelineJob::ExpenseSuggestions(id) => {
