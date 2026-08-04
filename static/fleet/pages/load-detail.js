@@ -8,6 +8,13 @@ import { confirmAction, confirmTyped, promptText } from '../components/confirm.j
 
 const PRE_DELIVERY = ['planned', 'assigned', 'dispatched', 'in_transit'];
 
+// A freight load earns `invoiced` by delivering. An administrative load has no
+// trip and never reaches `delivered`, so it invoices straight from `planned`.
+export function invoiceableFromStatus(load) {
+  return load.status === 'delivered'
+    || (load.status === 'planned' && load.kind === 'administrative');
+}
+
 export async function renderLoadDetail(id) {
   const topbarTitle = document.getElementById('topbar-title');
   if (topbarTitle) topbarTitle.textContent = 'Load';
@@ -195,7 +202,7 @@ export async function renderLoadDetail(id) {
     }
 
     const canWrite = hasScope('loads:write');
-    const canInvoice = hasScope('loads:invoice') && load.status === 'delivered';
+    const canInvoice = hasScope('loads:invoice') && invoiceableFromStatus(load);
     const canSettle = hasScope('loads:settle') && load.status === 'invoiced';
     const canDelete = hasScope('loads:delete');
     const canCancel = canWrite && PRE_DELIVERY.includes(load.status);
@@ -222,6 +229,11 @@ export async function renderLoadDetail(id) {
             <div class="detail-item__label">Status</div>
             <div class="detail-item__value">${badge(load.status)}</div>
           </div>
+          ${load.kind === 'administrative' ? `
+          <div class="detail-item">
+            <div class="detail-item__label">Kind</div>
+            <div class="detail-item__value"><span class="badge badge--load">Administrative</span></div>
+          </div>` : ''}
           <div class="detail-item">
             <div class="detail-item__label">Customer</div>
             <div class="detail-item__value">${escHtml(load.customer || load.customer_name || '—')}</div>
