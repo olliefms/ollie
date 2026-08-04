@@ -22,6 +22,31 @@ pub enum PipelineJob {
     ExpenseSuggestions(Uuid),
 }
 
+/// Hand a job to the pipeline without making a request handler wait for a free
+/// slot.
+///
+/// The channel is bounded, so a saturated pipeline — a bulk import, or the
+/// startup backlog drain, which the API now serves through (#404) — would
+/// otherwise block the upload for as long as the drain takes, and a client
+/// timeout would cancel the send outright, leaving a `Pending` blob with no
+/// queued job until the next restart. The record is always persisted before the
+/// enqueue, so detaching costs at worst a late summary.
+///
+/// The `try_send` fast path keeps the common case synchronous: only a genuinely
+/// full channel detaches. Startup recovery deliberately does NOT use this — it
+/// wants the backpressure, not 768 parked tasks.
+pub fn enqueue(tx: &async_channel::Sender<PipelineJob>, job: PipelineJob) {
+    if tx.try_send(job).is_ok() {
+        return;
+    }
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        if let Err(e) = tx.send(job).await {
+            tracing::error!("pipeline enqueue failed for {job:?}: {e}");
+        }
+    });
+}
+
 pub fn spawn_pipeline(
     workers: usize,
     db: Arc<DbClient>,

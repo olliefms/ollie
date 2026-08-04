@@ -17,27 +17,69 @@ use crate::{
 /// ~40 s each projected to an 8.5-hour cold start while this ran ahead of the
 /// listener, with the port refusing connections the whole time (#404). Summaries,
 /// embeddings and geocodes are all eventually-consistent: a blob with a pending
-/// summary is still readable, listable and attachable, so no API path needs
-/// recovery to have finished.
+/// summary is still readable, listable and attachable, so no *read* path needs
+/// recovery to have finished. The upload paths do touch the same saturated
+/// channel — `pipeline::enqueue` is what keeps them from inheriting the drain.
 pub async fn serve(state: AppState, listener: tokio::net::TcpListener) -> std::io::Result<()> {
-    let startup = state.clone();
+    let task = tokio::spawn(background_startup(state.clone()));
     tokio::spawn(async move {
-        // Indices first: they are bounded work, and building them before recovery
-        // starts writing keeps the window where they contend with pipeline writes
-        // as small as possible.
-        create_search_indices(&startup.db).await;
-        // Recover facilities persisted without an embedding (e.g. embed model down
-        // at create, or geocode-skipped) so they become searchable for dedup again.
-        spawn_facility_embedding_backfill(startup.db.clone(), startup.ai.clone());
-        if let Err(e) = requeue_stale(&startup.db, &startup.pipeline_tx, &startup.geocoding_tx, &startup.routing_tx).await {
-            // Non-fatal on purpose. An unrecovered backlog means stale summaries,
-            // which is not a reason to take the whole API down — that trade is the
-            // entire point of #404.
-            tracing::error!("startup recovery failed: {e}");
+        // A panic in here would otherwise reach nothing but the default panic
+        // hook — the process keeps serving with the backlog silently unrecovered.
+        if let Err(e) = task.await {
+            tracing::error!("startup background task ended abnormally: {e}");
         }
     });
 
     axum::serve(listener, crate::api::router(state)).await
+}
+
+async fn background_startup(state: AppState) {
+    // Indices first. They are bounded work measured in seconds, while the drain
+    // below is measured in hours on the cold start this exists for — delaying it
+    // by an index build is noise, and building before recovery starts writing
+    // keeps the window where the two contend as small as possible.
+    create_search_indices(&state.db).await;
+    // Recover facilities persisted without an embedding (e.g. embed model down at
+    // create, or geocode-skipped) so they become searchable for dedup again.
+    spawn_facility_embedding_backfill(state.db.clone(), state.ai.clone());
+    if let Err(e) = requeue_stale(&state.db, &state.pipeline_tx, &state.geocoding_tx, &state.routing_tx).await {
+        // Non-fatal on purpose. An unrecovered backlog means stale summaries,
+        // which is not a reason to take the whole API down — that trade is the
+        // entire point of #404.
+        tracing::error!("startup recovery failed: {e}");
+    }
+}
+
+/// Probe a local listener on `port`, the body of the `ollie healthcheck`
+/// subcommand wired to the image's `HEALTHCHECK`. `Err` until the listener is
+/// actually answering, so "container up" stops meaning "service reachable"
+/// (#404: the container reported healthy through the entire cold start).
+///
+/// Deliberately shallow: it proves the API can answer, not that recovery has
+/// finished — a pending backlog does not make the service unready.
+pub async fn healthcheck(port: u16) -> anyhow::Result<()> {
+    let url = format!("http://127.0.0.1:{port}/version");
+    // `no_proxy()`: reqwest honours HTTP_PROXY/ALL_PROXY by default and does not
+    // exempt loopback, so in an egress-controlled deployment the probe would be
+    // routed off-box and fail a perfectly healthy container.
+    let resp = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?
+        .get(&url)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("{url} returned {}", resp.status());
+    }
+    Ok(())
+}
+
+/// `PORT` as the healthcheck subcommand resolves it. Reads the env var directly
+/// rather than `Config::from_env`, which would fail the probe for reasons that
+/// have nothing to do with reachability. Must stay in step with `Config`.
+pub fn healthcheck_port() -> u16 {
+    std::env::var("PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(3000)
 }
 
 /// Best-effort index creation — a missing index degrades vector search to an exact

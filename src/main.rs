@@ -17,7 +17,7 @@ use webauthn_rs::prelude::{Url, WebauthnBuilder};
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     if std::env::args().nth(1).as_deref() == Some("healthcheck") {
-        return healthcheck().await;
+        return startup::healthcheck(startup::healthcheck_port()).await;
     }
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -80,29 +80,5 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("listening on {addr}");
     startup::serve(state, listener).await?;
-    Ok(())
-}
-
-/// `ollie healthcheck` — the image's HEALTHCHECK command. Exits non-zero until the
-/// HTTP listener is actually answering, so "container up" stops meaning "service
-/// reachable" (#404: the container reported healthy through the entire cold start).
-/// Reads `PORT` directly rather than `Config::from_env`, which would fail the check
-/// for reasons that have nothing to do with reachability.
-async fn healthcheck() -> anyhow::Result<()> {
-    let port = std::env::var("PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(3000);
-    let url = format!("http://127.0.0.1:{port}/version");
-    // `no_proxy()`: reqwest honours HTTP_PROXY/ALL_PROXY by default and does not
-    // exempt loopback, so in an egress-controlled deployment the probe would be
-    // routed off-box and fail a perfectly healthy container.
-    let resp = reqwest::Client::builder()
-        .no_proxy()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?
-        .get(&url)
-        .send()
-        .await?;
-    if !resp.status().is_success() {
-        anyhow::bail!("{url} returned {}", resp.status());
-    }
     Ok(())
 }

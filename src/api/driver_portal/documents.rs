@@ -253,7 +253,7 @@ pub async fn upload_document(
         None
     };
     if let Some(job) = job {
-        let _ = state.pipeline_tx.send(job).await;
+        crate::pipeline::enqueue(&state.pipeline_tx, job);
     }
 
     Ok((status_code, Json(record)))

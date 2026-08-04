@@ -108,4 +108,32 @@ async fn test_http_listener_serves_while_startup_recovery_is_blocked() {
 
     // Still wedged: the API answered *during* recovery, not after it.
     assert_eq!(rx.len(), CHANNEL_CAPACITY, "the requeue loop drained unexpectedly");
+
+    // The image's HEALTHCHECK probe must agree, against the same server — a probe
+    // that reported unhealthy here would strand every deployment behind a
+    // `service_healthy` condition.
+    startup::healthcheck(addr.port()).await.expect("healthcheck failed against a serving listener");
+}
+
+/// The probe must be able to say "no": a dead port has to fail it, or the
+/// HEALTHCHECK reports healthy exactly as #404 did.
+#[tokio::test]
+async fn test_healthcheck_fails_when_nothing_is_listening() {
+    // Bind then drop, so the port is known-free rather than guessed.
+    let port = {
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        l.local_addr().unwrap().port()
+    };
+    assert!(startup::healthcheck(port).await.is_err());
+}
+
+/// `ollie healthcheck` must resolve `PORT` the way the server does, or the probe
+/// aims at the wrong port on every non-default deployment.
+#[test]
+fn test_healthcheck_port_matches_config_default() {
+    std::env::remove_var("PORT");
+    assert_eq!(startup::healthcheck_port(), 3000);
+    std::env::set_var("PORT", "8081");
+    assert_eq!(startup::healthcheck_port(), 8081);
+    std::env::remove_var("PORT");
 }
