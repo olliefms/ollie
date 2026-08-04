@@ -384,7 +384,14 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         load_number: str_col("load_number"), owner_id: i64_col("owner_id"),
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
-        kind: str_col("kind").parse().unwrap_or(crate::models::LoadKind::Freight),
+        kind: {
+            let k = str_col("kind");
+            if k.is_empty() {
+                crate::models::LoadKind::Freight
+            } else {
+                k.parse().map_err(AppError::Internal)?
+            }
+        },
         customer_name: str_col("customer_name"), customer_ref: opt_str("customer_ref"),
         stops, rate_items,
         commodity: opt_str("commodity"), weight_lbs: opt_f64("weight_lbs"),
