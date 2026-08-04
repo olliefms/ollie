@@ -103,6 +103,24 @@ async fn create_test_facility(server: &TestServer, token: &str, name: &str, addr
     resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
 }
 
+async fn create_driver(server: &TestServer, token: &str, name: &str) -> String {
+    let resp = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "name": name }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "create driver failed: {}", resp.text());
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
+async fn create_truck(server: &TestServer, token: &str, unit_number: &str) -> String {
+    let resp = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "unit_number": unit_number }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "create truck failed: {}", resp.text());
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
+
 fn stop_json(fac_id: &str, scheduled_arrive: &str) -> serde_json::Value {
     serde_json::json!({
         "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
@@ -633,10 +651,101 @@ async fn test_cancelled_trip_does_not_block_reclassification_to_administrative()
     assert_eq!(settled.status, LoadStatus::Settled);
 }
 
-/// `tool_list_loads` previously advertised a `tags` filter in its schema while
-/// silently dropping it before it reached `db.list_loads` — an argument-
-/// extraction bug that no DB-level test could catch, because the DB layer was
-/// never wrong. Only a call through the actual MCP tool proves the glue works.
+/// TONU's full shape: a truck is actually ordered — a driver and truck get
+/// *assigned* to the trip (load -> `Assigned`) — and only then is it cancelled
+/// (load demotes back through the `trip_lifecycle` cascade to `Planned`)
+/// before the load is reclassified administrative. The test above never
+/// assigns anyone, so the load never leaves `planned` and the demote cascade
+/// is never exercised; this one drives it.
+#[tokio::test]
+async fn test_tonu_load_assigned_then_cancelled_can_be_reclassified() {
+    let (server, state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let fac_id = create_test_facility(&server, &token, "TONU Assign Dock", "Chicago, IL").await;
+    let driver_id = create_driver(&server, &token, "TONU Driver").await;
+    let truck_id = create_truck(&server, &token, "TONU-1").await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "load_number": "4581472",
+            "customer_name": "Landstar",
+            "stops": [stop_json(&fac_id, "2026-06-01T08:00:00")],
+            "kind": "freight",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let load_id = resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_resp = server.post("/fleet/api/v1/trips")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201, "trip create failed: {}", trip_resp.text());
+    let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Order the truck: assign a driver and truck to the trip.
+    let assign_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign_resp.status_code(), 200, "assign failed: {}", assign_resp.text());
+
+    let after_assign = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(after_assign.status_code(), 200);
+    assert_eq!(
+        after_assign.json::<serde_json::Value>()["status"], "assigned",
+        "assigning a driver and truck must move the load out of planned",
+    );
+
+    // Not used: cancel the trip after the truck was ordered.
+    let cancel_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/cancel"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(cancel_resp.status_code(), 200, "cancel failed: {}", cancel_resp.text());
+
+    let after_cancel = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(after_cancel.status_code(), 200);
+    assert_eq!(
+        after_cancel.json::<serde_json::Value>()["status"], "planned",
+        "cancelling the only trip holding the load must demote it back to planned",
+    );
+
+    // The reclassification the whole feature exists for.
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "kind": "administrative" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "kind change rejected: {}", resp.text());
+    assert_eq!(resp.json::<serde_json::Value>()["kind"], "administrative");
+
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "invoice_number": "JQL-4581472" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "invoice failed: {}", resp.text());
+
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "settle failed: {}", resp.text());
+
+    let uuid: uuid::Uuid = load_id.parse().unwrap();
+    let settled = state.db.get_load_by_id(uuid).await.unwrap();
+    assert_eq!(settled.status, LoadStatus::Settled);
+}
+
+/// Permanent regression guard for a defect fixed earlier in this branch
+/// (commit 382f117): `tool_list_loads` advertised a `tags` filter in its
+/// schema while silently dropping it before the call ever reached
+/// `db.list_loads`. That was an argument-extraction bug in the MCP glue
+/// itself, not in `DbClient::list_loads`, so no DB-level test could ever have
+/// caught it — only a call through the actual MCP tool proves the glue works.
 #[tokio::test]
 async fn test_mcp_list_loads_tags_filter_reaches_the_db() {
     let (server, _state, _d1, _d2, _rx) = setup().await;
