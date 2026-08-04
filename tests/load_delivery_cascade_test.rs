@@ -17,7 +17,8 @@
 
 use ollie::models::trip::TripStopType;
 use ollie::models::{
-    LoadRecord, LoadStatus, ServiceType, Stop, StopType, TripRecord, TripStatus, TripStop,
+    LoadKind, LoadRecord, LoadStatus, ServiceType, Stop, StopType, TripRecord, TripStatus,
+    TripStop,
 };
 use ollie::services::doctors;
 use ollie::services::trip_stops;
@@ -123,6 +124,7 @@ fn load_with_stops(id: Uuid, status: LoadStatus, stops: Vec<Stop>) -> LoadRecord
         load_number: "4819063".into(),
         owner_id: 0,
         status,
+        kind: LoadKind::Freight,
         customer_name: "Acme Freight".into(),
         customer_ref: None,
         stops,

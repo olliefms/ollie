@@ -98,18 +98,20 @@ impl DbClient {
         cancellation_reason: Option<String>,
     ) -> Result<LoadRecord, AppError> {
         let mut record = self.get_load_by_id(id).await?;
-        if !record.status.can_transition_to(&new_status) {
+        if !record.can_transition_to(&new_status) {
             return Err(AppError::Conflict(format!(
                 "cannot transition from '{}' to '{}'",
                 record.status.as_str(), new_status.as_str()
             )));
         }
+        let from = record.status.as_str().to_string();
         record.status = new_status;
         if let Some(v) = invoice_number { record.invoice_number = Some(v); }
         if let Some(v) = invoice_date { record.invoice_date = Some(v); }
         if let Some(v) = cancellation_reason { record.cancellation_reason = Some(v); }
         record.updated_at = Utc::now();
         self.upsert_load(&record).await?;
+        crate::events::on_load_status_changed(self, id, &from, record.status.as_str()).await;
         Ok(record)
     }
 
@@ -119,6 +121,14 @@ impl DbClient {
         record.updated_at = Utc::now();
         self.upsert_load(&record).await?;
         self.sync_trip_load_numbers(id, &record.load_number).await?;
+        Ok(record)
+    }
+
+    pub async fn update_load_kind(&self, id: Uuid, kind: crate::models::LoadKind) -> Result<LoadRecord, AppError> {
+        let mut record = self.get_load_by_id(id).await?;
+        record.kind = kind;
+        record.updated_at = Utc::now();
+        self.upsert_load(&record).await?;
         Ok(record)
     }
 
@@ -154,12 +164,15 @@ impl DbClient {
         status_filter: Option<&str>,
         customer_filter: Option<&str>,
         tag_filter: &[String],
+        facility_filter: Option<Uuid>,
         from_date: Option<&str>,
         to_date: Option<&str>,
         limit: usize,
         offset: usize,
     ) -> Result<(usize, Vec<LoadListItem>), AppError> {
-        let filter = build_load_filter(status_filter, customer_filter, tag_filter, from_date, to_date)?;
+        let filter = build_load_filter(
+            status_filter, customer_filter, tag_filter, facility_filter, from_date, to_date,
+        )?;
         let total = self.load_table.count_rows(filter.clone()).await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let mut q = self.load_table.query().limit(LOAD_SCAN_CAP);
@@ -177,9 +190,12 @@ impl DbClient {
         status_filter: Option<&str>,
         customer_filter: Option<&str>,
         tag_filter: &[String],
+        facility_filter: Option<Uuid>,
         limit: usize,
     ) -> Result<Vec<LoadListItem>, AppError> {
-        let filter = build_load_filter(status_filter, customer_filter, tag_filter, None, None)?;
+        let filter = build_load_filter(
+            status_filter, customer_filter, tag_filter, facility_filter, None, None,
+        )?;
         let mut q = self.load_table.query()
             .nearest_to(embedding)
             .map_err(|e| AppError::Internal(e.to_string()))?
@@ -259,7 +275,7 @@ impl DbClient {
     pub async fn list_loads_needing_routing(&self) -> Result<Vec<Uuid>, AppError> {
         // loads with no miles and non-terminal status
         let stream = self.load_table.query()
-            .only_if("miles IS NULL AND status NOT IN ('delivered','invoiced','settled','cancelled')")
+            .only_if("miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled')")
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(batches_to_loads(collect_stream(stream).await?)?
@@ -269,7 +285,7 @@ impl DbClient {
     pub async fn list_unrouted_loads_for_facility(&self, facility_id: Uuid) -> Result<Vec<Uuid>, AppError> {
         let fac_str = facility_id.to_string();
         let filter = format!(
-            "miles IS NULL AND status NOT IN ('delivered','invoiced','settled','cancelled') AND stops LIKE '%\"{}\"%'",
+            "miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled') AND stops LIKE '%\"{}\"%'",
             fac_str
         );
         let stream = self.load_table.query()
@@ -331,6 +347,7 @@ fn load_to_batch(record: &LoadRecord, embed_dim: usize) -> Result<RecordBatch, A
         embedding_col,
         Arc::new(StringArray::from(vec![record.created_at.to_rfc3339().as_str()])),
         Arc::new(StringArray::from(vec![record.updated_at.to_rfc3339().as_str()])),
+        Arc::new(StringArray::from(vec![record.kind.as_str()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -383,6 +400,14 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         load_number: str_col("load_number"), owner_id: i64_col("owner_id"),
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
+        kind: {
+            let k = str_col("kind");
+            if k.is_empty() {
+                crate::models::LoadKind::Freight
+            } else {
+                k.parse().map_err(AppError::Internal)?
+            }
+        },
         customer_name: str_col("customer_name"), customer_ref: opt_str("customer_ref"),
         stops, rate_items,
         commodity: opt_str("commodity"), weight_lbs: opt_f64("weight_lbs"),
@@ -399,7 +424,8 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
 
 fn build_load_filter(
     status: Option<&str>, customer: Option<&str>,
-    tags: &[String], from: Option<&str>, to: Option<&str>,
+    tags: &[String], facility_id: Option<Uuid>,
+    from: Option<&str>, to: Option<&str>,
 ) -> Result<Option<String>, AppError> {
     let mut parts: Vec<String> = Vec::new();
     // Escape single quotes to prevent SQL injection in LanceDB filter strings
@@ -411,6 +437,9 @@ fn build_load_filter(
     for tag in tags {
         let tag = tag.replace('\'', "''");
         parts.push(format!("tags LIKE '%\"{tag}\"%'"));
+    }
+    if let Some(f) = facility_id {
+        parts.push(format!("stops LIKE '%\"{f}\"%'"));
     }
     if let Some(f) = from {
         chrono::DateTime::parse_from_rfc3339(f)
@@ -449,6 +478,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
+            kind: crate::models::LoadKind::Freight,
             customer_name: "ACME Logistics".into(), customer_ref: None,
             stops: vec![], rate_items: vec![
                 RateLineItem { description: "Line Haul".into(), amount_usd: 1500.0 },
@@ -459,6 +489,72 @@ mod tests {
             cancellation_reason: None, embedding: None,
             created_at: now, updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn test_load_kind_round_trips() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&load).await.unwrap();
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.kind, crate::models::LoadKind::Administrative);
+    }
+
+    #[tokio::test]
+    async fn test_load_kind_defaults_to_freight() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.kind, crate::models::LoadKind::Freight);
+    }
+
+    #[tokio::test]
+    async fn test_list_loads_filters_by_tag() {
+        let (db, _dir) = test_db().await;
+        let mut tagged = sample_load();
+        tagged.tags = vec!["guarantee".into(), "no-trip".into()];
+        db.insert_load(&tagged).await.unwrap();
+        let mut other = sample_load();
+        other.id = uuid::Uuid::new_v4();
+        other.tags = vec!["flatbed".into()];
+        db.insert_load(&other).await.unwrap();
+
+        let (total, items) = db.list_loads(
+            None, None, &["guarantee".to_string()], None, None, None, 20, 0,
+        ).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(items[0].id, tagged.id);
+    }
+
+    #[tokio::test]
+    async fn test_list_loads_filters_by_facility() {
+        let (db, _dir) = test_db().await;
+        let fac = uuid::Uuid::new_v4();
+        let mut at_facility = sample_load();
+        at_facility.stops = vec![crate::models::Stop {
+            sequence: 1,
+            stop_type: crate::models::StopType::Pickup,
+            service_type: crate::models::ServiceType::LiveLoad,
+            facility_id: fac,
+            scheduled_arrive: "2026-07-29T08:00:00".into(),
+            scheduled_arrive_end: None, actual_arrive: None, actual_depart: None,
+            expected_dwell_minutes: None, detention_free_minutes: None,
+            detention_grace_minutes: None, notes: None, blob_ids: vec![],
+            timezone: Some("America/Chicago".into()),
+            actual_arrive_utc: None, actual_depart_utc: None,
+        }];
+        db.insert_load(&at_facility).await.unwrap();
+        let mut elsewhere = sample_load();
+        elsewhere.id = uuid::Uuid::new_v4();
+        db.insert_load(&elsewhere).await.unwrap();
+
+        let (total, items) = db.list_loads(
+            None, None, &[], Some(fac), None, None, 20, 0,
+        ).await.unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(items[0].id, at_facility.id);
     }
 
     #[tokio::test]
@@ -487,6 +583,18 @@ mod tests {
         assert_eq!(updated.load_number, "JQL-9821550");
         let fetched = db.get_load_by_id(load.id).await.unwrap();
         assert_eq!(fetched.load_number, "JQL-9821550");
+    }
+
+    #[tokio::test]
+    async fn test_update_load_kind() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+        let updated = db.update_load_kind(load.id, crate::models::LoadKind::Administrative)
+            .await.unwrap();
+        assert_eq!(updated.kind, crate::models::LoadKind::Administrative);
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.kind, crate::models::LoadKind::Administrative);
     }
 
     #[tokio::test]
@@ -579,7 +687,7 @@ mod tests {
 
     #[test]
     fn test_build_load_filter_valid_dates() {
-        let filter = build_load_filter(None, None, &[], Some("2026-01-01T00:00:00Z"), Some("2026-12-31T23:59:59Z")).unwrap();
+        let filter = build_load_filter(None, None, &[], None, Some("2026-01-01T00:00:00Z"), Some("2026-12-31T23:59:59Z")).unwrap();
         let f = filter.unwrap();
         assert!(f.contains("created_at >= '2026-01-01T00:00:00Z'"));
         assert!(f.contains("created_at <= '2026-12-31T23:59:59Z'"));
@@ -587,13 +695,72 @@ mod tests {
 
     #[test]
     fn test_build_load_filter_invalid_from_returns_bad_request() {
-        let result = build_load_filter(None, None, &[], Some("' OR 1=1--"), None);
+        let result = build_load_filter(None, None, &[], None, Some("' OR 1=1--"), None);
         assert!(matches!(result, Err(AppError::BadRequest(_))));
     }
 
     #[test]
     fn test_build_load_filter_invalid_to_returns_bad_request() {
-        let result = build_load_filter(None, None, &[], None, Some("not-a-date"));
+        let result = build_load_filter(None, None, &[], None, None, Some("not-a-date"));
         assert!(matches!(result, Err(AppError::BadRequest(_))));
+    }
+
+    #[tokio::test]
+    async fn test_administrative_load_walks_planned_to_settled() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&load).await.unwrap();
+
+        db.transition_load_status(
+            load.id, LoadStatus::Invoiced,
+            Some("JQL-4581461".into()), Some("2026-07-29".into()), None,
+        ).await.unwrap();
+        db.transition_load_status(load.id, LoadStatus::Settled, None, None, None).await.unwrap();
+
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.status, LoadStatus::Settled);
+        assert_eq!(fetched.invoice_number.as_deref(), Some("JQL-4581461"));
+    }
+
+    #[tokio::test]
+    async fn test_freight_load_still_cannot_invoice_from_planned() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+        let err = db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None).await;
+        assert!(matches!(err, Err(AppError::Conflict(_))));
+    }
+
+    #[tokio::test]
+    async fn test_transition_emits_load_event() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&load).await.unwrap();
+
+        db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None).await.unwrap();
+
+        let (_total, events) = db.query_events(
+            Some(load.id), None, Some("load.invoiced"), None, None, 10, 0,
+        ).await.unwrap();
+        assert_eq!(events.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_administrative_loads_are_not_queued_for_routing() {
+        let (db, _dir) = test_db().await;
+
+        let freight = sample_load();          // miles: None, status: Planned
+        db.insert_load(&freight).await.unwrap();
+        let mut admin = sample_load();
+        admin.id = uuid::Uuid::new_v4();
+        admin.load_number = "JQL-4581461".into();
+        admin.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&admin).await.unwrap();
+
+        let queued = db.list_loads_needing_routing().await.unwrap();
+        assert!(queued.contains(&freight.id));
+        assert!(!queued.contains(&admin.id), "administrative loads have no stops to route");
     }
 }

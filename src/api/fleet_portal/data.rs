@@ -24,7 +24,7 @@ use crate::{
         TrailerListResponse,
         TruckListResponse,
         EventListResponse, EventResponse,
-        LoadStatus,
+        LoadKind, LoadStatus,
     },
     api::loads::{ListLoadsQuery, resolve_stops_pub},
 };
@@ -233,6 +233,7 @@ pub async fn list_loads(
         q.status.as_deref(),
         q.customer.as_deref(),
         &q.tag,
+        q.facility_id,
         q.from.as_deref(),
         q.to.as_deref(),
         limit,
@@ -319,6 +320,7 @@ pub async fn create_load(
         load_number,
         owner_id: 0,
         status: LoadStatus::Planned,
+        kind: body.kind.unwrap_or_default(),
         customer_name: body.customer_name,
         customer_ref: body.customer_ref,
         stops,
@@ -339,7 +341,7 @@ pub async fn create_load(
 
     state.db.insert_load(&record).await?;
 
-    if record.miles.is_none() {
+    if record.miles.is_none() && record.kind != LoadKind::Administrative {
         let _ = state.routing_tx.try_send(record.id);
     }
 
@@ -367,6 +369,11 @@ pub async fn update_load(
     Json(body): Json<UpdateLoadRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:write")?;
+
+    if let Some(k) = body.kind {
+        validate_load_kind_change(&state, id, k).await?;
+    }
+
     let stops_provided = body.stops.is_some();
     let stops = match body.stops {
         Some(inputs) => Some(resolve_stops_pub(&state, inputs).await?),
@@ -407,14 +414,21 @@ pub async fn update_load(
         embedding,
     ).await?;
 
-    if stops_provided && body.miles.is_none() {
+    if let Some(ln) = body.load_number {
+        updated = state.db.update_load_number(id, ln).await?;
+    }
+
+    if let Some(k) = body.kind {
+        updated = apply_load_kind_change(&state, id, k).await?;
+    }
+
+    // The miles tests in tests/administrative_loads_test.rs cover the routing
+    // enqueue only because clear_load_miles and try_send share this condition —
+    // don't split them without adding direct enqueue coverage.
+    if stops_provided && body.miles.is_none() && updated.kind != LoadKind::Administrative {
         state.db.clear_load_miles(id).await?;
         updated.miles = None;
         let _ = state.routing_tx.try_send(id);
-    }
-
-    if let Some(ln) = body.load_number {
-        updated = state.db.update_load_number(id, ln).await?;
     }
 
     let response = build_load_detail(&state, updated).await?;
@@ -1505,6 +1519,7 @@ async fn subject_for(db: &crate::db::DbClient, entity_type: &str, id: Uuid) -> O
         "truck" => db.get_truck_by_id(id).await.ok().map(|t| format!("Truck {}", t.unit_number)),
         "trailer" => db.get_trailer_by_id(id).await.ok().map(|t| format!("Trailer {}", t.unit_number)),
         "blob" => db.get_by_id(id).await.ok().map(|b| b.name),
+        "load" => db.get_load_by_id(id).await.ok().map(|l| format!("Load {}", l.load_number)),
         _ => None,
     }
 }
@@ -1781,6 +1796,32 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    fn sample_load_record(load_number: &str) -> crate::models::LoadRecord {
+        let now = chrono::Utc::now();
+        crate::models::LoadRecord {
+            id: Uuid::new_v4(),
+            load_number: load_number.into(),
+            owner_id: 0,
+            status: crate::models::LoadStatus::Planned,
+            kind: crate::models::LoadKind::Freight,
+            customer_name: "Landstar".into(), customer_ref: None,
+            stops: vec![], rate_items: vec![],
+            commodity: None, weight_lbs: None, miles: None, notes: None,
+            tags: vec![], blob_ids: vec![],
+            invoice_number: None, invoice_date: None, cancellation_reason: None,
+            embedding: None, created_at: now, updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subject_for_load_uses_load_number() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load_record("JQL-4581461");
+        db.insert_load(&load).await.unwrap();
+        let result = subject_for(&db, "load", load.id).await;
+        assert_eq!(result.as_deref(), Some("Load JQL-4581461"));
+    }
+
     #[tokio::test]
     async fn test_subject_for_unknown_entity_type() {
         let (db, _dir) = test_db().await;
@@ -1826,6 +1867,52 @@ pub async fn count_events_today(
 // ---------------------------------------------------------------------------
 // Internal helpers — mirror build_detail_response from src/api/loads.rs
 // ---------------------------------------------------------------------------
+
+/// Check whether a load's kind may change, or explain why it can't.
+///
+/// Kind is only mutable while the load is still `planned` and has no trips.
+/// Past that, the two models have already diverged: a freight load with trips
+/// cannot become administrative without orphaning them, and an administrative
+/// load that has already invoiced from `planned` used an edge a freight load
+/// never had, so relabelling it would leave a status the freight machine
+/// cannot explain.
+pub(crate) async fn validate_load_kind_change(
+    state: &AppState, id: Uuid, kind: LoadKind,
+) -> Result<(), AppError> {
+    let load = state.db.get_load_by_id(id).await?;
+    if load.kind == kind {
+        return Ok(());
+    }
+    if load.status != LoadStatus::Planned {
+        return Err(AppError::Conflict(format!(
+            "cannot change kind of a load in '{}' — only a 'planned' load can be reclassified",
+            load.status.as_str(),
+        )));
+    }
+    let trips = state.db.list_trips_for_load(id).await?;
+    let live_trips = trips.iter()
+        .filter(|t| t.status != crate::models::trip::TripStatus::Cancelled)
+        .count();
+    if live_trips > 0 {
+        return Err(AppError::Conflict(format!(
+            "cannot change kind: load has {live_trips} trip(s). Cancel them first.",
+        )));
+    }
+    Ok(())
+}
+
+/// Validate then apply a load kind change. No-op (no write) when the load's
+/// kind already matches `kind`.
+pub(crate) async fn apply_load_kind_change(
+    state: &AppState, id: Uuid, kind: LoadKind,
+) -> Result<crate::models::LoadRecord, AppError> {
+    validate_load_kind_change(state, id, kind).await?;
+    let load = state.db.get_load_by_id(id).await?;
+    if load.kind == kind {
+        return Ok(load);
+    }
+    state.db.update_load_kind(id, kind).await
+}
 
 pub async fn build_load_detail(
     state: &AppState,
@@ -1882,6 +1969,7 @@ pub async fn build_load_detail(
         id: record.id,
         load_number: record.load_number,
         status: record.status,
+        kind: record.kind,
         customer_name: record.customer_name,
         customer_ref: record.customer_ref,
         stops,

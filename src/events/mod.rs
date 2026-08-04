@@ -149,6 +149,21 @@ pub async fn expense_deleted(db: &DbClient, expense_id: Uuid, actor: Option<Stri
     tracing::info!(expense_id = %expense_id, "expense deleted");
 }
 
+/// A load's status moved. Emitted from inside `transition_load_status` rather
+/// than from its callers, so no path — API, MCP, trip cascade, or doctor fix —
+/// can move a load without leaving a record.
+///
+/// `actor` is deliberately `None` for now: `transition_load_status` has no actor
+/// parameter, and the human-vs-cascade distinction belongs to the `set_load_status`
+/// work that will thread one through.
+pub async fn on_load_status_changed(db: &DbClient, load_id: Uuid, from: &str, to: &str) {
+    let payload = serde_json::json!({ "from": from, "to": to });
+    let _ = db.append_event(
+        "load", load_id, &format!("load.{to}"), Some(payload), None, &now_z(), None,
+    ).await;
+    tracing::info!(load_id = %load_id, from, to, "load status changed");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +273,24 @@ mod tests {
         ).unwrap();
         assert_eq!(payload["stop_name"], serde_json::Value::Null);
         assert_eq!(payload["seq"], serde_json::json!(99u32));
+    }
+
+    #[tokio::test]
+    async fn test_load_status_changed_records_both_ends() {
+        let (db, _dir) = test_db().await;
+        let load_id = Uuid::new_v4();
+
+        on_load_status_changed(&db, load_id, "planned", "invoiced").await;
+
+        let (_total, events) = db.query_events(
+            Some(load_id), None, Some("load.invoiced"), None, None, 10, 0,
+        ).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].entity_type, "load");
+        let payload: serde_json::Value = serde_json::from_str(
+            events[0].payload.as_deref().unwrap_or("{}"),
+        ).unwrap();
+        assert_eq!(payload["from"], serde_json::json!("planned"));
+        assert_eq!(payload["to"], serde_json::json!("invoiced"));
     }
 }

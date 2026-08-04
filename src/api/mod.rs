@@ -146,6 +146,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::StopType,
             models::ServiceType,
             models::LoadStatus,
+            models::LoadKind,
             models::RateLineItem,
             models::Stop,
             models::StopInput,

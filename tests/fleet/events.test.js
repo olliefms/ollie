@@ -30,6 +30,9 @@ describe('jumpHref', () => {
   it('null for unknown', () => {
     expect(jumpHref('mystery', 'x')).toBe(null);
   });
+  it('maps load events to the load detail route', () => {
+    expect(jumpHref('load', 'l1')).toBe('/fleet/loads/l1');
+  });
 });
 
 describe('eventRowHtml', () => {

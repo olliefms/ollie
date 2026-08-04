@@ -7,6 +7,7 @@ use crate::{
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
+use uuid::Uuid;
 
 #[derive(Deserialize, Default, IntoParams)]
 #[into_params(parameter_in = Query)]
@@ -24,6 +25,8 @@ pub struct ListLoadsQuery {
     /// Filter by tag (repeat for multiple: ?tag=a&tag=b)
     #[serde(default)]
     pub tag: Vec<String>,
+    /// Filter to loads with a stop at this facility
+    pub facility_id: Option<Uuid>,
     /// Maximum results (default 20, max 100)
     pub limit: Option<usize>,
     /// Pagination offset (default 0)

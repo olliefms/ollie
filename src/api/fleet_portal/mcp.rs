@@ -520,7 +520,7 @@ async fn completion_values(
     let candidates: Vec<String> = match req.argument.name.as_str() {
         "customer_name" => state
             .db
-            .list_loads(ctx_status, None, &[], None, None, 500, 0)
+            .list_loads(ctx_status, None, &[], None, None, None, 500, 0)
             .await
             .map_err(internal)?
             .1
@@ -823,12 +823,16 @@ fn tools_list() -> Value {
         "tools": [
             {
                 "name": "list_loads",
-                "description": "List loads. Optional filters: status (planned/assigned/dispatched/in_transit/delivered/invoiced/settled/cancelled), facility_id (UUID).",
+                "description": "List loads. Optional filters, all ANDed together: status, customer (substring), tags (a load must carry every tag given), facility_id (loads with a stop at that facility), from/to (created_at bounds, ISO 8601).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "status": { "type": "string", "enum": ["planned","assigned","dispatched","in_transit","delivered","invoiced","settled","cancelled"] },
-                        "facility_id": { "type": "string", "format": "uuid" }
+                        "customer": { "type": "string", "description": "Substring match on customer name." },
+                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Load must carry every tag listed." },
+                        "facility_id": { "type": "string", "format": "uuid" },
+                        "from": { "type": "string", "description": "created_at >= this RFC 3339 datetime." },
+                        "to": { "type": "string", "description": "created_at <= this RFC 3339 datetime." }
                     }
                 }
             },
@@ -851,6 +855,7 @@ fn tools_list() -> Value {
                     "properties": {
                         "customer_name": { "type": "string" },
                         "customer_ref": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["freight", "administrative"], "description": "Default freight. 'administrative' marks revenue with no trip behind it (weekly guarantee, TONU, detention-only, layover, accessorial-only) — it invoices straight from planned and cannot be assigned to a trip." },
                         "stops": { "type": "array", "items": { "type": "object" } },
                         "rate_items": { "type": "array", "items": { "type": "object" } },
                         "commodity": { "type": "string" },
@@ -861,7 +866,7 @@ fn tools_list() -> Value {
                         "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
                         "load_number": { "type": "string", "description": "Human-facing load/reference number (free-form string, e.g. a broker/Landstar number). Omit to auto-assign LD-YYYY-NNNN." }
                     },
-                    "required": ["customer_name", "stops"]
+                    "required": ["customer_name"]
                 }
             },
             {
@@ -873,6 +878,7 @@ fn tools_list() -> Value {
                         "id": { "type": "string", "format": "uuid" },
                         "customer_name": { "type": "string" },
                         "customer_ref": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["freight", "administrative"], "description": "Only changeable while the load is 'planned' and has no trips." },
                         "stops": { "type": "array", "items": { "type": "object" } },
                         "rate_items": { "type": "array", "items": { "type": "object" } },
                         "commodity": { "type": "string" },
@@ -2082,16 +2088,17 @@ fn paginate_slice<T>(all: Vec<T>, offset: usize, page: usize) -> (Vec<T>, usize,
 
 async fn tool_list_loads(state: &AppState, args: &Value) -> Result<Value, String> {
     let status = args["status"].as_str();
+    let customer = args["customer"].as_str();
+    let from = args["from"].as_str();
+    let to = args["to"].as_str();
+    let tags: Vec<String> = args["tags"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let facility_id = parse_uuid_opt(args, "facility_id")?;
     let offset = cursor_offset(args)?;
 
     let (total, items) = state.db.list_loads(
-        status,
-        None, // customer
-        &[],  // tags
-        None, // from
-        None, // to
-        PAGE_SIZE,
-        offset,
+        status, customer, &tags, facility_id, from, to, PAGE_SIZE, offset,
     ).await.map_err(|e| e.to_string())?;
 
     let returned = items.len();
@@ -2144,6 +2151,7 @@ async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, Strin
         load_number,
         owner_id: 0,
         status: LoadStatus::Planned,
+        kind: req.kind.unwrap_or_default(),
         customer_name: req.customer_name,
         customer_ref: req.customer_ref,
         stops,
@@ -2164,7 +2172,7 @@ async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, Strin
 
     state.db.insert_load(&record).await.map_err(|e| e.to_string())?;
 
-    if record.miles.is_none() {
+    if record.miles.is_none() && record.kind != crate::models::LoadKind::Administrative {
         let _ = state.routing_tx.try_send(record.id);
     }
 
@@ -2203,6 +2211,10 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
 
     let req: UpdateLoadRequest = serde_json::from_value(args.clone())
         .map_err(|e| format!("invalid update_load arguments: {e}"))?;
+
+    if let Some(k) = req.kind {
+        super::data::validate_load_kind_change(state, id, k).await.map_err(|e| e.to_string())?;
+    }
 
     let stops_provided = req.stops.is_some();
     let stops = match req.stops {
@@ -2244,14 +2256,18 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
         embedding,
     ).await.map_err(|e| e.to_string())?;
 
-    if stops_provided && req.miles.is_none() {
+    if let Some(ln) = req.load_number {
+        updated = state.db.update_load_number(id, ln).await.map_err(|e| e.to_string())?;
+    }
+
+    if let Some(k) = req.kind {
+        updated = super::data::apply_load_kind_change(state, id, k).await.map_err(|e| e.to_string())?;
+    }
+
+    if stops_provided && req.miles.is_none() && updated.kind != crate::models::LoadKind::Administrative {
         state.db.clear_load_miles(id).await.map_err(|e| e.to_string())?;
         updated.miles = None;
         let _ = state.routing_tx.try_send(id);
-    }
-
-    if let Some(ln) = req.load_number {
-        updated = state.db.update_load_number(id, ln).await.map_err(|e| e.to_string())?;
     }
 
     Ok(mcp_content(updated))
@@ -3857,5 +3873,37 @@ mod tests {
                 "tool catalog must contain {name}"
             );
         }
+    }
+
+    #[test]
+    fn parse_uuid_opt_rejects_malformed_input() {
+        let valid_uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+        // Absent key → Ok(None)
+        assert_eq!(parse_uuid_opt(&json!({}), "field"), Ok(None));
+
+        // Null value → Ok(None)
+        assert_eq!(parse_uuid_opt(&json!({"field": null}), "field"), Ok(None));
+
+        // Valid UUID string → Ok(Some(..))
+        let result = parse_uuid_opt(&json!({"field": valid_uuid}), "field");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+
+        // Non-string value (number) → Err
+        let err = parse_uuid_opt(&json!({"field": 42}), "field").unwrap_err();
+        assert!(err.contains("must be a string"));
+
+        // Non-string value (object) → Err
+        let err = parse_uuid_opt(&json!({"field": {}}), "field").unwrap_err();
+        assert!(err.contains("must be a string"));
+
+        // Non-string value (array) → Err
+        let err = parse_uuid_opt(&json!({"field": []}), "field").unwrap_err();
+        assert!(err.contains("must be a string"));
+
+        // Invalid UUID string → Err
+        let err = parse_uuid_opt(&json!({"field": "not-a-uuid"}), "field").unwrap_err();
+        assert!(err.contains("invalid UUID"));
     }
 }

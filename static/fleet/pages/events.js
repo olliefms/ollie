@@ -4,6 +4,7 @@ import { setContent, setRefreshIndicator, setTopbarControls } from '../utils/dom
 
 const ROUTE_BASE = {
   trip: 'trips', driver: 'drivers', truck: 'trucks', trailer: 'trailers', blob: 'documents',
+  load: 'loads',
 };
 
 export function jumpHref(entityType, entityId) {

@@ -116,6 +116,39 @@ impl std::str::FromStr for LoadStatus {
     }
 }
 
+/// Whether a load represents freight that moves, or revenue with no truck
+/// behind it.
+///
+/// `Administrative` covers weekly revenue guarantees, TONU, detention-only
+/// billing, layover pay, and accessorial-only freight bills: real money on a
+/// real freight bill, with no trip, no mileage, and no driver. Such a load
+/// cannot reach `Delivered`, because every route there is a trip-side cascade,
+/// so it invoices straight from `Planned` — see `LoadRecord::can_transition_to`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadKind {
+    #[default]
+    Freight,
+    Administrative,
+}
+
+impl LoadKind {
+    pub fn as_str(&self) -> &'static str {
+        match self { Self::Freight => "freight", Self::Administrative => "administrative" }
+    }
+}
+
+impl std::str::FromStr for LoadKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "freight" => Ok(Self::Freight),
+            "administrative" => Ok(Self::Administrative),
+            other => Err(format!("unknown load kind: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RateLineItem {
     pub description: String,
@@ -286,6 +319,8 @@ pub struct LoadRecord {
     pub load_number: String,
     pub owner_id: i64,
     pub status: LoadStatus,
+    #[serde(default)]
+    pub kind: LoadKind,
     pub customer_name: String,
     pub customer_ref: Option<String>,
     pub stops: Vec<Stop>,
@@ -310,6 +345,26 @@ impl LoadRecord {
     pub fn total_rate_usd(&self) -> f64 {
         self.rate_items.iter().map(|r| r.amount_usd).sum()
     }
+
+    /// Kind-aware transition policy.
+    ///
+    /// `LoadStatus::can_transition_to` stays a pure status machine; the one edge
+    /// that depends on the *load* rather than on its status alone lives here.
+    ///
+    /// An administrative load has no trip and never will (see the guard in
+    /// `apply_trip_create`), so the trip-driven route to `Delivered` is
+    /// unreachable and the load would sit in `planned` forever. It invoices
+    /// straight from `planned` instead. It deliberately does **not** get
+    /// `Planned -> Delivered`: a load that never moved was never delivered, and
+    /// `Delivered` has no reverse edge to walk back from.
+    pub fn can_transition_to(&self, next: &LoadStatus) -> bool {
+        if self.kind == LoadKind::Administrative
+            && matches!((&self.status, next), (LoadStatus::Planned, LoadStatus::Invoiced))
+        {
+            return true;
+        }
+        self.status.can_transition_to(next)
+    }
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -317,6 +372,9 @@ pub struct CreateLoadRequest {
     pub load_number: Option<String>,
     pub customer_name: String,
     pub customer_ref: Option<String>,
+    #[serde(default)]
+    pub kind: Option<LoadKind>,
+    #[serde(default)]
     pub stops: Vec<StopInput>,
     #[serde(default)]
     pub rate_items: Vec<RateLineItem>,
@@ -335,6 +393,7 @@ pub struct UpdateLoadRequest {
     pub load_number: Option<String>,
     pub customer_name: Option<String>,
     pub customer_ref: Option<String>,
+    pub kind: Option<LoadKind>,
     pub stops: Option<Vec<StopInput>>,
     pub rate_items: Option<Vec<RateLineItem>>,
     pub commodity: Option<String>,
@@ -361,6 +420,7 @@ pub struct LoadListItem {
     pub id: Uuid,
     pub load_number: String,
     pub status: LoadStatus,
+    pub kind: LoadKind,
     pub customer_name: String,
     pub customer_ref: Option<String>,
     pub stops: Vec<Stop>,
@@ -384,7 +444,7 @@ impl From<LoadRecord> for LoadListItem {
     fn from(r: LoadRecord) -> Self {
         let total = r.total_rate_usd();
         Self {
-            id: r.id, load_number: r.load_number, status: r.status,
+            id: r.id, load_number: r.load_number, status: r.status, kind: r.kind,
             customer_name: r.customer_name, customer_ref: r.customer_ref,
             stops: r.stops, rate_items: r.rate_items, total_rate_usd: total,
             commodity: r.commodity, weight_lbs: r.weight_lbs, miles: r.miles,
@@ -408,6 +468,7 @@ pub struct LoadDetailResponse {
     pub id: Uuid,
     pub load_number: String,
     pub status: LoadStatus,
+    pub kind: LoadKind,
     pub customer_name: String,
     pub customer_ref: Option<String>,
     pub stops: Vec<StopResponse>,
@@ -490,11 +551,64 @@ mod tests {
         assert!(!LoadStatus::Planned.can_transition_to(&LoadStatus::Dispatched));
     }
 
+    fn load_of_kind(kind: LoadKind, status: LoadStatus) -> LoadRecord {
+        LoadRecord {
+            id: uuid::Uuid::new_v4(), load_number: "JQL-4581461".into(),
+            owner_id: 0, status, kind,
+            customer_name: "Landstar".into(), customer_ref: None,
+            stops: vec![], rate_items: vec![], commodity: None,
+            weight_lbs: None, miles: None, notes: None, tags: vec![],
+            blob_ids: vec![], invoice_number: None, invoice_date: None,
+            cancellation_reason: None, embedding: None,
+            created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_administrative_load_invoices_from_planned() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Planned);
+        assert!(load.can_transition_to(&LoadStatus::Invoiced));
+    }
+
+    #[test]
+    fn test_freight_load_cannot_invoice_from_planned() {
+        let load = load_of_kind(LoadKind::Freight, LoadStatus::Planned);
+        assert!(!load.can_transition_to(&LoadStatus::Invoiced));
+    }
+
+    #[test]
+    fn test_administrative_load_is_never_delivered() {
+        // A load that never moved was never delivered. `invoiced` is the honest
+        // first stop, so the trip-shaped edge stays closed.
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Planned);
+        assert!(!load.can_transition_to(&LoadStatus::Delivered));
+    }
+
+    #[test]
+    fn test_administrative_load_settles_from_invoiced() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Invoiced);
+        assert!(load.can_transition_to(&LoadStatus::Settled));
+    }
+
+    #[test]
+    fn test_administrative_load_can_still_be_cancelled() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Planned);
+        assert!(load.can_transition_to(&LoadStatus::Cancelled));
+    }
+
+    #[test]
+    fn test_administrative_load_cannot_skip_back_from_settled() {
+        let load = load_of_kind(LoadKind::Administrative, LoadStatus::Settled);
+        assert!(!load.can_transition_to(&LoadStatus::Invoiced));
+        assert!(!load.can_transition_to(&LoadStatus::Planned));
+    }
+
     #[test]
     fn test_total_rate_usd_sums_including_negatives() {
         let record = LoadRecord {
             id: uuid::Uuid::new_v4(), load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
+            kind: LoadKind::Freight,
             customer_name: "ACME".into(), customer_ref: None,
             stops: vec![], rate_items: vec![
                 RateLineItem { description: "Line Haul".into(), amount_usd: 1800.0 },
@@ -515,6 +629,7 @@ mod tests {
         let r = LoadRecord {
             id: uuid::Uuid::new_v4(), load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
+            kind: LoadKind::Freight,
             customer_name: "ACME".into(), customer_ref: None,
             stops: vec![], rate_items: vec![], commodity: None,
             weight_lbs: None, miles: None, notes: None, tags: vec![],
