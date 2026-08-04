@@ -2,6 +2,12 @@
 use crate::{db::DbClient, error::AppError, pipeline::PipelineJob};
 use uuid::Uuid;
 
+/// Emit a progress line every this many blobs handed to the pipeline. Past the
+/// channel's capacity a send only completes when a worker takes a job, so this
+/// rate tracks the drain rate — without it `requeueing N stale blobs on startup`
+/// is the last word an operator gets for hours (#404).
+const PROGRESS_EVERY: usize = 50;
+
 pub async fn requeue_stale(
     db: &DbClient,
     pipeline_tx: &async_channel::Sender<PipelineJob>,
@@ -9,9 +15,14 @@ pub async fn requeue_stale(
     routing_tx: &async_channel::Sender<Uuid>,
 ) -> Result<(), AppError> {
     let ids = db.list_non_ready_ids().await?;
-    tracing::info!("requeueing {} stale blobs on startup", ids.len());
-    for id in &ids {
+    let total = ids.len();
+    tracing::info!("requeueing {total} stale blobs on startup");
+    for (i, id) in ids.iter().enumerate() {
         pipeline_tx.send(PipelineJob::Process(*id)).await.map_err(|e| AppError::Internal(e.to_string()))?;
+        let done = i + 1;
+        if done % PROGRESS_EVERY == 0 || done == total {
+            tracing::info!("stale blob requeue: {done}/{total} accepted by the pipeline");
+        }
     }
 
     // Suggestions-only jobs target already-Ready blobs, so the status sweep

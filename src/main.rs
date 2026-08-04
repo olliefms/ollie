@@ -16,6 +16,9 @@ use webauthn_rs::prelude::{Url, WebauthnBuilder};
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
+    if std::env::args().nth(1).as_deref() == Some("healthcheck") {
+        return healthcheck().await;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -37,30 +40,6 @@ async fn main() -> anyhow::Result<()> {
     let pipeline_tx = spawn_pipeline(config.pipeline_workers, db.clone(), store.clone(), ai.clone(), config.extract_store_path.clone());
     let routing_tx = spawn_routing_pipeline(1, db.clone(), ors.clone());
     let geocoding_tx = spawn_geocoding_pipeline(config.geocoding_workers, db.clone(), geocoding.clone(), ai.clone(), routing_tx.clone());
-
-    requeue_stale(&db, &pipeline_tx, &geocoding_tx, &routing_tx).await?;
-
-    for (result, label) in [
-        (db.create_vector_index().await, "blobs"),
-        (db.create_facility_vector_index().await, "facilities"),
-        (db.create_load_vector_index().await, "loads"),
-        (db.create_driver_vector_index().await, "drivers"),
-        (db.create_truck_vector_index().await, "trucks"),
-        (db.create_trailer_vector_index().await, "trailers"),
-        (db.create_maintenance_vector_index().await, "maintenance"),
-        (db.create_event_vector_index().await, "events"),
-    ] {
-        if let Err(e) = result {
-            tracing::warn!("vector index not created for {label}: {e}");
-        }
-    }
-    if let Err(e) = db.create_event_scalar_indices().await {
-        tracing::warn!("scalar indices not created for events: {e}");
-    }
-
-    // Recover facilities persisted without an embedding (e.g. embed model down
-    // at create, or geocode-skipped) so they become searchable for dedup again.
-    spawn_facility_embedding_backfill(db.clone(), ai.clone());
 
     let rp_origin = Url::parse(&config.driver_rp_origin)
         .expect("DRIVER_RP_ORIGIN must be a valid URL");
@@ -93,12 +72,72 @@ async fn main() -> anyhow::Result<()> {
         auth_challenge_store,
         reg_challenge_store,
     };
+    let startup = state.clone();
     let app = api::router(state);
 
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
     tracing::info!("ollie v{}", env!("CARGO_PKG_VERSION"));
-    tracing::info!("listening on {addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("listening on {addr}");
+
+    // Everything below runs BEHIND the bound listener, never in front of it. The
+    // pipeline channel is bounded, so requeueing a backlog larger than its capacity
+    // blocks until the workers drain it — 768 stale blobs at ~40 s each held the
+    // bind for a projected 8.5 hours while Docker still reported the container up
+    // (#404). Summaries are eventually-consistent: a blob with a pending summary is
+    // still readable, listable and attachable, so there is no correctness reason to
+    // withhold the whole API until recovery finishes.
+    tokio::spawn(async move {
+        create_search_indices(&startup.db).await;
+        // Recover facilities persisted without an embedding (e.g. embed model down
+        // at create, or geocode-skipped) so they become searchable for dedup again.
+        spawn_facility_embedding_backfill(startup.db.clone(), startup.ai.clone());
+        if let Err(e) = requeue_stale(&startup.db, &startup.pipeline_tx, &startup.geocoding_tx, &startup.routing_tx).await {
+            tracing::error!("startup recovery failed: {e}");
+        }
+    });
+
     axum::serve(listener, app).await?;
+    Ok(())
+}
+
+/// Best-effort index creation — a missing index degrades search to a brute-force
+/// scan, it does not break anything, so every failure is a warning.
+async fn create_search_indices(db: &DbClient) {
+    for (result, label) in [
+        (db.create_vector_index().await, "blobs"),
+        (db.create_facility_vector_index().await, "facilities"),
+        (db.create_load_vector_index().await, "loads"),
+        (db.create_driver_vector_index().await, "drivers"),
+        (db.create_truck_vector_index().await, "trucks"),
+        (db.create_trailer_vector_index().await, "trailers"),
+        (db.create_maintenance_vector_index().await, "maintenance"),
+        (db.create_event_vector_index().await, "events"),
+    ] {
+        if let Err(e) = result {
+            tracing::warn!("vector index not created for {label}: {e}");
+        }
+    }
+    if let Err(e) = db.create_event_scalar_indices().await {
+        tracing::warn!("scalar indices not created for events: {e}");
+    }
+}
+
+/// `ollie healthcheck` — the image's HEALTHCHECK command. Exits non-zero until the
+/// HTTP listener is actually answering, so "container up" stops meaning "service
+/// ready" (#404: the container reported healthy through the entire cold start).
+/// Reads `PORT` directly rather than `Config::from_env`, which would fail the check
+/// for reasons that have nothing to do with readiness.
+async fn healthcheck() -> anyhow::Result<()> {
+    let port = std::env::var("PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(3000);
+    let url = format!("http://127.0.0.1:{port}/version");
+    let resp = reqwest::Client::new()
+        .get(&url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("{url} returned {}", resp.status());
+    }
     Ok(())
 }

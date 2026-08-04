@@ -41,4 +41,13 @@ RUN mkdir -p /data/blobs /data/lancedb && chown -R ollie:ollie /data /app
 USER ollie
 
 EXPOSE 3000
+
+# `ollie healthcheck` GETs /version on the local listener and exits non-zero until
+# it answers — the runtime image ships no curl/wget, and the binary already has an
+# HTTP client. Without this the container reports healthy from the moment it starts,
+# so an unreachable service looks fine to `docker ps`, uptime checks and
+# `depends_on` conditions (#404).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["ollie", "healthcheck"]
+
 CMD ["ollie"]
