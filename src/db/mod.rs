@@ -184,8 +184,9 @@ impl DbClient {
     /// Every dataset in the database, paired with its on-disk name.
     ///
     /// The maintenance pass (#403) walks exactly this list, so a table absent
-    /// here is a table that never compacts — it accumulates one fragment per
-    /// write forever, invisibly, until the process runs out of file descriptors.
+    /// here is a table that never compacts and never prunes — it keeps a
+    /// fragment per row and a manifest per write forever, invisibly, until the
+    /// process runs out of file descriptors.
     /// `test_tables_covers_every_dataset` pins it against
     /// [`DbClient::dataset_names`] so adding a table without adding it here
     /// fails a test instead of an instance.

@@ -365,8 +365,8 @@ Fleet & facilities:
 
 Data-integrity doctors:
   trip_doctor, load_doctor, facility_doctor — diagnose (and optionally repair) one record.
-  compact_datasets — report LanceDB fragmentation per dataset; apply=true compacts and
-                     prunes old versions (needs datasets:maintain). A scheduled pass does
+  compact_datasets — report LanceDB fragmentation per dataset; apply=true prunes old
+                     versions and compacts (needs datasets:maintain). A scheduled pass does
                      the same every OLLIE_MAINTENANCE_INTERVAL_SECS. Never compact the
                      store externally with pylance — a version mismatch can upgrade the
                      on-disk format past what this server reads.
