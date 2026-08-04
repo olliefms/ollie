@@ -421,6 +421,9 @@ pub async fn update_load(
         updated = apply_load_kind_change(&state, id, k).await?;
     }
 
+    // The miles tests in tests/administrative_loads_test.rs cover the routing
+    // enqueue only because clear_load_miles and try_send share this condition —
+    // don't split them without adding direct enqueue coverage.
     if stops_provided && body.miles.is_none() && updated.kind != LoadKind::Administrative {
         state.db.clear_load_miles(id).await?;
         updated.miles = None;
@@ -1864,7 +1867,7 @@ pub async fn count_events_today(
 // Internal helpers — mirror build_detail_response from src/api/loads.rs
 // ---------------------------------------------------------------------------
 
-/// Change a load's kind, or explain why it can't move.
+/// Check whether a load's kind may change, or explain why it can't.
 ///
 /// Kind is only mutable while the load is still `planned` and has no trips.
 /// Past that, the two models have already diverged: a freight load with trips
@@ -1895,10 +1898,16 @@ pub(crate) async fn validate_load_kind_change(
     Ok(())
 }
 
+/// Validate then apply a load kind change. No-op (no write) when the load's
+/// kind already matches `kind`.
 pub(crate) async fn apply_load_kind_change(
     state: &AppState, id: Uuid, kind: LoadKind,
 ) -> Result<crate::models::LoadRecord, AppError> {
     validate_load_kind_change(state, id, kind).await?;
+    let load = state.db.get_load_by_id(id).await?;
+    if load.kind == kind {
+        return Ok(load);
+    }
     state.db.update_load_kind(id, kind).await
 }
 

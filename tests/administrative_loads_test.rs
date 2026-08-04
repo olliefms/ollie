@@ -297,6 +297,160 @@ async fn test_kind_flip_to_freight_does_clear_miles_via_routing_guard() {
     );
 }
 
+// ── MCP surface shares the same guard (REST-only coverage was a gap) ──
+//
+// Helpers copied from tests/expenses_test.rs — each integration test file is
+// its own binary, so there's no shared test-support module to import from.
+
+/// Extract the single JSON-RPC message from a Streamable-HTTP SSE response body.
+/// rmcp frames each POST reply as one `event: message` / `data: {…}` SSE event.
+fn sse_json(body: &str) -> serde_json::Value {
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                continue; // priming/keep-alive frames carry no JSON payload
+            }
+            return serde_json::from_str(rest)
+                .unwrap_or_else(|e| panic!("SSE data not JSON ({e}): {rest}"));
+        }
+    }
+    panic!("no SSE `data:` event in body: {body:?}");
+}
+
+/// Open an MCP session: `initialize` then the `notifications/initialized` ack.
+/// Returns the `Mcp-Session-Id` the server assigned (used on subsequent calls).
+async fn mcp_session(server: &TestServer, token: &str) -> String {
+    let resp = server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "ollie-test", "version": "1.0" }
+            }
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "initialize HTTP {}", resp.status_code());
+    let session = resp
+        .headers()
+        .get("mcp-session-id")
+        .expect("initialize must return an Mcp-Session-Id header")
+        .to_str()
+        .unwrap()
+        .to_string();
+    server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.clone())
+        .json(&serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+        .await;
+    session
+}
+
+/// Send one JSON-RPC request on an existing session and return the parsed reply
+/// (the full JSON-RPC envelope: `{ jsonrpc, id, result | error }`).
+async fn mcp_rpc(
+    server: &TestServer,
+    token: &str,
+    session: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    let resp = server
+        .post("/fleet/mcp")
+        .add_header(header::ACCEPT, "application/json, text/event-stream")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .add_header("mcp-session-id", session.to_string())
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": method, "params": params
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "MCP {method} HTTP {}", resp.status_code());
+    sse_json(&resp.text())
+}
+
+#[tokio::test]
+async fn test_mcp_update_load_rejects_illegal_kind_change() {
+    // All six tests above drive REST. `tool_update_load` in src/api/fleet_portal/
+    // mcp.rs runs the identical validate_load_kind_change/apply_load_kind_change
+    // guard, but MCP is the surface an AI agent actually calls — this whole
+    // feature exists because an agent hit this wall over MCP. Prove the guard
+    // holds there too, and that a rejected call writes nothing.
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let fac_id = create_test_facility(&server, &token, "MCP Guard Dock", "Chicago, IL").await;
+    let other_fac_id = create_test_facility(&server, &token, "MCP Other Dock", "Atlanta, GA").await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "load_number": "4581468",
+            "customer_name": "Landstar",
+            "stops": [stop_json(&fac_id, "2026-06-01T08:00:00")],
+            "kind": "freight",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let load_id = resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Attach a trip so the guard has grounds to reject.
+    let trip_resp = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201, "trip create failed: {}", trip_resp.text());
+
+    let session = mcp_session(&server, &token).await;
+    let body = mcp_rpc(
+        &server,
+        &token,
+        &session,
+        "tools/call",
+        serde_json::json!({
+            "name": "update_load",
+            "arguments": {
+                "id": load_id,
+                "stops": [{
+                    "sequence": 1, "stop_type": "pickup", "service_type": "live_load",
+                    "facility_id": other_fac_id, "scheduled_arrive": "2026-06-02T08:00:00",
+                    "timezone": "America/Chicago",
+                }],
+                "kind": "administrative",
+            }
+        }),
+    ).await;
+
+    // A domain rejection comes back as a normal JSON-RPC result with
+    // isError: true (NOT a JSON-RPC-level error) — see call_tool's
+    // ToolError::Domain arm in src/api/fleet_portal/mcp.rs.
+    assert!(body["error"].is_null(), "expected a normal result, not a JSON-RPC error: {body}");
+    assert_eq!(body["result"]["isError"], true, "body: {body}");
+    let text = body["result"]["content"][0]["text"].as_str().expect("content[0].text missing");
+    assert!(
+        text.contains("trip"),
+        "the error should name the reason (trips) so the caller knows why: {text}",
+    );
+
+    // Writes nothing: kind and stops must both be untouched.
+    let refetched = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .await;
+    assert_eq!(refetched.status_code(), 200);
+    let load = refetched.json::<serde_json::Value>();
+    assert_eq!(load["kind"], "freight", "rejected MCP kind change must not have written: {load}");
+    let stops = load["stops"].clone();
+    assert_eq!(
+        stops.as_array().map(|a| a.len()), Some(1),
+        "rejected MCP call must not have written the new stops either: {stops}",
+    );
+    assert_eq!(stops[0]["facility_id"], fac_id, "stops must remain the original facility: {stops}");
+}
+
 #[tokio::test]
 async fn test_rejected_kind_change_does_not_write_stops() {
     let (server, _state, _d1, _d2, _rx) = setup().await;
