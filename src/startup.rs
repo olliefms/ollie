@@ -6,6 +6,7 @@
 use crate::{
     db::DbClient,
     pipeline::{embedding_backfill::spawn_facility_embedding_backfill, recovery::requeue_stale},
+    services::maintenance,
     AppState,
 };
 
@@ -42,6 +43,15 @@ async fn background_startup(state: AppState) {
     // Recover facilities persisted without an embedding (e.g. embed model down at
     // create, or geocode-skipped) so they become searchable for dedup again.
     spawn_facility_embedding_backfill(state.db.clone(), state.ai.clone());
+    // Its own task, ahead of the requeue below rather than after it: `requeue_stale`
+    // awaits the whole drain, which on the cold start this module exists for is
+    // measured in hours — and a badly fragmented instance is precisely the one
+    // that just restarted with a backlog (#403 + #404 compound this way).
+    maintenance::spawn(
+        state.db.clone(),
+        std::time::Duration::from_secs(state.config.maintenance_interval_secs),
+        state.config.maintenance_target_rows_per_fragment,
+    );
     if let Err(e) = requeue_stale(&state.db, &state.pipeline_tx, &state.geocoding_tx, &state.routing_tx).await {
         // Non-fatal on purpose. An unrecovered backlog means stale summaries,
         // which is not a reason to take the whole API down — that trade is the

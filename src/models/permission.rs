@@ -112,6 +112,11 @@ pub const ALL_SCOPES: &[&str] = &[
     "blobs:write",
     "blobs:delete",
     "events:read",
+    // Dataset maintenance (#403). Deliberately absent from DISPATCHER_SCOPES:
+    // compaction is an operator action, not a dispatch one. Owner and
+    // fleet_manager reach it through `*`.
+    "datasets:read",
+    "datasets:maintain",
     "users:read",
     "users:write",
     "users:delete",
@@ -284,6 +289,21 @@ mod tests {
         assert!(scope_granted(&eff, "expenses:read"));
         assert!(scope_granted(&eff, "expenses:write"));
         assert!(!scope_granted(&eff, "expenses:approve"));
+    }
+
+    #[test]
+    fn test_dataset_scopes_are_operator_only() {
+        for s in ["datasets:read", "datasets:maintain"] {
+            assert!(ALL_SCOPES.contains(&s), "missing {s}");
+        }
+        // Compaction is an operator action, not a dispatch one.
+        let eff = effective_scopes(Role::Dispatcher, &[]);
+        assert!(!scope_granted(&eff, "datasets:read"));
+        assert!(!scope_granted(&eff, "datasets:maintain"));
+        // Granting the report must not carry the rewrite (#403).
+        let granted = effective_scopes(Role::Dispatcher, &["datasets:read".to_string()]);
+        assert!(scope_granted(&granted, "datasets:read"));
+        assert!(!scope_granted(&granted, "datasets:maintain"));
     }
 
     #[test]
