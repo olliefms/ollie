@@ -751,25 +751,41 @@ In `static/fleet/css/components.css`, next to the existing `.badge--trip` / `.ba
 .badge--load    { background: var(--color-warning-soft);  color: var(--color-warning); }
 ```
 
-Confirm `--color-warning-soft` and `--color-warning` exist in `static/driver/css/base.css`. If either does not, use `var(--color-info-soft)` / `var(--color-info)` rather than adding a token — a new token requires a `docs/DESIGN.md` entry and is out of scope here.
+Both tokens are confirmed present in `static/fleet/css/base.css:10-11` and `static/driver/css/base.css:10-11`. Use them as written; do not add a new token (that would require a `docs/DESIGN.md` entry and is out of scope).
 
 - [ ] **Step 5: Write the failing Rust test**
 
-In `src/api/fleet_portal/data.rs`, in the `mod tests` block near the existing `test_subject_for_driver_found`:
+In `src/api/fleet_portal/data.rs`, in the `mod tests` block, directly after the existing `test_subject_for_driver_found` (~line 1769). That module already has a `test_db() -> (DbClient, TempDir)` helper at line 1649, and `subject_for` takes `&DbClient` — there is no `test_state` here.
+
+There is no load fixture in this module, so add one next to the existing `sample_driver` helper, following the `sample_load` shape in `src/db/load_ops.rs:446`:
 
 ```rust
+    fn sample_load_record(load_number: &str) -> crate::models::LoadRecord {
+        let now = chrono::Utc::now();
+        crate::models::LoadRecord {
+            id: Uuid::new_v4(),
+            load_number: load_number.into(),
+            owner_id: 0,
+            status: crate::models::LoadStatus::Planned,
+            kind: crate::models::LoadKind::Freight,
+            customer_name: "Landstar".into(), customer_ref: None,
+            stops: vec![], rate_items: vec![],
+            commodity: None, weight_lbs: None, miles: None, notes: None,
+            tags: vec![], blob_ids: vec![],
+            invoice_number: None, invoice_date: None, cancellation_reason: None,
+            embedding: None, created_at: now, updated_at: now,
+        }
+    }
+
     #[tokio::test]
     async fn test_subject_for_load_uses_load_number() {
-        let (state, _d1, _d2) = test_state().await;
-        let mut load = sample_load_record();
-        load.load_number = "JQL-4581461".into();
-        state.db.insert_load(&load).await.unwrap();
-        let result = subject_for(&state.db, "load", load.id).await;
+        let (db, _dir) = test_db().await;
+        let load = sample_load_record("JQL-4581461");
+        db.insert_load(&load).await.unwrap();
+        let result = subject_for(&db, "load", load.id).await;
         assert_eq!(result.as_deref(), Some("Load JQL-4581461"));
     }
 ```
-
-Use whatever `test_state` / load-fixture helpers already exist in this module's `mod tests`; if there is no load fixture, build a `LoadRecord` literal following `sample_load` in `src/db/load_ops.rs:446`, adding `kind: LoadKind::Freight`.
 
 - [ ] **Step 6: Run to verify it fails**
 
@@ -1104,7 +1120,19 @@ Apply the two equivalent guards in `src/api/fleet_portal/mcp.rs` at lines 2141 (
 
 - [ ] **Step 5: Write the failing trip-guard test**
 
-Create `tests/administrative_loads_test.rs`. Copy the `test_state()` helper verbatim from `tests/load_delivery_cascade_test.rs` (lines 30-70 and its `AppState { .. }` tail) — that file is the working pattern for building an `AppState` against temp dirs with no Ollama.
+Create `tests/administrative_loads_test.rs`. Drive it through the real fleet HTTP API, not through internal functions: copy the `setup()` and `setup_owner()` helpers from `tests/fleet_pagination_test.rs:16-58` (an `axum_test::TestServer` over `api::router(state)`, an unreachable Ollama, and a bearer token from `POST /fleet/setup`). Keep the `rx` receiver binding alive — dropping it closes the pipeline channel and later writes start failing.
+
+Do **not** widen `apply_trip_create`'s `pub(crate)` visibility to reach it from a test. Testing through the route is both closer to the reported defect and free of that smell.
+
+Relevant routes, from `src/api/fleet_portal/mod.rs:62-70`:
+
+```
+POST   /fleet/api/v1/trips              (create, body carries load_id)
+PUT    /fleet/api/v1/loads/{id}         (update, body carries kind)
+POST   /fleet/api/v1/loads/{id}/invoice
+POST   /fleet/api/v1/loads/{id}/settle
+GET    /fleet/api/v1/loads              (list, query filters)
+```
 
 ```rust
 // tests/administrative_loads_test.rs
@@ -1118,34 +1146,47 @@ Create `tests/administrative_loads_test.rs`. Copy the `test_state()` helper verb
 // must never acquire a trip, and its kind must not be changeable once it has
 // moved past `planned`.
 
-use ollie::models::{CreateTripRequest, LoadKind, LoadRecord, LoadStatus};
-// ... plus the imports test_state() needs, copied from load_delivery_cascade_test.rs
+// ... the imports and setup()/setup_owner() helpers copied from
+// tests/fleet_pagination_test.rs:16-58
+
+/// Create a stopless load through the API and return its id.
+async fn create_bare_load(
+    server: &TestServer, token: &str, load_number: &str, kind: &str,
+) -> String {
+    let resp = server.post("/fleet/api/v1/loads")
+        .authorization_bearer(token)
+        .json(&serde_json::json!({
+            "load_number": load_number,
+            "customer_name": "Landstar",
+            "stops": [],
+            "kind": kind,
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "create failed: {}", resp.text());
+    resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string()
+}
 
 #[tokio::test]
 async fn test_trip_cannot_be_created_against_an_administrative_load() {
-    let (state, _d1, _d2) = test_state().await;
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let load_id = create_bare_load(&server, &token, "4581461", "administrative").await;
 
-    let mut load = bare_load();
-    load.kind = LoadKind::Administrative;
-    state.db.insert_load(&load).await.unwrap();
+    let resp = server.post("/fleet/api/v1/trips")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "load_id": load_id, "stops": [] }))
+        .await;
 
-    let req = CreateTripRequest {
-        load_id: Some(load.id),
-        ..Default::default()
-    };
-    let err = ollie::api::trips::apply_trip_create(&state, req).await;
+    assert_eq!(resp.status_code(), 422, "body: {}", resp.text());
     assert!(
-        matches!(err, Err(ollie::error::AppError::UnprocessableEntity(ref m)) if m.contains("administrative")),
-        "expected a 422 naming the kind, got {err:?}",
+        resp.text().contains("administrative"),
+        "the error should name the kind so the caller knows why: {}",
+        resp.text(),
     );
 }
 ```
 
-Add a `bare_load()` fixture in the same file, built from the `LoadRecord` literal shape in `tests/load_delivery_cascade_test.rs:121`, with `stops: vec![]`, `miles: None`, and `kind: LoadKind::Freight`. Each test sets `kind` explicitly, so the fixture stays neutral — a load with no stops, nothing more.
-
-If `CreateTripRequest` does not derive `Default`, construct it explicitly — read `src/api/trips.rs:15-30` for its full field list rather than guessing. Do not add a `Default` derive to production code for a test's convenience.
-
-`apply_trip_create` is `pub(crate)`. Make it `pub` so the integration test can reach it, or drive trip creation through the fleet HTTP API as `load_delivery_cascade_test.rs` does in its later tests — prefer the HTTP route if the existing test file already has the harness for it.
+Match `setup_owner`'s bearer-token helper name and the request-builder methods to whatever `tests/fleet_pagination_test.rs` actually uses — read it rather than assuming `authorization_bearer` if that file does it differently.
 
 - [ ] **Step 6: Run to verify it fails**
 
@@ -1195,23 +1236,27 @@ In `tests/administrative_loads_test.rs`:
 ```rust
 #[tokio::test]
 async fn test_kind_cannot_change_once_the_load_has_left_planned() {
-    let (state, _d1, _d2) = test_state().await;
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let load_id = create_bare_load(&server, &token, "4581461", "administrative").await;
 
-    let mut load = bare_load();
-    load.kind = LoadKind::Administrative;
-    state.db.insert_load(&load).await.unwrap();
-    state.db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None)
-        .await.unwrap();
+    // planned -> invoiced, an edge only an administrative load has.
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "invoice_number": "JQL-4581461" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
 
-    let err = ollie::api::fleet_portal::data::apply_load_kind_change(
-        &state, load.id, LoadKind::Freight,
-    ).await;
-    assert!(
-        matches!(err, Err(ollie::error::AppError::Conflict(_))),
-        "expected 409 once the load is past planned, got {err:?}",
-    );
+    // Reclassifying it now would leave a status the freight machine can't explain.
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "kind": "freight" }))
+        .await;
+    assert_eq!(resp.status_code(), 409, "body: {}", resp.text());
 }
 ```
+
+Confirm how `AppError::Conflict` maps to an HTTP status in `src/error.rs` before asserting `409`; use whatever that mapping actually produces.
 
 - [ ] **Step 9: Run to verify it fails**
 
@@ -1234,7 +1279,7 @@ In `src/api/fleet_portal/data.rs`, next to `build_load_detail`:
 /// load that has already invoiced from `planned` used an edge a freight load
 /// never had, so relabelling it would leave a status the freight machine
 /// cannot explain.
-pub async fn apply_load_kind_change(
+pub(crate) async fn apply_load_kind_change(
     state: &AppState, id: Uuid, kind: crate::models::LoadKind,
 ) -> Result<crate::models::LoadRecord, AppError> {
     let load = state.db.get_load_by_id(id).await?;
@@ -1674,7 +1719,7 @@ Proves the reported sequence end-to-end through the real MCP surface, and record
 
 - [ ] **Step 1: Write the failing acceptance test**
 
-Append to `tests/administrative_loads_test.rs`. Drive it through the MCP tool dispatch the way `tests/load_delivery_cascade_test.rs`'s `test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp` does — read that test first and copy its call mechanism rather than inventing one:
+Append to `tests/administrative_loads_test.rs`, reusing the `setup()` / `setup_owner()` / `create_bare_load()` helpers already in that file from Task 6.
 
 ```rust
 /// The reported sequence, verbatim: a weekly revenue guarantee that was paid on
@@ -1684,40 +1729,48 @@ Append to `tests/administrative_loads_test.rs`. Drive it through the MCP tool di
 /// returned it week after week.
 #[tokio::test]
 async fn test_guarantee_load_invoices_and_settles_with_no_trip() {
-    let (state, _d1, _d2) = test_state().await;
+    let (server, state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
 
-    let mut load = bare_load();
-    load.kind = LoadKind::Freight;           // starts as an ordinary load…
-    load.load_number = "4581461".into();
-    state.db.insert_load(&load).await.unwrap();
+    // Starts as an ordinary load, and is reclassified in place — not recreated.
+    let load_id = create_bare_load(&server, &token, "4581461", "freight").await;
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "kind": "administrative" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
 
-    // …and is reclassified in place, not recreated.
-    ollie::api::fleet_portal::data::apply_load_kind_change(
-        &state, load.id, LoadKind::Administrative,
-    ).await.unwrap();
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "invoice_number": "JQL-4581461",
+            "invoice_date": "2026-07-29",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
 
-    state.db.transition_load_status(
-        load.id, LoadStatus::Invoiced,
-        Some("JQL-4581461".into()), Some("2026-07-29".into()), None,
-    ).await.unwrap();
-    state.db.transition_load_status(load.id, LoadStatus::Settled, None, None, None)
-        .await.unwrap();
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
 
-    let settled = state.db.get_load_by_id(load.id).await.unwrap();
+    let uuid: uuid::Uuid = load_id.parse().unwrap();
+    let settled = state.db.get_load_by_id(uuid).await.unwrap();
     assert_eq!(settled.status, LoadStatus::Settled);
     assert_eq!(settled.invoice_number.as_deref(), Some("JQL-4581461"));
-    assert!(state.db.list_trips_for_load(load.id).await.unwrap().is_empty());
+    assert!(state.db.list_trips_for_load(uuid).await.unwrap().is_empty());
 
     // It drops out of the unsettled queue.
-    let (total, _items) = state.db.list_loads(
-        Some("planned"), None, &[], None, None, None, 20, 0,
-    ).await.unwrap();
-    assert_eq!(total, 0);
+    let resp = server.get("/fleet/api/v1/loads?status=planned")
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(resp.json::<serde_json::Value>()["total"], serde_json::json!(0));
 
     // And load_doctor does not flag it. The check gates on Dispatched|InTransit
     // and load_trips_all_delivered is false on an empty survivor set, so this is
     // regression insurance against a later loosening of either.
-    let report = ollie::services::doctors::load::run(&state, load.id, false).await.unwrap();
+    let report = ollie::services::doctors::load::run(&state, uuid, false).await.unwrap();
     assert!(
         !report.findings.iter().any(|f| f.check == "load.status_matches_trips"),
         "administrative loads must not be flagged as status-mismatched: {:?}",
@@ -1725,6 +1778,8 @@ async fn test_guarantee_load_invoices_and_settles_with_no_trip() {
     );
 }
 ```
+
+Check the list response's actual field name before asserting on `total` — `DispatchLoadListResponse` in `src/api/fleet_portal/data.rs` carries both `returned` and `total`.
 
 - [ ] **Step 2: Run it**
 
