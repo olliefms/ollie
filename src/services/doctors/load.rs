@@ -6,16 +6,17 @@
 //! - `load.stops.actual_order_valid`       — `actual_depart > actual_arrive` when both set.
 //! - `load.stops.timezone_present`         — timezone set wherever actual or scheduled times are present.
 //! - `load.rate_items.sum_matches_total`   — rate_items sum within 0.01 of `total_rate_usd()`.
+//! - `load.status_matches_trips`           — load still pre-delivery while every live trip has delivered.
 
 use uuid::Uuid;
 
 use crate::{
     error::AppError,
-    models::LoadRecord,
+    models::{load_trips_all_delivered, LoadRecord, LoadStatus},
     AppState,
 };
 
-use super::{DoctorReport, Finding, Severity};
+use super::{DoctorReport, Finding, ProposedFix, Severity};
 
 pub async fn run(state: &AppState, load_id: Uuid, apply: bool) -> Result<DoctorReport, AppError> {
     let load = state.db.get_load_by_id(load_id).await?;
@@ -26,11 +27,11 @@ pub async fn run(state: &AppState, load_id: Uuid, apply: bool) -> Result<DoctorR
     check_actual_order(&load, &mut report);
     check_timezones(&load, &mut report);
     check_rate_sum(&load, &mut report);
+    check_status_matches_trips(state, &load, &mut report).await;
 
-    // load_doctor currently has no auto-fixes — everything points at
-    // facility_doctor or human-required reconciliation. The `apply` flag is
-    // accepted for API symmetry but is a no-op today.
-    let _ = apply;
+    if apply {
+        apply_safe_fixes(state, &load, &mut report).await;
+    }
 
     report.classify_findings();
     Ok(report)
@@ -120,6 +121,44 @@ fn check_timezones(load: &LoadRecord, report: &mut DoctorReport) {
     }
 }
 
+/// The load's status is denormalized from its trips. When every live trip has
+/// delivered but the load is still sitting in a pre-delivery status, the
+/// delivery cascade never fired (or was rejected) and the load is stranded —
+/// `invoice` and `settle` both refuse from anything but `delivered`, so there
+/// is no supported way forward without this fix (#395).
+async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report: &mut DoctorReport) {
+    if !matches!(load.status, LoadStatus::Dispatched | LoadStatus::InTransit) {
+        return;
+    }
+    let Ok(trips) = state.db.list_trips_for_load(load.id).await else { return };
+    if !load_trips_all_delivered(&trips) {
+        return;
+    }
+    let summary: Vec<String> = trips
+        .iter()
+        .map(|t| format!("{} ({})", t.trip_number, t.status.as_str()))
+        .collect();
+    report.push(Finding {
+        check: "load.status_matches_trips".into(),
+        severity: Severity::Error,
+        description: format!(
+            "load is '{}' but every live trip has delivered: {}. The load is stranded — \
+             invoice and settle both require 'delivered'.",
+            load.status.as_str(),
+            summary.join(", "),
+        ),
+        fix: Some(ProposedFix {
+            kind: "advance_load_to_delivered".into(),
+            description: format!(
+                "transition the load '{}' -> 'delivered', the cascade the trips already earned",
+                load.status.as_str(),
+            ),
+            conflicts: Vec::new(),
+            safe_to_auto_apply: true,
+        }),
+    });
+}
+
 fn check_rate_sum(load: &LoadRecord, report: &mut DoctorReport) {
     let sum: f64 = load.rate_items.iter().map(|r| r.amount_usd).sum();
     let total = load.total_rate_usd();
@@ -133,5 +172,40 @@ fn check_rate_sum(load: &LoadRecord, report: &mut DoctorReport) {
             ),
             fix: None,
         });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-apply
+// ---------------------------------------------------------------------------
+
+async fn apply_safe_fixes(state: &AppState, load: &LoadRecord, report: &mut DoctorReport) {
+    let to_apply: Vec<String> = report.findings.iter()
+        .filter_map(|f| match &f.fix {
+            Some(fix) if fix.safe_to_auto_apply => Some(f.check.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for check_id in to_apply {
+        match check_id.as_str() {
+            "load.status_matches_trips" => {
+                match state.db
+                    .transition_load_status(load.id, LoadStatus::Delivered, None, None, None)
+                    .await
+                {
+                    Ok(_) => report.applied.push(check_id),
+                    Err(e) => tracing::warn!(
+                        load_id = %load.id, error = %e,
+                        "load_doctor: advance_load_to_delivered failed"
+                    ),
+                }
+            }
+            _ => {
+                // Defensive: a finding marked safe_to_auto_apply has no wired-up
+                // applier. Never reached in a well-formed build.
+                tracing::warn!("load_doctor: no applier wired for check {check_id}");
+            }
+        }
     }
 }

@@ -5399,6 +5399,80 @@ async fn test_load_doctor_flags_ungeocoded_facility() {
     );
 }
 
+/// #395 — end-to-end over MCP: a load stranded in `in_transit` while its only
+/// trip already delivered is detected by `load_doctor` and walked forward by
+/// `apply=true`, which is the only supported repair path (invoice and settle
+/// both refuse from `in_transit`). Unit coverage of the checks themselves lives
+/// in `tests/load_delivery_cascade_test.rs`.
+#[tokio::test]
+async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let token = fleet_user_login(&server, "doctor395@example.com", "password-doctor395").await;
+    let fac_id = create_test_facility(&server, "Strand Dock", "Toledo, OH").await;
+    let load_id = create_2stop_load(&server, &fac_id, "Strand Co").await;
+
+    let trip_id = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {token}"))
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T08:00:00", "timezone": "America/New_York" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": fac_id,
+                  "scheduled_arrive": "2026-08-01T16:00:00", "timezone": "America/New_York" }
+            ]
+        }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Reproduce the stranded shape by walking both records along their own legal
+    // transitions: the load ends at in_transit, the trip at delivered, and
+    // nothing is left to fire the cascade.
+    let lid: uuid::Uuid = load_id.parse().unwrap();
+    let tid: uuid::Uuid = trip_id.parse().unwrap();
+    for s in [ollie::models::TripStatus::Assigned, ollie::models::TripStatus::Dispatched,
+              ollie::models::TripStatus::InTransit, ollie::models::TripStatus::Delivered] {
+        state.db.transition_trip_status(tid, s).await.unwrap();
+    }
+    for s in [ollie::models::LoadStatus::Assigned, ollie::models::LoadStatus::Dispatched,
+              ollie::models::LoadStatus::InTransit] {
+        state.db.transition_load_status(lid, s, None, None, None).await.unwrap();
+    }
+
+    let dry = mcp_call(&server, &token, "load_doctor",
+        serde_json::json!({ "load_id": load_id })).await;
+    assert!(
+        dry["findings"].as_array().unwrap().iter()
+            .any(|f| f["check"] == "load.status_matches_trips"),
+        "#395: load_doctor must flag the stranded load, got {:?}", dry["findings"],
+    );
+    assert_eq!(
+        state.db.get_load_by_id(lid).await.unwrap().status,
+        ollie::models::LoadStatus::InTransit,
+        "#395: the dry run must not mutate the load",
+    );
+
+    let applied = mcp_call(&server, &token, "load_doctor",
+        serde_json::json!({ "load_id": load_id, "apply": true })).await;
+    assert!(
+        applied["applied"].as_array().unwrap().iter()
+            .any(|c| c == "load.status_matches_trips"),
+        "#395: apply=true must record the fix, got {:?}", applied["applied"],
+    );
+    assert_eq!(
+        state.db.get_load_by_id(lid).await.unwrap().status,
+        ollie::models::LoadStatus::Delivered,
+        "#395: apply=true must unstrand the load",
+    );
+
+    // And the repaired load can now take the billing path it was locked out of.
+    let owner_token = setup_owner(&server).await;
+    let inv = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "invoice_number": "STRAND-1" })).await;
+    assert_eq!(inv.status_code(), 200, "#395: repaired load must be invoiceable");
+}
+
 // ── Task 5: MCP create_trip/update_trip/recalculate_trip_miles + filters ───────
 
 /// Extract the single JSON-RPC message from a Streamable-HTTP SSE response body.
