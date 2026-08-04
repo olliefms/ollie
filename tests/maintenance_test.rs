@@ -1,10 +1,11 @@
 // tests/maintenance_test.rs
 //! #403: LanceDB datasets never compact on their own.
 //!
-//! Every write — insert *and* the `merge_insert` every update goes through —
-//! lands in a new fragment, so file count tracks writes ever made rather than
-//! rows stored. Left alone it exhausts the process fd limit and reads start
-//! failing with "Too many open files".
+//! Every insert lands in its own fragment and nothing ever merges them, so a
+//! table settles at one file per row; every write on top of that — updates
+//! included — leaves another data file and version manifest that nothing
+//! reclaims. Left alone the two together exhaust the process fd limit and reads
+//! start failing with "Too many open files".
 //!
 //! The critical path is data integrity *through* a compaction: the pass must
 //! collapse fragments without losing or corrupting a single row.
@@ -54,8 +55,9 @@ fn blobs_report(report: &maintenance::MaintenanceReport) -> &maintenance::Datase
         .expect("blobs dataset must be in the report")
 }
 
-/// The headline of #403: one fragment per write, on every table. Compaction has
-/// to collapse them and hand back every row exactly as it went in.
+/// The headline of #403: one fragment per row, on every table, because nothing
+/// ever merges them. Compaction has to collapse them and hand back every row
+/// exactly as it went in.
 #[tokio::test]
 async fn test_compaction_collapses_fragments_and_preserves_every_row() {
     let dir = TempDir::new().unwrap();
@@ -65,10 +67,12 @@ async fn test_compaction_collapses_fragments_and_preserves_every_row() {
     for r in &records {
         db.insert(r).await.unwrap();
     }
-    // Updates are the half of #403 that surprises people. They do not add
-    // fragments — `merge_insert` rewrites in place — but every one leaves a
-    // version manifest behind, which is why the reported instance had more
-    // manifests (2,813) than data files (2,940) or rows (2,069).
+    // Updates are the half of #403 that surprises people. They leave the
+    // fragment count alone — `merge_insert` writes a replacement fragment and
+    // tombstones the one it supersedes — but each still leaves a data file and
+    // a version manifest behind, which is why the reported instance carried
+    // 2,940 data files and 2,813 manifests for only 2,069 rows. Compaction
+    // reclaims the first count, the prune reclaims the second.
     for r in records.iter_mut().take(ROWS / 2) {
         r.status = BlobStatus::Ready;
         r.summary = Some(format!("summary for {}", r.name));

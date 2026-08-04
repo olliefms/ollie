@@ -1,14 +1,24 @@
 // src/services/maintenance.rs
 //! Periodic LanceDB compaction and version pruning (#403).
 //!
-//! Lance is append-only: every write — insert *and* the `merge_insert` upsert
-//! every update goes through — lands in a new fragment and leaves a new version
-//! manifest behind. Nothing reclaims either, so file count tracks *writes ever
-//! made*, not rows currently stored: a row updated 50 times contributes 50
-//! fragments. A single-truck fleet reached 2,069 fragments across 2,069 blob
-//! rows and 30,371 files under `/data/lancedb`, against a container default
-//! `ulimit -n` of 1024. Reads then fail intermittently with "Too many open
-//! files", and which read fails first is arbitrary.
+//! Lance is append-only, and two different counts grow without bound here.
+//!
+//! **Fragments track live rows.** Every insert lands in its own fragment and
+//! nothing ever merges them, so a table ends up at one file per row — the 2,069
+//! fragments over 2,069 blob rows in #403. An update does *not* raise this: the
+//! `merge_insert` upsert writes a replacement fragment and tombstones the one it
+//! supersedes, netting zero. Compaction is what collapses these.
+//!
+//! **Files and version manifests track writes ever made.** Every write, insert
+//! and update alike, leaves both behind, and nothing reclaims them — which is
+//! why those same 2,069 rows carried 2,940 data files and 2,813 manifests.
+//! Measured locally: one row plus ten updates = 1 fragment, 11 data files, 12
+//! manifests. Pruning old versions is what reclaims these.
+//!
+//! Together they reached 30,371 files under `/data/lancedb` against a container
+//! default `ulimit -n` of 1024, at which point reads fail intermittently with
+//! "Too many open files" and which read fails first is arbitrary. Both halves
+//! need reclaiming, which is why a pass does both.
 //!
 //! Compaction runs **in-process**, against the same `lance` the server is linked
 //! with. That is the whole reason this exists rather than a documented cron:
@@ -40,9 +50,10 @@ pub const DEFAULT_TARGET_ROWS_PER_FRAGMENT: usize = 1_048_576;
 const FIRST_PASS_DELAY: Duration = Duration::from_secs(60);
 
 /// How much version history the prune pass keeps. Ollie never checks out an old
-/// version, so retention buys nothing but disk — and manifests were the larger
-/// half of the file count in #403 (2,813 manifests against 2,940 data files),
-/// because *every* write leaves one while only an insert adds a fragment.
+/// version, so retention buys nothing but disk — and this is the half of the
+/// file count that compaction cannot touch: 2,813 manifests and 2,940 data
+/// files against only 2,069 rows in #403, because every write leaves both
+/// behind whether or not it changed the fragment count.
 ///
 /// This window is NOT what protects a concurrent reader — see the ordering
 /// comment in `run_one`, which is. Lance's 7-day threshold isn't either: it
