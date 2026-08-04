@@ -11,7 +11,10 @@
 
 use axum::http::header;
 use axum_test::TestServer;
-use ollie::{ai::OllamaClient, api, config::Config, db::DbClient, storage::BlobStore, AppState};
+use ollie::{
+    ai::OllamaClient, api, config::Config, db::DbClient, models::LoadStatus, storage::BlobStore,
+    AppState,
+};
 use std::sync::Arc;
 use tempfile::TempDir;
 use webauthn_rs::prelude::{Url, WebauthnBuilder};
@@ -501,5 +504,61 @@ async fn test_rejected_kind_change_does_not_write_stops() {
     assert_eq!(
         stops[0]["facility_id"], fac_id,
         "stops must remain the original facility, not the one from the rejected update: {stops}",
+    );
+}
+
+/// The reported sequence, verbatim: a weekly revenue guarantee that was paid on
+/// a contractor settlement but has no trip behind it. Before this shipped,
+/// `invoice_load` answered `cannot transition from 'planned' to 'invoiced'` and
+/// the load sat in `planned` forever, so every "what is unsettled?" query
+/// returned it week after week.
+#[tokio::test]
+async fn test_guarantee_load_invoices_and_settles_with_no_trip() {
+    let (server, state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+
+    // Starts as an ordinary load, and is reclassified in place — not recreated.
+    let load_id = create_bare_load(&server, &token, "4581461", "freight").await;
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "kind": "administrative" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
+
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "invoice_number": "JQL-4581461",
+            "invoice_date": "2026-07-29",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
+
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "body: {}", resp.text());
+
+    let uuid: uuid::Uuid = load_id.parse().unwrap();
+    let settled = state.db.get_load_by_id(uuid).await.unwrap();
+    assert_eq!(settled.status, LoadStatus::Settled);
+    assert_eq!(settled.invoice_number.as_deref(), Some("JQL-4581461"));
+    assert!(state.db.list_trips_for_load(uuid).await.unwrap().is_empty());
+
+    // It drops out of the unsettled queue.
+    let resp = server.get("/fleet/api/v1/loads?status=planned")
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(resp.json::<serde_json::Value>()["total"], serde_json::json!(0));
+
+    // And load_doctor does not flag it. The check gates on Dispatched|InTransit
+    // and load_trips_all_delivered is false on an empty survivor set, so this is
+    // regression insurance against a later loosening of either.
+    let report = ollie::services::doctors::load::run(&state, uuid, false).await.unwrap();
+    assert!(
+        !report.findings.iter().any(|f| f.check == "load.status_matches_trips"),
+        "administrative loads must not be flagged as status-mismatched: {:?}",
+        report.findings,
     );
 }
