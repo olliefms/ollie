@@ -68,7 +68,9 @@ mod tests {
         let load_id = uuid::Uuid::new_v4();
         let load = crate::models::LoadRecord {
             id: load_id, load_number: "LD-2026-0001".into(), owner_id: 0,
-            status: crate::models::LoadStatus::Planned, customer_name: "ACME".into(),
+            status: crate::models::LoadStatus::Planned,
+            kind: crate::models::LoadKind::Freight,
+            customer_name: "ACME".into(),
             customer_ref: None,
             stops: vec![crate::models::Stop {
                 sequence: 1, stop_type: crate::models::StopType::Pickup,

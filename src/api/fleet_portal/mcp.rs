@@ -2144,6 +2144,7 @@ async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, Strin
         load_number,
         owner_id: 0,
         status: LoadStatus::Planned,
+        kind: crate::models::LoadKind::Freight,
         customer_name: req.customer_name,
         customer_ref: req.customer_ref,
         stops,

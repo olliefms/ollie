@@ -331,6 +331,7 @@ fn load_to_batch(record: &LoadRecord, embed_dim: usize) -> Result<RecordBatch, A
         embedding_col,
         Arc::new(StringArray::from(vec![record.created_at.to_rfc3339().as_str()])),
         Arc::new(StringArray::from(vec![record.updated_at.to_rfc3339().as_str()])),
+        Arc::new(StringArray::from(vec![record.kind.as_str()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -383,6 +384,7 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
         id: str_col("id").parse().map_err(|e: uuid::Error| AppError::Internal(e.to_string()))?,
         load_number: str_col("load_number"), owner_id: i64_col("owner_id"),
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
+        kind: str_col("kind").parse().unwrap_or(crate::models::LoadKind::Freight),
         customer_name: str_col("customer_name"), customer_ref: opt_str("customer_ref"),
         stops, rate_items,
         commodity: opt_str("commodity"), weight_lbs: opt_f64("weight_lbs"),
@@ -449,6 +451,7 @@ mod tests {
             id: uuid::Uuid::new_v4(),
             load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
+            kind: crate::models::LoadKind::Freight,
             customer_name: "ACME Logistics".into(), customer_ref: None,
             stops: vec![], rate_items: vec![
                 RateLineItem { description: "Line Haul".into(), amount_usd: 1500.0 },
@@ -459,6 +462,25 @@ mod tests {
             cancellation_reason: None, embedding: None,
             created_at: now, updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn test_load_kind_round_trips() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.kind = crate::models::LoadKind::Administrative;
+        db.insert_load(&load).await.unwrap();
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.kind, crate::models::LoadKind::Administrative);
+    }
+
+    #[tokio::test]
+    async fn test_load_kind_defaults_to_freight() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.kind, crate::models::LoadKind::Freight);
     }
 
     #[tokio::test]

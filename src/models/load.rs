@@ -116,6 +116,39 @@ impl std::str::FromStr for LoadStatus {
     }
 }
 
+/// Whether a load represents freight that moves, or revenue with no truck
+/// behind it.
+///
+/// `Administrative` covers weekly revenue guarantees, TONU, detention-only
+/// billing, layover pay, and accessorial-only freight bills: real money on a
+/// real freight bill, with no trip, no mileage, and no driver. Such a load
+/// cannot reach `Delivered`, because every route there is a trip-side cascade,
+/// so it invoices straight from `Planned` — see `LoadRecord::can_transition_to`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Default, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadKind {
+    #[default]
+    Freight,
+    Administrative,
+}
+
+impl LoadKind {
+    pub fn as_str(&self) -> &'static str {
+        match self { Self::Freight => "freight", Self::Administrative => "administrative" }
+    }
+}
+
+impl std::str::FromStr for LoadKind {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "freight" => Ok(Self::Freight),
+            "administrative" => Ok(Self::Administrative),
+            other => Err(format!("unknown load kind: {other}")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RateLineItem {
     pub description: String,
@@ -286,6 +319,8 @@ pub struct LoadRecord {
     pub load_number: String,
     pub owner_id: i64,
     pub status: LoadStatus,
+    #[serde(default)]
+    pub kind: LoadKind,
     pub customer_name: String,
     pub customer_ref: Option<String>,
     pub stops: Vec<Stop>,
@@ -495,6 +530,7 @@ mod tests {
         let record = LoadRecord {
             id: uuid::Uuid::new_v4(), load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
+            kind: LoadKind::Freight,
             customer_name: "ACME".into(), customer_ref: None,
             stops: vec![], rate_items: vec![
                 RateLineItem { description: "Line Haul".into(), amount_usd: 1800.0 },
@@ -515,6 +551,7 @@ mod tests {
         let r = LoadRecord {
             id: uuid::Uuid::new_v4(), load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
+            kind: LoadKind::Freight,
             customer_name: "ACME".into(), customer_ref: None,
             stops: vec![], rate_items: vec![], commodity: None,
             weight_lbs: None, miles: None, notes: None, tags: vec![],

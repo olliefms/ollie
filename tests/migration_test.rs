@@ -1062,3 +1062,103 @@ async fn migration_opens_pre_expense_id_maintenance_table_and_adds_expense_id_co
     let fetched = client.get_maintenance_by_id(new_id).await.unwrap();
     assert_eq!(fetched.expense_id, Some(linked_expense_id));
 }
+
+/// Pre-`kind` load schema: the current `load_schema` minus the trailing
+/// `kind` column added for administrative loads.
+fn load_schema_pre_kind(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("load_number", DataType::Utf8, false),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("customer_name", DataType::Utf8, false),
+        Field::new("customer_ref", DataType::Utf8, true),
+        Field::new("stops", DataType::Utf8, false),
+        Field::new("rate_items", DataType::Utf8, false),
+        Field::new("commodity", DataType::Utf8, true),
+        Field::new("weight_lbs", DataType::Float64, true),
+        Field::new("miles", DataType::Float64, true),
+        Field::new("notes", DataType::Utf8, true),
+        Field::new("tags", DataType::Utf8, false),
+        Field::new("blob_ids", DataType::Utf8, false),
+        Field::new("invoice_number", DataType::Utf8, true),
+        Field::new("invoice_date", DataType::Utf8, true),
+        Field::new("cancellation_reason", DataType::Utf8, true),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+    ]))
+}
+
+fn load_pre_kind_row_batch(schema: Arc<Schema>, embed_dim: usize, id: &str) -> RecordBatch {
+    let now = Utc::now().to_rfc3339();
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![None];
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(vec![Some(id)])),
+            Arc::new(StringArray::from(vec![Some("LD-2026-0001")])),
+            Arc::new(Int64Array::from(vec![0_i64])),
+            Arc::new(StringArray::from(vec![Some("planned")])),
+            Arc::new(StringArray::from(vec![Some("ACME Logistics")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(Float64Array::from(vec![None::<f64>])),
+            Arc::new(Float64Array::from(vec![None::<f64>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(StringArray::from(vec![Some("[]")])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+            Arc::new(FixedSizeListArray::from_iter_primitive::<
+                arrow_array::types::Float32Type, _, _
+            >(nulls, embed_dim as i32)),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+            Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        ],
+    )
+    .unwrap()
+}
+
+#[tokio::test]
+async fn migration_opens_pre_kind_loads_table_and_adds_kind() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+    let existing_id = Uuid::new_v4().to_string();
+
+    // Build the old-shaped table directly, bypassing DbClient.
+    {
+        let conn = lancedb::connect(path).execute().await.unwrap();
+        let schema = load_schema_pre_kind(EMBED_DIM);
+        let batch = load_pre_kind_row_batch(schema.clone(), EMBED_DIM, &existing_id);
+        let iter = RecordBatchIterator::new(vec![Ok(batch)], schema);
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+        conn.create_table("loads", reader).execute().await.unwrap();
+    }
+
+    // Opening through DbClient must migrate rather than fail.
+    let db = DbClient::new(path, EMBED_DIM).await.unwrap();
+
+    // The pre-existing row backfills to `freight`, not to a parse error.
+    let migrated = db
+        .get_load_by_id(existing_id.parse::<Uuid>().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(migrated.kind, ollie::models::LoadKind::Freight);
+    assert_eq!(migrated.load_number, "LD-2026-0001");
+
+    // And a fresh administrative load round-trips through the migrated table.
+    let mut fresh = migrated.clone();
+    fresh.id = Uuid::new_v4();
+    fresh.load_number = "JQL-4581461".into();
+    fresh.kind = ollie::models::LoadKind::Administrative;
+    db.insert_load(&fresh).await.unwrap();
+    let refetched = db.get_load_by_id(fresh.id).await.unwrap();
+    assert_eq!(refetched.kind, ollie::models::LoadKind::Administrative);
+}

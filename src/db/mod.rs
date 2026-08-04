@@ -65,9 +65,7 @@ impl DbClient {
 
         let facility_table = open_or_create_facility(&conn, embed_dim).await?;
 
-        let load_table = open_or_create(&conn, "loads", load_schema(embed_dim), |schema| {
-            empty_load_batch(schema, embed_dim)
-        }).await?;
+        let load_table = open_or_create_load(&conn, embed_dim).await?;
 
         let terminal_table = open_or_create_terminal(&conn).await?;
 
@@ -383,6 +381,33 @@ async fn open_or_create_fleet_user(conn: &lancedb::Connection) -> Result<Table, 
                 tracing::info!("migrating fleet_users table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
                     .map_err(|e| AppError::Internal(format!("fleet_user schema migration failed: {e}")))?;
+            }
+            Ok(table)
+        }
+    }
+}
+
+async fn open_or_create_load(conn: &lancedb::Connection, embed_dim: usize) -> Result<Table, AppError> {
+    let schema = load_schema(embed_dim);
+    match conn.open_table("loads").execute().await {
+        Err(_) => {
+            let batch = empty_load_batch(schema.clone(), embed_dim)?;
+            let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+            conn.create_table("loads", reader).execute().await
+                .map_err(|e| AppError::Internal(e.to_string()))
+        }
+        Ok(table) => {
+            let existing = table.schema().await.map_err(|e| AppError::Internal(e.to_string()))?;
+            let mut transforms: Vec<(String, String)> = Vec::new();
+            // SQL keyword type `string`, never the Arrow name `Utf8` — see AGENTS.md.
+            if existing.field_with_name("kind").is_err() {
+                transforms.push(("kind".into(), "CAST('freight' AS string)".into()));
+            }
+            if !transforms.is_empty() {
+                tracing::info!("migrating loads table: adding {} column(s)", transforms.len());
+                table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
+                    .map_err(|e| AppError::Internal(format!("load schema migration failed: {e}")))?;
             }
             Ok(table)
         }
@@ -875,6 +900,7 @@ pub fn load_schema(embed_dim: usize) -> Arc<Schema> {
         ), true),
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
+        Field::new("kind", DataType::Utf8, false),
     ]))
 }
 
@@ -1582,6 +1608,7 @@ fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(FixedSizeListArray::from_iter_primitive::<
             arrow_array::types::Float32Type, _, _
         >(nulls, embed_dim as i32)),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
     ]).map_err(|e| AppError::Internal(e.to_string()))
