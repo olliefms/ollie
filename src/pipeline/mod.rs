@@ -112,9 +112,26 @@ pub fn spawn_pipeline(
                         // The panic itself is already on stderr via the default
                         // hook; what matters here is that the worker lives and
                         // the blob does not sit in Processing for ever.
-                        tracing::error!("worker {i} panicked on {id}; worker survives, blob marked failed");
-                        if let Err(e) = db.mark_failed(id, "pipeline worker panicked".into()).await {
-                            tracing::error!("could not mark {id} failed after panic: {e}");
+                        //
+                        // Only a full `Process` pass owns blob status. An
+                        // `ExpenseSuggestions` pass runs over a blob that is
+                        // already Ready and must never touch it (#380) — a
+                        // panic there costs the suggestions, nothing else. The
+                        // recovery itself runs through `run_job` too, so a
+                        // panic in *it* cannot kill the worker either.
+                        match job {
+                            PipelineJob::Process(id) => {
+                                tracing::error!("worker {i} panicked on {id}; worker survives, ending the pass");
+                                let recovery = worker::fail_without_degrading(
+                                    id, &db, &ai, "pipeline worker panicked".into(),
+                                );
+                                if !matches!(run_job(recovery).await, Ok(Ok(()))) {
+                                    tracing::error!("could not end the failed pass for {id}");
+                                }
+                            }
+                            PipelineJob::ExpenseSuggestions(id) => {
+                                tracing::error!("worker {i} panicked staging expense suggestions for {id}; worker survives, blob status untouched");
+                            }
                         }
                     }
                 }

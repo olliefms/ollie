@@ -167,8 +167,11 @@ process: every later `enqueue` fails with `sending into a closed channel` (async
 wording) while the HTTP server carries on serving normally, so the only visible symptom is
 blobs that never gain a summary. Two rules keep that from recurring:
 
-- Every job runs through `run_job()` (`catch_unwind`), which turns a panic into a failed blob
-  and a live worker.
+- Every job in all three pools runs through `run_job()` (`catch_unwind`), so a panic costs one
+  job and leaves the worker alive. What it costs the *record* differs by job: a `Process` pass
+  ends via `fail_without_degrading()`; an `ExpenseSuggestions` pass runs over an
+  already-`Ready` blob and must never touch its status (#380); geocoding and routing panics
+  are logged only, and the record stays queueable.
 - Parsers fed arbitrary uploaded bytes run on the blocking pool, never inline on the worker
   task — `pdf-extract` and the image decoders panic rather than error on malformed input.
   `extract_off_task()` is the seam.
@@ -246,7 +249,7 @@ Auth depends on the surface (see `/llms.txt` for the authoritative description):
 
 - **Fleet MCP/REST** (`/fleet/*`) — `Authorization: Bearer <JWT>` from `POST /fleet/auth/login` (email+password), or a fleet user API key. JWTs are signed with `FLEET_JWT_SECRET`.
 - **Driver portal** (`/driver/api/v1/*`) — `Authorization: Bearer <JWT>` from passkey/PIN auth. JWTs are signed with `DRIVER_JWT_SECRET`.
-- **Public, no auth:** `GET /version`, `GET /openapi.json`, `GET /llms.txt`.
+- **Public, no auth:** `GET /version`, `GET /healthz`, `GET /openapi.json`, `GET /llms.txt`.
 
 Missing or wrong credentials → 401. Both secrets (`DRIVER_JWT_SECRET`, `FLEET_JWT_SECRET`) are required at startup — the server refuses to boot without them.
 
