@@ -2961,7 +2961,8 @@ async fn tool_resummarize_blob(state: &AppState, args: &Value) -> Result<Value, 
         ));
     }
     state.db.mark_pending(id).await.map_err(|e| e.to_string())?;
-    crate::pipeline::enqueue(&state.pipeline_tx, crate::pipeline::PipelineJob::Process(id));
+    crate::pipeline::enqueue(&state.pipeline_tx, crate::pipeline::PipelineJob::Process(id))
+        .map_err(|e| format!("failed to enqueue blob for processing: {e}"))?;
     Ok(mcp_content(serde_json::json!({
         "queued": true,
         "id": id,

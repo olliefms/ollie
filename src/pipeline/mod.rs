@@ -5,7 +5,7 @@ pub mod recovery;
 pub mod routing;
 pub mod worker;
 
-use crate::{ai::OllamaClient, db::DbClient, storage::BlobStore};
+use crate::{ai::OllamaClient, db::DbClient, error::AppError, storage::BlobStore};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -32,19 +32,28 @@ pub enum PipelineJob {
 /// queued job until the next restart. The record is always persisted before the
 /// enqueue, so detaching costs at worst a late summary.
 ///
-/// The `try_send` fast path keeps the common case synchronous: only a genuinely
-/// full channel detaches. Startup recovery deliberately does NOT use this — it
-/// wants the backpressure, not 768 parked tasks.
-pub fn enqueue(tx: &async_channel::Sender<PipelineJob>, job: PipelineJob) {
-    if tx.try_send(job).is_ok() {
-        return;
-    }
-    let tx = tx.clone();
-    tokio::spawn(async move {
-        if let Err(e) = tx.send(job).await {
-            tracing::error!("pipeline enqueue failed for {job:?}: {e}");
+/// The `try_send` fast path keeps the common case synchronous. Only a *full*
+/// channel detaches; a *closed* one is returned as an error, because it means
+/// every pipeline worker is gone and no amount of waiting will queue anything —
+/// reporting success there would make the 202 (or `queued: true`) a false claim.
+/// Startup recovery deliberately does NOT use this — it wants the backpressure,
+/// not 768 parked tasks.
+pub fn enqueue(tx: &async_channel::Sender<PipelineJob>, job: PipelineJob) -> Result<(), AppError> {
+    match tx.try_send(job) {
+        Ok(()) => Ok(()),
+        Err(async_channel::TrySendError::Closed(_)) => Err(AppError::Internal(
+            "pipeline channel is closed — no workers are running".into(),
+        )),
+        Err(async_channel::TrySendError::Full(job)) => {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if let Err(e) = tx.send(job).await {
+                    tracing::error!("pipeline enqueue failed for {job:?}: {e}");
+                }
+            });
+            Ok(())
         }
-    });
+    }
 }
 
 pub fn spawn_pipeline(
@@ -132,4 +141,33 @@ pub fn spawn_routing_pipeline(
         });
     }
     tx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A full channel must not block the caller, and must not lose the job.
+    #[tokio::test]
+    async fn test_enqueue_detaches_when_full() {
+        let (tx, rx) = async_channel::bounded::<PipelineJob>(1);
+        let first = PipelineJob::Process(Uuid::new_v4());
+        let second = PipelineJob::Process(Uuid::new_v4());
+        enqueue(&tx, first).unwrap();
+
+        // Channel is now full; this one has to detach rather than block.
+        enqueue(&tx, second).unwrap();
+        assert_eq!(rx.recv().await.unwrap(), first);
+        assert_eq!(rx.recv().await.unwrap(), second, "the detached job was lost");
+    }
+
+    /// A closed channel means every worker is gone — no amount of waiting will
+    /// queue anything, so the caller must hear about it rather than get a 202
+    /// that claims work was scheduled.
+    #[tokio::test]
+    async fn test_enqueue_errors_when_closed() {
+        let (tx, rx) = async_channel::bounded::<PipelineJob>(1);
+        drop(rx);
+        assert!(enqueue(&tx, PipelineJob::Process(Uuid::new_v4())).is_err());
+    }
 }

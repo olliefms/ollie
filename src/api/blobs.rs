@@ -132,7 +132,7 @@ pub(crate) async fn ingest_blob(
         };
         state.db.insert(&record).await?;
         if matches!(record.status, BlobStatus::Pending) {
-            crate::pipeline::enqueue(&state.pipeline_tx, crate::pipeline::PipelineJob::Process(record.id));
+            crate::pipeline::enqueue(&state.pipeline_tx, crate::pipeline::PipelineJob::Process(record.id))?;
         }
         Ok((StatusCode::CREATED, record))
     } else {
@@ -144,7 +144,7 @@ pub(crate) async fn ingest_blob(
             visibility, uploaded_by: None,
         };
         state.db.insert(&record).await?;
-        crate::pipeline::enqueue(&state.pipeline_tx, crate::pipeline::PipelineJob::Process(record.id));
+        crate::pipeline::enqueue(&state.pipeline_tx, crate::pipeline::PipelineJob::Process(record.id))?;
         Ok((StatusCode::ACCEPTED, record))
     }
 }
