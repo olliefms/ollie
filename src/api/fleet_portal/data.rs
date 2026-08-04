@@ -1890,10 +1890,12 @@ pub(crate) async fn validate_load_kind_change(
         )));
     }
     let trips = state.db.list_trips_for_load(id).await?;
-    if !trips.is_empty() {
+    let live_trips = trips.iter()
+        .filter(|t| t.status != crate::models::trip::TripStatus::Cancelled)
+        .count();
+    if live_trips > 0 {
         return Err(AppError::Conflict(format!(
-            "cannot change kind: load has {} trip(s). Cancel or detach them first.",
-            trips.len(),
+            "cannot change kind: load has {live_trips} trip(s). Cancel them first.",
         )));
     }
     Ok(())

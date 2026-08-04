@@ -562,3 +562,130 @@ async fn test_guarantee_load_invoices_and_settles_with_no_trip() {
         report.findings,
     );
 }
+
+/// The headline TONU (Truck Ordered, Not Used) shape: a freight load gets a
+/// trip, the trip is cancelled before it ever rolls, and the load must still be
+/// reclassifiable to administrative so the TONU fee can be invoiced. Before the
+/// fix, `validate_load_kind_change`'s `list_trips_for_load` guard counted the
+/// cancelled trip as still-live and refused the reclassification forever.
+#[tokio::test]
+async fn test_cancelled_trip_does_not_block_reclassification_to_administrative() {
+    let (server, state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let fac_id = create_test_facility(&server, &token, "TONU Dock", "Chicago, IL").await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "load_number": "4581469",
+            "customer_name": "Landstar",
+            "stops": [stop_json(&fac_id, "2026-06-01T08:00:00")],
+            "kind": "freight",
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let load_id = resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let trip_resp = server.post("/fleet/api/v1/trips")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "load_id": load_id }))
+        .await;
+    assert_eq!(trip_resp.status_code(), 201, "trip create failed: {}", trip_resp.text());
+    let trip_id = trip_resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Cancel it — a truck was ordered, then it was not used.
+    let cancel_resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/cancel"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(cancel_resp.status_code(), 200, "cancel failed: {}", cancel_resp.text());
+
+    let after_cancel = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .await;
+    assert_eq!(after_cancel.status_code(), 200);
+    assert_eq!(
+        after_cancel.json::<serde_json::Value>()["status"], "planned",
+        "the trip was never assigned, so the load never left planned",
+    );
+
+    // The reclassification the whole feature exists for.
+    let resp = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "kind": "administrative" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "kind change rejected: {}", resp.text());
+    assert_eq!(resp.json::<serde_json::Value>()["kind"], "administrative");
+
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/invoice"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "invoice_number": "JQL-4581469" }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "invoice failed: {}", resp.text());
+
+    let resp = server.post(&format!("/fleet/api/v1/loads/{load_id}/settle"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({}))
+        .await;
+    assert_eq!(resp.status_code(), 200, "settle failed: {}", resp.text());
+
+    let uuid: uuid::Uuid = load_id.parse().unwrap();
+    let settled = state.db.get_load_by_id(uuid).await.unwrap();
+    assert_eq!(settled.status, LoadStatus::Settled);
+}
+
+/// `tool_list_loads` previously advertised a `tags` filter in its schema while
+/// silently dropping it before it reached `db.list_loads` — an argument-
+/// extraction bug that no DB-level test could catch, because the DB layer was
+/// never wrong. Only a call through the actual MCP tool proves the glue works.
+#[tokio::test]
+async fn test_mcp_list_loads_tags_filter_reaches_the_db() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "load_number": "4581470",
+            "customer_name": "Landstar",
+            "stops": [],
+            "kind": "administrative",
+            "tags": ["urgent"],
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+    let urgent_id = resp.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let resp = server.post("/fleet/api/v1/loads")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "load_number": "4581471",
+            "customer_name": "Landstar",
+            "stops": [],
+            "kind": "administrative",
+            "tags": ["routine"],
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 201, "load create failed: {}", resp.text());
+
+    let session = mcp_session(&server, &token).await;
+    let body = mcp_rpc(
+        &server,
+        &token,
+        &session,
+        "tools/call",
+        serde_json::json!({
+            "name": "list_loads",
+            "arguments": { "tags": ["urgent"] }
+        }),
+    ).await;
+
+    assert!(body["error"].is_null(), "expected a normal result: {body}");
+    assert_ne!(body["result"]["isError"], serde_json::json!(true), "body: {body}");
+    let structured = &body["result"]["structuredContent"];
+    let items = structured["items"].as_array().expect("items array missing");
+    assert_eq!(
+        items.len(), 1,
+        "only the 'urgent'-tagged load should come back: {structured}",
+    );
+    assert_eq!(items[0]["id"], urgent_id, "wrong load returned: {structured}");
+}
