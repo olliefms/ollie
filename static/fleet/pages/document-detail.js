@@ -11,7 +11,16 @@ let activeObjectUrl = null;
 // "this blob is text". Keeping the two in sync avoids the confusing state
 // where a document was summarized as text but the viewer claims it can't be
 // previewed (which is what happened to text/markdown).
-function isTextMime(mt) {
+//
+// text/html is the one deliberate divergence: it stays out of preview
+// entirely (#184/#240). The pipeline predicate answers "can we pull text out
+// of this for summarizing", which is not the same question as "is this safe
+// to put in the DOM" — and text/html is exactly where the two part ways.
+function isTextMime(mimeType) {
+  // Match on the bare type: a stored mime_type may carry parameters
+  // ("text/html; charset=utf-8"), and the exclusion has to hold regardless.
+  const mt = mimeType.split(';')[0].trim().toLowerCase();
+  if (mt === 'text/html') return false;
   return mt.startsWith('text/')
     || mt === 'application/json'
     || mt === 'application/xml'

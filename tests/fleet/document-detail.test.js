@@ -69,6 +69,24 @@ describe('document detail text preview', () => {
     expect(document.getElementById('doc-viewer').textContent).toContain("can't be previewed");
   });
 
+  // AGENTS.md: "text/html -> drop from preview, force download (the only
+  // previewable type that can execute scripts)". Broadening the text gate to
+  // text/* must not walk that back — see #184/#240.
+  for (const htmlMime of ['text/html', 'text/html; charset=utf-8', 'TEXT/HTML']) {
+    it(`refuses to preview ${htmlMime}`, async () => {
+      stubFetch(htmlMime, '<img src=x onerror=alert(1)>');
+      await render();
+      expect(document.querySelector('#doc-viewer pre')).toBeFalsy();
+      expect(document.getElementById('doc-viewer').textContent).toContain("can't be previewed");
+    });
+  }
+
+  it('matches on the bare type when the mime carries parameters', async () => {
+    stubFetch('application/json; charset=utf-8', '{"a":1}');
+    await render();
+    expect(document.querySelector('#doc-viewer pre').textContent).toBe('{"a":1}');
+  });
+
   it('truncates an oversized text file and says so', async () => {
     stubFetch('text/plain', 'x'.repeat(1_000_050));
     await render();
