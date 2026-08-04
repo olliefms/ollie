@@ -253,10 +253,17 @@ In `src/db/load_ops.rs`, `load_to_batch` (line 290) — append as the **last** e
 In `row_to_load` (line 345), inside the `Ok(LoadRecord {` literal, directly after the `status:` line:
 
 ```rust
-        kind: str_col("kind").parse().unwrap_or(crate::models::LoadKind::Freight),
+        kind: {
+            let k = str_col("kind");
+            if k.is_empty() {
+                crate::models::LoadKind::Freight
+            } else {
+                k.parse().map_err(AppError::Internal)?
+            }
+        },
 ```
 
-`unwrap_or` rather than `?`: a row written before the migration returns an empty string from `str_col`, and a read must not fail on it. The migration runs at startup before any read, so this is belt-and-braces.
+The empty-string branch is the one real case: a row written before the migration returns `""` from `str_col`, and a read must not fail on it. Anything else propagates, matching how `status` behaves two lines above — a blanket `unwrap_or` would silently coerce genuine corruption to `Freight`.
 
 - [ ] **Step 7: Add the migration branch**
 
