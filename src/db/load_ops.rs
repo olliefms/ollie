@@ -124,6 +124,14 @@ impl DbClient {
         Ok(record)
     }
 
+    pub async fn update_load_kind(&self, id: Uuid, kind: crate::models::LoadKind) -> Result<LoadRecord, AppError> {
+        let mut record = self.get_load_by_id(id).await?;
+        record.kind = kind;
+        record.updated_at = Utc::now();
+        self.upsert_load(&record).await?;
+        Ok(record)
+    }
+
     pub async fn update_load_miles(&self, id: Uuid, miles: f64) -> Result<(), AppError> {
         let mut record = self.get_load_by_id(id).await?;
         record.miles = Some(miles);
@@ -518,6 +526,18 @@ mod tests {
         assert_eq!(updated.load_number, "JQL-9821550");
         let fetched = db.get_load_by_id(load.id).await.unwrap();
         assert_eq!(fetched.load_number, "JQL-9821550");
+    }
+
+    #[tokio::test]
+    async fn test_update_load_kind() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+        let updated = db.update_load_kind(load.id, crate::models::LoadKind::Administrative)
+            .await.unwrap();
+        assert_eq!(updated.kind, crate::models::LoadKind::Administrative);
+        let fetched = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(fetched.kind, crate::models::LoadKind::Administrative);
     }
 
     #[tokio::test]

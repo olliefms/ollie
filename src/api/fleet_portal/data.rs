@@ -284,7 +284,7 @@ pub async fn create_load(
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:write")?;
     use chrono::Utc;
-    use crate::models::{LoadKind, LoadRecord, LoadStatus};
+    use crate::models::{LoadRecord, LoadStatus};
 
     let stops = resolve_stops_pub(&state, body.stops).await?;
     let now = Utc::now();
@@ -319,7 +319,7 @@ pub async fn create_load(
         load_number,
         owner_id: 0,
         status: LoadStatus::Planned,
-        kind: LoadKind::Freight,
+        kind: body.kind.unwrap_or_default(),
         customer_name: body.customer_name,
         customer_ref: body.customer_ref,
         stops,
@@ -416,6 +416,10 @@ pub async fn update_load(
 
     if let Some(ln) = body.load_number {
         updated = state.db.update_load_number(id, ln).await?;
+    }
+
+    if let Some(k) = body.kind {
+        updated = state.db.update_load_kind(id, k).await?;
     }
 
     let response = build_load_detail(&state, updated).await?;
@@ -1910,6 +1914,7 @@ pub async fn build_load_detail(
         id: record.id,
         load_number: record.load_number,
         status: record.status,
+        kind: record.kind,
         customer_name: record.customer_name,
         customer_ref: record.customer_ref,
         stops,

@@ -372,6 +372,9 @@ pub struct CreateLoadRequest {
     pub load_number: Option<String>,
     pub customer_name: String,
     pub customer_ref: Option<String>,
+    #[serde(default)]
+    pub kind: Option<LoadKind>,
+    #[serde(default)]
     pub stops: Vec<StopInput>,
     #[serde(default)]
     pub rate_items: Vec<RateLineItem>,
@@ -390,6 +393,7 @@ pub struct UpdateLoadRequest {
     pub load_number: Option<String>,
     pub customer_name: Option<String>,
     pub customer_ref: Option<String>,
+    pub kind: Option<LoadKind>,
     pub stops: Option<Vec<StopInput>>,
     pub rate_items: Option<Vec<RateLineItem>>,
     pub commodity: Option<String>,
@@ -416,6 +420,7 @@ pub struct LoadListItem {
     pub id: Uuid,
     pub load_number: String,
     pub status: LoadStatus,
+    pub kind: LoadKind,
     pub customer_name: String,
     pub customer_ref: Option<String>,
     pub stops: Vec<Stop>,
@@ -439,7 +444,7 @@ impl From<LoadRecord> for LoadListItem {
     fn from(r: LoadRecord) -> Self {
         let total = r.total_rate_usd();
         Self {
-            id: r.id, load_number: r.load_number, status: r.status,
+            id: r.id, load_number: r.load_number, status: r.status, kind: r.kind,
             customer_name: r.customer_name, customer_ref: r.customer_ref,
             stops: r.stops, rate_items: r.rate_items, total_rate_usd: total,
             commodity: r.commodity, weight_lbs: r.weight_lbs, miles: r.miles,
@@ -463,6 +468,7 @@ pub struct LoadDetailResponse {
     pub id: Uuid,
     pub load_number: String,
     pub status: LoadStatus,
+    pub kind: LoadKind,
     pub customer_name: String,
     pub customer_ref: Option<String>,
     pub stops: Vec<StopResponse>,

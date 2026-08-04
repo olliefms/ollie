@@ -851,6 +851,7 @@ fn tools_list() -> Value {
                     "properties": {
                         "customer_name": { "type": "string" },
                         "customer_ref": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["freight", "administrative"], "description": "Default freight. 'administrative' marks revenue with no trip behind it (weekly guarantee, TONU, detention-only, layover, accessorial-only) — it invoices straight from planned and cannot be assigned to a trip." },
                         "stops": { "type": "array", "items": { "type": "object" } },
                         "rate_items": { "type": "array", "items": { "type": "object" } },
                         "commodity": { "type": "string" },
@@ -861,7 +862,7 @@ fn tools_list() -> Value {
                         "blob_ids": { "type": "array", "items": { "type": "string", "format": "uuid" } },
                         "load_number": { "type": "string", "description": "Human-facing load/reference number (free-form string, e.g. a broker/Landstar number). Omit to auto-assign LD-YYYY-NNNN." }
                     },
-                    "required": ["customer_name", "stops"]
+                    "required": ["customer_name"]
                 }
             },
             {
@@ -873,6 +874,7 @@ fn tools_list() -> Value {
                         "id": { "type": "string", "format": "uuid" },
                         "customer_name": { "type": "string" },
                         "customer_ref": { "type": "string" },
+                        "kind": { "type": "string", "enum": ["freight", "administrative"], "description": "Only changeable while the load is 'planned' and has no trips." },
                         "stops": { "type": "array", "items": { "type": "object" } },
                         "rate_items": { "type": "array", "items": { "type": "object" } },
                         "commodity": { "type": "string" },
@@ -2144,7 +2146,7 @@ async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, Strin
         load_number,
         owner_id: 0,
         status: LoadStatus::Planned,
-        kind: crate::models::LoadKind::Freight,
+        kind: req.kind.unwrap_or_default(),
         customer_name: req.customer_name,
         customer_ref: req.customer_ref,
         stops,
@@ -2253,6 +2255,10 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
 
     if let Some(ln) = req.load_number {
         updated = state.db.update_load_number(id, ln).await.map_err(|e| e.to_string())?;
+    }
+
+    if let Some(k) = req.kind {
+        updated = state.db.update_load_kind(id, k).await.map_err(|e| e.to_string())?;
     }
 
     Ok(mcp_content(updated))
