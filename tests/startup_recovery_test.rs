@@ -1,24 +1,22 @@
 // tests/startup_recovery_test.rs
-//! #404: startup pipeline recovery must run *behind* the bound HTTP listener.
+//! #404: startup pipeline recovery must run *behind* the accept loop.
 //!
 //! The pipeline channel is bounded, so requeueing a backlog larger than its
-//! capacity blocks until the workers drain it. While that ran ahead of the bind,
-//! a restart with a summarisation backlog refused every connection for as long as
-//! the drain took (a projected 8.5 hours for 768 blobs) with no listener at all —
-//! and Docker reported the container healthy throughout.
+//! capacity blocks until the workers drain it. While that ran ahead of serving,
+//! a restart with a summarisation backlog left the API unreachable for as long as
+//! the drain took (a projected 8.5 hours for 768 blobs) — and Docker reported the
+//! container healthy throughout.
 //!
-//! This test reproduces the shape of that outage: a full pipeline channel that
-//! nothing is draining, and a `requeue_stale` that therefore cannot finish. The
-//! API must answer anyway.
+//! The test drives `startup::serve`, the function that owns the ordering, so
+//! moving recovery back in front of `axum::serve` fails it.
 
 use chrono::Utc;
 use ollie::{
     ai::OllamaClient,
-    api,
     config::Config,
     db::DbClient,
     models::{BlobRecord, BlobStatus},
-    pipeline::recovery::requeue_stale,
+    startup,
     storage::BlobStore,
     AppState,
 };
@@ -27,7 +25,7 @@ use tempfile::TempDir;
 use uuid::Uuid;
 use webauthn_rs::prelude::{Url, WebauthnBuilder};
 
-/// Small enough that the backlog below is guaranteed to wedge the send loop.
+/// Small enough that the backlog below is guaranteed to wedge the requeue loop.
 const CHANNEL_CAPACITY: usize = 4;
 const BACKLOG: usize = 16;
 
@@ -55,6 +53,7 @@ async fn test_http_listener_serves_while_startup_recovery_is_blocked() {
     let db = Arc::new(DbClient::new(db_dir.path().to_str().unwrap(), 4).await.unwrap());
     let store = Arc::new(BlobStore::new(blob_dir.path().to_str().unwrap()));
     let ai = Arc::new(OllamaClient::new(
+        // Deliberately unreachable: this test must not depend on a live Ollama.
         "http://127.0.0.1:1", "nomic-embed-text", "llama3.2", "moondream",
     ));
     let geocoding = Arc::new(ollie::geocoding::GeocodingClient::new());
@@ -65,8 +64,9 @@ async fn test_http_listener_serves_while_startup_recovery_is_blocked() {
     }
 
     // No receiver is ever polled — this stands in for pipeline workers that are
-    // far slower than the requeue loop.
-    let (pipeline_tx, _rx) = async_channel::bounded(CHANNEL_CAPACITY);
+    // far slower than the requeue loop. Bound to named locals so the receivers
+    // stay alive and sends block rather than error.
+    let (pipeline_tx, rx) = async_channel::bounded(CHANNEL_CAPACITY);
     let (geocoding_tx, _grx) = async_channel::bounded(CHANNEL_CAPACITY);
     let (routing_tx, _rrx) = async_channel::bounded(CHANNEL_CAPACITY);
 
@@ -74,39 +74,38 @@ async fn test_http_listener_serves_while_startup_recovery_is_blocked() {
     let webauthn = Arc::new(WebauthnBuilder::new("localhost", &rp_origin).unwrap().build().unwrap());
 
     let state = AppState {
-        db: db.clone(), store, ai, geocoding, ors,
-        pipeline_tx: pipeline_tx.clone(),
-        geocoding_tx: geocoding_tx.clone(),
-        routing_tx: routing_tx.clone(),
-        config,
+        db, store, ai, geocoding, ors,
+        pipeline_tx, geocoding_tx, routing_tx, config,
         webauthn,
         auth_challenge_store: Arc::new(dashmap::DashMap::new()),
         reg_challenge_store: Arc::new(dashmap::DashMap::new()),
     };
 
-    // Mirror main.rs: bind and serve first, then kick recovery off behind it.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        axum::serve(listener, api::router(state)).await.unwrap();
-    });
+    tokio::spawn(async move { startup::serve(state, listener).await.unwrap() });
 
-    let recovery = tokio::spawn(async move {
-        requeue_stale(&db, &pipeline_tx, &geocoding_tx, &routing_tx).await
-    });
+    // Wait until the requeue loop is wedged on the full channel — this is the
+    // state #404 spent hours in, and it must be reached for the assertion below
+    // to mean anything.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while rx.len() < CHANNEL_CAPACITY {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("startup recovery never filled the pipeline channel — the test no longer reproduces #404");
 
     let resp = tokio::time::timeout(
         std::time::Duration::from_secs(5),
-        reqwest::get(format!("http://{addr}/version")),
+        reqwest::Client::builder().no_proxy().build().unwrap()
+            .get(format!("http://{addr}/version")).send(),
     )
     .await
-    .expect("GET /version timed out — the listener is blocked behind startup recovery")
-    .expect("GET /version failed — nothing is listening");
+    .expect("GET /version timed out — the accept loop is stuck behind startup recovery")
+    .expect("GET /version failed — nothing is serving");
     assert_eq!(resp.status().as_u16(), 200);
 
-    assert!(
-        !recovery.is_finished(),
-        "recovery finished, so the backlog never wedged the send loop — the test no longer reproduces #404",
-    );
-    recovery.abort();
+    // Still wedged: the API answered *during* recovery, not after it.
+    assert_eq!(rx.len(), CHANNEL_CAPACITY, "the requeue loop drained unexpectedly");
 }

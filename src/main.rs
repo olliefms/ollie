@@ -1,13 +1,13 @@
 // src/main.rs
 use ollie::{
     ai::OllamaClient,
-    api,
     config::Config,
     db::DbClient,
     geocoding::GeocodingClient,
-    pipeline::{embedding_backfill::spawn_facility_embedding_backfill, recovery::requeue_stale, spawn_pipeline, spawn_geocoding_pipeline, spawn_routing_pipeline},
+    pipeline::{spawn_pipeline, spawn_geocoding_pipeline, spawn_routing_pipeline},
     routing::RoutingClient,
     storage::BlobStore,
+    startup,
     AppState,
 };
 use std::{net::SocketAddr, sync::Arc};
@@ -72,68 +72,33 @@ async fn main() -> anyhow::Result<()> {
         auth_challenge_store,
         reg_challenge_store,
     };
-    let startup = state.clone();
-    let app = api::router(state);
 
+    // Bind before anything that scales with data volume — `startup::serve` owns
+    // that ordering and is where the reasoning lives (#404).
     let addr: SocketAddr = format!("0.0.0.0:{}", config.port).parse()?;
     tracing::info!("ollie v{}", env!("CARGO_PKG_VERSION"));
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("listening on {addr}");
-
-    // Everything below runs BEHIND the bound listener, never in front of it. The
-    // pipeline channel is bounded, so requeueing a backlog larger than its capacity
-    // blocks until the workers drain it — 768 stale blobs at ~40 s each held the
-    // bind for a projected 8.5 hours while Docker still reported the container up
-    // (#404). Summaries are eventually-consistent: a blob with a pending summary is
-    // still readable, listable and attachable, so there is no correctness reason to
-    // withhold the whole API until recovery finishes.
-    tokio::spawn(async move {
-        create_search_indices(&startup.db).await;
-        // Recover facilities persisted without an embedding (e.g. embed model down
-        // at create, or geocode-skipped) so they become searchable for dedup again.
-        spawn_facility_embedding_backfill(startup.db.clone(), startup.ai.clone());
-        if let Err(e) = requeue_stale(&startup.db, &startup.pipeline_tx, &startup.geocoding_tx, &startup.routing_tx).await {
-            tracing::error!("startup recovery failed: {e}");
-        }
-    });
-
-    axum::serve(listener, app).await?;
+    startup::serve(state, listener).await?;
     Ok(())
-}
-
-/// Best-effort index creation — a missing index degrades search to a brute-force
-/// scan, it does not break anything, so every failure is a warning.
-async fn create_search_indices(db: &DbClient) {
-    for (result, label) in [
-        (db.create_vector_index().await, "blobs"),
-        (db.create_facility_vector_index().await, "facilities"),
-        (db.create_load_vector_index().await, "loads"),
-        (db.create_driver_vector_index().await, "drivers"),
-        (db.create_truck_vector_index().await, "trucks"),
-        (db.create_trailer_vector_index().await, "trailers"),
-        (db.create_maintenance_vector_index().await, "maintenance"),
-        (db.create_event_vector_index().await, "events"),
-    ] {
-        if let Err(e) = result {
-            tracing::warn!("vector index not created for {label}: {e}");
-        }
-    }
-    if let Err(e) = db.create_event_scalar_indices().await {
-        tracing::warn!("scalar indices not created for events: {e}");
-    }
 }
 
 /// `ollie healthcheck` — the image's HEALTHCHECK command. Exits non-zero until the
 /// HTTP listener is actually answering, so "container up" stops meaning "service
-/// ready" (#404: the container reported healthy through the entire cold start).
+/// reachable" (#404: the container reported healthy through the entire cold start).
 /// Reads `PORT` directly rather than `Config::from_env`, which would fail the check
-/// for reasons that have nothing to do with readiness.
+/// for reasons that have nothing to do with reachability.
 async fn healthcheck() -> anyhow::Result<()> {
     let port = std::env::var("PORT").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(3000);
     let url = format!("http://127.0.0.1:{port}/version");
-    let resp = reqwest::Client::new()
-        .get(&url)
+    // `no_proxy()`: reqwest honours HTTP_PROXY/ALL_PROXY by default and does not
+    // exempt loopback, so in an egress-controlled deployment the probe would be
+    // routed off-box and fail a perfectly healthy container.
+    let resp = reqwest::Client::builder()
+        .no_proxy()
         .timeout(std::time::Duration::from_secs(5))
+        .build()?
+        .get(&url)
         .send()
         .await?;
     if !resp.status().is_success() {

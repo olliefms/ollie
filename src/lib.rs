@@ -11,6 +11,7 @@ pub mod models;
 pub mod pipeline;
 pub mod routing;
 pub mod services;
+pub mod startup;
 pub mod storage;
 
 use ai::OllamaClient;
