@@ -7,6 +7,30 @@ import { confirmAction } from '../components/confirm.js';
 // revokeActiveObjectUrl() on every navigation so blob URLs don't leak.
 let activeObjectUrl = null;
 
+// Mirrors extract_content() in src/ai/extract.rs — the pipeline's notion of
+// "this blob is text". Keeping the two in sync avoids the confusing state
+// where a document was summarized as text but the viewer claims it can't be
+// previewed (which is what happened to text/markdown).
+//
+// text/html is the one deliberate divergence: it stays out of preview
+// entirely (#184/#240). The pipeline predicate answers "can we pull text out
+// of this for summarizing", which is not the same question as "is this safe
+// to put in the DOM" — and text/html is exactly where the two part ways.
+function isTextMime(mimeType) {
+  // Match on the bare type: a stored mime_type may carry parameters
+  // ("text/html; charset=utf-8"), and the exclusion has to hold regardless.
+  const mt = mimeType.split(';')[0].trim().toLowerCase();
+  if (mt === 'text/html') return false;
+  return mt.startsWith('text/')
+    || mt === 'application/json'
+    || mt === 'application/xml'
+    || mt.includes('javascript');
+}
+
+// A text preview goes into the DOM whole, so bound it. Freight paperwork is
+// small, but a stray multi-MB log would otherwise lock up the tab.
+const MAX_TEXT_PREVIEW_CHARS = 1_000_000;
+
 export function revokeActiveObjectUrl() {
   if (activeObjectUrl) {
     URL.revokeObjectURL(activeObjectUrl);
@@ -115,8 +139,8 @@ export async function renderDocumentDetailView(id) {
     const mt = doc.mime_type || '';
     const isPdf = mt === 'application/pdf';
     const isImage = mt.startsWith('image/');
-    const isPlainText = mt === 'text/plain';
-    const canPreview = isPdf || isImage || isPlainText;
+    const isText = isTextMime(mt);
+    const canPreview = isPdf || isImage || isText;
 
     if (!canPreview) {
       const msg = document.createElement('div');
@@ -147,12 +171,21 @@ export async function renderDocumentDetailView(id) {
           img.alt = doc.name || 'preview';
           img.style.cssText = 'max-width:100%;height:auto;display:block;';
           viewerEl.appendChild(img);
-        } else if (isPlainText) {
+        } else if (isText) {
           const text = await blob.text();
+          const truncated = text.length > MAX_TEXT_PREVIEW_CHARS;
           const pre = document.createElement('pre');
           pre.style.cssText = 'white-space:pre-wrap;word-break:break-word;max-height:600px;overflow:auto;margin:0;padding:12px;background:var(--color-surface-2);border-radius:4px;';
-          pre.textContent = text;
+          pre.textContent = truncated ? text.slice(0, MAX_TEXT_PREVIEW_CHARS) : text;
           viewerEl.appendChild(pre);
+          if (truncated) {
+            const note = document.createElement('div');
+            note.id = 'doc-preview-truncated';
+            note.className = 'state-empty';
+            note.style.minHeight = 'auto';
+            note.textContent = 'Preview truncated — use the Download button above for the full file.';
+            viewerEl.appendChild(note);
+          }
         }
       } catch (err) {
         if (err.message !== 'Unauthorized — please sign in again.') {
