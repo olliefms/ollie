@@ -2094,12 +2094,7 @@ async fn tool_list_loads(state: &AppState, args: &Value) -> Result<Value, String
     let tags: Vec<String> = args["tags"].as_array()
         .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
         .unwrap_or_default();
-    let facility_id = match args.get("facility_id") {
-        Some(Value::String(s)) => Some(
-            s.parse::<uuid::Uuid>().map_err(|_| "facility_id must be a UUID".to_string())?,
-        ),
-        _ => None,
-    };
+    let facility_id = parse_uuid_opt(args, "facility_id")?;
     let offset = cursor_offset(args)?;
 
     let (total, items) = state.db.list_loads(
@@ -3878,5 +3873,37 @@ mod tests {
                 "tool catalog must contain {name}"
             );
         }
+    }
+
+    #[test]
+    fn parse_uuid_opt_rejects_malformed_input() {
+        let valid_uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+        // Absent key → Ok(None)
+        assert_eq!(parse_uuid_opt(&json!({}), "field"), Ok(None));
+
+        // Null value → Ok(None)
+        assert_eq!(parse_uuid_opt(&json!({"field": null}), "field"), Ok(None));
+
+        // Valid UUID string → Ok(Some(..))
+        let result = parse_uuid_opt(&json!({"field": valid_uuid}), "field");
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_some());
+
+        // Non-string value (number) → Err
+        let err = parse_uuid_opt(&json!({"field": 42}), "field").unwrap_err();
+        assert!(err.contains("must be a string"));
+
+        // Non-string value (object) → Err
+        let err = parse_uuid_opt(&json!({"field": {}}), "field").unwrap_err();
+        assert!(err.contains("must be a string"));
+
+        // Non-string value (array) → Err
+        let err = parse_uuid_opt(&json!({"field": []}), "field").unwrap_err();
+        assert!(err.contains("must be a string"));
+
+        // Invalid UUID string → Err
+        let err = parse_uuid_opt(&json!({"field": "not-a-uuid"}), "field").unwrap_err();
+        assert!(err.contains("invalid UUID"));
     }
 }
