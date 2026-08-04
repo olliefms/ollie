@@ -32,6 +32,11 @@ pub struct Config {
     pub blob_presign_ttl_secs: u64,
     /// Hard cap (seconds) on presigned blob URL TTL, regardless of caller request.
     pub blob_presign_max_ttl_secs: u64,
+    /// Gap between LanceDB compaction passes (#403). `0` disables the scheduler;
+    /// the `compact_datasets` MCP tool still works.
+    pub maintenance_interval_secs: u64,
+    /// Compaction target — fragments smaller than this are compaction candidates.
+    pub maintenance_target_rows_per_fragment: usize,
 }
 
 impl Config {
@@ -99,6 +104,15 @@ impl Config {
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(300),
             blob_presign_max_ttl_secs: env::var("OLLIE_BLOB_PRESIGN_MAX_TTL_SECS")
                 .ok().and_then(|v| v.parse().ok()).unwrap_or(3600),
+            maintenance_interval_secs: env::var("OLLIE_MAINTENANCE_INTERVAL_SECS")
+                .ok().and_then(|v| v.parse().ok())
+                .unwrap_or(crate::services::maintenance::DEFAULT_INTERVAL_SECS),
+            maintenance_target_rows_per_fragment: env::var(
+                "OLLIE_MAINTENANCE_TARGET_ROWS_PER_FRAGMENT",
+            )
+                .ok().and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(crate::services::maintenance::DEFAULT_TARGET_ROWS_PER_FRAGMENT),
         })
     }
 }
@@ -148,6 +162,33 @@ mod tests {
         assert!((cfg.facility_dedup_high_threshold - 0.92).abs() < f64::EPSILON);
         assert!((cfg.facility_dedup_low_threshold - 0.75).abs() < f64::EPSILON);
         assert_eq!(cfg.geocoding_workers, 1);
+        remove_driver_vars();
+    }
+
+    #[test]
+    fn test_config_maintenance_defaults_and_overrides() {
+        let _g = ENV_LOCK.lock().unwrap();
+        set_driver_vars();
+        env::remove_var("OLLIE_MAINTENANCE_INTERVAL_SECS");
+        env::remove_var("OLLIE_MAINTENANCE_TARGET_ROWS_PER_FRAGMENT");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.maintenance_interval_secs, 21600);
+        assert_eq!(cfg.maintenance_target_rows_per_fragment, 1_048_576);
+
+        // `0` is the documented escape hatch for the scheduler — it must survive
+        // the parse rather than fall back to the default.
+        env::set_var("OLLIE_MAINTENANCE_INTERVAL_SECS", "0");
+        // A zero target would make every fragment a non-candidate; fall back.
+        env::set_var("OLLIE_MAINTENANCE_TARGET_ROWS_PER_FRAGMENT", "0");
+        let cfg = Config::from_env().unwrap();
+        assert_eq!(cfg.maintenance_interval_secs, 0);
+        assert_eq!(cfg.maintenance_target_rows_per_fragment, 1_048_576);
+
+        env::set_var("OLLIE_MAINTENANCE_TARGET_ROWS_PER_FRAGMENT", "4096");
+        assert_eq!(Config::from_env().unwrap().maintenance_target_rows_per_fragment, 4096);
+
+        env::remove_var("OLLIE_MAINTENANCE_INTERVAL_SECS");
+        env::remove_var("OLLIE_MAINTENANCE_TARGET_ROWS_PER_FRAGMENT");
         remove_driver_vars();
     }
 

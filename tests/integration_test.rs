@@ -8326,6 +8326,53 @@ async fn test_scope_mcp_fleet_user_denied_owner_allowed() {
     assert_eq!(settled["status"], "settled", "owner settle_load succeeds");
 }
 
+/// #403: `compact_datasets` is dry-run by default and reports every dataset's
+/// fragmentation. Reporting is `datasets:read`; rewriting the store additionally
+/// needs `datasets:maintain`, so a grant of the read half must not carry the
+/// rewrite with it.
+#[tokio::test]
+async fn test_mcp_compact_datasets_gates_apply_separately_from_report() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let reader = login_with_role(&server, "compact_read@example.com", "pw-compact-read", "dispatcher").await;
+    let owner = login_with_role(&server, "compact_owner@example.com", "pw-compact-own", "owner").await;
+
+    // Plain dispatcher has neither scope: even the report is denied.
+    let denied = mcp_call_result(&server, &reader, "compact_datasets", serde_json::json!({})).await;
+    assert_eq!(denied["isError"], serde_json::json!(true), "dispatcher must not reach compact_datasets");
+
+    // Grant only the read half.
+    let mut record = state.db.get_fleet_user_by_email("compact_read@example.com")
+        .await.unwrap().expect("fleet_user exists");
+    record.extra_scopes = vec!["datasets:read".to_string()];
+    state.db.upsert_fleet_user(&record).await.unwrap();
+
+    let report = mcp_call(&server, &reader, "compact_datasets", serde_json::json!({})).await;
+    assert_eq!(report["applied"], serde_json::json!(false));
+    let datasets = report["datasets"].as_array().expect("datasets array");
+    assert!(datasets.iter().any(|d| d["table"] == "blobs"), "blobs must be reported");
+    for d in datasets {
+        assert!(d["error"].is_null(), "{} failed to measure: {}", d["table"], d["error"]);
+        assert!(d["fragments"].is_u64(), "{} missing a fragment count", d["table"]);
+        assert!(d["fragments_after"].is_null(), "a dry run must not report an after-state");
+    }
+
+    // The read grant must not carry the rewrite.
+    let apply = mcp_call_result(&server, &reader, "compact_datasets",
+        serde_json::json!({ "apply": true })).await;
+    assert_eq!(apply["isError"], serde_json::json!(true), "datasets:read must not allow apply");
+    let msg = apply["content"][0]["text"].as_str().unwrap_or("");
+    assert!(msg.contains("datasets:maintain"), "denial should name the missing scope: {msg}");
+
+    // Owner (`*`) can apply, and every dataset comes back compacted, not errored.
+    let applied = mcp_call(&server, &owner, "compact_datasets",
+        serde_json::json!({ "apply": true })).await;
+    assert_eq!(applied["applied"], serde_json::json!(true));
+    for d in applied["datasets"].as_array().expect("datasets array") {
+        assert!(d["error"].is_null(), "{} failed to compact: {}", d["table"], d["error"]);
+        assert!(d["fragments_after"].is_u64(), "{} missing an after-state", d["table"]);
+    }
+}
+
 #[tokio::test]
 async fn test_scope_extra_scope_grant_allows_settle() {
     // A fleet_user granted the single `loads:settle` extra scope can settle, on

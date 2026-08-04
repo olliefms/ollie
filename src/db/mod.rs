@@ -28,6 +28,9 @@ use lancedb::Table;
 use std::sync::Arc;
 
 pub struct DbClient {
+    /// Kept so the maintenance pass can enumerate what actually exists on disk
+    /// and prove [`DbClient::tables`] covers all of it (#403).
+    conn: lancedb::Connection,
     pub blob_table: Table,
     pub fleet_user_table: Table,
     pub fleet_user_credentials_table: Table,
@@ -48,6 +51,9 @@ pub struct DbClient {
     pub truck_table: Table,
     pub expense_table: Table,
     pub embed_dim: usize,
+    /// Serializes compaction passes, so the scheduled one and an operator's
+    /// `compact_datasets` can never rewrite the same dataset at once (#403).
+    pub(crate) maintenance_lock: tokio::sync::Mutex<()>,
 }
 
 impl DbClient {
@@ -143,6 +149,7 @@ impl DbClient {
         ).await?;
 
         let client = Self {
+            conn,
             blob_table,
             fleet_user_table,
             fleet_user_credentials_table,
@@ -163,6 +170,7 @@ impl DbClient {
             truck_table,
             expense_table,
             embed_dim,
+            maintenance_lock: tokio::sync::Mutex::new(()),
         };
 
         // Migration (existing installs): if fleet_users exist but no owner does,
@@ -171,6 +179,49 @@ impl DbClient {
         client.reconcile_owner().await?;
 
         Ok(client)
+    }
+
+    /// Every dataset in the database, paired with its on-disk name.
+    ///
+    /// The maintenance pass (#403) walks exactly this list, so a table absent
+    /// here is a table that never compacts — it accumulates one fragment per
+    /// write forever, invisibly, until the process runs out of file descriptors.
+    /// `test_tables_covers_every_dataset` pins it against
+    /// [`DbClient::dataset_names`] so adding a table without adding it here
+    /// fails a test instead of an instance.
+    ///
+    /// These are the *same* handles the request path reads through, which is the
+    /// point: `optimize` refreshes the handle it is called on, so compacting via
+    /// a separately-opened table would leave every reader pinned to a manifest
+    /// whose files the prune just deleted.
+    pub fn tables(&self) -> Vec<(&'static str, &Table)> {
+        vec![
+            ("blobs", &self.blob_table),
+            ("fleet_users", &self.fleet_user_table),
+            ("fleet_user_credentials", &self.fleet_user_credentials_table),
+            ("fleet_user_api_keys", &self.fleet_user_api_key_table),
+            ("refresh_tokens", &self.refresh_token_table),
+            ("oauth_clients", &self.oauth_client_table),
+            ("authorization_codes", &self.authorization_code_table),
+            ("driver_credentials", &self.driver_credentials_table),
+            ("driver_passkey_credentials", &self.driver_passkey_credentials_table),
+            ("drivers", &self.driver_table),
+            ("events", &self.event_table),
+            ("facilities", &self.facility_table),
+            ("loads", &self.load_table),
+            ("terminals", &self.terminal_table),
+            ("trailers", &self.trailer_table),
+            ("maintenance", &self.maintenance_table),
+            ("trips", &self.trip_table),
+            ("trucks", &self.truck_table),
+            ("expenses", &self.expense_table),
+        ]
+    }
+
+    /// Dataset names present on disk, straight from the connection.
+    pub async fn dataset_names(&self) -> Result<Vec<String>, AppError> {
+        self.conn.table_names().execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))
     }
 
     /// Create an IVF-PQ vector index on `column` of `table`, but only once the

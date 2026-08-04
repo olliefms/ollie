@@ -313,6 +313,10 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "delete_facility" => "facilities:delete",
         // Events
         "list_events" => "events:read",
+        // Dataset maintenance (#403). The dry run is a read; apply=true rewrites
+        // every dataset on disk, so it additionally requires datasets:maintain —
+        // enforced inside `tool_compact_datasets`, where the args are visible.
+        "compact_datasets" => "datasets:read",
         // Blobs
         "list_blobs" | "search_blobs" | "get_blob_url" | "get_blob_metadata" => "blobs:read",
         "upload_blob" | "update_blob" | "resummarize_blob" => "blobs:write",
@@ -782,8 +786,10 @@ fn annotations_for(name: &str) -> ToolAnnotations {
     );
     // update_* set fields to a target value; dispatch/undispatch converge to a
     // status — re-running with the same args is a no-op.
-    let idempotent =
-        name.starts_with("update_") || matches!(name, "dispatch_trip" | "undispatch_trip");
+    // compact_datasets converges on a compacted dataset — running it twice in a
+    // row leaves the second pass with nothing to do.
+    let idempotent = name.starts_with("update_")
+        || matches!(name, "dispatch_trip" | "undispatch_trip" | "compact_datasets");
     ToolAnnotations::from_raw(
         None,
         Some(false),
@@ -1503,6 +1509,16 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "compact_datasets",
+                "description": "Report LanceDB fragmentation per dataset, and optionally compact it. Every write lands in a new fragment and leaves a version manifest behind, so file count tracks total writes ever made — left alone it eventually exhausts the process file-descriptor limit and reads start failing with 'Too many open files'. Dry-run by default: returns rows, fragments, versions and fragments_per_row per table (fragments_per_row near 1.0 means every row is its own file). With apply=true (requires datasets:maintain) it compacts each dataset and prunes version history older than 24h, reporting fragments_after/versions_after. Safe to run while serving; a scheduled pass does the same thing every OLLIE_MAINTENANCE_INTERVAL_SECS. Use this after a known-heavy import instead of waiting for the scheduler. Do NOT compact externally with pylance — a version mismatch can silently upgrade the on-disk storage format past what this server can read.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "apply": { "type": "boolean", "default": false }
+                    }
+                }
+            },
+            {
                 "name": "upload_blob",
                 "description": "Upload a file (PDF, scan, contract, etc.) to the blob store. Returns a short-lived presigned URL — do NOT stream file bytes through this tool call. POST the raw file bytes to the returned url with a Content-Type header (optional query params name and tags, comma-separated), e.g. curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<url>&name=doc.pdf'. The HTTP response is the created blob record; use its id in the blob_ids of create_load/update_load, create_facility/update_facility, create_trip/update_trip, create_driver/update_driver, create_truck/update_truck, and create_trailer/update_trailer. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
                 "inputSchema": {
@@ -1997,6 +2013,7 @@ async fn handle_tool_call(
         "trip_doctor" => tool_trip_doctor(state, args).await,
         "load_doctor" => tool_load_doctor(state, args, scopes).await,
         "facility_doctor" => tool_facility_doctor(state, args).await,
+        "compact_datasets" => tool_compact_datasets(state, args, scopes).await,
         "upload_blob" => tool_upload_blob(state, args).await,
         "get_blob_url" => tool_get_blob_url(state, args).await,
         "get_blob_metadata" => tool_get_blob_metadata(state, args).await,
@@ -2878,6 +2895,30 @@ async fn tool_facility_doctor(state: &AppState, args: &Value) -> Result<Value, S
     let report = crate::services::doctors::facility::run(state, facility_id, apply)
         .await
         .map_err(|e| e.to_string())?;
+    Ok(mcp_content(report))
+}
+
+async fn tool_compact_datasets(
+    state: &AppState,
+    args: &Value,
+    scopes: &[String],
+) -> Result<Value, String> {
+    let apply = args["apply"].as_bool().unwrap_or(false);
+    // Measuring fragmentation is a read; compacting rewrites every dataset on
+    // disk, so it needs the maintain scope even though the tool is gated at
+    // datasets:read.
+    if apply && !crate::models::permission::scope_granted(scopes, "datasets:maintain") {
+        return Err(
+            "compact_datasets apply=true denied: missing required scope 'datasets:maintain'.".into(),
+        );
+    }
+    let report = crate::services::maintenance::run(
+        &state.db,
+        apply,
+        state.config.maintenance_target_rows_per_fragment,
+    )
+    .await
+    .ok_or("a compaction pass is already running; retry once it finishes")?;
     Ok(mcp_content(report))
 }
 

@@ -22,6 +22,14 @@ services:
       PIPELINE_WORKERS: ${PIPELINE_WORKERS:-1}
       ORS_API_KEY: ${ORS_API_KEY}
       RUST_LOG: ollie=info
+    # 1024 (the Docker default) is far too low for a fragment-per-write store.
+    # Scheduled compaction (#403) keeps the file count bounded, but the headroom
+    # is what stops an unlucky import from exhausting descriptors between passes
+    # and failing reads with "Too many open files".
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - ./data:/data
     depends_on:

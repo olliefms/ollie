@@ -130,6 +130,28 @@ All configuration is via environment variables (or a `.env` file).
 | `OLLIE_BLOB_PRESIGN_MAX_TTL_SECS` | `3600` | Hard cap on presigned blob URL TTL |
 | `FACILITY_DEDUP_HIGH_THRESHOLD` | `0.92` | Cosine score above which a facility is an exact match |
 | `FACILITY_DEDUP_LOW_THRESHOLD` | `0.75` | Cosine score above which a facility is a candidate match |
+| `OLLIE_MAINTENANCE_INTERVAL_SECS` | `21600` (6 h) | Gap between LanceDB compaction passes. `0` disables the scheduler |
+| `OLLIE_MAINTENANCE_TARGET_ROWS_PER_FRAGMENT` | `1048576` | Compaction target — smaller fragments are compaction candidates |
+
+### File descriptors
+
+LanceDB writes a new file per write and never reclaims one on its own, so an
+instance left alone accumulates files until it exhausts its descriptor limit and
+reads start failing with `Too many open files`. Ollie compacts its datasets on a
+schedule (and on demand via the `compact_datasets` MCP tool), but the default
+limit of 1024 is still low for a store shaped this way. The shipped
+`docker-compose.yml` raises it; if you deploy some other way, raise it there too:
+
+```yaml
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+```
+
+Do **not** compact the store externally with `pylance` — a version mismatch
+against the `lance` this server is built with can silently upgrade the on-disk
+storage format past what it can read back.
 
 ## Using the API
 
