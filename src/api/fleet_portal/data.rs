@@ -1506,6 +1506,7 @@ async fn subject_for(db: &crate::db::DbClient, entity_type: &str, id: Uuid) -> O
         "truck" => db.get_truck_by_id(id).await.ok().map(|t| format!("Truck {}", t.unit_number)),
         "trailer" => db.get_trailer_by_id(id).await.ok().map(|t| format!("Trailer {}", t.unit_number)),
         "blob" => db.get_by_id(id).await.ok().map(|b| b.name),
+        "load" => db.get_load_by_id(id).await.ok().map(|l| format!("Load {}", l.load_number)),
         _ => None,
     }
 }
@@ -1780,6 +1781,32 @@ mod tests {
         let (db, _dir) = test_db().await;
         let result = subject_for(&db, "driver", Uuid::new_v4()).await;
         assert_eq!(result, None);
+    }
+
+    fn sample_load_record(load_number: &str) -> crate::models::LoadRecord {
+        let now = chrono::Utc::now();
+        crate::models::LoadRecord {
+            id: Uuid::new_v4(),
+            load_number: load_number.into(),
+            owner_id: 0,
+            status: crate::models::LoadStatus::Planned,
+            kind: crate::models::LoadKind::Freight,
+            customer_name: "Landstar".into(), customer_ref: None,
+            stops: vec![], rate_items: vec![],
+            commodity: None, weight_lbs: None, miles: None, notes: None,
+            tags: vec![], blob_ids: vec![],
+            invoice_number: None, invoice_date: None, cancellation_reason: None,
+            embedding: None, created_at: now, updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_subject_for_load_uses_load_number() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load_record("JQL-4581461");
+        db.insert_load(&load).await.unwrap();
+        let result = subject_for(&db, "load", load.id).await;
+        assert_eq!(result.as_deref(), Some("Load JQL-4581461"));
     }
 
     #[tokio::test]
