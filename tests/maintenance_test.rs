@@ -169,6 +169,49 @@ async fn test_dry_run_leaves_the_datasets_alone() {
     }
 }
 
+/// The pass must prune BEFORE it compacts, or it deletes the files it just
+/// orphaned out from under whatever is mid-scan.
+///
+/// Compaction supersedes the current version without deleting anything; only the
+/// prune deletes. Run the prune second and the pre-compaction data files are
+/// referenced solely by the manifest it is removing, which makes them
+/// "verified" in lance's terms and deletes them unconditionally — lance's 7-day
+/// threshold covers unreferenced files, not these. A request already scanning
+/// that snapshot then dies with "No such file or directory": the exact
+/// intermittent read failure #403 exists to remove.
+///
+/// Zero retention makes it deterministic here; in production it needs only a
+/// table whose last write predates the 24h window, which is every table on the
+/// first pass after a restart.
+#[tokio::test]
+async fn test_pass_does_not_delete_files_an_in_flight_read_is_using() {
+    use futures::TryStreamExt;
+    use lancedb::query::ExecutableQuery;
+
+    let dir = TempDir::new().unwrap();
+    let db = open_db(&dir).await;
+    // Enough fragments that the scan is still resolving files when the pass runs.
+    const SCANNED: usize = 200;
+    for n in 0..SCANNED {
+        db.insert(&blob(n)).await.unwrap();
+    }
+
+    // Open the scan against the pre-pass snapshot and deliberately do not drain
+    // it — this stands in for a request in flight when maintenance fires.
+    let stream = db.blob_table.query().execute().await.expect("scan started");
+
+    maintenance::run_with_retention(&db, true, 1_048_576, chrono::Duration::zero())
+        .await
+        .expect("apply run");
+
+    let batches = stream
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("in-flight scan lost its files to the prune — the pass must prune before it compacts");
+    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+    assert_eq!(rows, SCANNED, "in-flight scan came back short");
+}
+
 /// A table missing from `DbClient::tables()` never compacts — it leaks
 /// descriptors forever and nothing says so. This is the omission guard.
 #[tokio::test]
@@ -192,6 +235,61 @@ async fn test_tables_covers_every_dataset() {
     reported.sort();
     assert_eq!(reported, on_disk);
     assert!(report.failures().next().is_none(), "no dataset should fail to measure");
+}
+
+/// Compaction rewrites fragments and remaps every index that points at them.
+/// The production `blobs` table carries an IVF-PQ vector index (2,069 rows in
+/// the reported instance, well past the 256-row training floor), and a botched
+/// remap corrupts `search_blobs` and facility dedup silently — nothing errors,
+/// the results just stop being right. Every other test here sits below the
+/// index floor, so this is the only one that exercises the remap at all.
+#[tokio::test]
+async fn test_compaction_preserves_vector_search_results() {
+    const INDEXED_DIM: usize = 32;
+    // Above MIN_IVFPQ_TRAINING_ROWS (256) — below it there is no index to remap.
+    const INDEXED_ROWS: usize = 300;
+
+    let dir = TempDir::new().unwrap();
+    let db = DbClient::new(dir.path().to_str().unwrap(), INDEXED_DIM).await.unwrap();
+
+    for n in 0..INDEXED_ROWS {
+        let mut r = blob(n);
+        r.status = BlobStatus::Ready;
+        r.summary = Some(format!("summary {n}"));
+        // Spread the vectors so nearest-neighbour order is well-defined rather
+        // than an arbitrary tie-break that compaction could legitimately change.
+        r.embedding = Some((0..INDEXED_DIM).map(|d| (n + d) as f32 / 100.0).collect());
+        db.insert(&r).await.unwrap();
+    }
+    db.create_vector_index().await.unwrap();
+    assert!(
+        !db.blob_table.list_indices().await.unwrap().is_empty(),
+        "no index was built — this test would pass vacuously",
+    );
+
+    let probe: Vec<f32> = (0..INDEXED_DIM).map(|d| (42 + d) as f32 / 100.0).collect();
+    let before: Vec<String> = db.search(probe.clone(), None, &[], 5).await.unwrap()
+        .into_iter().map(|i| i.name).collect();
+    assert_eq!(before.len(), 5, "search returned nothing to compare against");
+
+    let report = maintenance::run_with_retention(&db, true, 1_048_576, chrono::Duration::zero())
+        .await
+        .expect("apply run");
+    let blobs = blobs_report(&report);
+    assert!(blobs.error.is_none(), "compaction failed: {:?}", blobs.error);
+    assert!(
+        blobs.fragments_after.unwrap() < blobs.fragments,
+        "nothing was compacted, so the remap was never exercised",
+    );
+    assert!(
+        !db.blob_table.list_indices().await.unwrap().is_empty(),
+        "compaction dropped the vector index",
+    );
+
+    let after: Vec<String> = db.search(probe, None, &[], 5).await.unwrap()
+        .into_iter().map(|i| i.name).collect();
+    assert_eq!(before, after, "compaction changed vector search results");
+    assert_eq!(db.blob_table.count_rows(None).await.unwrap(), INDEXED_ROWS);
 }
 
 /// Compaction must go through the handles the request path already holds, or

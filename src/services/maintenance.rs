@@ -43,9 +43,11 @@ const FIRST_PASS_DELAY: Duration = Duration::from_secs(60);
 /// version, so retention buys nothing but disk — and manifests were the larger
 /// half of the file count in #403 (2,813 manifests against 2,940 data files),
 /// because *every* write leaves one while only an insert adds a fragment.
-/// Files that no manifest references at all — a write that may still be in
-/// flight — are protected independently by lance's own 7-day unverified-file
-/// threshold, which this window does not and cannot shorten.
+///
+/// This window is NOT what protects a concurrent reader — see the ordering
+/// comment in `run_one`, which is. Lance's 7-day threshold isn't either: it
+/// covers only files *no* manifest references (a write that may still be in
+/// flight), never a file referenced by the old manifest being deleted.
 pub const PRUNE_OLDER_THAN_HOURS: i64 = 24;
 
 /// One dataset's fragmentation, and what the pass did about it.
@@ -100,10 +102,11 @@ impl MaintenanceReport {
 
 /// Run one maintenance pass over every dataset.
 ///
-/// `apply = false` only measures. `apply = true` compacts and then prunes old
-/// versions, one table at a time. A table that fails is recorded in its own
-/// report and the pass continues — one bad dataset must not stop the others
-/// from reclaiming their descriptors, which is the entire point of running.
+/// `apply = false` only measures. `apply = true` prunes old versions and then
+/// compacts, one table at a time — that order is load-bearing, see `run_one`.
+/// A table that fails is recorded in its own report and the pass continues:
+/// one bad dataset must not stop the others from reclaiming their descriptors,
+/// which is the entire point of running.
 ///
 /// Returns `None` when a mutating pass is already in flight.
 pub async fn run(
@@ -188,6 +191,36 @@ async fn run_one(
         return report;
     }
 
+    // ---- Prune BEFORE compact. The order is load-bearing. ----
+    //
+    // Compaction supersedes the current version without deleting anything; the
+    // prune is the only step that removes files. Run it second and it deletes
+    // the files compaction *just* orphaned — and lance classifies a data file
+    // referenced only by manifests it is deleting as "verified", so it goes
+    // unconditionally (`cleanup.rs`; the 7-day threshold guards unreferenced
+    // files only, not this). Any request already scanning the pre-compaction
+    // snapshot then dies mid-read with "No such file or directory". That needs
+    // no unusual timing: a table whose last write predates the retention window
+    // — routine for terminals/trucks/drivers, and true of *every* table on the
+    // first pass 60s after a restart — becomes prunable the instant compaction
+    // supersedes it.
+    //
+    // Pruning first, the live snapshot is still the latest version, so its files
+    // are referenced and survive. What compaction orphans is reclaimed on the
+    // next pass an interval later, by which point no reader can still hold it.
+    // That deferral is what the raised `nofile` headroom is for.
+    let prune = OptimizeAction::Prune {
+        older_than: Some(prune_older_than),
+        delete_unverified: None,
+        error_if_tagged_old_versions: None,
+    };
+    match table.optimize(prune).await {
+        Ok(stats) => report.bytes_removed = stats.prune.map(|p| p.bytes_removed),
+        // Not fatal to the pass: compaction is the half that reclaims
+        // descriptors, and it is safe to attempt on an unpruned dataset.
+        Err(e) => push_error(&mut report, format!("prune: {e}")),
+    }
+
     let compact = OptimizeAction::Compact {
         options: CompactionOptions {
             target_rows_per_fragment,
@@ -197,23 +230,7 @@ async fn run_one(
     };
     match table.optimize(compact).await {
         Ok(stats) => report.files_removed = stats.compaction.map(|m| m.files_removed),
-        Err(e) => {
-            // Pruning after a failed compaction would still be safe, but the
-            // dataset is in whatever state the failure left it and the operator
-            // wants to see that failure, not a partial success next to it.
-            report.error = Some(format!("compact: {e}"));
-            return report;
-        }
-    }
-
-    let prune = OptimizeAction::Prune {
-        older_than: Some(prune_older_than),
-        delete_unverified: None,
-        error_if_tagged_old_versions: None,
-    };
-    match table.optimize(prune).await {
-        Ok(stats) => report.bytes_removed = stats.prune.map(|p| p.bytes_removed),
-        Err(e) => report.error = Some(format!("prune: {e}")),
+        Err(e) => push_error(&mut report, format!("compact: {e}")),
     }
 
     match measure(table).await {
@@ -221,12 +238,21 @@ async fn run_one(
             report.fragments_after = Some(fragments);
             report.versions_after = Some(versions);
         }
-        Err(e) => {
-            // Never mask a compact/prune failure with a measurement one.
-            report.error.get_or_insert(format!("post-measure: {e}"));
-        }
+        Err(e) => push_error(&mut report, format!("post-measure: {e}")),
     }
     report
+}
+
+/// Record a failure without dropping one already there — a pass can fail at
+/// more than one step and the operator needs to see all of them.
+fn push_error(report: &mut DatasetReport, msg: String) {
+    match &mut report.error {
+        Some(existing) => {
+            existing.push_str("; ");
+            existing.push_str(&msg);
+        }
+        None => report.error = Some(msg),
+    }
 }
 
 /// `(rows, fragments, versions)`.

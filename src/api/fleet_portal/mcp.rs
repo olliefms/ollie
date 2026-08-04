@@ -783,6 +783,11 @@ fn annotations_for(name: &str) -> ToolAnnotations {
             | "delete_facility"
             | "delete_expense"
             | "delete_user"
+            // apply=true permanently deletes version history — the one thing in
+            // this store that cannot be reconstructed. The hint is per-tool, not
+            // per-arg, so the dry run inherits the confirmation; that is the
+            // right way round.
+            | "compact_datasets"
     );
     // update_* set fields to a target value; dispatch/undispatch converge to a
     // status — re-running with the same args is a no-op.
@@ -3883,6 +3888,8 @@ mod tests {
             "delete_facility", "delete_expense", "delete_user",
             // Releasing a driver/equipment from a trip discards the assignment.
             "unassign_driver", "detach_equipment",
+            // apply=true permanently deletes LanceDB version history (#403).
+            "compact_datasets",
         ] {
             let a = annotations_for(name);
             assert_eq!(a.destructive_hint, Some(true), "{name} must carry destructiveHint");
@@ -3893,6 +3900,17 @@ mod tests {
             assert_ne!(annotations_for(name).destructive_hint, Some(true),
                 "{name} must not be flagged destructive");
         }
+    }
+
+    #[test]
+    fn compact_datasets_scope_map_and_catalog() {
+        // `handle_tool_call` gates on `if let Some(required) = ...`, so a tool
+        // the scope map forgets runs with no scope check at all.
+        assert_eq!(tool_required_scope("compact_datasets"), Some("datasets:read"));
+        assert!(
+            tool_catalog().iter().any(|t| t.name == "compact_datasets"),
+            "compact_datasets must be in the advertised catalog",
+        );
     }
 
     #[test]
