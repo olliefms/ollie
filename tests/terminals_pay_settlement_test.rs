@@ -460,6 +460,163 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
         "driver override not applied: loaded_pay {loaded_pay2}");
 }
 
+// (h) driver_pay_for_record must not gate on loaded_miles alone: a TONU trip
+// has zero loaded miles by construction (rolled to the shipper, released
+// before loading) but real deadhead, and must still be paid.
+#[tokio::test]
+async fn test_driver_pay_present_for_tonu_shaped_trip_with_deadhead_only() {
+    use ollie::models::{TripRecord, TripStatus};
+
+    let (server, db, _b, _d) = test_server_with_db().await;
+    let token = fleet_user_login(&server, "pay-tonu@example.com", "pw-paytonu").await;
+    let auth = format!("Bearer {token}");
+
+    let term_id = default_terminal_id(&server, &auth).await;
+    let put = server.put(&format!("/fleet/api/v1/terminals/{term_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "loaded_rate_per_mile": 0.50,
+            "deadhead_rate_per_mile": 0.40,
+            "extra_stop_fee": 30.0,
+            "detention_rate_per_hour": 20.0,
+        }))
+        .await;
+    assert_eq!(put.status_code(), 200);
+
+    let drv = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Terry Tonu" }))
+        .await;
+    assert_eq!(drv.status_code(), 201, "driver create failed: {:?}", drv.text());
+    let driver_id = uuid::Uuid::parse_str(
+        drv.json::<serde_json::Value>()["id"].as_str().unwrap()).unwrap();
+
+    // TONU shape: no loaded_miles, but real deadhead. Set directly — this
+    // suite runs with RoutingClient::new(""), so ORS never computes mileage.
+    let now = chrono::Utc::now();
+    let trip_id = uuid::Uuid::new_v4();
+    let trip = TripRecord {
+        id: trip_id,
+        trip_number: "T-TONU-0001".into(),
+        load_id: None,
+        load_number: None,
+        previous_trip_id: None,
+        deadhead_miles: Some(35.0),
+        loaded_miles: None,
+        total_miles: Some(35.0),
+        segment_miles: vec![],
+        sequence: 0,
+        driver_id: Some(driver_id),
+        truck_id: None,
+        trailer_ids: vec![],
+        status: TripStatus::Planned,
+        stops: vec![],
+        notes: None,
+        blob_ids: vec![],
+        loaded_rate_per_mile: None,
+        deadhead_rate_per_mile: None,
+        extra_stop_fee: None,
+        detention_rate_per_hour: None,
+        free_dwell_minutes: None,
+        settlement_ref: None,
+        pay_period_start: None,
+        pay_period_end: None,
+        driver_pay_snapshot: None,
+        embedding: None,
+        owner_id: 0,
+        created_at: now,
+        updated_at: now,
+    };
+    db.insert_trip(&trip).await.unwrap();
+
+    let detail = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(detail.status_code(), 200, "detail GET failed: {:?}", detail.text());
+    let body = detail.json::<serde_json::Value>();
+    let pay = &body["driver_pay"];
+    assert!(!pay.is_null(),
+        "TONU-shaped trip (loaded_miles=None, deadhead_miles=Some) must still be paid, body: {body}");
+    let deadhead_pay = pay["deadhead_pay"].as_f64().unwrap();
+    assert!(deadhead_pay > 0.0, "deadhead_pay {deadhead_pay} must be > 0 for a TONU trip");
+    assert!((deadhead_pay - 35.0 * 0.40).abs() < 1e-9, "deadhead_pay {deadhead_pay}");
+}
+
+// Negative: a trip with no miles at all (neither loaded nor deadhead) still
+// yields no pay — confirms the gate wasn't simply removed.
+#[tokio::test]
+async fn test_driver_pay_absent_when_no_miles_at_all() {
+    use ollie::models::{TripRecord, TripStatus};
+
+    let (server, db, _b, _d) = test_server_with_db().await;
+    let token = fleet_user_login(&server, "pay-nomiles@example.com", "pw-paynomiles").await;
+    let auth = format!("Bearer {token}");
+
+    let term_id = default_terminal_id(&server, &auth).await;
+    let put = server.put(&format!("/fleet/api/v1/terminals/{term_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "loaded_rate_per_mile": 0.50,
+            "deadhead_rate_per_mile": 0.40,
+            "extra_stop_fee": 30.0,
+            "detention_rate_per_hour": 20.0,
+        }))
+        .await;
+    assert_eq!(put.status_code(), 200);
+
+    let drv = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "No Miles Driver" }))
+        .await;
+    assert_eq!(drv.status_code(), 201, "driver create failed: {:?}", drv.text());
+    let driver_id = uuid::Uuid::parse_str(
+        drv.json::<serde_json::Value>()["id"].as_str().unwrap()).unwrap();
+
+    let now = chrono::Utc::now();
+    let trip_id = uuid::Uuid::new_v4();
+    let trip = TripRecord {
+        id: trip_id,
+        trip_number: "T-NOMILES-0001".into(),
+        load_id: None,
+        load_number: None,
+        previous_trip_id: None,
+        deadhead_miles: None,
+        loaded_miles: None,
+        total_miles: None,
+        segment_miles: vec![],
+        sequence: 0,
+        driver_id: Some(driver_id),
+        truck_id: None,
+        trailer_ids: vec![],
+        status: TripStatus::Planned,
+        stops: vec![],
+        notes: None,
+        blob_ids: vec![],
+        loaded_rate_per_mile: None,
+        deadhead_rate_per_mile: None,
+        extra_stop_fee: None,
+        detention_rate_per_hour: None,
+        free_dwell_minutes: None,
+        settlement_ref: None,
+        pay_period_start: None,
+        pay_period_end: None,
+        driver_pay_snapshot: None,
+        embedding: None,
+        owner_id: 0,
+        created_at: now,
+        updated_at: now,
+    };
+    db.insert_trip(&trip).await.unwrap();
+
+    let detail = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(detail.status_code(), 200, "detail GET failed: {:?}", detail.text());
+    let body = detail.json::<serde_json::Value>();
+    assert!(body["driver_pay"].is_null(),
+        "trip with no miles at all must not be paid, body: {body}");
+}
+
 // Phase D: settlement freezes driver_pay, locks pay edits + stop times, and
 // the pay-period range filter selects the trip.
 #[tokio::test]
