@@ -275,7 +275,7 @@ impl DbClient {
     pub async fn list_loads_needing_routing(&self) -> Result<Vec<Uuid>, AppError> {
         // loads with no miles and non-terminal status
         let stream = self.load_table.query()
-            .only_if("miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled')")
+            .only_if("miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled','tonu')")
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(batches_to_loads(collect_stream(stream).await?)?
@@ -285,7 +285,7 @@ impl DbClient {
     pub async fn list_unrouted_loads_for_facility(&self, facility_id: Uuid) -> Result<Vec<Uuid>, AppError> {
         let fac_str = facility_id.to_string();
         let filter = format!(
-            "miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled') AND stops LIKE '%\"{}\"%'",
+            "miles IS NULL AND kind != 'administrative' AND status NOT IN ('delivered','invoiced','settled','cancelled','tonu') AND stops LIKE '%\"{}\"%'",
             fac_str
         );
         let stream = self.load_table.query()
@@ -818,5 +818,21 @@ mod tests {
         let queued = db.list_loads_needing_routing().await.unwrap();
         assert!(queued.contains(&freight.id));
         assert!(!queued.contains(&admin.id), "administrative loads have no stops to route");
+    }
+
+    #[tokio::test]
+    async fn test_tonu_load_is_excluded_from_routing_requeue() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.miles = None;
+        load.status = LoadStatus::Tonu;
+        db.insert_load(&load).await.unwrap();
+
+        let needing = db.list_loads_needing_routing().await.unwrap();
+        assert!(
+            !needing.contains(&load.id),
+            "a TONU'd load has no miles and never will; leaving it in the requeue \
+             makes it a permanent startup zombie",
+        );
     }
 }
