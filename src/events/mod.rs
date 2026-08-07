@@ -67,6 +67,12 @@ pub async fn on_trip_cancelled(db: &DbClient, trip_id: Uuid) {
     tracing::info!(trip_id = %trip_id, "trip cancelled");
 }
 
+pub async fn on_trip_tonu(db: &DbClient, trip_id: Uuid, reason: Option<String>) {
+    let payload = serde_json::json!({ "reason": reason });
+    let _ = db.append_event("trip", trip_id, "trip.tonu", Some(payload), None, &now_z(), None).await;
+    tracing::info!(trip_id = %trip_id, "trip tonu");
+}
+
 pub async fn on_stop_arrived(db: &DbClient, trip_id: Uuid, seq: u32) {
     let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(db, trip_id, seq).await });
     let _ = db.append_event("trip", trip_id, "stop.arrived", Some(payload), None, &now_z(), None).await;

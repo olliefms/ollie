@@ -132,6 +132,17 @@ impl DbClient {
         Ok(record)
     }
 
+    /// Move `rate_items` into `quoted_rate_items` and clear them. Idempotent:
+    /// a load whose rate items are already empty is left untouched.
+    pub async fn archive_load_rate_items(&self, id: Uuid) -> Result<LoadRecord, AppError> {
+        let mut record = self.get_load_by_id(id).await?;
+        if record.rate_items.is_empty() { return Ok(record); }
+        record.quoted_rate_items = std::mem::take(&mut record.rate_items);
+        record.updated_at = Utc::now();
+        self.upsert_load(&record).await?;
+        Ok(record)
+    }
+
     pub async fn update_load_miles(&self, id: Uuid, miles: f64) -> Result<(), AppError> {
         let mut record = self.get_load_by_id(id).await?;
         record.miles = Some(miles);

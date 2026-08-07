@@ -49,6 +49,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         fleet_portal::data::dispatch_trip,
         fleet_portal::data::undispatch_trip,
         fleet_portal::data::cancel_trip,
+        fleet_portal::data::tonu_trip,
         fleet_portal::data::complete_trip,
         fleet_portal::data::stop_arrive,
         fleet_portal::data::stop_depart,
@@ -213,6 +214,9 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             crate::services::trip_lifecycle::StopDepartRequest,
             crate::services::trip_lifecycle::StopLateRequest,
             crate::services::trip_lifecycle::CheckCallRequest,
+            crate::services::trip_lifecycle::PositionInput,
+            crate::services::trip_lifecycle::TonuRequest,
+            crate::services::trip_lifecycle::TonuResult,
             fleet_portal::trip_writes::RecalculateMilesBody,
             fleet_portal::trip_writes::PatchTripBody,
             fleet_portal::trip_writes::PatchTripResult,
@@ -352,6 +356,7 @@ Loads & trips:
   list_loads, get_load, create_load, update_load
   list_trips, get_trip, create_trip, update_trip, recalculate_trip_miles
   assign_driver, unassign_driver, dispatch_trip, undispatch_trip, cancel_trip, complete_trip
+  tonu_trip (truck ordered not used: a dispatched trip released before loading)
   stop_arrive, stop_depart, stop_late, check_call
 
 Fleet & facilities:

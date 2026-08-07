@@ -281,7 +281,7 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         // Trips
         "list_trips" | "get_trip" => "trips:read",
         "create_trip" | "update_trip" | "assign_driver" | "unassign_driver"
-        | "dispatch_trip" | "undispatch_trip" | "cancel_trip" | "complete_trip"
+        | "dispatch_trip" | "undispatch_trip" | "cancel_trip" | "complete_trip" | "tonu_trip"
         | "stop_arrive" | "stop_depart" | "stop_late" | "check_call"
         | "recalculate_trip_miles" => "trips:write",
         "delete_trip" => "trips:delete",
@@ -771,6 +771,7 @@ fn annotations_for(name: &str) -> ToolAnnotations {
         name,
         "delete_blob"
             | "cancel_trip"
+            | "tonu_trip"
             | "unassign_driver"
             | "detach_equipment"
             | "cancel_load"
@@ -1022,6 +1023,33 @@ fn tools_list() -> Value {
                 "inputSchema": {
                     "type": "object",
                     "properties": { "trip_id": { "type": "string", "format": "uuid" } },
+                    "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "tonu_trip",
+                "description": "End a dispatched trip as TONU (Truck Ordered Not Used): the truck rolled but was released before loading. Truncates the trip to the last stop actually reached, stamps the release time so the dock wait bills as detention, assigns all miles to deadhead, moves the load to 'tonu' and archives its rate items. Valid only from 'dispatched' — use cancel_trip before dispatch, divert_trip once the pickup has been departed. Supply 'waypoint' with where the driver stopped when no stop was reached; it is required in that case.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "waypoint": {
+                            "type": "object",
+                            "description": "Where the truck actually stopped. Required when no stop was reached.",
+                            "properties": {
+                                "facility_id": { "type": "string", "format": "uuid" },
+                                "facility_name": { "type": "string" },
+                                "address": { "type": "string" },
+                                "timezone": { "type": "string", "description": "IANA timezone, e.g. America/Chicago" },
+                                "actual_arrive": { "type": "string", "description": "Naive local datetime, e.g. 2026-06-01T06:30:00" },
+                                "actual_depart": { "type": "string" },
+                                "notes": { "type": "string" }
+                            },
+                            "required": ["timezone"]
+                        },
+                        "occurred_at": { "type": "string", "description": "When the driver was released; naive local in the truncation stop's timezone. Defaults to now." },
+                        "reason": { "type": "string" }
+                    },
                     "required": ["trip_id"]
                 }
             },
@@ -1870,7 +1898,7 @@ fn parse_uuid(args: &Value, key: &str) -> Result<Uuid, String> {
 /// resource being attached.
 fn id_arg_alias(tool: &str) -> Option<(&'static str, &'static str)> {
     let pair = match tool {
-        "cancel_trip" | "complete_trip" | "dispatch_trip" | "undispatch_trip"
+        "cancel_trip" | "complete_trip" | "dispatch_trip" | "undispatch_trip" | "tonu_trip"
         | "unassign_driver" | "update_trip" | "trip_doctor" | "recalculate_trip_miles"
         | "stop_arrive" | "stop_depart" | "stop_late" | "check_call" => ("trip_id", "id"),
         "get_trip" | "delete_trip" => ("id", "trip_id"),
@@ -1983,6 +2011,7 @@ async fn handle_tool_call(
         "dispatch_trip" => tool_dispatch_trip(state, args).await,
         "undispatch_trip" => tool_undispatch_trip(state, args).await,
         "cancel_trip" => tool_cancel_trip(state, args).await,
+        "tonu_trip" => tool_tonu_trip(state, args).await,
         "complete_trip" => tool_complete_trip(state, args).await,
         "stop_arrive" => tool_stop_arrive(state, args).await,
         "stop_depart" => tool_stop_depart(state, args).await,
@@ -2444,6 +2473,16 @@ async fn tool_cancel_trip(state: &AppState, args: &Value) -> Result<Value, Strin
         .map_err(|e| e.to_string())?;
     let trip = state.db.get_trip(trip_id).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(trip))
+}
+
+async fn tool_tonu_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let req: crate::services::trip_lifecycle::TonuRequest =
+        serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
+    let result = crate::services::trip_lifecycle::tonu(state, trip_id, req)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(result))
 }
 
 async fn tool_complete_trip(state: &AppState, args: &Value) -> Result<Value, String> {

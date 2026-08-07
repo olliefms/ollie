@@ -1002,6 +1002,33 @@ pub async fn cancel_trip(
 
 #[utoipa::path(
     post,
+    path = "/fleet/api/v1/trips/{id}/tonu",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    request_body(content = TonuRequest, description = "Optional waypoint, release time and reason"),
+    responses(
+        (status = 200, description = "Trip ended as TONU", body = TonuResult),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip is not dispatched, or is settled"),
+        (status = 422, description = "Waypoint required or unresolvable"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+pub async fn tonu_trip(
+    state: State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    id: Path<Uuid>,
+    body: Option<Json<crate::services::trip_lifecycle::TonuRequest>>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let result = crate::services::trip_lifecycle::tonu(&state, id.0, req).await?;
+    Ok(Json(result))
+}
+
+#[utoipa::path(
+    post,
     path = "/fleet/api/v1/trips/{id}/complete",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(

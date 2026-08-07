@@ -2,8 +2,8 @@
 //!
 //! The Fleet REST API (`/fleet/api/v1`) and the Fleet MCP server both drive
 //! the same trip state machine: assign,
-//! unassign, dispatch, undispatch, cancel, complete, plus the late/check-call
-//! event emitters. Each surface owns its auth and request-shape concerns; the
+//! unassign, dispatch, undispatch, cancel, complete, tonu, plus the
+//! late/check-call event emitters. Each surface owns its auth and request-shape concerns; the
 //! cascades (resource status, linked-load status), the events, and the re-fetch
 //! all live here so every surface behaves identically.
 
@@ -62,6 +62,49 @@ pub struct CheckCallRequest {
     pub location: String,
     pub notes: Option<String>,
     pub eta_next_stop: Option<String>,
+}
+
+/// A position the dispatcher supplies for a stop that was not in the plan:
+/// either an existing facility, or a name + address resolved (or created)
+/// through the same path `StopInput` uses.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PositionInput {
+    pub facility_id: Option<Uuid>,
+    pub facility_name: Option<String>,
+    pub address: Option<String>,
+    /// IANA timezone, required so the naive local arrive/depart strings parse.
+    pub timezone: String,
+    pub actual_arrive: Option<String>,
+    pub actual_depart: Option<String>,
+    pub notes: Option<String>,
+    /// Overrides the caller's default. A diversion destination is normally a
+    /// `delivery`, but a cross-dock hand-off is a `relay`.
+    #[serde(default)]
+    pub stop_type: Option<crate::models::TripStopType>,
+}
+
+#[derive(Debug, Deserialize, ToSchema, Default)]
+pub struct TonuRequest {
+    /// Required when no stop was reached; optional (and appended) otherwise.
+    #[serde(default)]
+    pub waypoint: Option<PositionInput>,
+    /// When the driver was released. Naive local in the truncation stop's own
+    /// timezone; defaults to now in that zone.
+    #[serde(default)]
+    pub occurred_at: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// The trip plus an optional warning when mileage could not be recomputed.
+/// A TONU is an operational fact that must be recordable with ORS down, so a
+/// routing failure degrades to this field rather than failing the call.
+#[derive(Debug, serde::Serialize, ToSchema)]
+pub struct TonuResult {
+    #[serde(flatten)]
+    pub trip: TripRecord,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mileage_recompute_warning: Option<String>,
 }
 
 /// Validates that a driver/truck/trailers are eligible for assignment WITHOUT
@@ -363,6 +406,237 @@ pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppEr
     Ok(trip)
 }
 
+/// Resolve a `PositionInput` into a trip stop at `sequence`, typed
+/// `default_stop_type` unless the input overrides it. Runs before any mutation
+/// so a geocode failure cannot leave a half-applied outcome behind.
+pub(crate) async fn resolve_position(
+    state: &AppState,
+    pos: PositionInput,
+    sequence: u32,
+    default_stop_type: crate::models::TripStopType,
+) -> Result<crate::models::TripStop, AppError> {
+    use crate::models::TripStop;
+
+    let _: chrono_tz::Tz = pos.timezone.parse().map_err(|_| {
+        AppError::UnprocessableEntity(format!("'{}' is not a valid IANA timezone", pos.timezone))
+    })?;
+    for (field, value) in [("actual_arrive", &pos.actual_arrive), ("actual_depart", &pos.actual_depart)] {
+        if let Some(v) = value {
+            crate::models::load::validate_stop_time_str(v, &pos.timezone, field)?;
+        }
+    }
+
+    let (facility_id, name, address) = match pos.facility_id {
+        Some(id) => {
+            let f = state.db.get_facility_by_id(id).await?;
+            (id, f.name, f.address)
+        }
+        None => {
+            let name = pos.facility_name.ok_or_else(|| AppError::UnprocessableEntity(
+                "waypoint must provide either facility_id or facility_name + address".into()
+            ))?;
+            let address = pos.address.ok_or_else(|| AppError::UnprocessableEntity(
+                "waypoint must provide address when facility_id is not given".into()
+            ))?;
+            let id = resolve_waypoint_facility(state, &name, &address).await?;
+            (id, name, address)
+        }
+    };
+
+    Ok(TripStop {
+        sequence,
+        stop_type: pos.stop_type.unwrap_or(default_stop_type),
+        facility_id: Some(facility_id),
+        name: Some(name),
+        address: Some(address),
+        load_stop_index: None,
+        scheduled_arrive: None,
+        scheduled_arrive_end: None,
+        actual_arrive: pos.actual_arrive,
+        actual_depart: pos.actual_depart,
+        expected_dwell_minutes: None,
+        detention_free_minutes: None,
+        detention_grace_minutes: None,
+        notes: pos.notes,
+        timezone: Some(pos.timezone),
+        actual_arrive_utc: None,
+        actual_depart_utc: None,
+    })
+}
+
+/// Dedup a waypoint's name+address against existing facilities, falling back to
+/// an outright create when dedup itself is unavailable.
+///
+/// `resolve_or_create_facility` needs an embedding to search, so it fails closed
+/// when Ollama is down — correct for a booked load, wrong here: a truck released
+/// at the dock is an operational fact that must be recordable regardless. An
+/// ambiguous match still propagates, since only the caller can pick between the
+/// candidates it names.
+async fn resolve_waypoint_facility(
+    state: &AppState, name: &str, address: &str,
+) -> Result<Uuid, AppError> {
+    match crate::api::facilities::resolve_or_create_facility(state, name, address, false).await {
+        Ok(id) => Ok(id),
+        Err(e @ AppError::FacilityResolution(_)) => Err(e),
+        Err(e) => {
+            tracing::warn!(%name, error = %e, "waypoint facility dedup unavailable; creating a new facility");
+            crate::api::facilities::resolve_or_create_facility(state, name, address, true).await
+        }
+    }
+}
+
+/// Recompute mileage and reassign the whole figure to deadhead.
+///
+/// `compute_trip_mileage` calls a leg deadhead only when it originates from a
+/// `previous_trip_id`; every other leg is loaded. On a TONU that empty run *is*
+/// the entire trip, so delegating the split would pay 100% of the miles at the
+/// loaded rate. Stale planned mileage is cleared first, so a routing failure
+/// leaves an honest "unknown" rather than the never-driven loaded figure.
+async fn recompute_as_all_deadhead(state: &AppState, trip_id: Uuid) -> Option<String> {
+    let _ = state.db.update_trip_mileage(trip_id, None, None, None, vec![]).await;
+    if let Err(e) = crate::api::trips::compute_and_persist_mileage(state, trip_id).await {
+        return Some(format!("mileage not recomputed: {e}"));
+    }
+    let Ok(t) = state.db.get_trip(trip_id).await else { return None };
+    let total = t.total_miles
+        .or_else(|| match (t.deadhead_miles, t.loaded_miles) {
+            (None, None) => None,
+            (d, l) => Some(d.unwrap_or(0.0) + l.unwrap_or(0.0)),
+        });
+    let _ = state.db.update_trip_mileage(trip_id, total, None, total, t.segment_miles).await;
+    None
+}
+
+/// TONU — Truck Ordered Not Used. Valid only from `Dispatched`: the truck rolled
+/// but never departed a pickup, so no freight was ever aboard.
+pub async fn tonu(
+    state: &AppState,
+    trip_id: Uuid,
+    req: TonuRequest,
+) -> Result<TonuResult, AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
+    match existing.status {
+        TripStatus::Dispatched => {}
+        TripStatus::Planned | TripStatus::Assigned => {
+            return Err(AppError::Conflict(
+                "trip has not been dispatched; no truck was used — use cancel_trip".into()));
+        }
+        TripStatus::InTransit => {
+            return Err(AppError::Conflict(
+                "trip has departed its pickup and is carrying freight — use divert_trip".into()));
+        }
+        s => {
+            return Err(AppError::Conflict(format!(
+                "cannot TONU a trip with status '{}'", s.as_str())));
+        }
+    }
+    if existing.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; miles and pay are frozen".into()));
+    }
+
+    // Everything that can be rejected is decided before the first write.
+    let last_reached = existing.stops.iter()
+        .filter(|s| s.actual_arrive.is_some())
+        .max_by_key(|s| s.sequence)
+        .map(|s| s.sequence);
+    if last_reached.is_none() && req.waypoint.is_none() {
+        return Err(AppError::UnprocessableEntity(
+            "no stop was reached, so the truck's position is unknown: supply `waypoint` \
+             with where the driver stopped, or the deadhead cannot be measured".into()));
+    }
+
+    let mut stops: Vec<crate::models::TripStop> = match last_reached {
+        Some(seq) => existing.stops.iter().filter(|s| s.sequence <= seq).cloned().collect(),
+        None => vec![],
+    };
+
+    // Stamp the release time on the truncation stop so the dock wait is billable.
+    if let Some(last) = stops.last_mut() {
+        if last.actual_arrive.is_some() && last.actual_depart.is_none() {
+            let tz = last.timezone.as_deref().unwrap_or("UTC");
+            let released = match &req.occurred_at {
+                Some(v) => {
+                    crate::models::load::validate_stop_time_str(v, tz, "occurred_at")?;
+                    v.clone()
+                }
+                None => now_local_naive(tz),
+            };
+            last.actual_depart = Some(released);
+        }
+    }
+
+    if let Some(pos) = req.waypoint {
+        let seq = stops.len() as u32;
+        stops.push(resolve_position(state, pos, seq, crate::models::TripStopType::Waypoint).await?);
+    }
+    for (i, s) in stops.iter_mut().enumerate() { s.sequence = i as u32; }
+
+    // --- writes ---
+    state.db.update_trip_metadata(trip_id, None, None, Some(stops), None, None, None).await?;
+    state.db.transition_trip_status(trip_id, TripStatus::Tonu).await?;
+    let warning = recompute_as_all_deadhead(state, trip_id).await;
+
+    if let Some(load_id) = existing.load_id {
+        let holding = state.db.count_load_holding_trips(load_id).await.unwrap_or(1);
+        if holding == 0 {
+            if let Ok(load) = state.db.get_load_by_id(load_id).await {
+                if matches!(load.status, LoadStatus::Assigned | LoadStatus::Dispatched) {
+                    if let Err(e) = state.db.transition_load_status(
+                        load_id, LoadStatus::Tonu, None, None, req.reason.clone(),
+                    ).await {
+                        tracing::warn!(%load_id, error = %e, "load not moved to tonu");
+                    } else {
+                        archive_quoted_rates(state, load_id).await;
+                    }
+                }
+            }
+        }
+    }
+
+    release_resources(state, &existing).await;
+    events::on_trip_tonu(&state.db, trip_id, req.reason).await;
+
+    let trip = state.db.get_trip(trip_id).await?;
+    Ok(TonuResult { trip, mileage_recompute_warning: warning })
+}
+
+/// Move `rate_items` into `quoted_rate_items` and clear them. The line haul will
+/// never be earned, and a `tonu` load still reporting it is exactly the
+/// false-positive class administrative loads were built to kill.
+async fn archive_quoted_rates(state: &AppState, load_id: Uuid) {
+    if let Err(e) = state.db.archive_load_rate_items(load_id).await {
+        tracing::warn!(%load_id, error = %e, "quoted rate items not archived");
+    }
+}
+
+/// Release driver, truck and trailers, skipping any already rebound to another
+/// active trip. Shared with `complete`.
+async fn release_resources(state: &AppState, existing: &TripRecord) {
+    let active = list_active_trips(state).await.unwrap_or_default();
+    if let Some(driver_id) = existing.driver_id {
+        if !resource_on_other_active_trip(&active, existing.id, Some(driver_id), None, None) {
+            let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
+        }
+    }
+    if let Some(truck_id) = existing.truck_id {
+        if !resource_on_other_active_trip(&active, existing.id, None, Some(truck_id), None) {
+            let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
+        }
+    }
+    for &trailer_id in &existing.trailer_ids {
+        if !resource_on_other_active_trip(&active, existing.id, None, None, Some(trailer_id)) {
+            let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
+        }
+    }
+}
+
+/// Now, as a naive local datetime string in `tz` — the format every stop time
+/// in this system uses.
+fn now_local_naive(tz: &str) -> String {
+    let zone: chrono_tz::Tz = tz.parse().unwrap_or(chrono_tz::UTC);
+    chrono::Utc::now().with_timezone(&zone).format("%Y-%m-%dT%H:%M:%S").to_string()
+}
+
 /// Outcome of a `delete` call, so callers can tell the two-call soft-then-hard
 /// semantics apart: the first call on an active trip `Cancelled` it (record and
 /// its trip number still exist); a second call `Deleted` it for good.
@@ -398,7 +672,10 @@ pub async fn delete(state: &AppState, trip_id: Uuid) -> Result<DeleteOutcome, Ap
             state.db.hard_delete_trip(trip_id).await?;
             return Ok(DeleteOutcome::Deleted);
         }
-        TripStatus::InTransit | TripStatus::Delivered | TripStatus::Completed => {
+        // `Tonu` belongs here rather than in the soft-cancel path below: it is
+        // terminal with no edge to `Cancelled`, so falling through would call
+        // `cancel` and fail with a transition error naming neither verb.
+        TripStatus::InTransit | TripStatus::Delivered | TripStatus::Completed | TripStatus::Tonu => {
             return Err(AppError::Conflict(format!(
                 "cannot delete trip with status '{}'",
                 existing.status.as_str()
@@ -423,22 +700,7 @@ pub async fn complete(state: &AppState, trip_id: Uuid) -> Result<(), AppError> {
 
     // Only release a resource to Available if it has NOT already been rebound
     // to another active trip (e.g. via auto-dispatch when this trip delivered).
-    let active = list_active_trips(state).await.unwrap_or_default();
-    if let Some(driver_id) = existing.driver_id {
-        if !resource_on_other_active_trip(&active, trip_id, Some(driver_id), None, None) {
-            let _ = state.db.update_driver_status(driver_id, DriverStatus::Available).await;
-        }
-    }
-    if let Some(truck_id) = existing.truck_id {
-        if !resource_on_other_active_trip(&active, trip_id, None, Some(truck_id), None) {
-            let _ = state.db.update_truck_status(truck_id, TruckStatus::Available).await;
-        }
-    }
-    for &trailer_id in &existing.trailer_ids {
-        if !resource_on_other_active_trip(&active, trip_id, None, None, Some(trailer_id)) {
-            let _ = state.db.update_trailer_status(trailer_id, TrailerStatus::Available).await;
-        }
-    }
+    release_resources(state, &existing).await;
 
     events::on_trip_completed(&state.db, trip_id, existing.driver_id, existing.truck_id, &existing.trailer_ids).await;
     Ok(())
