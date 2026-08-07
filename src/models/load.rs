@@ -344,6 +344,21 @@ pub struct LoadRecord {
     pub invoice_number: Option<String>,
     pub invoice_date: Option<String>,
     pub cancellation_reason: Option<String>,
+    /// The rate the load was booked at, archived when a TONU clears `rate_items`
+    /// so revenue reporting does not count money that will never be earned.
+    #[serde(default)]
+    pub quoted_rate_items: Vec<RateLineItem>,
+    /// Set when the load was diverted or reconsigned mid-transit. Absent for a
+    /// `bol_correction`, which corrects a plan that was wrong from the start
+    /// rather than diverting anything.
+    #[serde(default)]
+    pub diverted_at: Option<String>,
+    /// `diverted` or `reconsigned` — the enum value, so "which loads were
+    /// diverted, and why" is a filter rather than a text search.
+    #[serde(default)]
+    pub diversion_reason: Option<String>,
+    #[serde(default)]
+    pub diversion_notes: Option<String>,
     #[serde(skip)]
     #[schema(skip)]
     pub embedding: Option<Vec<f32>>,
@@ -445,6 +460,14 @@ pub struct LoadListItem {
     pub invoice_number: Option<String>,
     pub invoice_date: Option<String>,
     pub cancellation_reason: Option<String>,
+    #[serde(default)]
+    pub quoted_rate_items: Vec<RateLineItem>,
+    #[serde(default)]
+    pub diverted_at: Option<String>,
+    #[serde(default)]
+    pub diversion_reason: Option<String>,
+    #[serde(default)]
+    pub diversion_notes: Option<String>,
     pub created_at: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<f32>,
@@ -461,6 +484,10 @@ impl From<LoadRecord> for LoadListItem {
             notes: r.notes, tags: r.tags, blob_ids: r.blob_ids,
             invoice_number: r.invoice_number, invoice_date: r.invoice_date,
             cancellation_reason: r.cancellation_reason,
+            quoted_rate_items: r.quoted_rate_items,
+            diverted_at: r.diverted_at,
+            diversion_reason: r.diversion_reason,
+            diversion_notes: r.diversion_notes,
             created_at: r.created_at, score: None,
         }
     }
@@ -493,6 +520,14 @@ pub struct LoadDetailResponse {
     pub invoice_number: Option<String>,
     pub invoice_date: Option<String>,
     pub cancellation_reason: Option<String>,
+    #[serde(default)]
+    pub quoted_rate_items: Vec<RateLineItem>,
+    #[serde(default)]
+    pub diverted_at: Option<String>,
+    #[serde(default)]
+    pub diversion_reason: Option<String>,
+    #[serde(default)]
+    pub diversion_notes: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -586,7 +621,10 @@ mod tests {
             stops: vec![], rate_items: vec![], commodity: None,
             weight_lbs: None, miles: None, notes: None, tags: vec![],
             blob_ids: vec![], invoice_number: None, invoice_date: None,
-            cancellation_reason: None, embedding: None,
+            cancellation_reason: None,
+            quoted_rate_items: vec![], diverted_at: None,
+            diversion_reason: None, diversion_notes: None,
+            embedding: None,
             created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
         }
     }
@@ -645,6 +683,8 @@ mod tests {
             commodity: None, weight_lbs: None, miles: None, notes: None,
             tags: vec![], blob_ids: vec![],
             invoice_number: None, invoice_date: None, cancellation_reason: None,
+            quoted_rate_items: vec![], diverted_at: None,
+            diversion_reason: None, diversion_notes: None,
             embedding: None,
             created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
         };
@@ -661,7 +701,10 @@ mod tests {
             stops: vec![], rate_items: vec![], commodity: None,
             weight_lbs: None, miles: None, notes: None, tags: vec![],
             blob_ids: vec![], invoice_number: None, invoice_date: None,
-            cancellation_reason: None, embedding: Some(vec![0.1]),
+            cancellation_reason: None,
+            quoted_rate_items: vec![], diverted_at: None,
+            diversion_reason: None, diversion_notes: None,
+            embedding: Some(vec![0.1]),
             created_at: chrono::Utc::now(), updated_at: chrono::Utc::now(),
         };
         let json = serde_json::to_value(&r).unwrap();

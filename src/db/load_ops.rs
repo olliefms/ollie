@@ -313,6 +313,8 @@ fn load_to_batch(record: &LoadRecord, embed_dim: usize) -> Result<RecordBatch, A
         .map_err(|e| AppError::Internal(e.to_string()))?;
     let blob_ids_json = serde_json::to_string(&record.blob_ids)
         .map_err(|e| AppError::Internal(e.to_string()))?;
+    let quoted_rate_items_json = serde_json::to_string(&record.quoted_rate_items)
+        .map_err(|e| AppError::Internal(e.to_string()))?;
 
     let embedding_col: Arc<dyn arrow_array::Array> = match &record.embedding {
         Some(v) => {
@@ -348,6 +350,10 @@ fn load_to_batch(record: &LoadRecord, embed_dim: usize) -> Result<RecordBatch, A
         Arc::new(StringArray::from(vec![record.created_at.to_rfc3339().as_str()])),
         Arc::new(StringArray::from(vec![record.updated_at.to_rfc3339().as_str()])),
         Arc::new(StringArray::from(vec![record.kind.as_str()])),
+        Arc::new(StringArray::from(vec![quoted_rate_items_json.as_str()])),
+        Arc::new(StringArray::from(vec![record.diverted_at.as_deref()])),
+        Arc::new(StringArray::from(vec![record.diversion_reason.as_deref()])),
+        Arc::new(StringArray::from(vec![record.diversion_notes.as_deref()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -386,6 +392,8 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
         serde_json::from_str(&str_col("rate_items")).unwrap_or_default();
     let tags: Vec<String> = serde_json::from_str(&str_col("tags")).unwrap_or_default();
     let blob_ids: Vec<Uuid> = serde_json::from_str(&str_col("blob_ids")).unwrap_or_default();
+    let quoted_rate_items: Vec<crate::models::RateLineItem> =
+        serde_json::from_str(&str_col("quoted_rate_items")).unwrap_or_default();
 
     let embedding = batch.column_by_name("embedding")
         .and_then(|c| c.as_any().downcast_ref::<FixedSizeListArray>())
@@ -414,6 +422,10 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
         miles: opt_f64("miles"), notes: opt_str("notes"), tags, blob_ids,
         invoice_number: opt_str("invoice_number"), invoice_date: opt_str("invoice_date"),
         cancellation_reason: opt_str("cancellation_reason"),
+        quoted_rate_items,
+        diverted_at: opt_str("diverted_at"),
+        diversion_reason: opt_str("diversion_reason"),
+        diversion_notes: opt_str("diversion_notes"),
         embedding,
         created_at: str_col("created_at").parse()
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
@@ -486,9 +498,53 @@ mod tests {
             commodity: Some("dry goods".into()), weight_lbs: Some(40000.0),
             miles: None, notes: None, tags: vec!["flatbed".into()],
             blob_ids: vec![], invoice_number: None, invoice_date: None,
-            cancellation_reason: None, embedding: None,
+            cancellation_reason: None,
+            quoted_rate_items: vec![], diverted_at: None,
+            diversion_reason: None, diversion_notes: None,
+            embedding: None,
             created_at: now, updated_at: now,
         }
+    }
+
+    #[tokio::test]
+    async fn test_load_diversion_and_quoted_rates_round_trip() {
+        let (db, _dir) = test_db().await;
+        let mut load = sample_load();
+        load.quoted_rate_items = vec![crate::models::RateLineItem {
+            description: "Line Haul".into(), amount_usd: 1800.0,
+        }];
+        load.rate_items = vec![];
+        load.diverted_at = Some("2026-08-07T14:30:00Z".into());
+        load.diversion_reason = Some("reconsigned".into());
+        load.diversion_notes = Some("broker renominated to Salina".into());
+        db.insert_load(&load).await.unwrap();
+
+        let got = db.get_load_by_id(load.id).await.unwrap();
+        assert_eq!(got.quoted_rate_items.len(), 1);
+        assert_eq!(got.quoted_rate_items[0].amount_usd, 1800.0);
+        assert!(got.rate_items.is_empty());
+        assert_eq!(got.diverted_at.as_deref(), Some("2026-08-07T14:30:00Z"));
+        assert_eq!(got.diversion_reason.as_deref(), Some("reconsigned"));
+        assert_eq!(got.diversion_notes.as_deref(), Some("broker renominated to Salina"));
+    }
+
+    #[tokio::test]
+    async fn test_load_defaults_when_new_columns_absent() {
+        // Mirrors a row written before this migration: serde defaults must make
+        // the record usable rather than erroring the whole list query.
+        let json = serde_json::json!({
+            "id": uuid::Uuid::new_v4(), "load_number": "LD-2026-0009", "owner_id": 0,
+            "status": "planned", "customer_name": "ACME", "customer_ref": null,
+            "stops": [], "rate_items": [], "commodity": null, "weight_lbs": null,
+            "miles": null, "notes": null, "tags": [], "blob_ids": [],
+            "invoice_number": null, "invoice_date": null, "cancellation_reason": null,
+            "created_at": "2026-08-07T00:00:00Z", "updated_at": "2026-08-07T00:00:00Z"
+        });
+        let record: LoadRecord = serde_json::from_value(json).unwrap();
+        assert!(record.quoted_rate_items.is_empty());
+        assert!(record.diverted_at.is_none());
+        assert!(record.diversion_reason.is_none());
+        assert!(record.diversion_notes.is_none());
     }
 
     #[tokio::test]
