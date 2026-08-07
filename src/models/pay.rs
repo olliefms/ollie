@@ -56,6 +56,10 @@ pub struct PayStopInput {
     /// RFC3339 UTC timestamps (use TripStop::actual_arrive_utc/actual_depart_utc).
     pub actual_arrive_utc: Option<String>,
     pub actual_depart_utc: Option<String>,
+    /// Whether this stop is freight work. A fuel stop, origin, terminal,
+    /// maintenance visit or waypoint affects mileage but is not an "extra stop"
+    /// the driver is paid a fee for. Detention ignores this flag.
+    pub is_service_stop: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
@@ -73,7 +77,7 @@ fn round2(x: f64) -> f64 { (x * 100.0).round() / 100.0 }
 
 /// Pure pay computation. Detention per stop = max(0, dwell - free)/60 * detention_rate,
 /// where free = stop.detention_free_minutes ?? rates.free_dwell_minutes. Stops missing
-/// arrive/depart UTC contribute 0. extra_stop_pay = extra_stop_fee * max(0, stop_count - 2).
+/// arrive/depart UTC contribute 0. extra_stop_pay = extra_stop_fee * max(0, service_stop_count - 2).
 pub fn compute_driver_pay(
     loaded_miles: Option<f64>,
     deadhead_miles: Option<f64>,
@@ -82,7 +86,8 @@ pub fn compute_driver_pay(
 ) -> DriverPay {
     let loaded_pay = loaded_miles.unwrap_or(0.0) * rates.loaded_rate_per_mile;
     let deadhead_pay = deadhead_miles.unwrap_or(0.0) * rates.deadhead_rate_per_mile;
-    let extra_stops = (stops.len() as i64 - 2).max(0) as f64;
+    let service_stops = stops.iter().filter(|s| s.is_service_stop).count();
+    let extra_stops = (service_stops as i64 - 2).max(0) as f64;
     let extra_stop_pay = extra_stops * rates.extra_stop_fee;
 
     let mut detention_pay = 0.0;
@@ -161,7 +166,42 @@ mod pay_tests {
             detention_free_minutes: free,
             actual_arrive_utc: arrive.map(|s| s.to_string()),
             actual_depart_utc: depart.map(|s| s.to_string()),
+            is_service_stop: true,
         }
+    }
+
+    fn nonservice(arrive: Option<&str>, depart: Option<&str>) -> PayStopInput {
+        PayStopInput { is_service_stop: false, ..stop(None, arrive, depart) }
+    }
+
+    #[test]
+    fn non_service_stops_do_not_earn_extra_stop_pay() {
+        // Pickup, fuel, delivery: two service stops, so no extra-stop fee. Before
+        // the fix this billed 30.00 for stopping at a truck stop.
+        let pay = compute_driver_pay(Some(100.0), None,
+            &[stop(None,None,None), nonservice(None,None), stop(None,None,None)],
+            &sched());
+        assert_eq!(pay.extra_stop_pay, 0.0);
+    }
+
+    #[test]
+    fn non_service_stops_still_accrue_detention() {
+        // A driver held three hours at a waypoint is owed detention even though
+        // the waypoint is not an extra stop.
+        let pay = compute_driver_pay(Some(0.0), Some(10.0),
+            &[nonservice(Some("2026-05-30T12:00:00+00:00"), Some("2026-05-30T15:00:00+00:00"))],
+            &sched());
+        assert_eq!(pay.detention_pay, 20.0);
+        assert_eq!(pay.extra_stop_pay, 0.0);
+    }
+
+    #[test]
+    fn service_stops_beyond_two_still_earn_extra_stop_pay() {
+        let pay = compute_driver_pay(Some(0.0), None,
+            &[stop(None,None,None), stop(None,None,None),
+              stop(None,None,None), nonservice(None,None)],
+            &sched());
+        assert_eq!(pay.extra_stop_pay, 30.0); // 3 service stops, not 4 total
     }
 
     #[test]

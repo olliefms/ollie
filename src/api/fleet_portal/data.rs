@@ -818,7 +818,11 @@ pub async fn driver_pay_for_record(
     if let Some(snap) = &record.driver_pay_snapshot {
         return Some(snap.clone());
     }
-    record.loaded_miles?; // no loaded miles -> no pay
+    // A TONU trip has zero loaded miles by construction but real deadhead and
+    // real detention. Gating on loaded_miles alone paid such a driver nothing.
+    if record.loaded_miles.is_none() && record.deadhead_miles.is_none() {
+        return None;
+    }
     // Driver overrides + terminal floor.
     let driver = match record.driver_id {
         Some(did) => state.db.get_driver_by_id(did).await.ok(),
@@ -858,6 +862,7 @@ pub async fn driver_pay_for_record(
             detention_free_minutes: s2.detention_free_minutes,
             actual_arrive_utc: s2.actual_arrive_utc,
             actual_depart_utc: s2.actual_depart_utc,
+            is_service_stop: s2.stop_type.is_service_stop(),
         }
     }).collect();
     Some(compute_driver_pay(record.loaded_miles, record.deadhead_miles, &stops, &rates))
