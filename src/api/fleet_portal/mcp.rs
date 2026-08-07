@@ -1715,7 +1715,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "delete_trip",
-                "description": "Delete a trip. Active trips are soft-cancelled; already-cancelled trips are hard-deleted. Blocked if the trip is in_transit, delivered, or completed, or if another trip still references it via previous_trip_id. Returns { deleted: true, status: \"cancelled\" | \"deleted\" } — 'cancelled' means the record and its trip number still exist; call again to hard-delete.",
+                "description": "Delete a trip. Active trips are soft-cancelled; already-cancelled trips are hard-deleted. Blocked if the trip is in_transit, delivered, completed, or tonu, or if another trip still references it via previous_trip_id. Returns { deleted: true, status: \"cancelled\" | \"deleted\" } — 'cancelled' means the record and its trip number still exist; call again to hard-delete.",
                 "inputSchema": {
                     "type": "object",
                     "properties": { "id": { "type": "string", "format": "uuid" } },

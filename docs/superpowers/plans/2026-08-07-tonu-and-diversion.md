@@ -20,6 +20,7 @@ Design spec: [`docs/superpowers/specs/2026-08-07-tonu-and-diversion-design.md`](
 - **Cascades are best-effort.** Load-status and resource-status updates in `trip_lifecycle` log failures via `tracing::warn!` and do not fail the caller's operation.
 - **Integration tests have no ORS.** `tests/*` construct `RoutingClient::new("")`, so every mileage computation fails. Verbs must degrade to a warning, never an error, and tests must assert on stop structure rather than mile counts.
 - **No fleet SPA changes.** Backend and MCP only; static assets are untouched so no `?v=` cache-stamp bump is needed at release.
+  > **Correction (post-implementation):** this did not hold. `trips.js`, `loads.js`, and `components.css` gained a `tonu` filter option and badge during the review pass. The release that ships this work must bump the fleet `?v=` cache stamps.
 
 ---
 
@@ -115,6 +116,17 @@ In `src/models/trip.rs`, inside `mod tests`, replace the body of `test_trip_stop
         assert!(!all_delivered(&[Cancelled, Tonu]));
     }
 ```
+
+> **Correction (post-implementation):** this reasoning was backwards and does not
+> match what shipped. `load_trips_all_delivered` filters `Tonu` out of the "live"
+> set exactly like `Cancelled` (see `src/models/trip.rs`), because a `Tonu` leg is
+> a dead record for the delivery cascade — the load moves to its own `Tonu`
+> status separately, once no live trip still holds it. So `all_delivered(&[Tonu])`
+> is `false` (no live trips left, vacuous), but `all_delivered(&[Delivered, Tonu])`
+> is **`true`** (the `Tonu` leg is filtered out, leaving `[Delivered]`), not
+> `false` as asserted above. The shipped test is
+> `test_tonu_leg_is_a_dead_record_for_the_delivery_cascade` in
+> `src/models/trip.rs`.
 
 Also extend the existing `test_trip_status_roundtrip` string list with `"tonu"`.
 

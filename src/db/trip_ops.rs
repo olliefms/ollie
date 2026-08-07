@@ -350,10 +350,15 @@ impl DbClient {
         Ok(t)
     }
 
+    /// Backs the load-delete guard. `tonu` must be excluded alongside the other
+    /// terminal statuses: it has no outgoing edge, so a trip stuck there would
+    /// make the load permanently undeletable — the guard's own error message
+    /// ("cancel or complete them first") names two verbs a `Tonu` trip can
+    /// never reach.
     pub async fn count_active_trips_for_load(&self, load_id: Uuid) -> Result<usize, AppError> {
         let id_str = load_id.to_string();
         let filter = format!(
-            "load_id = '{id_str}' AND status NOT IN ('cancelled', 'delivered', 'completed')"
+            "load_id = '{id_str}' AND status NOT IN ('cancelled', 'delivered', 'completed', 'tonu')"
         );
         self.trip_table.count_rows(Some(filter)).await
             .map_err(|e| AppError::Internal(e.to_string()))

@@ -882,3 +882,27 @@ async fn test_tonu_ignores_a_stop_type_override_on_the_waypoint() {
     assert_eq!(stops[0]["stop_type"], "waypoint",
         "a waypoint is a waypoint whatever the caller asked for: {}", trip["stops"]);
 }
+
+/// `Tonu` has no outgoing edge on the trip status machine, so a delete guard
+/// that treats it as still-active makes the load permanently undeletable — no
+/// verb exists to move the trip anywhere else.
+#[tokio::test]
+async fn test_tonu_trip_does_not_block_load_deletion() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581514").await;
+
+    let tonu = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "waypoint": { "facility_name": "Hold", "address": "Joliet, IL",
+                          "timezone": "America/Chicago" }
+        })).await;
+    assert_eq!(tonu.status_code(), 200, "tonu failed: {}", tonu.text());
+
+    let del = server.delete(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(del.status_code(), 204,
+        "a tonu'd trip is terminal with no outgoing edge; it must not block \
+         deleting the load: {}", del.text());
+}
