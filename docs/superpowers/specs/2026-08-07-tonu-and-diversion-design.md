@@ -123,7 +123,9 @@ Add `TripStopType::is_service_stop()`:
 |---|---|
 | `Pickup`, `Delivery`, `Relay`, `EmptyMove` | `Origin`, `Fuel`, `Maintenance`, `Terminal`, `Waypoint` |
 
-`EmptyMove` counts: the driver still hooks, drops and does paperwork at one.
+`EmptyMove` counts. An empty move is a dispatched movement with its own BOL and POD — the
+commodity just happens to be nothing. Its dwell is near zero so detention never fires on its
+own, which makes the extra-stop fee the only pay it would otherwise miss.
 
 The predicate has to reach the pay function, which today receives a shape (`PayStopInput`)
 carrying no stop type. It gains one boolean. **Detention still iterates every stop**, so a
@@ -208,10 +210,20 @@ exist to carry it out.
 
 ### Loaded/deadhead misclassification
 
-`compute_trip_mileage` classifies a leg as deadhead **only** when it originates from a
-`previous_trip_id`; every other leg is loaded. A trip beginning at an explicit
-`TripStopType::Origin` stop therefore already pays its empty run to the shipper at the
-*loaded* rate — pre-existing, and mostly invisible as one leg among many.
+The governing definition, which is worth stating because the words mislead:
+
+> **"Loaded" means *under dispatch performing the move*, not *cargo weight > 0*.** Deadhead
+> is getting to the work; loaded is doing it.
+
+That is why an empty move's haul leg is correctly loaded miles — a dispatched movement with
+a BOL, whose commodity happens to be nothing — while the run from your own terminal to a
+shipper is not.
+
+`compute_trip_mileage` approximates this by classifying a leg as deadhead **only** when it
+originates from a `previous_trip_id`; every other leg is loaded. The approximation holds for
+an empty move that follows a previous trip, and fails for a trip beginning at an explicit
+`TripStopType::Origin` stop, which already pays its empty run to the shipper at the *loaded*
+rate — pre-existing, and mostly invisible as one leg among many.
 
 On a TONU it stops being invisible: that empty run is the *entire* trip, so the trip would
 pay 100% of its miles at the loaded rate. TONU therefore does not delegate the split. It
