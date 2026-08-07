@@ -501,8 +501,107 @@ async fn test_tonu_leg_does_not_strand_a_load_with_a_live_sibling() {
 
     let load: serde_json::Value = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .authorization_bearer(&token).await.json();
-    assert_ne!(load["status"], "tonu",
+    // Not `assert_ne!(.., "tonu")` — that passes for a wrong value too, so a
+    // silent demotion back to `planned` would slip through.
+    assert_eq!(load["status"], "dispatched",
         "a live sibling still holds the load; only the last leg out takes it terminal");
+}
+
+/// The other half of `resolve_position`'s facility branch: a dispatcher who
+/// already has the yard on file names it by id, and no dedup runs at all.
+#[tokio::test]
+async fn test_tonu_waypoint_accepts_an_existing_facility_id() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581492").await;
+    let yard = create_test_facility(&server, &token, "Joliet Yard", "Joliet, IL").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "waypoint": { "facility_id": yard, "timezone": "America/Chicago" }
+        })).await;
+    assert_eq!(resp.status_code(), 200, "tonu failed: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    let stops = trip["stops"].as_array().unwrap();
+    assert_eq!(stops.len(), 1);
+    assert_eq!(stops[0]["facility_id"], yard);
+    assert_eq!(stops[0]["name"], "Joliet Yard",
+               "the name must come from the named facility, not be left null");
+    assert_eq!(stops[0]["stop_type"], "waypoint");
+}
+
+/// `resolve_position` validates the zone before anything is written, because a
+/// zone it cannot parse means every stop time on the stop is unreadable.
+#[tokio::test]
+async fn test_tonu_waypoint_rejects_an_invalid_timezone() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581493").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "waypoint": { "facility_name": "Hold", "address": "Joliet, IL",
+                          "timezone": "US/Notazone" }
+        })).await;
+    assert_eq!(resp.status_code(), 422, "{}", resp.text());
+    assert!(resp.text().contains("US/Notazone"), "the error must name the bad value: {}", resp.text());
+
+    // Rejected before the first write, so the trip is untouched and retryable.
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["status"], "dispatched", "a rejected TONU must not half-apply");
+}
+
+/// The release time is what makes the dock wait billable, so an explicitly
+/// supplied one must land verbatim on the truncation stop.
+#[tokio::test]
+async fn test_tonu_occurred_at_stamps_the_reached_stop() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581494").await;
+
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/arrive"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "actual_arrive": "2026-06-01T08:00:00" })).await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "occurred_at": "2026-06-01T11:45:00" })).await;
+    assert_eq!(resp.status_code(), 200, "tonu failed: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["stops"][0]["actual_depart"], "2026-06-01T11:45:00",
+               "three and three-quarter hours of detention, not 'now'");
+}
+
+/// `occurred_at` is defined in the truncation stop's timezone. With no stop
+/// reached there is no zone to read it in, so it is rejected rather than dropped
+/// — a 200 that ignored it would read as "applied".
+#[tokio::test]
+async fn test_tonu_rejects_occurred_at_when_no_stop_was_reached() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581495").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "occurred_at": "2026-06-01T11:45:00",
+            "waypoint": { "facility_name": "Hold", "address": "Joliet, IL",
+                          "timezone": "America/Chicago" }
+        })).await;
+    assert_eq!(resp.status_code(), 422, "{}", resp.text());
+    assert!(resp.text().contains("waypoint.actual_depart"),
+            "the refusal must name the field that does work: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["status"], "dispatched", "a rejected TONU must not half-apply");
 }
 
 /// A TONU is an operational fact that must be recordable with ORS down.
@@ -594,12 +693,19 @@ async fn test_doctors_are_clean_on_a_tonu_load_and_trip() {
     let token = setup_owner(&server).await;
     let (load_id, trip_id, _driver) = dispatched_trip(&server, &token, "4581488").await;
 
-    server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+    let tonu = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
         .authorization_bearer(&token)
         .json(&serde_json::json!({
             "waypoint": { "facility_name": "Hold", "address": "Joliet, IL",
                           "timezone": "America/Chicago" }
         })).await;
+    // Both doctor checks below are also silent on a `dispatched` trip/load, so
+    // without these two assertions a `tonu` that regressed to a 4xx would leave
+    // the test green while proving nothing.
+    assert_eq!(tonu.status_code(), 200, "tonu failed: {}", tonu.text());
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["status"], "tonu", "the doctors must be run against a TONU'd trip");
 
     // The doctors are MCP-only tools with no REST route, so call the services
     // directly rather than going through the server.

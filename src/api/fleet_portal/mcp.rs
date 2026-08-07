@@ -1047,7 +1047,7 @@ fn tools_list() -> Value {
                             },
                             "required": ["timezone"]
                         },
-                        "occurred_at": { "type": "string", "description": "When the driver was released; naive local in the truncation stop's timezone. Defaults to now." },
+                        "occurred_at": { "type": "string", "description": "When the driver was released; naive local in the truncation stop's timezone. Defaults to now. Rejected when no stop was reached — put the release time in waypoint.actual_depart there." },
                         "reason": { "type": "string" }
                     },
                     "required": ["trip_id"]

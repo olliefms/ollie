@@ -89,7 +89,8 @@ pub struct TonuRequest {
     #[serde(default)]
     pub waypoint: Option<PositionInput>,
     /// When the driver was released. Naive local in the truncation stop's own
-    /// timezone; defaults to now in that zone.
+    /// timezone; defaults to now in that zone. Rejected when no stop was reached
+    /// — use `waypoint.actual_depart` there instead.
     #[serde(default)]
     pub occurred_at: Option<String>,
     #[serde(default)]
@@ -493,17 +494,31 @@ async fn resolve_waypoint_facility(
 /// loaded rate. Stale planned mileage is cleared first, so a routing failure
 /// leaves an honest "unknown" rather than the never-driven loaded figure.
 async fn recompute_as_all_deadhead(state: &AppState, trip_id: Uuid) -> Option<String> {
-    let _ = state.db.update_trip_mileage(trip_id, None, None, None, vec![]).await;
+    if let Err(e) = state.db.update_trip_mileage(trip_id, None, None, None, vec![]).await {
+        tracing::warn!(%trip_id, error = %e, "stale planned mileage not cleared before TONU recompute");
+    }
     if let Err(e) = crate::api::trips::compute_and_persist_mileage(state, trip_id).await {
         return Some(format!("mileage not recomputed: {e}"));
     }
-    let Ok(t) = state.db.get_trip(trip_id).await else { return None };
+    let t = match state.db.get_trip(trip_id).await {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(%trip_id, error = %e, "trip not re-read; miles left split as routed");
+            return Some(format!("miles routed but not reassigned to deadhead: {e}"));
+        }
+    };
     let total = t.total_miles
         .or_else(|| match (t.deadhead_miles, t.loaded_miles) {
             (None, None) => None,
             (d, l) => Some(d.unwrap_or(0.0) + l.unwrap_or(0.0)),
         });
-    let _ = state.db.update_trip_mileage(trip_id, total, None, total, t.segment_miles).await;
+    // Discarding this write would leave the whole empty run sitting in
+    // `loaded_miles` — the exact state this helper exists to prevent, and one the
+    // caller would otherwise pay out at the loaded rate without ever being told.
+    if let Err(e) = state.db.update_trip_mileage(trip_id, total, None, total, t.segment_miles).await {
+        tracing::warn!(%trip_id, error = %e, "deadhead reassignment failed; miles stay split as routed");
+        return Some(format!("miles routed but not reassigned to deadhead: {e}"));
+    }
     None
 }
 
@@ -549,6 +564,21 @@ pub async fn tonu(
         Some(seq) => existing.stops.iter().filter(|s| s.sequence <= seq).cloned().collect(),
         None => vec![],
     };
+
+    // `occurred_at` stamps the truncation stop — the last stop the truck reached
+    // and has not left — and is parsed in that stop's own timezone. Where there
+    // is no such stop there is neither somewhere to put it nor a zone to read it
+    // in, and guessing the waypoint's zone would shift a detention clock by hours.
+    // Reject instead of dropping it: the waypoint carries its own `actual_depart`
+    // for exactly this case, and a 200 that silently ignored the field would read
+    // as "applied".
+    let release_stop_awaits = stops.last()
+        .is_some_and(|s| s.actual_arrive.is_some() && s.actual_depart.is_none());
+    if req.occurred_at.is_some() && !release_stop_awaits {
+        return Err(AppError::UnprocessableEntity(
+            "`occurred_at` stamps the last stop the truck reached and has not left, and \
+             this trip has no such stop: put the release time in `waypoint.actual_depart`".into()));
+    }
 
     // Stamp the release time on the truncation stop so the dock wait is billable.
     if let Some(last) = stops.last_mut() {
