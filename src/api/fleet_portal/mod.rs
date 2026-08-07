@@ -83,6 +83,8 @@ pub fn data_router(state: &AppState) -> Router<AppState> {
         .route("/fleet/api/v1/trips/{id}/dispatch", post(data::dispatch_trip))
         .route("/fleet/api/v1/trips/{id}/undispatch", post(data::undispatch_trip))
         .route("/fleet/api/v1/trips/{id}/cancel", post(data::cancel_trip))
+        .route("/fleet/api/v1/trips/{id}/tonu", post(data::tonu_trip))
+        .route("/fleet/api/v1/trips/{id}/divert", post(data::divert_trip))
         .route("/fleet/api/v1/trips/{id}/complete", post(data::complete_trip))
         .route("/fleet/api/v1/trips/{id}/stops/{seq}/arrive", post(data::stop_arrive))
         .route("/fleet/api/v1/trips/{id}/stops/{seq}/depart", post(data::stop_depart))

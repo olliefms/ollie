@@ -334,6 +334,10 @@ pub async fn create_load(
         invoice_number: None,
         invoice_date: None,
         cancellation_reason: None,
+        quoted_rate_items: vec![],
+        diverted_at: None,
+        diversion_reason: None,
+        diversion_notes: None,
         embedding,
         created_at: now,
         updated_at: now,
@@ -807,8 +811,17 @@ pub async fn build_trip_detail(
     Ok(enriched)
 }
 
-/// Computes driver pay for a trip on read. Resolves rates (trip ?? driver ?? terminal
-/// floor) and computes live. None when there are no loaded miles to pay on.
+/// Computes driver pay for a trip on read. Resolves rates (trip ?? driver ??
+/// terminal floor) and computes live.
+///
+/// `None` only when there is nothing to pay on at all: no mileage of either kind
+/// **and** no stop with a completed dwell. Detention is the half a miles-only
+/// gate silently dropped. A TONU on a driver's first trip has no
+/// `previous_trip_id` and a single reached stop, so `compute_trip_mileage`
+/// returns all-`None` and `compute_and_persist_mileage`'s failure detector never
+/// fires (it needs `expected_segments >= 2`) — the driver who sat five hours at
+/// the dock before being released got nothing, with nothing in the response
+/// saying so.
 pub async fn driver_pay_for_record(
     state: &AppState,
     record: &crate::models::TripRecord,
@@ -818,7 +831,21 @@ pub async fn driver_pay_for_record(
     if let Some(snap) = &record.driver_pay_snapshot {
         return Some(snap.clone());
     }
-    record.loaded_miles?; // no loaded miles -> no pay
+    let stops: Vec<PayStopInput> = record.stops.iter().map(|s| {
+        let mut s2 = s.clone();
+        s2.fill_utc_fields();
+        PayStopInput {
+            detention_free_minutes: s2.detention_free_minutes,
+            actual_arrive_utc: s2.actual_arrive_utc,
+            actual_depart_utc: s2.actual_depart_utc,
+            is_service_stop: s2.stop_type.is_service_stop(),
+        }
+    }).collect();
+    let has_billable_dwell = stops.iter()
+        .any(|s| s.actual_arrive_utc.is_some() && s.actual_depart_utc.is_some());
+    if record.loaded_miles.is_none() && record.deadhead_miles.is_none() && !has_billable_dwell {
+        return None;
+    }
     // Driver overrides + terminal floor.
     let driver = match record.driver_id {
         Some(did) => state.db.get_driver_by_id(did).await.ok(),
@@ -851,15 +878,6 @@ pub async fn driver_pay_for_record(
         free_dwell_minutes: terminal.free_dwell_minutes,
     };
     let rates = resolve_rates(&trip_ov, &driver_ov, &floor);
-    let stops: Vec<PayStopInput> = record.stops.iter().map(|s| {
-        let mut s2 = s.clone();
-        s2.fill_utc_fields();
-        PayStopInput {
-            detention_free_minutes: s2.detention_free_minutes,
-            actual_arrive_utc: s2.actual_arrive_utc,
-            actual_depart_utc: s2.actual_depart_utc,
-        }
-    }).collect();
     Some(compute_driver_pay(record.loaded_miles, record.deadhead_miles, &stops, &rates))
 }
 
@@ -989,6 +1007,63 @@ pub async fn cancel_trip(
     claims.require_scope("trips:write")?;
     let trip = crate::services::trip_lifecycle::cancel(&state, id.0).await?;
     Ok(Json(trip))
+}
+
+#[utoipa::path(
+    post,
+    path = "/fleet/api/v1/trips/{id}/tonu",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    request_body(content = TonuRequest, description = "Optional waypoint, release time and reason"),
+    responses(
+        (status = 200, description = "Trip ended as TONU", body = TripOutcomeResult),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip is not dispatched, or is settled"),
+        (status = 422, description = "Waypoint required or unresolvable"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+pub async fn tonu_trip(
+    state: State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    id: Path<Uuid>,
+    body: Option<Json<crate::services::trip_lifecycle::TonuRequest>>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let result = crate::services::trip_lifecycle::tonu(&state, id.0, req).await?;
+    Ok(Json(result))
+}
+
+#[utoipa::path(
+    post,
+    path = "/fleet/api/v1/trips/{id}/divert",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    request_body(content = DivertRequest, description = "Divergence waypoint, replacement stops and reason. `waypoint` is required unless the trip already ends at a waypoint the driver reached, in which case the new destinations are appended to it."),
+    responses(
+        (status = 200, description = "Trip re-targeted", body = TripOutcomeResult),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip is not in transit, or is settled"),
+        (status = 422, description = "Waypoint missing or unresolvable, or a reached stop would be replaced"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+pub async fn divert_trip(
+    state: State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    id: Path<Uuid>,
+    // Not `Option<Json<..>>` like `tonu_trip`: `reason` is required, and axum's
+    // rejection for a body missing it is the 422 the caller needs to see.
+    // `waypoint`'s conditional requirement can only be judged against the trip,
+    // so `divert` enforces that one and returns the same status.
+    Json(body): Json<crate::services::trip_lifecycle::DivertRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
+    let result = crate::services::trip_lifecycle::divert(&state, id.0, body).await?;
+    Ok(Json(result))
 }
 
 #[utoipa::path(
@@ -1809,6 +1884,8 @@ mod tests {
             commodity: None, weight_lbs: None, miles: None, notes: None,
             tags: vec![], blob_ids: vec![],
             invoice_number: None, invoice_date: None, cancellation_reason: None,
+            quoted_rate_items: vec![], diverted_at: None,
+            diversion_reason: None, diversion_notes: None,
             embedding: None, created_at: now, updated_at: now,
         }
     }
@@ -1984,6 +2061,10 @@ pub async fn build_load_detail(
         invoice_number: record.invoice_number,
         invoice_date: record.invoice_date,
         cancellation_reason: record.cancellation_reason,
+        quoted_rate_items: record.quoted_rate_items,
+        diverted_at: record.diverted_at,
+        diversion_reason: record.diversion_reason,
+        diversion_notes: record.diversion_notes,
         created_at: record.created_at,
         updated_at: record.updated_at,
         mileage_summary,

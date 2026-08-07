@@ -86,6 +86,8 @@ mod tests {
             rate_items: vec![], commodity: None, weight_lbs: None, miles: None,
             notes: None, tags: vec![], blob_ids: vec![],
             invoice_number: None, invoice_date: None, cancellation_reason: None,
+            quoted_rate_items: vec![], diverted_at: None,
+            diversion_reason: None, diversion_notes: None,
             embedding: None, created_at: now, updated_at: now,
         };
         db.insert_load(&load).await.unwrap();

@@ -96,7 +96,7 @@ export async function renderTripsView(params = {}) {
     await fetchPage(0);
     render();
 
-    const statusOptions = ['', 'planned', 'assigned', 'dispatched', 'in_transit', 'delivered', 'completed', 'cancelled'];
+    const statusOptions = ['', 'planned', 'assigned', 'dispatched', 'in_transit', 'delivered', 'completed', 'tonu', 'cancelled'];
     const selectHtml = `<select class="form-select" id="trip-status-filter">${statusOptions.map(s => `<option value="${s}" ${s === status ? 'selected' : ''}>${s || 'All Statuses'}</option>`).join('')}</select>`;
 
     const createBtn = hasScope('trips:write')

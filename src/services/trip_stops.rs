@@ -225,6 +225,14 @@ async fn cascade_start_in_transit(state: &AppState, trip: &TripRecord, seq: u32)
 
 async fn cascade_final_stop_delivered(state: &AppState, trip_id: Uuid, seq: u32) {
     let Ok(current) = state.db.get_trip(trip_id).await else { return };
+    // A waypoint is a routing point, not a delivery. After a hold-only divert it
+    // is the highest-sequence stop, so without this guard the driver leaving the
+    // truck stop would silently mark the load delivered.
+    if current.stops.iter().any(|s| s.sequence == seq
+        && s.stop_type == crate::models::TripStopType::Waypoint)
+    {
+        return;
+    }
     let max_seq = current.stops.iter().map(|s| s.sequence).max();
     if Some(seq) != max_seq || current.status != TripStatus::InTransit {
         return;

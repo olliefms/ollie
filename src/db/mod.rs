@@ -456,6 +456,14 @@ async fn open_or_create_load(conn: &lancedb::Connection, embed_dim: usize) -> Re
             if existing.field_with_name("kind").is_err() {
                 transforms.push(("kind".into(), "CAST('freight' AS string)".into()));
             }
+            if existing.field_with_name("quoted_rate_items").is_err() {
+                transforms.push(("quoted_rate_items".into(), "CAST('[]' AS string)".into()));
+            }
+            for col in ["diverted_at", "diversion_reason", "diversion_notes"] {
+                if existing.field_with_name(col).is_err() {
+                    transforms.push((col.into(), "CAST(NULL AS string)".into()));
+                }
+            }
             if !transforms.is_empty() {
                 tracing::info!("migrating loads table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
@@ -953,6 +961,10 @@ pub fn load_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("created_at", DataType::Utf8, false),
         Field::new("updated_at", DataType::Utf8, false),
         Field::new("kind", DataType::Utf8, false),
+        Field::new("quoted_rate_items", DataType::Utf8, false),
+        Field::new("diverted_at", DataType::Utf8, true),
+        Field::new("diversion_reason", DataType::Utf8, true),
+        Field::new("diversion_notes", DataType::Utf8, true),
     ]))
 }
 
@@ -1660,6 +1672,10 @@ fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(FixedSizeListArray::from_iter_primitive::<
             arrow_array::types::Float32Type, _, _
         >(nulls, embed_dim as i32)),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
