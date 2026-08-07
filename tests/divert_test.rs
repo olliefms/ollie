@@ -341,6 +341,11 @@ async fn test_divert_requires_a_waypoint() {
     assert_eq!(resp.status_code(), 422,
         "without the divergence point the recomputed route erases the backtrack: {}",
         resp.text());
+    // `waypoint` is only conditionally required, so serde can no longer enforce it
+    // and `divert` does. Pin the explanation, not just the status.
+    assert!(resp.text().contains("waypoint"), "{}", resp.text());
+    assert!(resp.text().contains("waypoint to waypoint"),
+            "the refusal must say why, or it reads as bureaucracy: {}", resp.text());
 
     // Rejected before the first write, so the plan is untouched and retryable.
     let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
@@ -389,6 +394,96 @@ async fn test_departing_a_waypoint_does_not_deliver_the_trip() {
     let load: serde_json::Value = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
         .authorization_bearer(&token).await.json();
     assert_ne!(load["status"], "delivered");
+}
+
+/// The hold-then-append flow. A `stops: []` divert leaves the trip ending at a
+/// waypoint the driver reached — which already satisfies the rule the mandatory
+/// waypoint exists to enforce (the list ends where the truck actually is), so
+/// naming the destination later needs no second divergence point. Without this,
+/// "pulled over, disposition unknown" is a dead end: every stop is history and
+/// the follow-up 422s.
+#[tokio::test]
+async fn test_a_hold_can_be_given_a_destination_without_a_second_waypoint() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver) = in_transit_trip(&server, &token, "4581499").await;
+
+    let hold = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "diverted",
+            "waypoint": { "facility_name": "Holding Yard", "address": "Topeka, KS",
+                          "timezone": "America/Chicago",
+                          "actual_arrive": "2026-06-01T14:00:00" },
+            "stops": []
+        })).await;
+    assert_eq!(hold.status_code(), 200, "hold divert failed: {}", hold.text());
+
+    // Hours later the broker names a consignee. The truck has not moved.
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "reconsigned",
+            "stops": [{ "facility_name": "New Consignee", "address": "Wichita, KS",
+                        "timezone": "America/Chicago" }]
+        })).await;
+    assert_eq!(resp.status_code(), 200,
+        "the trip already ends where the truck is, so no new divergence point \
+         exists to name: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    let stops = trip["stops"].as_array().unwrap();
+    assert_eq!(stops.len(), 3, "pickup, the hold, the new destination");
+    assert_eq!(stops[1]["name"], "Holding Yard", "the hold is history, not a stop to replace");
+    assert_eq!(stops[1]["stop_type"], "waypoint");
+    assert_eq!(stops[2]["name"], "New Consignee");
+    assert_eq!(stops[2]["stop_type"], "delivery");
+    assert_eq!(trip["status"], "in_transit");
+}
+
+/// The other half: the truck moved again while it was held, so there IS a fresh
+/// divergence point and supplying it must append rather than replace the hold.
+#[tokio::test]
+async fn test_a_hold_that_moved_takes_a_second_waypoint_and_keeps_the_first() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver) = in_transit_trip(&server, &token, "4581500").await;
+
+    let hold = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "diverted",
+            "waypoint": { "facility_name": "First Hold", "address": "Topeka, KS",
+                          "timezone": "America/Chicago",
+                          "actual_arrive": "2026-06-01T14:00:00",
+                          "actual_depart": "2026-06-01T18:00:00" },
+            "stops": []
+        })).await;
+    assert_eq!(hold.status_code(), 200, "hold divert failed: {}", hold.text());
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "reconsigned",
+            "waypoint": { "facility_name": "Second Hold", "address": "Salina, KS",
+                          "timezone": "America/Chicago",
+                          "actual_arrive": "2026-06-01T21:00:00" },
+            "stops": [{ "facility_name": "New Consignee", "address": "Wichita, KS",
+                        "timezone": "America/Chicago" }]
+        })).await;
+    assert_eq!(resp.status_code(), 200, "second divert failed: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    let stops = trip["stops"].as_array().unwrap();
+    assert_eq!(stops.len(), 4, "pickup, both holds, the new destination");
+    assert_eq!(stops[1]["name"], "First Hold",
+        "the first hold is where the truck sat for four hours — dropping it would \
+         erase the miles from there to the second one");
+    assert_eq!(stops[2]["name"], "Second Hold");
+    assert_eq!(stops[2]["stop_type"], "waypoint");
+    assert_eq!(stops[3]["name"], "New Consignee");
 }
 
 #[tokio::test]
@@ -448,6 +543,41 @@ async fn test_divert_rejects_a_dispatched_trip_and_names_tonu() {
     assert_eq!(resp.status_code(), 409);
     assert!(resp.text().contains("tonu_trip"),
             "no freight is aboard yet: {}", resp.text());
+}
+
+/// `divert` feeds several positions through `resolve_position`, so a rejection
+/// has to name the one the caller actually got wrong. Every message used to say
+/// "waypoint", which sent a dispatcher to a field that was already correct.
+#[tokio::test]
+async fn test_an_unresolvable_destination_names_the_field_it_came_from() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver) = in_transit_trip(&server, &token, "4581504").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "reconsigned",
+            "waypoint": { "facility_name": "Divergence", "address": "Salina, KS",
+                          "timezone": "America/Chicago" },
+            "stops": [
+                { "facility_name": "Fine Dock", "address": "Topeka, KS",
+                  "timezone": "America/Chicago" },
+                // Second destination: named, but with no address to geocode.
+                { "facility_name": "Nameless Dock", "timezone": "America/Chicago" }
+            ]
+        })).await;
+    assert_eq!(resp.status_code(), 422, "{}", resp.text());
+    assert!(resp.text().contains("stops[1]"),
+        "the waypoint was fine — pointing at it would send the dispatcher to the \
+         wrong field: {}", resp.text());
+
+    // Resolution runs before the first write, so nothing half-applied.
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["stops"].as_array().unwrap().len(), 2);
+    assert!(!trip["stops"].as_array().unwrap().iter().any(|s| s["name"] == "Fine Dock"),
+            "the destination that did resolve must not survive the rejection");
 }
 
 /// A cross-dock hand-off is a `relay`, not a `delivery`. The per-position
@@ -563,6 +693,108 @@ async fn test_divert_keeps_history_in_sequence_order_when_stops_were_stored_out_
     assert_eq!(stops[1]["name"], "Shipper B");
     assert_eq!(stops[2]["stop_type"], "waypoint");
     assert_eq!(stops[3]["name"], "Return Dock");
+}
+
+/// Mileage feeds `compute_driver_pay`. The pre-divert figure measures a route to
+/// a consignee the trip is no longer going to, and it is not self-correcting:
+/// `recalculate_trip_miles` short-circuits when deadhead and loaded are both
+/// already set unless the caller passes `force`, and miles are not hand-settable
+/// — so a stale figure that survives an ORS outage here survives every later
+/// attempt to fix it, and gets paid out.
+#[tokio::test]
+async fn test_divert_clears_superseded_miles_when_routing_is_unavailable() {
+    let (server, state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver) = in_transit_trip(&server, &token, "4581501").await;
+    let uuid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Stand in for a successful pre-divert routing pass (the suite has no ORS).
+    state.db.update_trip_mileage(uuid, Some(50.0), Some(1200.0), Some(1250.0), vec![50.0, 1200.0])
+        .await.unwrap();
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "diverted",
+            "waypoint": { "facility_name": "Turnaround", "address": "Salina, KS",
+                          "timezone": "America/Chicago" },
+            "stops": [{ "facility_name": "Return Dock", "address": "Kansas City, MO",
+                        "timezone": "America/Chicago" }]
+        })).await;
+    assert_eq!(resp.status_code(), 200, "divert failed: {}", resp.text());
+
+    let trip = state.db.get_trip(uuid).await.unwrap();
+    assert!(trip.loaded_miles.is_none(),
+        "1200 loaded miles to Denver must not survive a divert to Kansas City — \
+         recalculate short-circuits on an already-set pair, so this figure would \
+         be permanent and would be paid: {:?}", trip.loaded_miles);
+    assert!(trip.deadhead_miles.is_none(), "{:?}", trip.deadhead_miles);
+    assert!(trip.total_miles.is_none(), "{:?}", trip.total_miles);
+    assert!(trip.segment_miles.is_empty(), "{:?}", trip.segment_miles);
+
+    let body: serde_json::Value = resp.json();
+    assert!(body["mileage_recompute_warning"].is_string(),
+            "an honest null still has to be announced, not left to be read as zero: {body}");
+}
+
+/// A settled trip's miles and pay are frozen, and a divert would recompute both.
+#[tokio::test]
+async fn test_divert_refuses_a_settled_trip() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver) = in_transit_trip(&server, &token, "4581502").await;
+
+    let settle = server.patch(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "settlement_ref": "SETTLE-4581502" })).await;
+    assert_eq!(settle.status_code(), 200, "settle failed: {}", settle.text());
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "diverted",
+            "waypoint": { "facility_name": "Too Late", "address": "Salina, KS",
+                          "timezone": "America/Chicago" },
+            "stops": []
+        })).await;
+    assert_eq!(resp.status_code(), 409, "{}", resp.text());
+    assert!(resp.text().contains("settled"), "the refusal must name why: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["stops"].as_array().unwrap().len(), 2, "nothing was written");
+}
+
+/// The event journal is how a diversion is reconstructed after the fact — the
+/// load's `diverted_at` says a diversion happened, the event says what changed.
+#[tokio::test]
+async fn test_divert_appends_a_trip_diverted_event() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver) = in_transit_trip(&server, &token, "4581503").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "reconsigned",
+            "notes": "broker renominated to Wichita",
+            "waypoint": { "facility_name": "Divergence", "address": "Salina, KS",
+                          "timezone": "America/Chicago" },
+            "stops": [{ "facility_name": "New Consignee", "address": "Wichita, KS",
+                        "timezone": "America/Chicago" }]
+        })).await;
+    assert_eq!(resp.status_code(), 200, "divert failed: {}", resp.text());
+
+    let events: serde_json::Value = server
+        .get(&format!("/fleet/api/v1/events?trip_id={trip_id}&limit=100"))
+        .authorization_bearer(&token).await.json();
+    let items = events["items"].as_array()
+        .unwrap_or_else(|| panic!("unexpected events shape: {events}"));
+    let diverted = items.iter().find(|e| e["event_type"] == "trip.diverted")
+        .unwrap_or_else(|| panic!("no trip.diverted event: {events}"));
+    assert_eq!(diverted["payload"]["reason"], "reconsigned");
+    assert_eq!(diverted["payload"]["notes"], "broker renominated to Wichita");
+    assert_eq!(diverted["payload"]["new_stop_count"], 3);
 }
 
 /// A diversion is an operational fact that must be recordable with ORS down.

@@ -281,6 +281,84 @@ async fn test_follow_on_trip_deadheads_from_where_the_truck_actually_is() {
     );
 }
 
+/// `last_reached` is derived by `sequence`, but the kept prefix is then stamped
+/// and renumbered by vector *position* — and nothing in the codebase sorts trip
+/// stops (`src/api/trips.rs` stores whatever order the caller supplied). Without
+/// a sort, a trip whose stops arrived out of order has its history reversed AND
+/// the release time stamped on the wrong stop, which bills detention against a
+/// dock the truck left hours earlier.
+#[tokio::test]
+async fn test_tonu_stamps_and_renumbers_by_sequence_not_by_stored_order() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+
+    let a = create_test_facility(&server, &token, "Shipper A", "Chicago, IL").await;
+    let b = create_test_facility(&server, &token, "Shipper B", "Joliet, IL").await;
+    let c = create_test_facility(&server, &token, "Consignee C", "Denver, CO").await;
+    let driver_id = create_driver(&server, &token, "Unsorted TONU Driver").await;
+    let truck_id = create_truck(&server, &token, "T-UNSORTED-TONU").await;
+
+    let load = server.post("/fleet/api/v1/loads").authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "load_number": "4581496", "customer_name": "Landstar",
+            "stops": [stop_json(&a, "2026-06-01T08:00:00")]
+        })).await;
+    assert_eq!(load.status_code(), 201, "load create failed: {}", load.text());
+    let load_id = load.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // Supplied middle-first: vector order and sequence order disagree.
+    let trip = server.post("/fleet/api/v1/trips").authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "load_id": load_id,
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "facility_id": b,
+                  "name": "Shipper B", "scheduled_arrive": "2026-06-01T12:00:00",
+                  "timezone": "America/Chicago" },
+                { "sequence": 0, "stop_type": "pickup", "facility_id": a,
+                  "name": "Shipper A", "scheduled_arrive": "2026-06-01T08:00:00",
+                  "timezone": "America/Chicago" },
+                { "sequence": 2, "stop_type": "delivery", "facility_id": c,
+                  "name": "Consignee C", "scheduled_arrive": "2026-06-02T08:00:00",
+                  "timezone": "America/Denver" }
+            ]
+        })).await;
+    assert_eq!(trip.status_code(), 201, "trip create failed: {}", trip.text());
+    let trip_id = trip.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/assign"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id })).await;
+    server.post(&format!("/fleet/api/v1/trips/{trip_id}/dispatch"))
+        .authorization_bearer(&token).await;
+    // Arrive at both pickups without departing either: departing a pickup would
+    // start transit and put this in divert territory instead.
+    for (seq, at) in [(0, "2026-06-01T08:00:00"), (1, "2026-06-01T12:00:00")] {
+        let r = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/{seq}/arrive"))
+            .authorization_bearer(&token)
+            .json(&serde_json::json!({ "actual_arrive": at })).await;
+        assert_eq!(r.status_code(), 200, "arrive {seq} failed: {}", r.text());
+    }
+
+    let tonu = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "occurred_at": "2026-06-01T15:00:00" })).await;
+    assert_eq!(tonu.status_code(), 200, "tonu failed: {}", tonu.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    let stops = trip["stops"].as_array().unwrap();
+    assert_eq!(stops.len(), 2, "truncated to the two reached pickups");
+    assert_eq!(stops[0]["name"], "Shipper A",
+        "the truck visited A then B; renumbering by vector position swaps them and \
+         makes every downstream deadhead start from the wrong city");
+    assert_eq!(stops[1]["name"], "Shipper B");
+    assert_eq!(stops[1]["actual_depart"], "2026-06-01T15:00:00",
+        "the release time belongs on the stop the truck was actually sitting at");
+    assert!(stops[0]["actual_depart"].is_null(),
+        "stamping A would bill three hours of detention against a dock the driver \
+         left at noon");
+}
+
 #[tokio::test]
 async fn test_tonu_before_arrival_requires_a_waypoint() {
     let (server, _state, _d1, _d2, _rx) = setup().await;

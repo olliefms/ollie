@@ -1057,14 +1057,14 @@ fn tools_list() -> Value {
             },
             {
                 "name": "divert_trip",
-                "description": "Re-target an in-transit trip. Replaces every stop the driver has not reached with a new destination, keeping arrived-at stops as immutable history. 'waypoint' is REQUIRED and marks where the old plan and the new plan diverged: routing walks waypoint to waypoint, so without it any backtracking is silently erased from the recomputed miles. reason 'diverted' or 'reconsigned' flags the load for a diversion fee; 'bol_correction' does not. Valid only from 'in_transit' — use tonu_trip before the pickup is departed. 'stops' may be empty for 'pulled over, disposition unknown'. Rate items are left untouched: unlike a TONU, the line haul is at least partly earned.",
+                "description": "Re-target an in-transit trip. Replaces every stop the driver has not reached with a new destination, keeping arrived-at stops as immutable history. 'waypoint' marks where the old plan and the new plan diverged and is REQUIRED: routing walks waypoint to waypoint, so without it any backtracking is silently erased from the recomputed miles. The one exception is a trip that already ends at a waypoint the driver reached — where a previous 'stops'-empty hold left it — since the stop list already ends at the truck's real position; there, omit 'waypoint' to append the destination to the hold, or supply one if the truck has moved again since. reason 'diverted' or 'reconsigned' flags the load for a diversion fee; 'bol_correction' does not. Valid only from 'in_transit' — use tonu_trip before the pickup is departed. 'stops' may be empty for 'pulled over, disposition unknown'. Rate items are left untouched: unlike a TONU, the line haul is at least partly earned. Mileage is recomputed; if routing is unavailable the miles are cleared to null rather than left describing the superseded plan.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "trip_id": { "type": "string", "format": "uuid" },
                         "waypoint": {
                             "type": "object",
-                            "description": "Where the old plan and the new plan diverged — where the driver actually was when the plan changed. Stored as a 'waypoint' stop: it routes but services no freight, so departing it never delivers the load.",
+                            "description": "Where the old plan and the new plan diverged — where the driver actually was when the plan changed. Stored as a 'waypoint' stop: it routes but services no freight, so departing it never delivers the load. Required unless the trip already ends at a waypoint the driver reached.",
                             "properties": {
                                 "facility_id": { "type": "string", "format": "uuid" },
                                 "facility_name": { "type": "string" },
@@ -1105,7 +1105,7 @@ fn tools_list() -> Value {
                         },
                         "notes": { "type": "string" }
                     },
-                    "required": ["trip_id", "waypoint", "reason"]
+                    "required": ["trip_id", "reason"]
                 }
             },
             {
@@ -4089,11 +4089,22 @@ mod tests {
         let schema = &divert["inputSchema"];
         let required: Vec<&str> = schema["required"].as_array().unwrap().iter()
             .map(|v| v.as_str().unwrap()).collect();
-        assert!(required.contains(&"waypoint"),
-            "the divergence point is what keeps the backtrack in the recomputed miles");
         assert!(required.contains(&"reason"));
         assert!(!required.contains(&"stops"),
             "'pulled over, disposition unknown' must be expressible");
+        // `waypoint` is required in every case JSON Schema can see, but not when
+        // the trip already ends at a reached waypoint — a condition that depends
+        // on the trip, not the request. It therefore cannot sit in `required`,
+        // and the description is the only place a caller can learn the rule.
+        assert!(!required.contains(&"waypoint"),
+            "a conditionally-required field in `required` would reject the append case");
+        let desc = divert["description"].as_str().unwrap();
+        assert!(desc.contains("REQUIRED"),
+            "the divergence point is what keeps the backtrack in the recomputed miles, \
+             so the description must say it is normally required: {desc}");
+        assert!(desc.contains("already ends at a waypoint"),
+            "the description must name the one case where it may be omitted, or the \
+             hold-then-append flow is undiscoverable: {desc}");
 
         let stop_type = &schema["properties"]["stops"]["items"]["properties"]["stop_type"];
         assert!(stop_type.is_object(), "stops items must advertise stop_type: {schema}");

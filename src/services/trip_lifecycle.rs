@@ -124,9 +124,14 @@ impl DivertReason {
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DivertRequest {
-    /// Where the old plan and the new plan diverged. Always required: an
-    /// in-transit truck is by definition between the trip's existing points.
-    pub waypoint: PositionInput,
+    /// Where the old plan and the new plan diverged. Required, because an
+    /// in-transit truck is by definition between the trip's existing points —
+    /// EXCEPT when the trip already ends at a waypoint the driver reached, which
+    /// is where a previous hold-only divert left it. The stop list already ends
+    /// at the truck's real position there, so the new destination is simply
+    /// appended and no fresh divergence point exists to name.
+    #[serde(default)]
+    pub waypoint: Option<PositionInput>,
     /// Replacement for every stop the driver has not reached. May be empty —
     /// "pulled over, disposition unknown".
     #[serde(default)]
@@ -136,23 +141,15 @@ pub struct DivertRequest {
     pub notes: Option<String>,
 }
 
-/// The re-targeted trip plus an optional warning when mileage could not be
-/// recomputed. A diversion is an operational fact that must be recordable with
+/// What every trip-outcome verb returns: the trip as it now stands, plus a
+/// warning when its mileage could not be recomputed.
+///
+/// TONU and diversion are both operational facts that must be recordable with
 /// ORS down, so a routing failure degrades to this field rather than failing the
-/// call — and the caller is told the miles now describe the superseded plan.
+/// call. In both cases the miles are left as an honest `null` rather than the
+/// figure for a plan that no longer describes the trip.
 #[derive(Debug, serde::Serialize, ToSchema)]
-pub struct DivertResult {
-    #[serde(flatten)]
-    pub trip: TripRecord,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mileage_recompute_warning: Option<String>,
-}
-
-/// The trip plus an optional warning when mileage could not be recomputed.
-/// A TONU is an operational fact that must be recordable with ORS down, so a
-/// routing failure degrades to this field rather than failing the call.
-#[derive(Debug, serde::Serialize, ToSchema)]
-pub struct TonuResult {
+pub struct TripOutcomeResult {
     #[serde(flatten)]
     pub trip: TripRecord,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -458,13 +455,21 @@ pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppEr
     Ok(trip)
 }
 
-/// Resolve a `PositionInput` into a trip stop at `sequence`, typed
-/// `default_stop_type` unless the input overrides it. Runs before any mutation
-/// so a geocode failure cannot leave a half-applied outcome behind.
+/// Resolve a `PositionInput` into a trip stop typed `default_stop_type` unless
+/// the input overrides it. Runs before any mutation so a geocode failure cannot
+/// leave a half-applied outcome behind.
+///
+/// `field` names the request field this position came from (`waypoint`,
+/// `stops[1]`, …) so a rejection points at the value the caller actually sent —
+/// `divert` feeds several positions through here, and a message that always said
+/// "waypoint" sent the caller to the wrong one.
+///
+/// `sequence` is left at 0: every caller renumbers the whole list by position
+/// after appending, so anything set here would be overwritten unread.
 pub(crate) async fn resolve_position(
     state: &AppState,
     pos: PositionInput,
-    sequence: u32,
+    field: &str,
     default_stop_type: crate::models::TripStopType,
 ) -> Result<crate::models::TripStop, AppError> {
     use crate::models::TripStop;
@@ -472,9 +477,9 @@ pub(crate) async fn resolve_position(
     let _: chrono_tz::Tz = pos.timezone.parse().map_err(|_| {
         AppError::UnprocessableEntity(format!("'{}' is not a valid IANA timezone", pos.timezone))
     })?;
-    for (field, value) in [("actual_arrive", &pos.actual_arrive), ("actual_depart", &pos.actual_depart)] {
+    for (name, value) in [("actual_arrive", &pos.actual_arrive), ("actual_depart", &pos.actual_depart)] {
         if let Some(v) = value {
-            crate::models::load::validate_stop_time_str(v, &pos.timezone, field)?;
+            crate::models::load::validate_stop_time_str(v, &pos.timezone, name)?;
         }
     }
 
@@ -485,10 +490,10 @@ pub(crate) async fn resolve_position(
         }
         None => {
             let name = pos.facility_name.ok_or_else(|| AppError::UnprocessableEntity(
-                "waypoint must provide either facility_id or facility_name + address".into()
+                format!("{field} must provide either facility_id or facility_name + address")
             ))?;
             let address = pos.address.ok_or_else(|| AppError::UnprocessableEntity(
-                "waypoint must provide address when facility_id is not given".into()
+                format!("{field} must provide address when facility_id is not given")
             ))?;
             let id = resolve_waypoint_facility(state, &name, &address).await?;
             (id, name, address)
@@ -496,7 +501,7 @@ pub(crate) async fn resolve_position(
     };
 
     Ok(TripStop {
-        sequence,
+        sequence: 0,
         stop_type: pos.stop_type.unwrap_or(default_stop_type),
         facility_id: Some(facility_id),
         name: Some(name),
@@ -579,7 +584,7 @@ pub async fn tonu(
     state: &AppState,
     trip_id: Uuid,
     req: TonuRequest,
-) -> Result<TonuResult, AppError> {
+) -> Result<TripOutcomeResult, AppError> {
     let existing = state.db.get_trip(trip_id).await?;
     match existing.status {
         TripStatus::Dispatched => {}
@@ -653,8 +658,7 @@ pub async fn tonu(
     }
 
     if let Some(pos) = req.waypoint {
-        let seq = stops.len() as u32;
-        stops.push(resolve_position(state, pos, seq, crate::models::TripStopType::Waypoint).await?);
+        stops.push(resolve_position(state, pos, "waypoint", crate::models::TripStopType::Waypoint).await?);
     }
     for (i, s) in stops.iter_mut().enumerate() { s.sequence = i as u32; }
 
@@ -684,7 +688,7 @@ pub async fn tonu(
     events::on_trip_tonu(&state.db, trip_id, req.reason).await;
 
     let trip = state.db.get_trip(trip_id).await?;
-    Ok(TonuResult { trip, mileage_recompute_warning: warning })
+    Ok(TripOutcomeResult { trip, mileage_recompute_warning: warning })
 }
 
 /// Re-target an in-transit trip. The trip keeps running; only the plan changes.
@@ -695,7 +699,7 @@ pub async fn divert(
     state: &AppState,
     trip_id: Uuid,
     req: DivertRequest,
-) -> Result<DivertResult, AppError> {
+) -> Result<TripOutcomeResult, AppError> {
     let existing = state.db.get_trip(trip_id).await?;
     match existing.status {
         TripStatus::InTransit => {}
@@ -728,28 +732,59 @@ pub async fn divert(
     // Same reason as `tonu`: the prefix is selected by `sequence` but renumbered
     // by vector position, and stored trip stops are never sorted.
     stops.sort_by_key(|s| s.sequence);
-    if stops.len() == existing.stops.len() && !existing.stops.is_empty() {
+
+    // The invariant is that the kept list ends at the last position the truck
+    // actually reached — that is what makes the appended stops a continuation of
+    // the route rather than a shortcut across it. A trip already ending at a
+    // reached `Waypoint` (where a hold-only divert left it) satisfies that
+    // outright, so it needs no fresh divergence point, and its fully-arrived stop
+    // list is not the dead end the guard below is written for.
+    let ends_at_reached_waypoint = stops.last()
+        .is_some_and(|s| s.stop_type == crate::models::TripStopType::Waypoint);
+    if req.waypoint.is_none() && !ends_at_reached_waypoint {
         return Err(AppError::UnprocessableEntity(
-            "every stop on this trip has been arrived at; clear the actuals on the stop \
-             you mean to replace before diverting".into()));
+            "`waypoint` is required: it marks where the old plan and the new plan \
+             diverged, and routing walks waypoint to waypoint — without it the \
+             recomputed route runs straight to the new destination and every mile \
+             already driven toward the old one silently disappears. It may only be \
+             omitted when the trip already ends at a waypoint the driver reached."
+                .into()));
+    }
+    if !ends_at_reached_waypoint && stops.len() == existing.stops.len() && !existing.stops.is_empty() {
+        return Err(AppError::UnprocessableEntity(
+            "every stop on this trip has been arrived at and the last one is not a \
+             waypoint, so there is nothing left to replace; clear the actuals on the \
+             stop you mean to rewrite before diverting".into()));
     }
 
-    // Resolve every position before the first write.
-    stops.push(resolve_position(
-        state, req.waypoint, stops.len() as u32, crate::models::TripStopType::Waypoint,
-    ).await?);
-    for pos in req.stops {
-        let seq = stops.len() as u32;
+    // Resolve every position before the first write. `sequence` is not passed:
+    // the renumber below is what assigns it.
+    if let Some(pos) = req.waypoint {
+        stops.push(resolve_position(
+            state, pos, "waypoint", crate::models::TripStopType::Waypoint,
+        ).await?);
+    }
+    for (i, pos) in req.stops.into_iter().enumerate() {
         // Destinations default to `delivery`; a cross-dock hand-off can override
         // to `relay` via the position's own `stop_type`.
         stops.push(resolve_position(
-            state, pos, seq, crate::models::TripStopType::Delivery,
+            state, pos, &format!("stops[{i}]"), crate::models::TripStopType::Delivery,
         ).await?);
     }
     for (i, s) in stops.iter_mut().enumerate() { s.sequence = i as u32; }
 
     // --- writes ---
     state.db.update_trip_metadata(trip_id, None, None, Some(stops.clone()), None, None, None).await?;
+    // Clear before recomputing, exactly as `tonu` does. The old figure measures a
+    // route to a consignee this trip is no longer going to, and it is not merely
+    // cosmetic: `recalculate_trip_miles` short-circuits when deadhead and loaded
+    // are both already set (`trip_writes.rs`, unless the caller knows to pass
+    // `force`), and miles are not hand-settable — so a stale figure surviving an
+    // ORS outage here survives every later attempt to correct it, and
+    // `compute_driver_pay` bills the per-mile driver against it.
+    if let Err(e) = state.db.update_trip_mileage(trip_id, None, None, None, vec![]).await {
+        tracing::warn!(%trip_id, error = %e, "superseded mileage not cleared before divert recompute");
+    }
     let warning = match crate::api::trips::compute_and_persist_mileage(state, trip_id).await {
         Ok(_) => None,
         Err(e) => Some(format!("mileage not recomputed: {e}")),
@@ -770,7 +805,7 @@ pub async fn divert(
     ).await;
 
     let trip = state.db.get_trip(trip_id).await?;
-    Ok(DivertResult { trip, mileage_recompute_warning: warning })
+    Ok(TripOutcomeResult { trip, mileage_recompute_warning: warning })
 }
 
 /// Move `rate_items` into `quoted_rate_items` and clear them. The line haul will

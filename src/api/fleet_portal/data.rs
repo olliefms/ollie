@@ -1006,7 +1006,7 @@ pub async fn cancel_trip(
     params(("id" = Uuid, Path, description = "Trip UUID")),
     request_body(content = TonuRequest, description = "Optional waypoint, release time and reason"),
     responses(
-        (status = 200, description = "Trip ended as TONU", body = TonuResult),
+        (status = 200, description = "Trip ended as TONU", body = TripOutcomeResult),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Not found"),
         (status = 409, description = "Conflict — trip is not dispatched, or is settled"),
@@ -1031,13 +1031,13 @@ pub async fn tonu_trip(
     post,
     path = "/fleet/api/v1/trips/{id}/divert",
     params(("id" = Uuid, Path, description = "Trip UUID")),
-    request_body(content = DivertRequest, description = "Divergence waypoint, replacement stops and reason"),
+    request_body(content = DivertRequest, description = "Divergence waypoint, replacement stops and reason. `waypoint` is required unless the trip already ends at a waypoint the driver reached, in which case the new destinations are appended to it."),
     responses(
-        (status = 200, description = "Trip re-targeted", body = DivertResult),
+        (status = 200, description = "Trip re-targeted", body = TripOutcomeResult),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Not found"),
         (status = 409, description = "Conflict — trip is not in transit, or is settled"),
-        (status = 422, description = "Waypoint unresolvable, or a reached stop would be replaced"),
+        (status = 422, description = "Waypoint missing or unresolvable, or a reached stop would be replaced"),
     ),
     security(("BearerAuth" = [])),
     tag = "fleet"
@@ -1046,9 +1046,10 @@ pub async fn divert_trip(
     state: State<AppState>,
     Extension(claims): Extension<FleetUserClaims>,
     id: Path<Uuid>,
-    // Not `Option<Json<..>>` like `tonu_trip`: `waypoint` and `reason` are
-    // required, and axum's rejection for a body missing either is the 422 the
-    // caller needs to see.
+    // Not `Option<Json<..>>` like `tonu_trip`: `reason` is required, and axum's
+    // rejection for a body missing it is the 422 the caller needs to see.
+    // `waypoint`'s conditional requirement can only be judged against the trip,
+    // so `divert` enforces that one and returns the same status.
     Json(body): Json<crate::services::trip_lifecycle::DivertRequest>,
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("trips:write")?;
