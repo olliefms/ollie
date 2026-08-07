@@ -65,9 +65,47 @@ recording `actual_arrive` at the pickup does not move the status. Only departure
 
 ```
 TripStatus::Tonu       terminal.  Dispatched -> Tonu.  No edge out.
-TripStopType::Hold     "truck stopped here awaiting instructions" — not a planned service stop.
+TripStopType::Hold     the last position the truck actually reached under the old plan.
 LoadStatus::Tonu       Assigned|Dispatched -> Tonu -> Invoiced -> Settled.  Also Tonu -> Cancelled.
 ```
+
+### The `Hold` invariant
+
+`Hold` is not "somewhere the driver happened to park". It is a **routing waypoint marking
+where the old plan and the new plan diverged**, and it governs both verbs:
+
+> **A trip's stop list must end at the last position the truck actually reached.** If that
+> position is an existing stop, truncate to it. If it is not, record a `Hold`.
+
+Mileage then reflects miles *driven*, not miles *planned*. This is load-bearing, because ORS
+routes waypoint to waypoint: a diverted trip routed `stop0 -> new_destination` draws the
+path you would have taken had you known at the dock, and the entire backtrack disappears —
+silently, because the resulting number still looks plausible. A driver 200 miles toward
+Denver who is turned back to the shipper drove 400 miles; without the `Hold` the trip claims
+whatever `stop0 -> shipper` happens to be.
+
+The `Hold` need not be somewhere the truck literally stood still. A dispatcher may nominate a
+point on the driver's behalf and supply its in/out times. Its arrive/depart times are
+optional; when both are present the dwell bills as detention like any other stop.
+
+### `Hold` and extra-stop pay
+
+`compute_driver_pay` charges `extra_stop_fee * max(0, stop_count - 2)`
+(`src/models/pay.rs:85`) by counting stops, with no notion of what kind they are. Inserting a
+mandatory `Hold` would therefore pay one extra-stop fee on **every** diversion — including a
+`bol_correction` where the driver did nothing but keep rolling — and would make the fee
+depend on how the dispatcher chose to model the route.
+
+A `Hold` is a routing waypoint, not work the driver performed. It is excluded from the
+extra-stop count. He is paid for it through the miles it captures and, if he waited, through
+detention.
+
+That distinction has to reach the pay function, which today receives a shape (`PayStopInput`)
+carrying no stop type. It gains one boolean — whether the stop is a service stop — set false
+for `Hold` and true for everything else. Detention still iterates every stop, so a long wait
+at a `Hold` is paid; only the extra-stop count filters. Paying a driver for the disruption of
+a diversion stays possible, but as a deliberate line item rather than a side effect of record
+shape.
 
 `Tonu -> Cancelled` exists because a broker may ultimately refuse to pay anything, and a $0
 invoice is the wrong place to put that.
@@ -163,7 +201,7 @@ On a TONU it stops being invisible: that empty run is the *entire* trip, so the 
 pay 100% of its miles at the loaded rate. TONU therefore does not delegate the split. It
 asserts the invariant directly: **a TONU trip has zero loaded miles by construction.**
 
-## `divert_trip(trip_id, { hold?, stops, reason, notes? })`
+## `divert_trip(trip_id, { hold, stops, reason, notes? })`
 
 Gate: `status == InTransit`, and no `settlement_ref`.
 
@@ -178,11 +216,11 @@ commercial consequence differs.
   follow the BOL. Emphatically **no** `diverted_at`: nothing was diverted, the plan was wrong
   from the start. Flagging it would poison the exact query the field exists to answer.
 
-`hold` is **optional and independent of `reason`**. Its presence means one thing only: the
-truck physically stopped somewhere unplanned. A broker who reconsigns while the driver is
-rolling produces a `reconsigned` divert with no `hold`; a BOL dispute that puts the driver in
-a truck stop for three hours produces a `bol_correction` *with* one. Inferring the commercial
-fact from the physical one would misfile both.
+`hold` is **required for all three reasons**, per the `Hold` invariant above. `in_transit`
+means the truck departed the pickup and has not reached the next stop, so it is always
+between waypoints and there is always a divergence point no existing stop represents. Even a
+reconsignment the driver never stops for needs one: without it the recomputed route is
+`stop0 -> new destination` and any backtracking is erased.
 
 Algorithm:
 
@@ -233,7 +271,7 @@ dispatcher judgments made after a conversation with a broker.
 | `404` | trip not found |
 | `409` | wrong trip status — message names the correct verb |
 | `409` | trip has a `settlement_ref`; miles and pay are frozen |
-| `422` | `hold` required (no stop reached) but absent |
+| `422` | `hold` absent — always on `divert`, and on `tonu` when no stop was reached |
 | `422` | a `hold` or replacement stop position cannot be resolved to a facility |
 | `422` | attempt to replace a stop that has an `actual_arrive` |
 
@@ -262,6 +300,9 @@ string roundtrips for `Tonu` and `Hold`.
 `actual_depart` sets the depart to `occurred_at`, and the resulting `driver_pay_snapshot`
 bills the wait beyond `free_dwell_minutes` at the detention rate.
 
+**Extra-stop pay.** A diverted trip's `Hold` does not increase `extra_stop_pay`, and a `Hold`
+with a long dwell still produces detention pay.
+
 **`tests/tonu_test.rs`.** Arrived-at-shipper truncation — deadhead equals the full route,
 `loaded_miles` is `None`, equipment returns to `Available`, load is `tonu` with `rate_items`
 empty and `quoted_rate_items` populated. Never-arrived with `hold`. Never-arrived without
@@ -279,10 +320,15 @@ Two of these carry the design:
 
 **`tests/divert_test.rs`.** Divert with hold + destination — stops become
 `[kept pickup, Hold, new delivery]`, `diverted_at` set, `rate_items` untouched.
-`bol_correction` sets no `Hold` and no `diverted_at`. Empty-`stops` divert followed by
-departing the `Hold` does **not** mark the trip delivered. Replacing an arrived-at stop
--> 422. `dispatched` -> 409 naming `tonu_trip`. Trip completes normally to the new
-destination and the load invoices.
+`bol_correction` still requires a `Hold` but sets no `diverted_at`. Divert without `hold`
+-> 422. Empty-`stops` divert followed by departing the `Hold` does **not** mark the trip
+delivered. Replacing an arrived-at stop -> 422. `dispatched` -> 409 naming `tonu_trip`. Trip
+completes normally to the new destination and the load invoices.
+
+**Backtrack mileage.** The test that justifies the `Hold` invariant: divert a trip whose
+`Hold` lies well past the pickup, back to the pickup facility itself. Assert the recomputed
+total is roughly `2 x (pickup -> hold)` and not the near-zero figure a `stop0 -> stop0` route
+would produce.
 
 **Regression.** `load_doctor` clean on a `tonu` load; `tonu` load excluded from
 `list_loads_needing_routing` (mirroring the #411 zombie test); migration test that
