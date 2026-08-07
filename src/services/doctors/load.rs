@@ -130,6 +130,13 @@ fn check_timezones(load: &LoadRecord, report: &mut DoctorReport) {
 /// `invoice` only runs from `delivered` and `settle` only from `invoiced`, so
 /// the whole billing chain is out of reach and there is no supported way
 /// forward without this fix (#395).
+///
+/// A mid-relay TONU opens the same window as a cancelled leg 2: `[Delivered,
+/// Tonu]` with the load still `in_transit` and the replacement leg not yet
+/// dispatched will also report "every live trip has delivered". That is noise,
+/// not corruption — `uncovered_delivery_stops` downgrades it to
+/// reported-with-conflicts, because the TONU'd leg's residual stops no longer
+/// count as live evidence that the load's delivery stop was served.
 async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report: &mut DoctorReport) {
     if !matches!(load.status, LoadStatus::Dispatched | LoadStatus::InTransit) {
         return;
@@ -189,7 +196,7 @@ async fn check_status_matches_trips(state: &AppState, load: &LoadRecord, report:
 /// evidence: report the strand, leave the fix applyable.
 fn uncovered_delivery_stops(load: &LoadRecord, trips: &[TripRecord]) -> Vec<String> {
     let live_deliveries: Vec<&TripStop> = trips.iter()
-        .filter(|t| t.status != TripStatus::Cancelled)
+        .filter(|t| !matches!(t.status, TripStatus::Cancelled | TripStatus::Tonu))
         .flat_map(|t| t.stops.iter())
         .filter(|s| s.stop_type == TripStopType::Delivery)
         .collect();

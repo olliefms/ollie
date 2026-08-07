@@ -592,7 +592,7 @@ async fn recompute_as_all_deadhead(state: &AppState, trip_id: Uuid) -> Option<St
 /// precisely the recovery path TONU documents. Without this, the documented
 /// repair puts the empty run in `loaded_miles` and `compute_driver_pay` bills it
 /// at the loaded rate.
-pub async fn reassign_all_to_deadhead(state: &AppState, trip_id: Uuid) -> Option<String> {
+pub(crate) async fn reassign_all_to_deadhead(state: &AppState, trip_id: Uuid) -> Option<String> {
     let t = match state.db.get_trip(trip_id).await {
         Ok(t) => t,
         Err(e) => {

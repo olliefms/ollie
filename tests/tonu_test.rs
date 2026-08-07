@@ -802,43 +802,6 @@ async fn test_doctors_are_clean_on_a_tonu_load_and_trip() {
     );
 }
 
-/// The branch's headline invariant, with the positive coverage it was missing.
-///
-/// `assert!(trip["loaded_miles"].is_null())` after a `tonu` call is true under
-/// this suite's `RoutingClient::new("")` whether or not the reassignment ran at
-/// all — with no ORS, nothing ever sets `loaded_miles` to `Some`, so a swapped
-/// pair of arguments at the `update_trip_mileage` call would ship green. Seeding
-/// a routed figure and driving the reassignment step directly is what makes that
-/// regression fail. The step is exercised on its own rather than through `tonu`
-/// because `tonu` deliberately clears mileage before recomputing (a failed
-/// recompute must leave an honest null), so a figure seeded ahead of the call is
-/// gone before the reassignment is reached.
-#[tokio::test]
-async fn test_tonu_mileage_reassignment_puts_the_whole_figure_in_deadhead() {
-    let (server, state, _d1, _d2, _rx) = setup().await;
-    let token = setup_owner(&server).await;
-    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581510").await;
-    let uuid: uuid::Uuid = trip_id.parse().unwrap();
-
-    // Stand in for a successful routing pass over the truncated stop list, split
-    // the way `compute_trip_mileage` would split it with no `previous_trip_id`:
-    // almost everything called "loaded".
-    state.db.update_trip_mileage(uuid, Some(12.0), Some(407.0), Some(419.0), vec![12.0, 407.0])
-        .await.unwrap();
-
-    let warning = ollie::services::trip_lifecycle::reassign_all_to_deadhead(&state, uuid).await;
-    assert!(warning.is_none(), "reassignment reported a problem: {warning:?}");
-
-    let trip = state.db.get_trip(uuid).await.unwrap();
-    assert_eq!(trip.deadhead_miles, Some(419.0),
-        "a TONU trip has zero loaded miles by construction: the whole routed \
-         figure belongs in deadhead, got {:?}", trip.deadhead_miles);
-    assert!(trip.loaded_miles.is_none(),
-        "407 miles left in loaded_miles would be paid at the loaded rate: {:?}",
-        trip.loaded_miles);
-    assert_eq!(trip.total_miles, Some(419.0), "the total is unchanged by the split");
-}
-
 /// `recalculate_trip_miles` is the documented repair when ORS is down at TONU
 /// time, and it used to reintroduce the exact split TONU exists to prevent: it
 /// calls `compute_and_persist_mileage` directly, which applies the normal
@@ -892,6 +855,7 @@ async fn test_recalculate_never_leaves_a_tonu_trip_with_split_miles() {
         trip.loaded_miles);
     assert_eq!(trip.deadhead_miles, Some(419.0),
         "the whole figure belongs in deadhead: {:?}", trip.deadhead_miles);
+    assert_eq!(trip.total_miles, Some(419.0), "the total is unchanged by the split");
 }
 
 /// `stop_type` is a legitimate override on a diversion destination and has no

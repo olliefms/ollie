@@ -39,6 +39,10 @@ describe('trips list header', () => {
 
     expect(document.querySelector('#topbar-controls #trip-status-filter')).toBeTruthy();
     expect(document.querySelector('#topbar-controls #new-trip')).toBeTruthy();
+    const tripStatusOptions = Array.from(
+      document.querySelectorAll('#topbar-controls #trip-status-filter option')
+    ).map((o) => o.value);
+    expect(tripStatusOptions).toContain('tonu');
     const main = document.getElementById('main-content').innerHTML;
     expect(main).not.toContain('page-title');
     expect(main).toContain('Trip #'); // table header still in content
@@ -58,6 +62,10 @@ describe('loads list header', () => {
 
     expect(document.querySelector('#topbar-controls #status-filter')).toBeTruthy();
     expect(document.querySelector('#topbar-controls #new-load')).toBeTruthy();
+    const loadStatusOptions = Array.from(
+      document.querySelectorAll('#topbar-controls #status-filter option')
+    ).map((o) => o.value);
+    expect(loadStatusOptions).toContain('tonu');
     const main = document.getElementById('main-content').innerHTML;
     expect(main).not.toContain('page-title');
     expect(main).toContain('Load #');

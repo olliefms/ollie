@@ -298,9 +298,14 @@ Both verbs are thin wrappers over `services/trip_lifecycle.rs`, shaped like the 
 - MCP: `tonu_trip`, `divert_trip` — scope `trips:write`, registered in the scope map
   (`src/api/fleet_portal/mcp.rs:286`), the tool list, and the dispatch match arm.
 
-No new scopes. **Fleet SPA actions are out of scope** — backend and MCP only, so no static
-changes and no `?v=` cache-stamp bump at release. SPA buttons become a follow-up issue, as
-the admin-load create UI did after #411.
+No new scopes. **Fleet SPA action buttons are out of scope** — triggering `tonu`/`divert`
+from the SPA is still backend and MCP only, and remains a follow-up issue, as the admin-load
+create UI did after #411. What *did* land: `static/fleet/pages/trips.js` and
+`static/fleet/pages/loads.js` add `tonu` to their status filter options, and
+`static/fleet/css/components.css` adds a `badge--tonu` style (grouped with the other
+terminal-without-delivery outcomes). Those three static files changed, so whoever cuts the
+release must bump the fleet `?v=` cache-stamps and `CACHE_NAME` accordingly — this is not the
+static-changes-free release the original plan assumed.
 
 Driver portal is out of scope: the driver reports arrive/depart; TONU and diversion are
 dispatcher judgments made after a conversation with a broker.
