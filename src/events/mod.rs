@@ -73,6 +73,16 @@ pub async fn on_trip_tonu(db: &DbClient, trip_id: Uuid, reason: Option<String>) 
     tracing::info!(trip_id = %trip_id, "trip tonu");
 }
 
+pub async fn on_trip_diverted(
+    db: &DbClient, trip_id: Uuid, reason: &str, notes: Option<String>, new_stop_count: usize,
+) {
+    let payload = serde_json::json!({
+        "reason": reason, "notes": notes, "new_stop_count": new_stop_count,
+    });
+    let _ = db.append_event("trip", trip_id, "trip.diverted", Some(payload), None, &now_z(), None).await;
+    tracing::info!(trip_id = %trip_id, reason, "trip diverted");
+}
+
 pub async fn on_stop_arrived(db: &DbClient, trip_id: Uuid, seq: u32) {
     let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(db, trip_id, seq).await });
     let _ = db.append_event("trip", trip_id, "stop.arrived", Some(payload), None, &now_z(), None).await;

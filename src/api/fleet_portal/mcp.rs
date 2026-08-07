@@ -281,7 +281,8 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         // Trips
         "list_trips" | "get_trip" => "trips:read",
         "create_trip" | "update_trip" | "assign_driver" | "unassign_driver"
-        | "dispatch_trip" | "undispatch_trip" | "cancel_trip" | "complete_trip" | "tonu_trip"
+        | "dispatch_trip" | "undispatch_trip" | "cancel_trip" | "complete_trip"
+        | "tonu_trip" | "divert_trip"
         | "stop_arrive" | "stop_depart" | "stop_late" | "check_call"
         | "recalculate_trip_miles" => "trips:write",
         "delete_trip" => "trips:delete",
@@ -772,6 +773,7 @@ fn annotations_for(name: &str) -> ToolAnnotations {
         "delete_blob"
             | "cancel_trip"
             | "tonu_trip"
+            | "divert_trip"
             | "unassign_driver"
             | "detach_equipment"
             | "cancel_load"
@@ -1051,6 +1053,59 @@ fn tools_list() -> Value {
                         "reason": { "type": "string" }
                     },
                     "required": ["trip_id"]
+                }
+            },
+            {
+                "name": "divert_trip",
+                "description": "Re-target an in-transit trip. Replaces every stop the driver has not reached with a new destination, keeping arrived-at stops as immutable history. 'waypoint' is REQUIRED and marks where the old plan and the new plan diverged: routing walks waypoint to waypoint, so without it any backtracking is silently erased from the recomputed miles. reason 'diverted' or 'reconsigned' flags the load for a diversion fee; 'bol_correction' does not. Valid only from 'in_transit' — use tonu_trip before the pickup is departed. 'stops' may be empty for 'pulled over, disposition unknown'. Rate items are left untouched: unlike a TONU, the line haul is at least partly earned.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "trip_id": { "type": "string", "format": "uuid" },
+                        "waypoint": {
+                            "type": "object",
+                            "description": "Where the old plan and the new plan diverged — where the driver actually was when the plan changed. Stored as a 'waypoint' stop: it routes but services no freight, so departing it never delivers the load.",
+                            "properties": {
+                                "facility_id": { "type": "string", "format": "uuid" },
+                                "facility_name": { "type": "string" },
+                                "address": { "type": "string" },
+                                "timezone": { "type": "string", "description": "IANA timezone, e.g. America/Chicago" },
+                                "actual_arrive": { "type": "string", "description": "Naive local datetime, e.g. 2026-06-01T14:00:00" },
+                                "actual_depart": { "type": "string" },
+                                "notes": { "type": "string" }
+                            },
+                            "required": ["timezone"]
+                        },
+                        "stops": {
+                            "type": "array",
+                            "description": "New destinations, in order. Same shape as waypoint, plus an optional stop_type. May be omitted or empty when the disposition is not known yet.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "facility_id": { "type": "string", "format": "uuid" },
+                                    "facility_name": { "type": "string" },
+                                    "address": { "type": "string" },
+                                    "timezone": { "type": "string", "description": "IANA timezone, e.g. America/Chicago" },
+                                    "actual_arrive": { "type": "string" },
+                                    "actual_depart": { "type": "string" },
+                                    "notes": { "type": "string" },
+                                    "stop_type": {
+                                        "type": "string",
+                                        "description": "Defaults to 'delivery'. Set 'relay' for a cross-dock hand-off, where the freight changes trucks rather than reaching a consignee.",
+                                        "enum": ["origin", "fuel", "pickup", "delivery", "relay", "empty_move", "maintenance", "terminal", "waypoint"]
+                                    }
+                                },
+                                "required": ["timezone"]
+                            }
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "'diverted' — the broker cancelled mid-transit. 'reconsigned' — the broker nominated a different consignee. 'bol_correction' — the BOL disagreed with the rate confirmation and the BOL wins; nothing was diverted, so the load is NOT flagged.",
+                            "enum": ["diverted", "reconsigned", "bol_correction"]
+                        },
+                        "notes": { "type": "string" }
+                    },
+                    "required": ["trip_id", "waypoint", "reason"]
                 }
             },
             {
@@ -1899,6 +1954,7 @@ fn parse_uuid(args: &Value, key: &str) -> Result<Uuid, String> {
 fn id_arg_alias(tool: &str) -> Option<(&'static str, &'static str)> {
     let pair = match tool {
         "cancel_trip" | "complete_trip" | "dispatch_trip" | "undispatch_trip" | "tonu_trip"
+        | "divert_trip"
         | "unassign_driver" | "update_trip" | "trip_doctor" | "recalculate_trip_miles"
         | "stop_arrive" | "stop_depart" | "stop_late" | "check_call" => ("trip_id", "id"),
         "get_trip" | "delete_trip" => ("id", "trip_id"),
@@ -2012,6 +2068,7 @@ async fn handle_tool_call(
         "undispatch_trip" => tool_undispatch_trip(state, args).await,
         "cancel_trip" => tool_cancel_trip(state, args).await,
         "tonu_trip" => tool_tonu_trip(state, args).await,
+        "divert_trip" => tool_divert_trip(state, args).await,
         "complete_trip" => tool_complete_trip(state, args).await,
         "stop_arrive" => tool_stop_arrive(state, args).await,
         "stop_depart" => tool_stop_depart(state, args).await,
@@ -2480,6 +2537,16 @@ async fn tool_tonu_trip(state: &AppState, args: &Value) -> Result<Value, String>
     let req: crate::services::trip_lifecycle::TonuRequest =
         serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
     let result = crate::services::trip_lifecycle::tonu(state, trip_id, req)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(mcp_content(result))
+}
+
+async fn tool_divert_trip(state: &AppState, args: &Value) -> Result<Value, String> {
+    let trip_id = parse_uuid(args, "trip_id")?;
+    let req: crate::services::trip_lifecycle::DivertRequest =
+        serde_json::from_value(args.clone()).map_err(|e| e.to_string())?;
+    let result = crate::services::trip_lifecycle::divert(state, trip_id, req)
         .await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(result))
@@ -4007,5 +4074,45 @@ mod tests {
         // Invalid UUID string → Err
         let err = parse_uuid_opt(&json!({"field": "not-a-uuid"}), "field").unwrap_err();
         assert!(err.contains("invalid UUID"));
+    }
+
+    /// `PositionInput.stop_type` is accepted by serde but was invisible to MCP
+    /// callers, so a cross-dock hand-off could only be guessed at. `divert_trip`
+    /// is where the override genuinely belongs, so its schema must advertise it.
+    #[test]
+    fn divert_trip_advertises_stop_type_on_its_destination_stops() {
+        let tools = tools_list();
+        let divert = tools["tools"].as_array().unwrap().iter()
+            .find(|t| t["name"] == "divert_trip")
+            .expect("divert_trip must be advertised in tools/list");
+
+        let schema = &divert["inputSchema"];
+        let required: Vec<&str> = schema["required"].as_array().unwrap().iter()
+            .map(|v| v.as_str().unwrap()).collect();
+        assert!(required.contains(&"waypoint"),
+            "the divergence point is what keeps the backtrack in the recomputed miles");
+        assert!(required.contains(&"reason"));
+        assert!(!required.contains(&"stops"),
+            "'pulled over, disposition unknown' must be expressible");
+
+        let stop_type = &schema["properties"]["stops"]["items"]["properties"]["stop_type"];
+        assert!(stop_type.is_object(), "stops items must advertise stop_type: {schema}");
+        let variants: Vec<&str> = stop_type["enum"].as_array().unwrap().iter()
+            .map(|v| v.as_str().unwrap()).collect();
+        for v in ["delivery", "relay"] {
+            assert!(variants.contains(&v), "stop_type enum must offer '{v}': {variants:?}");
+        }
+        assert!(stop_type["description"].as_str().unwrap().contains("delivery"),
+            "the default must be stated, or a caller cannot tell when to override");
+    }
+
+    /// Wiring, not shape: a tool absent from the scope map or the dispatch arm
+    /// is advertised and then unusable.
+    #[test]
+    fn divert_trip_is_scoped_and_annotated_destructive() {
+        assert_eq!(tool_required_scope("divert_trip"), Some("trips:write"));
+        assert_eq!(id_arg_alias("divert_trip"), Some(("trip_id", "id")));
+        let ann = annotations_for("divert_trip");
+        assert_eq!(ann.destructive_hint, Some(true));
     }
 }

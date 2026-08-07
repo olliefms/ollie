@@ -1029,6 +1029,35 @@ pub async fn tonu_trip(
 
 #[utoipa::path(
     post,
+    path = "/fleet/api/v1/trips/{id}/divert",
+    params(("id" = Uuid, Path, description = "Trip UUID")),
+    request_body(content = DivertRequest, description = "Divergence waypoint, replacement stops and reason"),
+    responses(
+        (status = 200, description = "Trip re-targeted", body = DivertResult),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Not found"),
+        (status = 409, description = "Conflict — trip is not in transit, or is settled"),
+        (status = 422, description = "Waypoint unresolvable, or a reached stop would be replaced"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "fleet"
+)]
+pub async fn divert_trip(
+    state: State<AppState>,
+    Extension(claims): Extension<FleetUserClaims>,
+    id: Path<Uuid>,
+    // Not `Option<Json<..>>` like `tonu_trip`: `waypoint` and `reason` are
+    // required, and axum's rejection for a body missing either is the 422 the
+    // caller needs to see.
+    Json(body): Json<crate::services::trip_lifecycle::DivertRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    claims.require_scope("trips:write")?;
+    let result = crate::services::trip_lifecycle::divert(&state, id.0, body).await?;
+    Ok(Json(result))
+}
+
+#[utoipa::path(
+    post,
     path = "/fleet/api/v1/trips/{id}/complete",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(

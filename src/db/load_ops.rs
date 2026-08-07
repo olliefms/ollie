@@ -143,6 +143,21 @@ impl DbClient {
         Ok(record)
     }
 
+    /// Flag a load as diverted. Only `diverted` and `reconsigned` reach here — a
+    /// `bol_correction` corrects a plan that was wrong from the start and must
+    /// not pollute "which loads were diverted".
+    pub async fn mark_load_diverted(
+        &self, id: Uuid, reason: &str, notes: Option<String>,
+    ) -> Result<LoadRecord, AppError> {
+        let mut record = self.get_load_by_id(id).await?;
+        record.diverted_at = Some(Utc::now().to_rfc3339());
+        record.diversion_reason = Some(reason.to_string());
+        if notes.is_some() { record.diversion_notes = notes; }
+        record.updated_at = Utc::now();
+        self.upsert_load(&record).await?;
+        Ok(record)
+    }
+
     pub async fn update_load_miles(&self, id: Uuid, miles: f64) -> Result<(), AppError> {
         let mut record = self.get_load_by_id(id).await?;
         record.miles = Some(miles);

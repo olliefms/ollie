@@ -50,6 +50,7 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         fleet_portal::data::undispatch_trip,
         fleet_portal::data::cancel_trip,
         fleet_portal::data::tonu_trip,
+        fleet_portal::data::divert_trip,
         fleet_portal::data::complete_trip,
         fleet_portal::data::stop_arrive,
         fleet_portal::data::stop_depart,
@@ -217,6 +218,9 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             crate::services::trip_lifecycle::PositionInput,
             crate::services::trip_lifecycle::TonuRequest,
             crate::services::trip_lifecycle::TonuResult,
+            crate::services::trip_lifecycle::DivertReason,
+            crate::services::trip_lifecycle::DivertRequest,
+            crate::services::trip_lifecycle::DivertResult,
             fleet_portal::trip_writes::RecalculateMilesBody,
             fleet_portal::trip_writes::PatchTripBody,
             fleet_portal::trip_writes::PatchTripResult,
@@ -357,6 +361,7 @@ Loads & trips:
   list_trips, get_trip, create_trip, update_trip, recalculate_trip_miles
   assign_driver, unassign_driver, dispatch_trip, undispatch_trip, cancel_trip, complete_trip
   tonu_trip (truck ordered not used: a dispatched trip released before loading)
+  divert_trip (re-target an in-transit trip; the divergence waypoint is required)
   stop_arrive, stop_depart, stop_late, check_call
 
 Fleet & facilities:
@@ -471,6 +476,12 @@ forbidden (403).
   planned → assigned → dispatched → in_transit → delivered
   Assign/dispatch are reversible; cancel is allowed from planned, assigned, or
   dispatched only (in_transit and delivered are terminal — use a relay trip instead).
+  Two outcome verbs cover a plan that changes after dispatch: tonu_trip from
+  `dispatched` (the truck rolled but was released before loading), and divert_trip
+  from `in_transit` (freight is aboard; the trip keeps running to a new
+  destination). divert_trip requires a `waypoint` marking where the old and new
+  plans diverged — routing walks waypoint to waypoint, so without it the miles
+  already driven away from the original destination are silently erased.
   A load may have multiple trips (relay). Trip responses include: previous_trip_id
   (auto-chained to the driver's last non-cancelled trip unless provided),
   deadhead_miles and loaded_miles (ORS HGV routing; null when facilities lack

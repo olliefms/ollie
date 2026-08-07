@@ -97,6 +97,57 @@ pub struct TonuRequest {
     pub reason: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, ToSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum DivertReason {
+    /// The broker cancelled mid-transit.
+    Diverted,
+    /// The broker nominated a different consignee.
+    Reconsigned,
+    /// The BOL disagreed with the rate confirmation and the BOL wins. Nothing
+    /// was diverted — the plan was wrong from the start.
+    BolCorrection,
+}
+
+impl DivertReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Diverted => "diverted",
+            Self::Reconsigned => "reconsigned",
+            Self::BolCorrection => "bol_correction",
+        }
+    }
+    /// Whether this reason represents a commercial diversion with a fee to
+    /// negotiate, and therefore flags the load.
+    fn flags_the_load(&self) -> bool { !matches!(self, Self::BolCorrection) }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DivertRequest {
+    /// Where the old plan and the new plan diverged. Always required: an
+    /// in-transit truck is by definition between the trip's existing points.
+    pub waypoint: PositionInput,
+    /// Replacement for every stop the driver has not reached. May be empty —
+    /// "pulled over, disposition unknown".
+    #[serde(default)]
+    pub stops: Vec<PositionInput>,
+    pub reason: DivertReason,
+    #[serde(default)]
+    pub notes: Option<String>,
+}
+
+/// The re-targeted trip plus an optional warning when mileage could not be
+/// recomputed. A diversion is an operational fact that must be recordable with
+/// ORS down, so a routing failure degrades to this field rather than failing the
+/// call — and the caller is told the miles now describe the superseded plan.
+#[derive(Debug, serde::Serialize, ToSchema)]
+pub struct DivertResult {
+    #[serde(flatten)]
+    pub trip: TripRecord,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mileage_recompute_warning: Option<String>,
+}
+
 /// The trip plus an optional warning when mileage could not be recomputed.
 /// A TONU is an operational fact that must be recordable with ORS down, so a
 /// routing failure degrades to this field rather than failing the call.
@@ -564,6 +615,12 @@ pub async fn tonu(
         Some(seq) => existing.stops.iter().filter(|s| s.sequence <= seq).cloned().collect(),
         None => vec![],
     };
+    // `last_reached` is derived by `sequence`, but everything below picks and
+    // renumbers by vector position — and nothing in the codebase sorts trip
+    // stops (`src/api/trips.rs` stores whatever order the caller supplied). Sort
+    // so the two agree; without it a trip whose stops arrived out of order gets
+    // the release time stamped on the wrong stop and the rest renumbered wrongly.
+    stops.sort_by_key(|s| s.sequence);
 
     // `occurred_at` stamps the truncation stop — the last stop the truck reached
     // and has not left — and is parsed in that stop's own timezone. Where there
@@ -628,6 +685,92 @@ pub async fn tonu(
 
     let trip = state.db.get_trip(trip_id).await?;
     Ok(TonuResult { trip, mileage_recompute_warning: warning })
+}
+
+/// Re-target an in-transit trip. The trip keeps running; only the plan changes.
+///
+/// Unlike TONU, `rate_items` are left alone for every reason: the line haul is
+/// at least partly earned once the freight is aboard.
+pub async fn divert(
+    state: &AppState,
+    trip_id: Uuid,
+    req: DivertRequest,
+) -> Result<DivertResult, AppError> {
+    let existing = state.db.get_trip(trip_id).await?;
+    match existing.status {
+        TripStatus::InTransit => {}
+        TripStatus::Dispatched => {
+            return Err(AppError::Conflict(
+                "trip has not departed its pickup, so no freight is aboard — use tonu_trip \
+                 to end it, or update_trip to change a stop it has not reached".into()));
+        }
+        s => {
+            return Err(AppError::Conflict(format!(
+                "cannot divert a trip with status '{}'", s.as_str())));
+        }
+    }
+    if existing.settlement_ref.is_some() {
+        return Err(AppError::Conflict("trip is settled; miles and pay are frozen".into()));
+    }
+
+    // History is the contiguous prefix up to the last stop the driver reached —
+    // NOT every stop that happens to have an actual_arrive. Filtering on the
+    // predicate alone would let a later arrived-at stop survive while dropping an
+    // earlier unreached one, producing a stop list that never happened in that order.
+    let last_reached = existing.stops.iter()
+        .filter(|s| s.actual_arrive.is_some())
+        .max_by_key(|s| s.sequence)
+        .map(|s| s.sequence);
+    let mut stops: Vec<crate::models::TripStop> = match last_reached {
+        Some(seq) => existing.stops.iter().filter(|s| s.sequence <= seq).cloned().collect(),
+        None => vec![],
+    };
+    // Same reason as `tonu`: the prefix is selected by `sequence` but renumbered
+    // by vector position, and stored trip stops are never sorted.
+    stops.sort_by_key(|s| s.sequence);
+    if stops.len() == existing.stops.len() && !existing.stops.is_empty() {
+        return Err(AppError::UnprocessableEntity(
+            "every stop on this trip has been arrived at; clear the actuals on the stop \
+             you mean to replace before diverting".into()));
+    }
+
+    // Resolve every position before the first write.
+    stops.push(resolve_position(
+        state, req.waypoint, stops.len() as u32, crate::models::TripStopType::Waypoint,
+    ).await?);
+    for pos in req.stops {
+        let seq = stops.len() as u32;
+        // Destinations default to `delivery`; a cross-dock hand-off can override
+        // to `relay` via the position's own `stop_type`.
+        stops.push(resolve_position(
+            state, pos, seq, crate::models::TripStopType::Delivery,
+        ).await?);
+    }
+    for (i, s) in stops.iter_mut().enumerate() { s.sequence = i as u32; }
+
+    // --- writes ---
+    state.db.update_trip_metadata(trip_id, None, None, Some(stops.clone()), None, None, None).await?;
+    let warning = match crate::api::trips::compute_and_persist_mileage(state, trip_id).await {
+        Ok(_) => None,
+        Err(e) => Some(format!("mileage not recomputed: {e}")),
+    };
+
+    if req.reason.flags_the_load() {
+        if let Some(load_id) = existing.load_id {
+            if let Err(e) = state.db.mark_load_diverted(
+                load_id, req.reason.as_str(), req.notes.clone(),
+            ).await {
+                tracing::warn!(%load_id, error = %e, "load not flagged as diverted");
+            }
+        }
+    }
+
+    events::on_trip_diverted(
+        &state.db, trip_id, req.reason.as_str(), req.notes, stops.len(),
+    ).await;
+
+    let trip = state.db.get_trip(trip_id).await?;
+    Ok(DivertResult { trip, mileage_recompute_warning: warning })
 }
 
 /// Move `rate_items` into `quoted_rate_items` and clear them. The line haul will
