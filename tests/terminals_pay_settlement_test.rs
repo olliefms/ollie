@@ -617,6 +617,114 @@ async fn test_driver_pay_absent_when_no_miles_at_all() {
         "trip with no miles at all must not be paid, body: {body}");
 }
 
+// A TONU on a driver's FIRST trip has no `previous_trip_id` and a single reached
+// stop, so `compute_trip_mileage` returns all-None and
+// `compute_and_persist_mileage`'s failure detector stays quiet (it needs
+// `expected_segments >= 2`) — no miles, and no warning either. A miles-only pay
+// gate then silently dropped the other half of what TONU exists to pay: the
+// driver who sat five hours at the dock before being released got nothing.
+#[tokio::test]
+async fn test_driver_pay_bills_detention_when_a_tonu_trip_has_no_miles() {
+    use ollie::models::{TripRecord, TripStatus, TripStop};
+    use ollie::models::trip::TripStopType;
+
+    let (server, db, _b, _d) = test_server_with_db().await;
+    let token = fleet_user_login(&server, "pay-dwell@example.com", "pw-paydwell").await;
+    let auth = format!("Bearer {token}");
+
+    let term_id = default_terminal_id(&server, &auth).await;
+    let put = server.put(&format!("/fleet/api/v1/terminals/{term_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({
+            "loaded_rate_per_mile": 0.50,
+            "deadhead_rate_per_mile": 0.40,
+            "extra_stop_fee": 30.0,
+            "detention_rate_per_hour": 20.0,
+        }))
+        .await;
+    assert_eq!(put.status_code(), 200);
+
+    let drv = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, &auth)
+        .json(&serde_json::json!({ "name": "Dwell Driver" }))
+        .await;
+    assert_eq!(drv.status_code(), 201, "driver create failed: {:?}", drv.text());
+    let driver_id = uuid::Uuid::parse_str(
+        drv.json::<serde_json::Value>()["id"].as_str().unwrap()).unwrap();
+
+    // Five hours at the dock, two of them free. Free dwell is pinned on the stop
+    // so the expected figure does not ride on the terminal's seeded default.
+    let stop = TripStop {
+        sequence: 0,
+        stop_type: TripStopType::Pickup,
+        facility_id: None,
+        name: Some("Shipper Dock".into()),
+        address: None,
+        load_stop_index: None,
+        scheduled_arrive: None,
+        scheduled_arrive_end: None,
+        actual_arrive: Some("2026-06-01T08:00:00".into()),
+        actual_depart: Some("2026-06-01T13:00:00".into()),
+        expected_dwell_minutes: None,
+        detention_free_minutes: Some(120),
+        detention_grace_minutes: None,
+        notes: None,
+        timezone: Some("America/Chicago".into()),
+        actual_arrive_utc: None,
+        actual_depart_utc: None,
+    };
+    let now = chrono::Utc::now();
+    let trip_id = uuid::Uuid::new_v4();
+    let trip = TripRecord {
+        id: trip_id,
+        trip_number: "T-DWELL-0001".into(),
+        load_id: None,
+        load_number: None,
+        previous_trip_id: None,
+        // The whole point: routing produced nothing at all.
+        deadhead_miles: None,
+        loaded_miles: None,
+        total_miles: None,
+        segment_miles: vec![],
+        sequence: 0,
+        driver_id: Some(driver_id),
+        truck_id: None,
+        trailer_ids: vec![],
+        status: TripStatus::Tonu,
+        stops: vec![stop],
+        notes: None,
+        blob_ids: vec![],
+        loaded_rate_per_mile: None,
+        deadhead_rate_per_mile: None,
+        extra_stop_fee: None,
+        detention_rate_per_hour: None,
+        free_dwell_minutes: None,
+        settlement_ref: None,
+        pay_period_start: None,
+        pay_period_end: None,
+        driver_pay_snapshot: None,
+        embedding: None,
+        owner_id: 0,
+        created_at: now,
+        updated_at: now,
+    };
+    db.insert_trip(&trip).await.unwrap();
+
+    let detail = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .add_header(header::AUTHORIZATION, &auth)
+        .await;
+    assert_eq!(detail.status_code(), 200, "detail GET failed: {:?}", detail.text());
+    let body = detail.json::<serde_json::Value>();
+    let pay = &body["driver_pay"];
+    assert!(!pay.is_null(),
+        "a five-hour dock wait is payable even with no mileage at all, body: {body}");
+    let detention = pay["detention_pay"].as_f64().unwrap();
+    assert!((detention - 60.0).abs() < 1e-9,
+        "3 billable hours at $20/h = $60, got {detention}");
+    assert!((pay["total_pay"].as_f64().unwrap() - 60.0).abs() < 1e-9,
+        "detention is the whole of this trip's pay: {pay}");
+}
+
 // Phase D: settlement freezes driver_pay, locks pay edits + stop times, and
 // the pay-period range filter selects the trip.
 #[tokio::test]

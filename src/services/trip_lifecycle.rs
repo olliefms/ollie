@@ -455,9 +455,32 @@ pub async fn cancel(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppEr
     Ok(trip)
 }
 
+/// Resolve a `waypoint` position. The stop type is **forced** to `Waypoint`,
+/// whatever the caller sent.
+///
+/// `PositionInput` is shared between the `waypoint` field and `divert`'s `stops`
+/// array. The `stop_type` override is legitimate there (a cross-dock hand-off is
+/// a `relay`, not a `delivery`) and has no valid use on a waypoint, where
+/// honouring it defeats two guards: `cascade_final_stop_delivered` keys on
+/// `stop_type == Waypoint`, so a `divert` with `waypoint.stop_type: "delivery"`
+/// and empty `stops` produces a trip whose max-sequence stop is a `Delivery` —
+/// departing it marks the trip `Delivered` and cascades the load to `Delivered`,
+/// for freight that never arrived anywhere; and on `tonu` a service type earns
+/// the driver an extra-stop fee for parking.
+async fn resolve_waypoint_position(
+    state: &AppState,
+    mut pos: PositionInput,
+) -> Result<crate::models::TripStop, AppError> {
+    pos.stop_type = None;
+    resolve_position(state, pos, "waypoint", crate::models::TripStopType::Waypoint).await
+}
+
 /// Resolve a `PositionInput` into a trip stop typed `default_stop_type` unless
 /// the input overrides it. Runs before any mutation so a geocode failure cannot
 /// leave a half-applied outcome behind.
+///
+/// Waypoints do not go through here directly — see [`resolve_waypoint_position`],
+/// which strips the override first.
 ///
 /// `field` names the request field this position came from (`waypoint`,
 /// `stops[1]`, …) so a rejection points at the value the caller actually sent —
@@ -556,6 +579,20 @@ async fn recompute_as_all_deadhead(state: &AppState, trip_id: Uuid) -> Option<St
     if let Err(e) = crate::api::trips::compute_and_persist_mileage(state, trip_id).await {
         return Some(format!("mileage not recomputed: {e}"));
     }
+    reassign_all_to_deadhead(state, trip_id).await
+}
+
+/// Move a just-routed trip's whole figure into `deadhead_miles`, leaving
+/// `loaded_miles` `None`.
+///
+/// Split out of [`recompute_as_all_deadhead`] because `recalculate_trip_miles`
+/// needs the same reassignment: that handler calls `compute_and_persist_mileage`
+/// directly, and its `already_set` short-circuit does not fire on a TONU trip
+/// whose mileage is `None` because ORS was down when it was recorded — which is
+/// precisely the recovery path TONU documents. Without this, the documented
+/// repair puts the empty run in `loaded_miles` and `compute_driver_pay` bills it
+/// at the loaded rate.
+pub async fn reassign_all_to_deadhead(state: &AppState, trip_id: Uuid) -> Option<String> {
     let t = match state.db.get_trip(trip_id).await {
         Ok(t) => t,
         Err(e) => {
@@ -658,7 +695,7 @@ pub async fn tonu(
     }
 
     if let Some(pos) = req.waypoint {
-        stops.push(resolve_position(state, pos, "waypoint", crate::models::TripStopType::Waypoint).await?);
+        stops.push(resolve_waypoint_position(state, pos).await?);
     }
     for (i, s) in stops.iter_mut().enumerate() { s.sequence = i as u32; }
 
@@ -747,22 +784,22 @@ pub async fn divert(
              diverged, and routing walks waypoint to waypoint — without it the \
              recomputed route runs straight to the new destination and every mile \
              already driven toward the old one silently disappears. It may only be \
-             omitted when the trip already ends at a waypoint the driver reached."
+             omitted when the trip already ends at a waypoint the driver reached — \
+             and it is `actual_arrive` on that waypoint that makes it count as \
+             reached; a waypoint with no arrival time is not in the kept history."
                 .into()));
     }
     if !ends_at_reached_waypoint && stops.len() == existing.stops.len() && !existing.stops.is_empty() {
         return Err(AppError::UnprocessableEntity(
-            "every stop on this trip has been arrived at and the last one is not a \
-             waypoint, so there is nothing left to replace; clear the actuals on the \
-             stop you mean to rewrite before diverting".into()));
+            "this trip's last stop has been arrived at and is not a waypoint, so there \
+             is nothing after it left to replace; clear the actuals on the stop you mean \
+             to rewrite before diverting".into()));
     }
 
     // Resolve every position before the first write. `sequence` is not passed:
     // the renumber below is what assigns it.
     if let Some(pos) = req.waypoint {
-        stops.push(resolve_position(
-            state, pos, "waypoint", crate::models::TripStopType::Waypoint,
-        ).await?);
+        stops.push(resolve_waypoint_position(state, pos).await?);
     }
     for (i, pos) in req.stops.into_iter().enumerate() {
         // Destinations default to `delivery`; a cross-dock hand-off can override

@@ -1064,7 +1064,7 @@ fn tools_list() -> Value {
                         "trip_id": { "type": "string", "format": "uuid" },
                         "waypoint": {
                             "type": "object",
-                            "description": "Where the old plan and the new plan diverged — where the driver actually was when the plan changed. Stored as a 'waypoint' stop: it routes but services no freight, so departing it never delivers the load. Required unless the trip already ends at a waypoint the driver reached.",
+                            "description": "Where the old plan and the new plan diverged — where the driver actually was when the plan changed. Stored as a 'waypoint' stop: it routes but services no freight, so departing it never delivers the load. Required unless the trip already ends at a waypoint the driver reached — and 'actual_arrive' is what makes a hold count as reached, so set it on any hold you intend to append a destination to later; a waypoint with no arrival time is dropped from the kept history rather than continued from.",
                             "properties": {
                                 "facility_id": { "type": "string", "format": "uuid" },
                                 "facility_name": { "type": "string" },

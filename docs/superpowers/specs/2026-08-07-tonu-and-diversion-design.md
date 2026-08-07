@@ -76,8 +76,21 @@ The load-side entry edge is deliberately looser than the trip-side gate (`Assign
 as `Dispatched`) because load status is a best-effort denormalization whose cascades
 log-and-swallow. The trip's status is the real gate.
 
-`TripStatus::Tonu` is **not** delivery-complete, so `load_trips_all_delivered` keeps
-returning false and a TONU'd leg can never drag a load to `Delivered`.
+`TripStatus::Tonu` is **not** delivery-complete. This design originally concluded from that
+alone that `load_trips_all_delivered` "keeps returning false, so a TONU'd leg can never drag
+a load to `Delivered`" — **that was wrong**, and it was a defect in this document rather than
+in the implementation that followed it. The reasoning generalised from a single-leg load to a
+predicate that also governs relays. On a relay load — deliver to a cross-dock, TONU at the
+dock, re-dispatch and haul it out — a `Tonu` leg counted as live is never delivery-complete
+and has no edge out, so the load could never cascade to `Delivered` and therefore could never
+invoice. `load_doctor::check_status_matches_trips` is gated behind the same predicate, so the
+one tool built to catch stranded loads would have reported nothing.
+
+`load_trips_all_delivered` therefore filters `Tonu` out alongside `Cancelled`: a TONU'd leg is
+a **dead record for cascade purposes**, superseded by whatever leg is dispatched in its place,
+while its record persists because the driver's deadhead and detention are paid off it. The
+predicate's existing non-empty guard is what keeps the single-leg case correct — a load whose
+only trip is `Tonu` has no live trips and stays `false`.
 
 Diversion introduces no new status. It is a plan mutation on a trip that keeps running.
 

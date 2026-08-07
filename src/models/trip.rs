@@ -182,15 +182,27 @@ impl TripStatus {
 
 /// Whether a load's trips collectively say the load has been delivered (#395).
 ///
-/// Cancelled trips are dead records — a superseded pre-assignment must not
-/// strand the load — so they are filtered out rather than counted against the
-/// check. The survivors must all be `Delivered` *or* `Completed`: on a relay
-/// load, leg 1 is routinely completed before leg 2 delivers, and an equality
-/// check against `Delivered` alone leaves every multi-leg load unable to
-/// cascade. A load with no surviving trips has nothing to deliver, so it is
-/// `false` rather than the vacuously-true `all()` on an empty iterator.
+/// `Cancelled` **and** `Tonu` trips are dead records for cascade purposes — a
+/// superseded pre-assignment must not strand the load, and neither must a leg
+/// whose truck was released before loading. A TONU'd leg is superseded by
+/// whatever leg is dispatched in its place; its record persists because the
+/// driver's deadhead and detention are paid off it, but it never delivers and
+/// has no edge out of `Tonu`, so counting it against this check leaves a relay
+/// load (deliver to cross-dock, TONU at the dock, re-dispatch and haul out)
+/// unable to cascade to `Delivered` *forever* — and therefore unable to
+/// invoice, with no manual override and no doctor coverage, since
+/// `load_doctor`'s status check is gated behind this same predicate.
+///
+/// The survivors must all be `Delivered` *or* `Completed`: on a relay load,
+/// leg 1 is routinely completed before leg 2 delivers, and an equality check
+/// against `Delivered` alone leaves every multi-leg load unable to cascade. A
+/// load with no surviving trips has nothing to deliver, so it is `false` rather
+/// than the vacuously-true `all()` on an empty iterator — which is what keeps
+/// the single-leg case right: a load whose only trip is `Tonu` stays `false`.
 pub(crate) fn load_trips_all_delivered(trips: &[TripRecord]) -> bool {
-    let mut live = trips.iter().filter(|t| t.status != TripStatus::Cancelled).peekable();
+    let mut live = trips.iter()
+        .filter(|t| !matches!(t.status, TripStatus::Cancelled | TripStatus::Tonu))
+        .peekable();
     live.peek().is_some() && live.all(|t| t.status.is_delivery_complete())
 }
 
@@ -458,13 +470,24 @@ mod tests {
     }
 
     #[test]
-    fn test_tonu_leg_blocks_the_load_delivery_cascade() {
+    fn test_tonu_leg_is_a_dead_record_for_the_delivery_cascade() {
         use TripStatus::*;
-        // Unlike Cancelled, a Tonu leg is a live outcome that must hold the load
-        // back rather than being filtered out as a dead record.
+        // A TONU'd leg is superseded by its replacement, exactly like a cancelled
+        // one, so it is filtered out rather than held against the load. Counting
+        // it would strand every relay load that TONUs a middle leg: Tonu has no
+        // edge out and is never delivery-complete, so the load could never
+        // cascade to Delivered and could never invoice.
+        assert!(all_delivered(&[Delivered, Tonu]));
+        // The real relay shape — deliver to the cross-dock, TONU at the dock,
+        // re-dispatch and haul it out.
+        assert!(all_delivered(&[Delivered, Tonu, Delivered]));
+        assert!(all_delivered(&[Cancelled, Tonu, Completed]));
+        // But a load whose only trip TONU'd has no live trip at all, so it is
+        // not delivered — the non-empty guard, not the filter, carries this.
         assert!(!all_delivered(&[Tonu]));
-        assert!(!all_delivered(&[Delivered, Tonu]));
         assert!(!all_delivered(&[Cancelled, Tonu]));
+        // A live sibling still holds the load back.
+        assert!(!all_delivered(&[Tonu, InTransit]));
     }
 
     // --- #395 ------------------------------------------------------------

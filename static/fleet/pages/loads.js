@@ -123,7 +123,7 @@ export async function renderLoadsView(params = {}) {
 
     const statusOptions = [
       '', 'planned', 'assigned', 'dispatched', 'in_transit',
-      'delivered', 'invoiced', 'settled', 'cancelled',
+      'delivered', 'invoiced', 'settled', 'tonu', 'cancelled',
     ];
     const selectHtml = `
       <select class="form-select" id="status-filter">

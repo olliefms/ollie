@@ -811,8 +811,17 @@ pub async fn build_trip_detail(
     Ok(enriched)
 }
 
-/// Computes driver pay for a trip on read. Resolves rates (trip ?? driver ?? terminal
-/// floor) and computes live. None when there are no loaded miles to pay on.
+/// Computes driver pay for a trip on read. Resolves rates (trip ?? driver ??
+/// terminal floor) and computes live.
+///
+/// `None` only when there is nothing to pay on at all: no mileage of either kind
+/// **and** no stop with a completed dwell. Detention is the half a miles-only
+/// gate silently dropped. A TONU on a driver's first trip has no
+/// `previous_trip_id` and a single reached stop, so `compute_trip_mileage`
+/// returns all-`None` and `compute_and_persist_mileage`'s failure detector never
+/// fires (it needs `expected_segments >= 2`) — the driver who sat five hours at
+/// the dock before being released got nothing, with nothing in the response
+/// saying so.
 pub async fn driver_pay_for_record(
     state: &AppState,
     record: &crate::models::TripRecord,
@@ -822,9 +831,19 @@ pub async fn driver_pay_for_record(
     if let Some(snap) = &record.driver_pay_snapshot {
         return Some(snap.clone());
     }
-    // A TONU trip has zero loaded miles by construction but real deadhead and
-    // real detention. Gating on loaded_miles alone paid such a driver nothing.
-    if record.loaded_miles.is_none() && record.deadhead_miles.is_none() {
+    let stops: Vec<PayStopInput> = record.stops.iter().map(|s| {
+        let mut s2 = s.clone();
+        s2.fill_utc_fields();
+        PayStopInput {
+            detention_free_minutes: s2.detention_free_minutes,
+            actual_arrive_utc: s2.actual_arrive_utc,
+            actual_depart_utc: s2.actual_depart_utc,
+            is_service_stop: s2.stop_type.is_service_stop(),
+        }
+    }).collect();
+    let has_billable_dwell = stops.iter()
+        .any(|s| s.actual_arrive_utc.is_some() && s.actual_depart_utc.is_some());
+    if record.loaded_miles.is_none() && record.deadhead_miles.is_none() && !has_billable_dwell {
         return None;
     }
     // Driver overrides + terminal floor.
@@ -859,16 +878,6 @@ pub async fn driver_pay_for_record(
         free_dwell_minutes: terminal.free_dwell_minutes,
     };
     let rates = resolve_rates(&trip_ov, &driver_ov, &floor);
-    let stops: Vec<PayStopInput> = record.stops.iter().map(|s| {
-        let mut s2 = s.clone();
-        s2.fill_utc_fields();
-        PayStopInput {
-            detention_free_minutes: s2.detention_free_minutes,
-            actual_arrive_utc: s2.actual_arrive_utc,
-            actual_depart_utc: s2.actual_depart_utc,
-            is_service_stop: s2.stop_type.is_service_stop(),
-        }
-    }).collect();
     Some(compute_driver_pay(record.loaded_miles, record.deadhead_miles, &stops, &rates))
 }
 
@@ -2052,10 +2061,10 @@ pub async fn build_load_detail(
         invoice_number: record.invoice_number,
         invoice_date: record.invoice_date,
         cancellation_reason: record.cancellation_reason,
-        quoted_rate_items: record.quoted_rate_items.clone(),
-        diverted_at: record.diverted_at.clone(),
-        diversion_reason: record.diversion_reason.clone(),
-        diversion_notes: record.diversion_notes.clone(),
+        quoted_rate_items: record.quoted_rate_items,
+        diverted_at: record.diverted_at,
+        diversion_reason: record.diversion_reason,
+        diversion_notes: record.diversion_notes,
         created_at: record.created_at,
         updated_at: record.updated_at,
         mileage_summary,

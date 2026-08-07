@@ -801,3 +801,120 @@ async fn test_doctors_are_clean_on_a_tonu_load_and_trip() {
         "a TONU'd trip legitimately has stops with no actuals: {:?}", report.findings,
     );
 }
+
+/// The branch's headline invariant, with the positive coverage it was missing.
+///
+/// `assert!(trip["loaded_miles"].is_null())` after a `tonu` call is true under
+/// this suite's `RoutingClient::new("")` whether or not the reassignment ran at
+/// all — with no ORS, nothing ever sets `loaded_miles` to `Some`, so a swapped
+/// pair of arguments at the `update_trip_mileage` call would ship green. Seeding
+/// a routed figure and driving the reassignment step directly is what makes that
+/// regression fail. The step is exercised on its own rather than through `tonu`
+/// because `tonu` deliberately clears mileage before recomputing (a failed
+/// recompute must leave an honest null), so a figure seeded ahead of the call is
+/// gone before the reassignment is reached.
+#[tokio::test]
+async fn test_tonu_mileage_reassignment_puts_the_whole_figure_in_deadhead() {
+    let (server, state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581510").await;
+    let uuid: uuid::Uuid = trip_id.parse().unwrap();
+
+    // Stand in for a successful routing pass over the truncated stop list, split
+    // the way `compute_trip_mileage` would split it with no `previous_trip_id`:
+    // almost everything called "loaded".
+    state.db.update_trip_mileage(uuid, Some(12.0), Some(407.0), Some(419.0), vec![12.0, 407.0])
+        .await.unwrap();
+
+    let warning = ollie::services::trip_lifecycle::reassign_all_to_deadhead(&state, uuid).await;
+    assert!(warning.is_none(), "reassignment reported a problem: {warning:?}");
+
+    let trip = state.db.get_trip(uuid).await.unwrap();
+    assert_eq!(trip.deadhead_miles, Some(419.0),
+        "a TONU trip has zero loaded miles by construction: the whole routed \
+         figure belongs in deadhead, got {:?}", trip.deadhead_miles);
+    assert!(trip.loaded_miles.is_none(),
+        "407 miles left in loaded_miles would be paid at the loaded rate: {:?}",
+        trip.loaded_miles);
+    assert_eq!(trip.total_miles, Some(419.0), "the total is unchanged by the split");
+}
+
+/// `recalculate_trip_miles` is the documented repair when ORS is down at TONU
+/// time, and it used to reintroduce the exact split TONU exists to prevent: it
+/// calls `compute_and_persist_mileage` directly, which applies the normal
+/// previous-trip split, and `already_set` short-circuits only when BOTH fields
+/// are set — which for a TONU trip is true of the *broken* state and false of
+/// the correct one.
+///
+/// Seeded split miles stand in for that state (also reachable for real when
+/// `tonu`'s own reassignment write fails after a successful route). The
+/// recompute still 409s because the suite has no ORS — that is the endpoint's
+/// existing contract — but the split must be corrected regardless.
+#[tokio::test]
+async fn test_recalculate_never_leaves_a_tonu_trip_with_split_miles() {
+    let (server, state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581511").await;
+
+    let arrive = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/0/arrive"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "actual_arrive": "2026-06-01T08:00:00" }))
+        .await;
+    assert_eq!(arrive.status_code(), 200, "arrive failed: {}", arrive.text());
+
+    let tonu = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "waypoint": { "facility_name": "Overflow Lot", "address": "Joliet, IL",
+                          "timezone": "America/Chicago" }
+        })).await;
+    assert_eq!(tonu.status_code(), 200, "tonu failed: {}", tonu.text());
+
+    let uuid: uuid::Uuid = trip_id.parse().unwrap();
+    let trip = state.db.get_trip(uuid).await.unwrap();
+    assert_eq!(trip.status, ollie::models::TripStatus::Tonu);
+    assert_eq!(trip.stops.len(), 2, "reached dock + waypoint");
+
+    // The state ORS-down TONU leaves behind, once someone has routed it: a split
+    // that bills the empty run at the loaded rate.
+    state.db.update_trip_mileage(uuid, Some(12.0), Some(407.0), Some(419.0), vec![12.0, 407.0])
+        .await.unwrap();
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/recalculate-miles"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({})).await;
+    assert_eq!(resp.status_code(), 409,
+        "no ORS in this suite, so the recompute itself still fails: {}", resp.text());
+
+    let trip = state.db.get_trip(uuid).await.unwrap();
+    assert!(trip.loaded_miles.is_none(),
+        "the documented repair path must not leave the empty run in loaded_miles: {:?}",
+        trip.loaded_miles);
+    assert_eq!(trip.deadhead_miles, Some(419.0),
+        "the whole figure belongs in deadhead: {:?}", trip.deadhead_miles);
+}
+
+/// `stop_type` is a legitimate override on a diversion destination and has no
+/// valid use on a TONU waypoint, where honouring it makes the parking spot a
+/// service stop and earns the driver an extra-stop fee for parking.
+#[tokio::test]
+async fn test_tonu_ignores_a_stop_type_override_on_the_waypoint() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (_load_id, trip_id, _driver_id) = dispatched_trip(&server, &token, "4581513").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/tonu"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "waypoint": { "facility_name": "Overflow Lot", "address": "Joliet, IL",
+                          "timezone": "America/Chicago", "stop_type": "delivery" }
+        })).await;
+    assert_eq!(resp.status_code(), 200, "tonu failed: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    let stops = trip["stops"].as_array().unwrap();
+    assert_eq!(stops.len(), 1, "no stop was reached, so the waypoint is the list");
+    assert_eq!(stops[0]["stop_type"], "waypoint",
+        "a waypoint is a waypoint whatever the caller asked for: {}", trip["stops"]);
+}

@@ -396,6 +396,57 @@ async fn test_departing_a_waypoint_does_not_deliver_the_trip() {
     assert_ne!(load["status"], "delivered");
 }
 
+/// `PositionInput` is shared between the `waypoint` field and the `stops` array,
+/// where `stop_type` is a legitimate override — a cross-dock hand-off is a
+/// `relay`, not a `delivery`. On a waypoint it has no valid use and one very bad
+/// one: `cascade_final_stop_delivered` keys its guard on `stop_type == Waypoint`,
+/// so a waypoint typed `delivery` on a `stops: []` divert becomes the
+/// max-sequence stop, and departing it marks the trip Delivered and cascades the
+/// load to Delivered — for freight that never arrived anywhere. The override is
+/// dropped at the waypoint call site rather than honoured.
+#[tokio::test]
+async fn test_divert_ignores_a_stop_type_override_on_the_waypoint() {
+    let (server, _state, _d1, _d2, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let (load_id, trip_id, _driver) = in_transit_trip(&server, &token, "4581512").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_id}/divert"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "reason": "diverted",
+            "waypoint": {
+                "facility_name": "Holding Yard", "address": "Topeka, KS",
+                "timezone": "America/Chicago",
+                "actual_arrive": "2026-06-01T14:00:00",
+                "stop_type": "delivery"
+            },
+            "stops": []
+        }))
+        .await;
+    assert_eq!(resp.status_code(), 200, "divert failed: {}", resp.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["stops"][1]["stop_type"], "waypoint",
+        "a waypoint is a waypoint whatever the caller asked for: {}", trip["stops"]);
+
+    // And the consequence the type carries: departing the hold delivers nothing.
+    let depart = server.post(&format!("/fleet/api/v1/trips/{trip_id}/stops/1/depart"))
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({ "actual_depart": "2026-06-01T18:00:00" }))
+        .await;
+    assert_eq!(depart.status_code(), 200, "depart failed: {}", depart.text());
+
+    let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(trip["status"], "in_transit",
+        "the freight is still on the truck; nothing was delivered");
+    let load: serde_json::Value = server.get(&format!("/fleet/api/v1/loads/{load_id}"))
+        .authorization_bearer(&token).await.json();
+    assert_eq!(load["status"], "in_transit",
+        "billing must not open on freight that never arrived anywhere");
+}
+
 /// The hold-then-append flow. A `stops: []` divert leaves the trip ending at a
 /// waypoint the driver reached — which already satisfies the rule the mandatory
 /// waypoint exists to enforce (the list ends where the truck actually is), so
@@ -762,7 +813,12 @@ async fn test_divert_refuses_a_settled_trip() {
 
     let trip: serde_json::Value = server.get(&format!("/fleet/api/v1/trips/{trip_id}"))
         .authorization_bearer(&token).await.json();
-    assert_eq!(trip["stops"].as_array().unwrap().len(), 2, "nothing was written");
+    // Not a length check: the request carries `stops: []`, so a divert that
+    // *succeeded* would leave [kept pickup, waypoint] — also two stops. The names
+    // are what a successful write would actually have changed.
+    let names: Vec<&str> = trip["stops"].as_array().unwrap().iter()
+        .map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["Shipper", "Consignee"], "nothing was written");
 }
 
 /// The event journal is how a diversion is reconstructed after the fact — the

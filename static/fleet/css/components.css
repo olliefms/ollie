@@ -543,8 +543,10 @@
   color: var(--color-warning);
 }
 
-/* danger group: cancelled, failed, inactive */
+/* danger group: cancelled, tonu, failed, inactive
+   tonu sits here with cancelled: both are terminal-without-delivery outcomes. */
 .badge--cancelled,
+.badge--tonu,
 .badge--failed,
 .badge--inactive {
   background: var(--color-danger-soft);

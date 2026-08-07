@@ -122,7 +122,33 @@ pub async fn recalculate_miles_handler(
     }
     let already_set = trip.deadhead_miles.is_some() && trip.loaded_miles.is_some();
 
-    let summary = if !force && already_set {
+    let summary = if trip.status == crate::models::TripStatus::Tonu {
+        // A TONU trip has zero loaded miles by construction — the whole run is
+        // the empty roll to a shipper that never loaded. `compute_trip_mileage`
+        // calls a leg deadhead only when it originates from a `previous_trip_id`,
+        // so leaving it to decide here lands that empty run in `loaded_miles` and
+        // `compute_driver_pay` bills it at the loaded rate. That is reachable
+        // exactly through the repair TONU documents: when ORS is down at TONU
+        // time both fields are left `None`, so `already_set` is false and this
+        // handler would otherwise recompute with the *normal* split.
+        //
+        // The `already_set` short-circuit is skipped outright for a TONU trip:
+        // it needs BOTH fields set, and a correctly-reassigned TONU trip has
+        // `loaded_miles: None`, so the only state it ever fires on is the split
+        // one that must be corrected.
+        let routed = compute_and_persist_mileage(&state, id).await;
+        // Reassign whatever is on the record, routed or not. A split can also
+        // arrive from `tonu`'s own reassignment write having failed after a
+        // successful route — the "miles routed but not reassigned to deadhead"
+        // warning — and that record must not stay split just because ORS is
+        // down on the day someone comes back to repair it.
+        if let Some(w) = crate::services::trip_lifecycle::reassign_all_to_deadhead(&state, id).await {
+            tracing::warn!(trip_id = %id, warning = %w, "TONU miles left split as routed");
+        }
+        routed?;
+        let trip = state.db.get_trip(id).await?;
+        crate::api::mileage_summary::build_mileage_summary(&state, &trip).await
+    } else if !force && already_set {
         crate::api::mileage_summary::build_mileage_summary(&state, &trip).await
     } else {
         compute_and_persist_mileage(&state, id).await?
