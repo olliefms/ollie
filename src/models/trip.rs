@@ -15,6 +15,10 @@ pub enum TripStopType {
     EmptyMove,
     Maintenance,
     Terminal,
+    /// A non-service stop that affects mileage: a hold awaiting instructions, a
+    /// company-mandated routing point, anything the router must pass through
+    /// where no freight is serviced.
+    Waypoint,
 }
 
 impl TripStopType {
@@ -28,7 +32,15 @@ impl TripStopType {
             Self::EmptyMove => "empty_move",
             Self::Maintenance => "maintenance",
             Self::Terminal => "terminal",
+            Self::Waypoint => "waypoint",
         }
+    }
+
+    /// Whether this stop is freight work the driver is paid an extra-stop fee
+    /// for. Non-service stops still route and still accrue detention — they
+    /// simply are not an "extra stop".
+    pub fn is_service_stop(&self) -> bool {
+        matches!(self, Self::Pickup | Self::Delivery | Self::Relay | Self::EmptyMove)
     }
 }
 
@@ -44,6 +56,7 @@ impl std::str::FromStr for TripStopType {
             "empty_move" => Ok(Self::EmptyMove),
             "maintenance" => Ok(Self::Maintenance),
             "terminal" => Ok(Self::Terminal),
+            "waypoint" => Ok(Self::Waypoint),
             other => Err(format!("unknown trip stop type: {other}")),
         }
     }
@@ -126,6 +139,9 @@ pub enum TripStatus {
     Delivered,
     Completed,
     Cancelled,
+    /// Truck Ordered Not Used: dispatched and rolled, released before loading.
+    /// Terminal — real deadhead, no freight.
+    Tonu,
 }
 
 impl TripStatus {
@@ -138,6 +154,7 @@ impl TripStatus {
             Self::Delivered => "delivered",
             Self::Completed => "completed",
             Self::Cancelled => "cancelled",
+            Self::Tonu => "tonu",
         }
     }
 
@@ -151,6 +168,7 @@ impl TripStatus {
             | (Self::InTransit, Self::Delivered)
             | (Self::Delivered, Self::Completed)
             | (Self::Planned | Self::Assigned | Self::Dispatched, Self::Cancelled)
+            | (Self::Dispatched, Self::Tonu)
         )
     }
 
@@ -187,6 +205,7 @@ impl std::str::FromStr for TripStatus {
             "delivered" => Ok(Self::Delivered),
             "completed" => Ok(Self::Completed),
             "cancelled" => Ok(Self::Cancelled),
+            "tonu" => Ok(Self::Tonu),
             other => Err(format!("unknown trip status: {other}")),
         }
     }
@@ -372,15 +391,30 @@ mod tests {
 
     #[test]
     fn test_trip_stop_type_roundtrip() {
-        for s in ["origin", "fuel", "pickup", "delivery", "relay", "empty_move", "maintenance", "terminal"] {
+        for s in ["origin", "fuel", "pickup", "delivery", "relay", "empty_move",
+                  "maintenance", "terminal", "waypoint"] {
             let t: TripStopType = s.parse().unwrap();
             assert_eq!(t.as_str(), s);
         }
     }
 
     #[test]
+    fn test_is_service_stop() {
+        for t in [TripStopType::Pickup, TripStopType::Delivery,
+                  TripStopType::Relay, TripStopType::EmptyMove] {
+            assert!(t.is_service_stop(), "{t:?} is freight work");
+        }
+        // An empty move counts: it is a dispatched movement with its own BOL and
+        // POD whose commodity happens to be nothing.
+        for t in [TripStopType::Origin, TripStopType::Fuel, TripStopType::Maintenance,
+                  TripStopType::Terminal, TripStopType::Waypoint] {
+            assert!(!t.is_service_stop(), "{t:?} affects mileage but is not freight work");
+        }
+    }
+
+    #[test]
     fn test_trip_status_roundtrip() {
-        for s in ["planned", "assigned", "dispatched", "in_transit", "delivered", "completed", "cancelled"] {
+        for s in ["planned", "assigned", "dispatched", "in_transit", "delivered", "completed", "cancelled", "tonu"] {
             let st: TripStatus = s.parse().unwrap();
             assert_eq!(st.as_str(), s);
         }
@@ -405,6 +439,32 @@ mod tests {
         assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Planned));
         assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Delivered));
         assert!(!TripStatus::Completed.can_transition_to(&TripStatus::Cancelled));
+    }
+
+    #[test]
+    fn test_tonu_is_terminal_and_reachable_only_from_dispatched() {
+        assert!(TripStatus::Dispatched.can_transition_to(&TripStatus::Tonu));
+        for s in [TripStatus::Planned, TripStatus::Assigned, TripStatus::InTransit,
+                  TripStatus::Delivered, TripStatus::Completed, TripStatus::Cancelled] {
+            assert!(!s.can_transition_to(&TripStatus::Tonu), "{s:?} must not reach tonu");
+        }
+        for s in [TripStatus::Planned, TripStatus::Assigned, TripStatus::Dispatched,
+                  TripStatus::InTransit, TripStatus::Delivered, TripStatus::Completed,
+                  TripStatus::Cancelled] {
+            assert!(!TripStatus::Tonu.can_transition_to(&s), "tonu is terminal, not -> {s:?}");
+        }
+        // A TONU'd trip delivered nothing.
+        assert!(!TripStatus::Tonu.is_delivery_complete());
+    }
+
+    #[test]
+    fn test_tonu_leg_blocks_the_load_delivery_cascade() {
+        use TripStatus::*;
+        // Unlike Cancelled, a Tonu leg is a live outcome that must hold the load
+        // back rather than being filtered out as a dead record.
+        assert!(!all_delivered(&[Tonu]));
+        assert!(!all_delivered(&[Delivered, Tonu]));
+        assert!(!all_delivered(&[Cancelled, Tonu]));
     }
 
     // --- #395 ------------------------------------------------------------

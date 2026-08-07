@@ -62,7 +62,7 @@ impl std::str::FromStr for ServiceType {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum LoadStatus {
-    Planned, Assigned, Dispatched, InTransit, Delivered, Invoiced, Settled, Cancelled,
+    Planned, Assigned, Dispatched, InTransit, Delivered, Invoiced, Settled, Cancelled, Tonu,
 }
 
 impl LoadStatus {
@@ -72,6 +72,7 @@ impl LoadStatus {
             Self::Dispatched => "dispatched", Self::InTransit => "in_transit",
             Self::Delivered => "delivered", Self::Invoiced => "invoiced",
             Self::Settled => "settled", Self::Cancelled => "cancelled",
+            Self::Tonu => "tonu",
         }
     }
 
@@ -98,6 +99,14 @@ impl LoadStatus {
             (Self::Dispatched, Self::Planned) => true,
             // Cancel only from pre-delivery states; delivered/invoiced/settled are terminal
             (Self::Planned | Self::Assigned | Self::Dispatched | Self::InTransit, Self::Cancelled) => true,
+            // TONU: the truck was ordered and rolled but never loaded. The entry
+            // edge is looser than the trip-side gate (which requires Dispatched)
+            // because load status is a best-effort denormalization whose cascades
+            // log-and-swallow; a load lagging at Assigned must still be able to
+            // follow its trip.
+            (Self::Assigned | Self::Dispatched, Self::Tonu) => true,
+            (Self::Tonu, Self::Invoiced) => true,
+            (Self::Tonu, Self::Cancelled) => true,
             _ => false,
         }
     }
@@ -111,6 +120,7 @@ impl std::str::FromStr for LoadStatus {
             "dispatched" => Ok(Self::Dispatched), "in_transit" => Ok(Self::InTransit),
             "delivered" => Ok(Self::Delivered), "invoiced" => Ok(Self::Invoiced),
             "settled" => Ok(Self::Settled), "cancelled" => Ok(Self::Cancelled),
+            "tonu" => Ok(Self::Tonu),
             other => Err(format!("unknown load status: {other}")),
         }
     }
@@ -524,10 +534,27 @@ mod tests {
 
     #[test]
     fn test_load_status_roundtrip() {
-        for s in ["planned","assigned","dispatched","in_transit","delivered","invoiced","settled","cancelled"] {
+        for s in ["planned","assigned","dispatched","in_transit","delivered","invoiced","settled","cancelled","tonu"] {
             let st: LoadStatus = s.parse().unwrap();
             assert_eq!(st.as_str(), s);
         }
+    }
+
+    #[test]
+    fn test_load_tonu_transitions() {
+        assert!(LoadStatus::Assigned.can_transition_to(&LoadStatus::Tonu));
+        assert!(LoadStatus::Dispatched.can_transition_to(&LoadStatus::Tonu));
+        // in_transit means freight is aboard — that is diversion territory.
+        assert!(!LoadStatus::InTransit.can_transition_to(&LoadStatus::Tonu));
+        assert!(!LoadStatus::Planned.can_transition_to(&LoadStatus::Tonu));
+
+        assert!(LoadStatus::Tonu.can_transition_to(&LoadStatus::Invoiced));
+        // A broker who ultimately pays nothing needs somewhere to put it that
+        // is not a $0 invoice.
+        assert!(LoadStatus::Tonu.can_transition_to(&LoadStatus::Cancelled));
+        assert!(!LoadStatus::Tonu.can_transition_to(&LoadStatus::Delivered));
+        assert!(!LoadStatus::Tonu.can_transition_to(&LoadStatus::Planned));
+        assert!(!LoadStatus::Tonu.can_transition_to(&LoadStatus::Settled));
     }
 
     #[test]

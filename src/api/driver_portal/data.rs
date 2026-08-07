@@ -180,7 +180,7 @@ pub enum TripTab {
 pub fn classify_trip(trip: &TripListItem) -> TripTab {
     use crate::models::load::parse_stop_time;
     match &trip.status {
-        TripStatus::Delivered | TripStatus::Completed | TripStatus::Cancelled => TripTab::Past,
+        TripStatus::Delivered | TripStatus::Completed | TripStatus::Cancelled | TripStatus::Tonu => TripTab::Past,
         TripStatus::Dispatched | TripStatus::InTransit => TripTab::Current,
         TripStatus::Assigned => {
             let first_stop = trip.stops.first();
