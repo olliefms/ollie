@@ -168,7 +168,7 @@ pub async fn authorize_decision(
     }
 
     let mut raw = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut raw);
+    rand::rng().fill_bytes(&mut raw);
     use base64::Engine;
     let code = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw);
     let code_hash = hex::encode(Sha256::digest(code.as_bytes()));

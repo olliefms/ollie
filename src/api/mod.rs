@@ -304,8 +304,16 @@ impl utoipa::Modify for SecurityAddon {
     }
 }
 
-async fn openapi_json() -> axum::Json<utoipa::openapi::OpenApi> {
-    axum::Json(ApiDoc::openapi())
+async fn openapi_json() -> impl axum::response::IntoResponse {
+    // The spec is compile-time-fixed; build and serialize it once instead of
+    // walking every registered path and schema on each request.
+    static OPENAPI_JSON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let body = OPENAPI_JSON
+        .get_or_init(|| serde_json::to_string(&ApiDoc::openapi()).expect("openapi serializes"));
+    (
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body.as_str(),
+    )
 }
 
 const LLMS_TXT: &str = r#"# ollie API

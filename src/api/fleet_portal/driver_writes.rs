@@ -154,11 +154,8 @@ async fn reject_equipment_on_other_active_trip(
     if truck_id.is_none() && trailer_ids.is_empty() {
         return Ok(());
     }
-    let trips = state.db.list_trips(None, None, None, None, None).await?;
+    let trips = state.db.list_active_trips().await?;
     for t in &trips {
-        if !matches!(t.status, TripStatus::Dispatched | TripStatus::InTransit) {
-            continue;
-        }
         if t.driver_id == Some(driver_id) {
             continue;
         }

@@ -183,9 +183,8 @@ pub async fn update_trailer(
 
     // Reject trailers already on a different driver's active trip.
     if !resolved_ids.is_empty() {
-        let trips = state.db.list_trips(None, None, None, None, None).await?;
+        let trips = state.db.list_active_trips().await?;
         for t in &trips {
-            if !matches!(t.status, TripStatus::Dispatched | TripStatus::InTransit) { continue; }
             if t.driver_id == Some(driver_id) { continue; }
             for tid in &resolved_ids {
                 if t.trailer_ids.contains(tid) {

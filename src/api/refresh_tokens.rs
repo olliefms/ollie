@@ -20,7 +20,7 @@ pub fn hash_token(plaintext: &str) -> String {
 /// 32 bytes of CSPRNG, base64url (no padding), `ollr_`-prefixed for greppability.
 fn generate_secret() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     use base64::Engine;
     format!("ollr_{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
 }

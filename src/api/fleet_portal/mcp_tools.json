@@ -1,0 +1,2378 @@
+{
+  "tools": [
+    {
+      "description": "List loads. Optional filters, all ANDed together: status, customer (substring), tags (a load must carry every tag given), facility_id (loads with a stop at that facility), from/to (created_at bounds, ISO 8601).",
+      "inputSchema": {
+        "properties": {
+          "customer": {
+            "description": "Substring match on customer name.",
+            "type": "string"
+          },
+          "facility_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "from": {
+            "description": "created_at >= this RFC 3339 datetime.",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "planned",
+              "assigned",
+              "dispatched",
+              "in_transit",
+              "delivered",
+              "invoiced",
+              "settled",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "tags": {
+            "description": "Load must carry every tag listed.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "to": {
+            "description": "created_at <= this RFC 3339 datetime.",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_loads"
+    },
+    {
+      "description": "Get a single load by UUID.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_load"
+    },
+    {
+      "description": "Create a new freight load.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "commodity": {
+            "type": "string"
+          },
+          "customer_name": {
+            "type": "string"
+          },
+          "customer_ref": {
+            "type": "string"
+          },
+          "kind": {
+            "description": "Default freight. 'administrative' marks revenue with no trip behind it (weekly guarantee, TONU, detention-only, layover, accessorial-only) — it invoices straight from planned and cannot be assigned to a trip.",
+            "enum": [
+              "freight",
+              "administrative"
+            ],
+            "type": "string"
+          },
+          "load_number": {
+            "description": "Human-facing load/reference number (free-form string, e.g. a broker/Landstar number). Omit to auto-assign LD-YYYY-NNNN.",
+            "type": "string"
+          },
+          "miles": {
+            "type": "number"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "rate_items": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stops": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "weight_lbs": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "customer_name"
+        ],
+        "type": "object"
+      },
+      "name": "create_load"
+    },
+    {
+      "description": "Update fields on an existing load.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "commodity": {
+            "type": "string"
+          },
+          "customer_name": {
+            "type": "string"
+          },
+          "customer_ref": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "description": "Only changeable while the load is 'planned' and has no trips.",
+            "enum": [
+              "freight",
+              "administrative"
+            ],
+            "type": "string"
+          },
+          "load_number": {
+            "description": "Human-facing load/reference number (free-form string). Overwrites the existing number.",
+            "type": "string"
+          },
+          "miles": {
+            "type": "number"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "rate_items": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "stops": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "weight_lbs": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "update_load"
+    },
+    {
+      "description": "List trips. Items carry deadhead_miles, loaded_miles, total_miles, and origin_facility_name for fleet-wide audits without N+1 get_trip calls. Optional filters: load_id, driver_id, status, trip_number, load_number.",
+      "inputSchema": {
+        "properties": {
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "load_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "load_number": {
+            "description": "Filter to trips of a load by its load_number (e.g. 'LD-2026-0001')",
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "trip_number": {
+            "description": "Exact match, e.g. 'T-2026-0014'",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_trips"
+    },
+    {
+      "description": "Get a single trip by UUID. Response includes a full mileage_summary (origin block + per-leg breakdown).",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_trip"
+    },
+    {
+      "description": "Create a new trip. If load_id is given, stops can be omitted and will be copied from the load.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "load_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "previous_trip_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "sequence": {
+            "type": "integer"
+          },
+          "stops": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "trailer_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "trip_number": {
+            "type": "string"
+          },
+          "truck_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "create_trip"
+    },
+    {
+      "description": "Update a trip's notes, blob_ids, and/or previous_trip_id link. Setting previous_trip_id triggers a mileage recompute. Mileage fields cannot be set directly.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "previous_trip_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "update_trip"
+    },
+    {
+      "description": "Recompute deadhead/loaded/total miles for a trip via ORS routing. Returns the updated mileage_summary. Use force=true to recompute even when miles are already set.",
+      "inputSchema": {
+        "properties": {
+          "force": {
+            "type": "boolean"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "recalculate_trip_miles"
+    },
+    {
+      "description": "Assign a driver, truck, and trailers to a trip.",
+      "inputSchema": {
+        "properties": {
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trailer_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "truck_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id",
+          "driver_id",
+          "truck_id"
+        ],
+        "type": "object"
+      },
+      "name": "assign_driver"
+    },
+    {
+      "description": "Unassign the driver and equipment from a trip.",
+      "inputSchema": {
+        "properties": {
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "unassign_driver"
+    },
+    {
+      "description": "Dispatch a trip (assigned → dispatched). Trip must be in assigned status; driver/truck must not already be dispatched elsewhere.",
+      "inputSchema": {
+        "properties": {
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "dispatch_trip"
+    },
+    {
+      "description": "Revert a dispatched trip back to assigned. Trip must be in dispatched status (not in_transit or beyond).",
+      "inputSchema": {
+        "properties": {
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "undispatch_trip"
+    },
+    {
+      "description": "Cancel a trip. Blocked if the trip is in_transit or delivered.",
+      "inputSchema": {
+        "properties": {
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "cancel_trip"
+    },
+    {
+      "description": "End a dispatched trip as TONU (Truck Ordered Not Used): the truck rolled but was released before loading. Truncates the trip to the last stop actually reached, stamps the release time so the dock wait bills as detention, assigns all miles to deadhead, moves the load to 'tonu' and archives its rate items. Valid only from 'dispatched' — use cancel_trip before dispatch, divert_trip once the pickup has been departed. Supply 'waypoint' with where the driver stopped when no stop was reached; it is required in that case.",
+      "inputSchema": {
+        "properties": {
+          "occurred_at": {
+            "description": "When the driver was released; naive local in the truncation stop's timezone. Defaults to now. Rejected when no stop was reached — put the release time in waypoint.actual_depart there.",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "waypoint": {
+            "description": "Where the truck actually stopped. Required when no stop was reached.",
+            "properties": {
+              "actual_arrive": {
+                "description": "Naive local datetime, e.g. 2026-06-01T06:30:00",
+                "type": "string"
+              },
+              "actual_depart": {
+                "type": "string"
+              },
+              "address": {
+                "type": "string"
+              },
+              "facility_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "facility_name": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              },
+              "timezone": {
+                "description": "IANA timezone, e.g. America/Chicago",
+                "type": "string"
+              }
+            },
+            "required": [
+              "timezone"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "tonu_trip"
+    },
+    {
+      "description": "Re-target an in-transit trip. Replaces every stop the driver has not reached with a new destination, keeping arrived-at stops as immutable history. 'waypoint' marks where the old plan and the new plan diverged and is REQUIRED: routing walks waypoint to waypoint, so without it any backtracking is silently erased from the recomputed miles. The one exception is a trip that already ends at a waypoint the driver reached — where a previous 'stops'-empty hold left it — since the stop list already ends at the truck's real position; there, omit 'waypoint' to append the destination to the hold, or supply one if the truck has moved again since. reason 'diverted' or 'reconsigned' flags the load for a diversion fee; 'bol_correction' does not. Valid only from 'in_transit' — use tonu_trip before the pickup is departed. 'stops' may be empty for 'pulled over, disposition unknown'. Rate items are left untouched: unlike a TONU, the line haul is at least partly earned. Mileage is recomputed; if routing is unavailable the miles are cleared to null rather than left describing the superseded plan.",
+      "inputSchema": {
+        "properties": {
+          "notes": {
+            "type": "string"
+          },
+          "reason": {
+            "description": "'diverted' — the broker cancelled mid-transit. 'reconsigned' — the broker nominated a different consignee. 'bol_correction' — the BOL disagreed with the rate confirmation and the BOL wins; nothing was diverted, so the load is NOT flagged.",
+            "enum": [
+              "diverted",
+              "reconsigned",
+              "bol_correction"
+            ],
+            "type": "string"
+          },
+          "stops": {
+            "description": "New destinations, in order. Same shape as waypoint, plus an optional stop_type. May be omitted or empty when the disposition is not known yet.",
+            "items": {
+              "properties": {
+                "actual_arrive": {
+                  "type": "string"
+                },
+                "actual_depart": {
+                  "type": "string"
+                },
+                "address": {
+                  "type": "string"
+                },
+                "facility_id": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "facility_name": {
+                  "type": "string"
+                },
+                "notes": {
+                  "type": "string"
+                },
+                "stop_type": {
+                  "description": "Defaults to 'delivery'. Set 'relay' for a cross-dock hand-off, where the freight changes trucks rather than reaching a consignee.",
+                  "enum": [
+                    "origin",
+                    "fuel",
+                    "pickup",
+                    "delivery",
+                    "relay",
+                    "empty_move",
+                    "maintenance",
+                    "terminal",
+                    "waypoint"
+                  ],
+                  "type": "string"
+                },
+                "timezone": {
+                  "description": "IANA timezone, e.g. America/Chicago",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "timezone"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "waypoint": {
+            "description": "Where the old plan and the new plan diverged — where the driver actually was when the plan changed. Stored as a 'waypoint' stop: it routes but services no freight, so departing it never delivers the load. Required unless the trip already ends at a waypoint the driver reached — and 'actual_arrive' is what makes a hold count as reached, so set it on any hold you intend to append a destination to later; a waypoint with no arrival time is dropped from the kept history rather than continued from.",
+            "properties": {
+              "actual_arrive": {
+                "description": "Naive local datetime, e.g. 2026-06-01T14:00:00",
+                "type": "string"
+              },
+              "actual_depart": {
+                "type": "string"
+              },
+              "address": {
+                "type": "string"
+              },
+              "facility_id": {
+                "format": "uuid",
+                "type": "string"
+              },
+              "facility_name": {
+                "type": "string"
+              },
+              "notes": {
+                "type": "string"
+              },
+              "timezone": {
+                "description": "IANA timezone, e.g. America/Chicago",
+                "type": "string"
+              }
+            },
+            "required": [
+              "timezone"
+            ],
+            "type": "object"
+          }
+        },
+        "required": [
+          "trip_id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "name": "divert_trip"
+    },
+    {
+      "description": "Complete a delivered trip and release the driver, truck, and trailers back to available. Trip must be in delivered status.",
+      "inputSchema": {
+        "properties": {
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "complete_trip"
+    },
+    {
+      "description": "Record actual arrival at a trip stop. Cascades the actual_arrive to the linked load stop when present.",
+      "inputSchema": {
+        "properties": {
+          "actual_arrive": {
+            "description": "Naive local datetime when the stop has a timezone (e.g. 2026-05-10T08:00:00)",
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id",
+          "sequence",
+          "actual_arrive"
+        ],
+        "type": "object"
+      },
+      "name": "stop_arrive"
+    },
+    {
+      "description": "Record actual departure from a trip stop. Triggers trip and load status cascades: dispatched → in_transit when the first pickup departs (or, on a non-freight/empty move with no pickup, when the first stop departs), and → delivered when the final stop departs. A single-stop empty move advances straight to delivered on that one depart.",
+      "inputSchema": {
+        "properties": {
+          "actual_depart": {
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id",
+          "sequence",
+          "actual_depart"
+        ],
+        "type": "object"
+      },
+      "name": "stop_depart"
+    },
+    {
+      "description": "Flag a trip stop as late with an optional ETA and notes.",
+      "inputSchema": {
+        "properties": {
+          "eta": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id",
+          "sequence"
+        ],
+        "type": "object"
+      },
+      "name": "stop_late"
+    },
+    {
+      "description": "Record a driver check-call event with current location and optional notes and next-stop ETA.",
+      "inputSchema": {
+        "properties": {
+          "eta_next_stop": {
+            "type": "string"
+          },
+          "location": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id",
+          "location"
+        ],
+        "type": "object"
+      },
+      "name": "check_call"
+    },
+    {
+      "description": "List drivers. Optional filter: status (available/assigned/dispatched/inactive).",
+      "inputSchema": {
+        "properties": {
+          "status": {
+            "enum": [
+              "available",
+              "assigned",
+              "dispatched",
+              "inactive"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_drivers"
+    },
+    {
+      "description": "Get a single driver by UUID.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_driver"
+    },
+    {
+      "description": "Attach a truck and/or trailers to a driver. Trailers are additive (merged with any already attached). Attaching a truck releases the driver's previous truck to available first. Rejected if the driver is inactive or any equipment is on another driver's active (dispatched/in_transit) trip. If the driver has an active trip, the trip's truck/trailers are synced. Pure equipment event — does not change trip status.",
+      "inputSchema": {
+        "properties": {
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trailer_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "truck": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "driver_id"
+        ],
+        "type": "object"
+      },
+      "name": "attach_equipment"
+    },
+    {
+      "description": "Detach a driver's truck and/or drop trailers, releasing them to available. Set truck=true to un-seat the truck; pass trailer_ids to drop specific trailers, or all_trailers=true to drop every trailer. Syncs the driver's active trip when present. Pure equipment event — does not change trip status.",
+      "inputSchema": {
+        "properties": {
+          "all_trailers": {
+            "default": false,
+            "type": "boolean"
+          },
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trailer_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "truck": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "driver_id"
+        ],
+        "type": "object"
+      },
+      "name": "detach_equipment"
+    },
+    {
+      "description": "List all trucks.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_trucks"
+    },
+    {
+      "description": "Get a single truck by UUID.",
+      "inputSchema": {
+        "properties": {
+          "truck_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "truck_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_truck"
+    },
+    {
+      "description": "Create a new truck. Defaults status to `available`. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "plate": {
+            "type": "string"
+          },
+          "plate_state": {
+            "type": "string"
+          },
+          "unit_number": {
+            "type": "string"
+          },
+          "vin": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unit_number"
+        ],
+        "type": "object"
+      },
+      "name": "create_truck"
+    },
+    {
+      "description": "Update a truck's fields. `status` is not settable here — trucks transition via the trip lifecycle. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "make": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "plate": {
+            "type": "string"
+          },
+          "plate_state": {
+            "type": "string"
+          },
+          "truck_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "unit_number": {
+            "type": "string"
+          },
+          "vin": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "truck_id"
+        ],
+        "type": "object"
+      },
+      "name": "update_truck"
+    },
+    {
+      "description": "List all trailers.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_trailers"
+    },
+    {
+      "description": "Get a single trailer by UUID.",
+      "inputSchema": {
+        "properties": {
+          "trailer_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trailer_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_trailer"
+    },
+    {
+      "description": "Create a new trailer. `owner` is one of fleet/carrier/customer/other; `owner_name` is required when owner is not fleet. Defaults status to `available`. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "length_ft": {
+            "type": "number"
+          },
+          "make": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "fleet",
+              "carrier",
+              "customer",
+              "other"
+            ],
+            "type": "string"
+          },
+          "owner_name": {
+            "type": "string"
+          },
+          "plate": {
+            "type": "string"
+          },
+          "plate_state": {
+            "type": "string"
+          },
+          "trailer_type": {
+            "type": "string"
+          },
+          "unit_number": {
+            "type": "string"
+          },
+          "vin": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "unit_number",
+          "owner"
+        ],
+        "type": "object"
+      },
+      "name": "create_trailer"
+    },
+    {
+      "description": "Update a trailer's fields. `status` is not settable here — trailers transition via the trip lifecycle. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "length_ft": {
+            "type": "number"
+          },
+          "make": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "owner": {
+            "enum": [
+              "fleet",
+              "carrier",
+              "customer",
+              "other"
+            ],
+            "type": "string"
+          },
+          "owner_name": {
+            "type": "string"
+          },
+          "plate": {
+            "type": "string"
+          },
+          "plate_state": {
+            "type": "string"
+          },
+          "trailer_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trailer_type": {
+            "type": "string"
+          },
+          "unit_number": {
+            "type": "string"
+          },
+          "vin": {
+            "type": "string"
+          },
+          "year": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "trailer_id"
+        ],
+        "type": "object"
+      },
+      "name": "update_trailer"
+    },
+    {
+      "description": "List equipment maintenance entries. Optional filters: equipment_type (truck/trailer), equipment_id, category. Newest service_date first.",
+      "inputSchema": {
+        "properties": {
+          "category": {
+            "enum": [
+              "preventive_maintenance",
+              "repair",
+              "tire",
+              "inspection",
+              "oil_change",
+              "brakes",
+              "other"
+            ],
+            "type": "string"
+          },
+          "equipment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "equipment_type": {
+            "enum": [
+              "truck",
+              "trailer"
+            ],
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_maintenance"
+    },
+    {
+      "description": "Get a single maintenance entry by UUID.",
+      "inputSchema": {
+        "properties": {
+          "maintenance_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "maintenance_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_maintenance"
+    },
+    {
+      "description": "Record completed maintenance work on a truck or trailer. `equipment_id` must reference an existing unit of the given `equipment_type`. `service_date` is an ISO date (YYYY-MM-DD). `expense_id` links an existing expense record whose amount becomes the maintenance cost — cannot be set together with `cost`. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "category": {
+            "enum": [
+              "preventive_maintenance",
+              "repair",
+              "tire",
+              "inspection",
+              "oil_change",
+              "brakes",
+              "other"
+            ],
+            "type": "string"
+          },
+          "cost": {
+            "type": "number"
+          },
+          "description": {
+            "type": "string"
+          },
+          "equipment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "equipment_type": {
+            "enum": [
+              "truck",
+              "trailer"
+            ],
+            "type": "string"
+          },
+          "expense_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "invoice_ref": {
+            "type": "string"
+          },
+          "odometer": {
+            "type": "integer"
+          },
+          "service_date": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "equipment_type",
+          "equipment_id",
+          "service_date",
+          "category",
+          "description"
+        ],
+        "type": "object"
+      },
+      "name": "create_maintenance"
+    },
+    {
+      "description": "Update a maintenance entry's fields. equipment_type/equipment_id are not changeable (delete + recreate to re-link). `expense_id` links an expense record whose amount becomes the maintenance cost (cannot be set together with `cost`); re-linking an already-linked record to a different expense is rejected. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "category": {
+            "enum": [
+              "preventive_maintenance",
+              "repair",
+              "tire",
+              "inspection",
+              "oil_change",
+              "brakes",
+              "other"
+            ],
+            "type": "string"
+          },
+          "cost": {
+            "type": "number"
+          },
+          "description": {
+            "type": "string"
+          },
+          "expense_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "invoice_ref": {
+            "type": "string"
+          },
+          "maintenance_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "odometer": {
+            "type": "integer"
+          },
+          "service_date": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "maintenance_id"
+        ],
+        "type": "object"
+      },
+      "name": "update_maintenance"
+    },
+    {
+      "description": "List expenses. Optional filters: status (submitted/reviewed/settled), category, driver_id, trip_id, equipment_id, submitted_by, from/to (YYYY-MM-DD). Newest first. status=submitted is the review queue.",
+      "inputSchema": {
+        "properties": {
+          "category": {
+            "enum": [
+              "fuel",
+              "tolls",
+              "scales",
+              "lumper",
+              "parking",
+              "repair",
+              "supplies",
+              "permit",
+              "other"
+            ],
+            "type": "string"
+          },
+          "cursor": {
+            "type": "string"
+          },
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "equipment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "from": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "submitted",
+              "reviewed",
+              "settled"
+            ],
+            "type": "string"
+          },
+          "submitted_by": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_expenses"
+    },
+    {
+      "description": "Get a single expense by UUID, including AI-suggested fields and derived reimbursement/deduction.",
+      "inputSchema": {
+        "properties": {
+          "expense_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expense_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_expense"
+    },
+    {
+      "description": "Create an expense record (status=submitted). Attach receipt blobs via blob_ids. Optional links: driver_id, trip_id, equipment_type+equipment_id, maintenance_id (links an existing maintenance record; its cost will mirror this expense). Amounts are set at review, but amount may be pre-filled. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "amount": {
+            "type": "number"
+          },
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "category": {
+            "enum": [
+              "fuel",
+              "tolls",
+              "scales",
+              "lumper",
+              "parking",
+              "repair",
+              "supplies",
+              "permit",
+              "other"
+            ],
+            "type": "string"
+          },
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "equipment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "equipment_type": {
+            "enum": [
+              "truck",
+              "trailer"
+            ],
+            "type": "string"
+          },
+          "expense_date": {
+            "type": "string"
+          },
+          "maintenance_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "category"
+        ],
+        "type": "object"
+      },
+      "name": "create_expense"
+    },
+    {
+      "description": "Update an un-settled expense. Non-managers may only edit their own submitted records; money fields (amount, approved_amount, payment_method, review_note) require expenses:approve. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "amount": {
+            "type": "number"
+          },
+          "approved_amount": {
+            "type": "number"
+          },
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "category": {
+            "enum": [
+              "fuel",
+              "tolls",
+              "scales",
+              "lumper",
+              "parking",
+              "repair",
+              "supplies",
+              "permit",
+              "other"
+            ],
+            "type": "string"
+          },
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "equipment_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "equipment_type": {
+            "enum": [
+              "truck",
+              "trailer"
+            ],
+            "type": "string"
+          },
+          "expense_date": {
+            "type": "string"
+          },
+          "expense_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "maintenance_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "payment_method": {
+            "enum": [
+              "company",
+              "personal"
+            ],
+            "type": "string"
+          },
+          "review_note": {
+            "type": "string"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expense_id"
+        ],
+        "type": "object"
+      },
+      "name": "update_expense"
+    },
+    {
+      "description": "Review an expense: set the receipt total (amount), the approved_amount (0 <= approved <= amount; equal = full approval, 0 = rejection, between = partial), and payment_method (company = any company funds; personal = driver's own money). Personal approved portion becomes a reimbursement; company denied portion becomes a deduction. Clears AI suggestions.",
+      "inputSchema": {
+        "properties": {
+          "amount": {
+            "type": "number"
+          },
+          "approved_amount": {
+            "type": "number"
+          },
+          "expense_date": {
+            "type": "string"
+          },
+          "expense_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "payment_method": {
+            "enum": [
+              "company",
+              "personal"
+            ],
+            "type": "string"
+          },
+          "review_note": {
+            "type": "string"
+          },
+          "vendor": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "expense_id",
+          "amount",
+          "approved_amount",
+          "payment_method"
+        ],
+        "type": "object"
+      },
+      "name": "review_expense"
+    },
+    {
+      "description": "Delete an un-settled expense. Non-managers may only delete their own submitted records.",
+      "inputSchema": {
+        "properties": {
+          "expense_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "expense_id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_expense"
+    },
+    {
+      "description": "List events. Optional filters: trip_id, driver_id.",
+      "inputSchema": {
+        "properties": {
+          "driver_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_events"
+    },
+    {
+      "description": "List facilities. Optional q is a case-insensitive substring search across name and address. limit defaults to 100.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "q": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_facilities"
+    },
+    {
+      "description": "Get a single facility by UUID.",
+      "inputSchema": {
+        "properties": {
+          "facility_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "facility_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_facility"
+    },
+    {
+      "description": "Create a new facility. When lat+lng are omitted the geocoder is queued; when both are provided the facility is marked geocoded immediately. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "contacts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lng": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "address"
+        ],
+        "type": "object"
+      },
+      "name": "create_facility"
+    },
+    {
+      "description": "Update a facility's fields. Setting `address` re-queues the geocoder; explicit `lat`+`lng` skip the geocoder and mark the record geocoded. Unknown fields are rejected.",
+      "inputSchema": {
+        "properties": {
+          "address": {
+            "type": "string"
+          },
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "contacts": {
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "facility_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "lat": {
+            "type": "number"
+          },
+          "lng": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "facility_id"
+        ],
+        "type": "object"
+      },
+      "name": "update_facility"
+    },
+    {
+      "description": "Diagnose a trip's data integrity. Returns a structured report of findings (missing stop metadata, broken chain links, stale mileage arithmetic, status/actuals mismatches, unresolved driver/truck/trailer ids). Dry-run by default. Pass apply=true to commit safe auto-fixes (currently: resync trip-stop fields from the linked load when the trip's fields are null and the load has values; never overwrites a non-null trip value).",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "type": "boolean"
+          },
+          "trip_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trip_id"
+        ],
+        "type": "object"
+      },
+      "name": "trip_doctor"
+    },
+    {
+      "description": "Diagnose a load's data integrity. Checks: stop facilities geocoded, scheduled windows well-formed, actual_depart > actual_arrive, timezone present when actuals are, rate_items sum matches total, and load status consistent with its trips. With apply=true (requires loads:write) it advances a load stranded at dispatched/in_transit whose every live trip has already delivered to 'delivered', so it can be invoiced and settled — unless one of the load's delivery stops was never visited by any surviving trip, in which case the fix is reported with conflicts and held for a human ('delivered' has no reverse edge). The remaining findings point at facility_doctor or require human reconciliation.",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "type": "boolean"
+          },
+          "load_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "load_id"
+        ],
+        "type": "object"
+      },
+      "name": "load_doctor"
+    },
+    {
+      "description": "Diagnose a facility's data integrity. Checks: address present, lat/lng present, coordinates inside US bounding box (warning), normalized_address present when geocoded. With apply=true, re-queues geocoding for facilities stuck at geocode_status=permanently_failed (resets failure count, sets status=pending, pushes onto the geocoding worker). Setting manual coordinates remains a deliberate fleet_user action via update_facility.",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "type": "boolean"
+          },
+          "facility_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "facility_id"
+        ],
+        "type": "object"
+      },
+      "name": "facility_doctor"
+    },
+    {
+      "description": "Report LanceDB fragmentation per dataset, and optionally compact it. Every insert lands in its own fragment and nothing ever merges them, so a table settles at one file per row; every write on top of that — updates included — leaves another data file and version manifest that nothing reclaims. Left alone the two together exhaust the process file-descriptor limit and reads start failing with 'Too many open files'. Dry-run by default: returns rows, fragments, versions and fragments_per_row per table (fragments_per_row near 1.0 means every row is its own file; a high versions count relative to rows means heavy updating). With apply=true (requires datasets:maintain) it prunes version history older than 24h and compacts each dataset, reporting fragments_after/versions_after. Safe to run while serving; a scheduled pass does the same thing every OLLIE_MAINTENANCE_INTERVAL_SECS. Use this after a known-heavy import instead of waiting for the scheduler. Do NOT compact externally with pylance — a version mismatch can silently upgrade the on-disk storage format past what this server can read.",
+      "inputSchema": {
+        "properties": {
+          "apply": {
+            "default": false,
+            "type": "boolean"
+          }
+        },
+        "type": "object"
+      },
+      "name": "compact_datasets"
+    },
+    {
+      "description": "Upload a file (PDF, scan, contract, etc.) to the blob store. Returns a short-lived presigned URL — do NOT stream file bytes through this tool call. POST the raw file bytes to the returned url with a Content-Type header (optional query params name and tags, comma-separated), e.g. curl -X POST --data-binary @doc.pdf -H 'Content-Type: application/pdf' '<url>&name=doc.pdf'. The HTTP response is the created blob record; use its id in the blob_ids of create_load/update_load, create_facility/update_facility, create_trip/update_trip, create_driver/update_driver, create_truck/update_truck, and create_trailer/update_trailer. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
+      "inputSchema": {
+        "properties": {
+          "expires_in_seconds": {
+            "description": "TTL for the URL; clamped to the server max (default 300s).",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "name": "upload_blob"
+    },
+    {
+      "description": "Mint a short-lived presigned GET URL for downloading a blob's bytes. GET the url to retrieve the file; for large files stream to disk (e.g. curl -o out.pdf '<url>') rather than reading into context. Requires OLLIE_PUBLIC_BASE_URL to be configured.",
+      "inputSchema": {
+        "properties": {
+          "expires_in_seconds": {
+            "description": "TTL for the URL; clamped to the server max (default 300s).",
+            "minimum": 1,
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_blob_url"
+    },
+    {
+      "description": "Fetch a blob's metadata (no bytes) plus a reverse lookup of what references it: attached_to.loads, attached_to.facilities, attached_to.trips, attached_to.drivers, attached_to.trucks, and attached_to.trailers.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_blob_metadata"
+    },
+    {
+      "description": "List blob metadata. Optional filters: name (substring), tag (exact), content_type (exact MIME match), missing_summary (true = only blobs with no AI summary — useful for finding docs that need resummarize_blob or a manual summary), limit (default 100, max 1000). Response includes `total` (count for the name/tag/missing_summary filter) and `truncated` (true when more results exist than were returned — for content_type queries this means the scan window was saturated).",
+      "inputSchema": {
+        "properties": {
+          "content_type": {
+            "type": "string"
+          },
+          "limit": {
+            "maximum": 1000,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "missing_summary": {
+            "description": "When true, return only blobs whose AI summary is null or empty.",
+            "type": "boolean"
+          },
+          "name": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_blobs"
+    },
+    {
+      "description": "Delete a blob. By default fails if the blob is referenced by any load or facility; pass force=true to delete anyway. Storage bytes are removed only when no other blob record shares the same checksum. Returns { deleted, was_attached }.",
+      "inputSchema": {
+        "properties": {
+          "force": {
+            "default": false,
+            "type": "boolean"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_blob"
+    },
+    {
+      "description": "Edit a blob's metadata: rename it, set its tags, and/or set its AI summary. `tags` is a FULL REPLACE of the tag set (send the complete desired list, not a delta — read the current tags with get_blob_metadata first if you only want to add/remove one). `summary` replaces the AI summary (e.g. backfilling a scanned doc the pipeline couldn't read); it is re-embedded server-side so semantic search stays consistent, and setting it marks the blob ready and clears any pipeline error. At least one of `name`, `tags`, or `summary` must be provided. Does not touch the file bytes. Returns the updated blob record.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "description": "New display name for the blob.",
+            "type": "string"
+          },
+          "summary": {
+            "description": "New AI summary text (non-empty). Re-embedded server-side; marks the blob ready.",
+            "type": "string"
+          },
+          "tags": {
+            "description": "Complete new tag set (replaces all existing tags).",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "update_blob"
+    },
+    {
+      "description": "Re-run the AI pipeline (content extraction → summary → embedding) for one blob. Use for docs whose summary is missing or stale — e.g. scanned PDFs or document photos uploaded before OCR support. Scanned pages are read OCR-first (tesseract), with a vision-model fallback for non-document images; a doc nothing can read is left ready with no summary (it is never flipped to failed). The blob is re-queued (status returns to pending) and processed asynchronously; poll get_blob_metadata for status ready. Fails if the blob is already pending or processing.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "resummarize_blob"
+    },
+    {
+      "description": "SEMANTIC search over blobs by meaning, using vector similarity over Ollama embeddings of each blob's summary — use this for natural-language queries like 'rate con mentioning hazmat detention'. (Contrast list_blobs, which only does literal name-substring and exact-tag matching.) Returns ranked BlobListItems each with a `score` (higher = closer), best match first. Optional name/tag pre-filters and limit (default 10, max 100).",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 10,
+            "maximum": 100,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "name": {
+            "description": "Optional name-substring pre-filter.",
+            "type": "string"
+          },
+          "query": {
+            "description": "Natural-language search text.",
+            "type": "string"
+          },
+          "tag": {
+            "description": "Optional exact-tag pre-filter.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_blobs"
+    },
+    {
+      "description": "Delete a load record. Fails if the load has any active trips — cancel or complete them first. Returns { deleted: true }.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_load"
+    },
+    {
+      "description": "Delete a trip. Active trips are soft-cancelled; already-cancelled trips are hard-deleted. Blocked if the trip is in_transit, delivered, completed, or tonu, or if another trip still references it via previous_trip_id. Returns { deleted: true, status: \"cancelled\" | \"deleted\" } — 'cancelled' means the record and its trip number still exist; call again to hard-delete.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_trip"
+    },
+    {
+      "description": "Soft-delete a driver (status → inactive) and invalidate any outstanding driver JWTs. Returns { deleted: true }.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_driver"
+    },
+    {
+      "description": "Soft-delete a truck (status → inactive). Returns { deleted: true }.",
+      "inputSchema": {
+        "properties": {
+          "truck_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "truck_id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_truck"
+    },
+    {
+      "description": "Soft-delete a trailer (status → inactive). Returns { deleted: true }.",
+      "inputSchema": {
+        "properties": {
+          "trailer_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "trailer_id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_trailer"
+    },
+    {
+      "description": "Permanently delete a maintenance entry (hard delete). Returns { deleted: true }.",
+      "inputSchema": {
+        "properties": {
+          "maintenance_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "maintenance_id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_maintenance"
+    },
+    {
+      "description": "Delete a facility record. Fails if the facility is referenced by one or more loads. Returns { deleted: true }.",
+      "inputSchema": {
+        "properties": {
+          "facility_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "facility_id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_facility"
+    },
+    {
+      "description": "Transition a load to `invoiced`, optionally recording an invoice number and date. Returns the fleet_user-enriched load detail.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "invoice_date": {
+            "type": "string"
+          },
+          "invoice_number": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "invoice_load"
+    },
+    {
+      "description": "Transition a load to `cancelled`, optionally recording a reason. Returns the fleet_user-enriched load detail.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "cancel_load"
+    },
+    {
+      "description": "Transition a load to `settled`. Returns the fleet_user-enriched load detail.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "settle_load"
+    },
+    {
+      "description": "Set a driver's portal PIN (4–6 numeric digits). Invalidates any outstanding driver JWTs. Returns { pin_set: true }.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "pin": {
+            "description": "4–6 numeric digits.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "pin"
+        ],
+        "type": "object"
+      },
+      "name": "set_driver_pin"
+    },
+    {
+      "description": "Create a new driver. Defaults status to `available`; assigns the default terminal when terminal_id is omitted.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "deadhead_rate_per_mile": {
+            "type": "number"
+          },
+          "detention_rate_per_hour": {
+            "type": "number"
+          },
+          "email": {
+            "type": "string"
+          },
+          "extra_stop_fee": {
+            "type": "number"
+          },
+          "free_dwell_minutes": {
+            "type": "integer"
+          },
+          "license_expiry": {
+            "type": "string"
+          },
+          "license_number": {
+            "type": "string"
+          },
+          "license_state": {
+            "type": "string"
+          },
+          "loaded_rate_per_mile": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "terminal_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
+      "name": "create_driver"
+    },
+    {
+      "description": "Update a driver's fields. `status` is not settable here — drivers transition via the trip lifecycle.",
+      "inputSchema": {
+        "properties": {
+          "blob_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "deadhead_rate_per_mile": {
+            "type": "number"
+          },
+          "detention_rate_per_hour": {
+            "type": "number"
+          },
+          "email": {
+            "type": "string"
+          },
+          "extra_stop_fee": {
+            "type": "number"
+          },
+          "free_dwell_minutes": {
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "license_expiry": {
+            "type": "string"
+          },
+          "license_number": {
+            "type": "string"
+          },
+          "license_state": {
+            "type": "string"
+          },
+          "loaded_rate_per_mile": {
+            "type": "number"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "terminal_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "update_driver"
+    },
+    {
+      "description": "List fleet users (the fleet_users-with-roles population). Requires users:read (owner/fleet_manager). Never returns password hashes.",
+      "inputSchema": {
+        "properties": {},
+        "type": "object"
+      },
+      "name": "list_users"
+    },
+    {
+      "description": "Get a single fleet user by UUID. Requires users:read. Never returns the password hash.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "get_user"
+    },
+    {
+      "description": "Create a fleet user with a role (fleet_manager or fleet_user) and optional extra_scopes. Requires users:write. role=owner is rejected — ownership is established by bootstrap or transfer.",
+      "inputSchema": {
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "extra_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "fleet_manager",
+              "dispatcher"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "email",
+          "name",
+          "password",
+          "role"
+        ],
+        "type": "object"
+      },
+      "name": "create_user"
+    },
+    {
+      "description": "Update a user's name, status, role, and/or extra_scopes. Requires users:write. Owner-protection applies: the owner cannot be demoted/deactivated except via ownership transfer; setting a different user's role to owner is an ownership transfer permitted only when the caller is the current owner.",
+      "inputSchema": {
+        "properties": {
+          "extra_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "fleet_manager",
+              "dispatcher"
+            ],
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "inactive"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "update_user"
+    },
+    {
+      "description": "Reset a user's password, invalidating their outstanding JWTs (token_version bump). Requires users:write. Returns { password_reset: true }.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "password"
+        ],
+        "type": "object"
+      },
+      "name": "reset_user_password"
+    },
+    {
+      "description": "Deactivate a user (status → inactive) and revoke their access. Requires users:delete. The only owner cannot be deactivated — transfer ownership first. Returns { deleted: true }.",
+      "inputSchema": {
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "type": "object"
+      },
+      "name": "delete_user"
+    }
+  ]
+}

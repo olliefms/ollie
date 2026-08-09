@@ -3,8 +3,9 @@
 // #372: scanned PDFs are summarized OCR-first — when tesseract recovers real
 // text from the page image, the text model summarizes it and the vision model
 // is never needed. The tesseract binary is faked via OLLIE_TESSERACT_BIN
-// (process-global env — keep every test in this binary using the same fake).
-mod common;
+// (process-global env — serialised against the other pipeline tests via
+// common::ENV_LOCK, held across the process_blob await).
+use crate::common;
 
 use ollie::models::blob::BlobStatus;
 use ollie::pipeline::worker::process_blob;
@@ -26,8 +27,13 @@ const OCR_TEXT: &str = "BOSS SHOP RAPID CITY invoice 110148792 dated 04/28/26 \
 truck 581400 replace air filter bolt stripped had to cut off parts run labor \
 105.00 parts 189.99 shop supply 35.40 tax 20.48 total 350.87 fleet paid";
 
+// ENV_LOCK is deliberately held across the process_blob await: the env var it
+// guards is read inside that call, and each #[tokio::test] blocks only its own
+// thread's current-thread runtime.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn test_ocr_text_is_summarized_by_text_model_and_blob_ready() {
+    let _env = common::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let script_dir = tempfile::TempDir::new().unwrap();
     std::env::set_var("OLLIE_TESSERACT_BIN", fake_tesseract(script_dir.path(), OCR_TEXT));
 

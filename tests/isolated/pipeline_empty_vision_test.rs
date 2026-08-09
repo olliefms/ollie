@@ -5,18 +5,24 @@
 // never mark it failed with "cannot embed empty text". This is exactly what
 // production moondream does with full-resolution scans.
 //
-// Lives in its own test binary: pipeline_ocr_test.rs mutates the
-// process-global OLLIE_TESSERACT_BIN env var, and this test must run with
-// tesseract genuinely unavailable.
-mod common;
+// pipeline_ocr_test.rs points the process-global OLLIE_TESSERACT_BIN env var
+// at a working fake, while these tests need tesseract genuinely unavailable —
+// the contradictory values are serialised via common::ENV_LOCK, held across
+// the process_blob await.
+use crate::common;
 
 use ollie::models::blob::BlobStatus;
 use ollie::pipeline::worker::process_blob;
 
+// ENV_LOCK is deliberately held across the process_blob await: the env var it
+// guards is read inside that call, and each #[tokio::test] blocks only its own
+// thread's current-thread runtime.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn test_empty_vision_description_leaves_blob_ready_without_summary() {
     // Point OCR at a nonexistent binary so the vision path is exercised even
     // on machines that have tesseract installed.
+    let _env = common::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("OLLIE_TESSERACT_BIN", "/nonexistent/tesseract-372");
 
     let base_url = common::mock_ollama("").await; // moondream returns ""
@@ -43,11 +49,16 @@ async fn test_empty_vision_description_leaves_blob_ready_without_summary() {
     assert!(record.error.is_none(), "no error expected, got {:?}", record.error);
 }
 
+// ENV_LOCK is deliberately held across the process_blob await: the env var it
+// guards is read inside that call, and each #[tokio::test] blocks only its own
+// thread's current-thread runtime.
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn test_reprocess_yielding_nothing_preserves_existing_summary() {
     // resummarize_blob on a blob that already has a (possibly manual) summary
     // must not wipe it when the new run can't read the doc — a retry never
     // degrades an already-good blob (#372).
+    let _env = common::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::set_var("OLLIE_TESSERACT_BIN", "/nonexistent/tesseract-372");
 
     let base_url = common::mock_ollama("").await; // vision yields nothing
