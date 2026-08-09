@@ -66,6 +66,20 @@ impl DbClient {
         Ok(items)
     }
 
+    /// Trips currently Dispatched or InTransit, filtered in the DB. Used by the
+    /// equipment-conflict checks on assign/attach and the active-trip guards in
+    /// trip_lifecycle — never scan all trips for this; the historical trip
+    /// count grows without bound while the active set stays fleet-sized.
+    pub async fn list_active_trips(&self) -> Result<Vec<TripListItem>, AppError> {
+        let stream = self.trip_table.query()
+            .only_if("status IN ('dispatched', 'in_transit')")
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let items: Vec<TripListItem> = batches_to_trips(collect_stream(stream).await?)?
+            .into_iter().map(TripListItem::from).collect();
+        Ok(items)
+    }
+
     /// Paginated variant for the fleet list views (REST + MCP). Returns
     /// `(total_matching, page)` sorted by `created_at` DESC. `trip_number` is an
     /// exact match applied in the DB filter so `total` stays correct.

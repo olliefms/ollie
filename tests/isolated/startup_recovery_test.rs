@@ -1,4 +1,4 @@
-// tests/startup_recovery_test.rs
+// tests/isolated/startup_recovery_test.rs
 //! #404: startup pipeline recovery must run *behind* the accept loop.
 //!
 //! The pipeline channel is bounded, so requeueing a backlog larger than its
@@ -131,6 +131,7 @@ async fn test_healthcheck_fails_when_nothing_is_listening() {
 /// aims at the wrong port on every non-default deployment.
 #[test]
 fn test_healthcheck_port_matches_config_default() {
+    let _env = crate::common::ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     std::env::remove_var("PORT");
     assert_eq!(startup::healthcheck_port(), 3000);
     std::env::set_var("PORT", "8081");

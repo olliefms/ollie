@@ -419,32 +419,40 @@ pub async fn list_trips(
         })
         .collect();
 
-    // Use join_all only for the remaining async truck/trailer lookups.
-    let async_parts = join_all(filtered.iter().map(|trip| {
-        let state = state.clone();
-        async move {
-            let truck_unit = if let Some(tid) = trip.truck_id {
-                state.db.get_truck_by_id(tid).await.ok().map(|t| t.unit_number)
-            } else {
-                None
-            };
-
-            let trailer_units = join_all(
-                trip.trailer_ids.iter().map(|tid| {
-                    let state = state.clone();
-                    let tid = *tid;
-                    async move { state.db.get_trailer_by_id(tid).await.ok().map(|t| t.unit_number) }
-                })
-            )
-            .await
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>();
-
-            (truck_unit, trailer_units)
+    // Batch-fetch trucks and trailers the same way as the facilities above,
+    // instead of one query per trip (and per trailer within each trip).
+    let (truck_ids, trailer_ids): (Vec<Uuid>, Vec<Uuid>) = {
+        let mut trucks = std::collections::HashSet::new();
+        let mut trailers = std::collections::HashSet::new();
+        for trip in &filtered {
+            if let Some(tid) = trip.truck_id {
+                trucks.insert(tid);
+            }
+            trailers.extend(trip.trailer_ids.iter().copied());
         }
-    }))
-    .await;
+        (trucks.into_iter().collect(), trailers.into_iter().collect())
+    };
+    let (truck_map, trailer_map) = tokio::join!(
+        state.db.batch_get_trucks(&truck_ids),
+        state.db.batch_get_trailers(&trailer_ids)
+    );
+    let truck_map = truck_map.unwrap_or_default();
+    let trailer_map = trailer_map.unwrap_or_default();
+
+    let async_parts: Vec<(Option<String>, Vec<String>)> = filtered
+        .iter()
+        .map(|trip| {
+            let truck_unit = trip
+                .truck_id
+                .and_then(|tid| truck_map.get(&tid).map(|t| t.unit_number.clone()));
+            let trailer_units = trip
+                .trailer_ids
+                .iter()
+                .filter_map(|tid| trailer_map.get(tid).map(|t| t.unit_number.clone()))
+                .collect::<Vec<_>>();
+            (truck_unit, trailer_units)
+        })
+        .collect();
 
     let mut items: Vec<DriverTripListItem> = filtered
         .iter()

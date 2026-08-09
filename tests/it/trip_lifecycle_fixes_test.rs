@@ -1,4 +1,4 @@
-// tests/trip_lifecycle_fixes_test.rs
+// tests/it/trip_lifecycle_fixes_test.rs
 //
 // Regression tests for dispatcher-reported trip-lifecycle issues (2026-07-06):
 //   #2  a non-freight "empty move" trip (terminal/empty_move stops, no pickup)

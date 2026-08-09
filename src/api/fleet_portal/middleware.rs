@@ -44,15 +44,20 @@ async fn validate_jwt_token(state: &AppState, token: &str) -> Result<FleetUserCl
     let fleet_user_id: Uuid = claims.fleet_user_id.parse()
         .map_err(|_| AppError::Unauthorized)?;
 
-    let creds = state.db.get_fleet_user_credentials(fleet_user_id).await?
-        .ok_or(AppError::Unauthorized)?;
+    // Independent lookups, joined — this runs on every authenticated fleet
+    // request (same shape as the driver-portal middleware).
+    let (creds, fleet_user) = tokio::join!(
+        state.db.get_fleet_user_credentials(fleet_user_id),
+        state.db.get_fleet_user_by_id(fleet_user_id)
+    );
+
+    let creds = creds?.ok_or(AppError::Unauthorized)?;
 
     if creds.token_version != claims.token_version {
         return Err(AppError::Unauthorized);
     }
 
-    let fleet_user = state.db.get_fleet_user_by_id(fleet_user_id).await
-        .map_err(|_| AppError::Unauthorized)?;
+    let fleet_user = fleet_user.map_err(|_| AppError::Unauthorized)?;
 
     if fleet_user.status == FleetUserStatus::Inactive {
         return Err(AppError::Unauthorized);

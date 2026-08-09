@@ -978,9 +978,7 @@ pub async fn check_call(
 
 /// Fetches all trips currently in Dispatched or InTransit status.
 async fn list_active_trips(state: &AppState) -> Result<Vec<crate::models::trip::TripListItem>, AppError> {
-    let mut out = state.db.list_trips(None, None, Some("dispatched"), None, None).await?;
-    out.extend(state.db.list_trips(None, None, Some("in_transit"), None, None).await?);
-    Ok(out)
+    state.db.list_active_trips().await
 }
 
 /// Returns true if any trip in `active` (other than `exclude_trip_id`)

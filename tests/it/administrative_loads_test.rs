@@ -1,4 +1,4 @@
-// tests/administrative_loads_test.rs
+// tests/it/administrative_loads_test.rs
 //
 // Administrative (no-trip) loads: revenue with no truck behind it — a weekly
 // revenue guarantee, TONU, detention-only billing, layover, an accessorial-only
@@ -320,8 +320,9 @@ async fn test_kind_flip_to_freight_does_clear_miles_via_routing_guard() {
 
 // ── MCP surface shares the same guard (REST-only coverage was a gap) ──
 //
-// Helpers copied from tests/expenses_test.rs — each integration test file is
-// its own binary, so there's no shared test-support module to import from.
+// Helpers copied from tests/it/expenses_test.rs. Both files are now modules of
+// the same `it` binary with a shared crate::common — folding these duplicates
+// into it is tracked in #418.
 
 /// Extract the single JSON-RPC message from a Streamable-HTTP SSE response body.
 /// rmcp frames each POST reply as one `event: message` / `data: {…}` SSE event.

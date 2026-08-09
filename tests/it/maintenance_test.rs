@@ -1,4 +1,4 @@
-// tests/maintenance_test.rs
+// tests/it/maintenance_test.rs
 //! #403: LanceDB datasets never compact on their own.
 //!
 //! Every insert lands in its own fragment and nothing ever merges them, so a

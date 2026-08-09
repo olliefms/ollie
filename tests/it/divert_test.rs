@@ -1,4 +1,4 @@
-// tests/divert_test.rs
+// tests/it/divert_test.rs
 //
 // Diversion: a load is cancelled, reconsigned, or corrected after the driver
 // departs the shipper with freight aboard. The trip keeps running to a new

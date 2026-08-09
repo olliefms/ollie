@@ -26,7 +26,13 @@ lancedb = "0.29"
 arrow-array = "58"
 arrow-schema = "58"
 async-channel = "2"
-reqwest = { version = "0.12", features = ["json"] }
+# default-features off: the default pulls native-tls on top of the rustls stack
+# lance-namespace already forces, compiling two TLS implementations. rustls is
+# named explicitly so our TLS backend isn't an accident of lance's features;
+# system-proxy keeps macOS system proxy settings working (was default-only).
+reqwest = { version = "0.12", default-features = false, features = [
+    "json", "system-proxy", "rustls-tls-native-roots",
+] }
 mime_guess = "2"
 pdf-extract = "0.7"
 lopdf = "0.34"
@@ -36,7 +42,7 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "1"
+thiserror = "2"
 dotenvy = "0.15"
 futures = "0.3"
 bytes = "1"
@@ -45,11 +51,33 @@ utoipa = { version = "4", features = ["axum_extras", "uuid", "chrono"] }
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation"] }
 jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto"] }
 bcrypt = "0.15"
-dashmap = "5"
-rand = "0.8"
+dashmap = "6"
+rand = "0.9"
 url = "2"
-rmcp = { version = "1.7", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session", "tower"] }
+# default-features off drops the rmcp-macros proc-macro crate: the tool
+# catalogue in fleet_portal/mcp.rs is hand-authored, no #[tool] derives.
+# base64 stays for the blob Content/ResourceContents paths.
+rmcp = { version = "1.7", default-features = false, features = [
+    "base64", "server", "transport-streamable-http-server",
+    "transport-streamable-http-server-session", "tower",
+] }
 
 [dev-dependencies]
 axum-test = "17"
 tempfile = "3"
+
+# Dev-loop profile. On macOS the dominant cost of `cargo test` is linking each
+# test binary's symbol table + debug map (~350 MB of __LINKEDIT per binary at
+# full debuginfo). line-tables-only keeps file:line in backtraces and panic
+# locations; deps get no debuginfo at all (nobody steps through arrow/datafusion
+# internals). build-override speeds the proc macros this derive-heavy crate
+# executes on every lib build (utoipa/serde/thiserror derives).
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.dev.build-override]
+opt-level = 1
+debug = false

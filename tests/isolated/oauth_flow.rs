@@ -1,4 +1,4 @@
-// tests/oauth_flow.rs
+// tests/isolated/oauth_flow.rs
 //
 // End-to-end integration tests for the OAuth 2.1 Authorization Server (Task 10).
 // Covers: router mount, WWW-Authenticate header on MCP 401, metadata endpoints,

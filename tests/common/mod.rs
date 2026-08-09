@@ -1,9 +1,10 @@
-// tests/common/mod.rs — shared fixtures for pipeline worker tests.
+// tests/common/mod.rs — shared fixtures, included via #[path] by both test
+// harnesses (tests/it.rs and tests/isolated.rs).
 //
-// These tests exercise process_blob directly against a mock Ollama HTTP
-// server on an ephemeral local port. They live in separate integration-test
-// binaries (pipeline_*_test.rs) because some of them set process-global env
-// vars (OLLIE_TESSERACT_BIN) that must not leak across test binaries.
+// The pipeline fixtures exercise process_blob directly against a mock Ollama
+// HTTP server on an ephemeral local port. The pipeline tests live in
+// tests/isolated.rs because they set process-global env vars
+// (OLLIE_TESSERACT_BIN) that must not leak into the main suite.
 use axum::{routing::post, Json, Router};
 use bytes::Bytes;
 use chrono::Utc;
@@ -17,6 +18,11 @@ use tempfile::TempDir;
 use uuid::Uuid;
 
 pub const TEST_EMBED_DIM: usize = 4;
+
+/// Serialises tests that mutate process-global env vars (OLLIE_TESSERACT_BIN
+/// is read inside process_blob, not at setup — hold the guard across that
+/// await, not just across set_var).
+pub static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Serve a mock Ollama API: /api/generate always answers `generate_response`,
 /// /api/embeddings answers a fixed TEST_EMBED_DIM-dim vector.

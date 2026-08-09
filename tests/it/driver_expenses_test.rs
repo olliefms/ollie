@@ -1,4 +1,4 @@
-// tests/driver_expenses_test.rs
+// tests/it/driver_expenses_test.rs
 //
 // Driver-portal expense endpoints (#233 task 9): uploading a receipt with
 // doctype=expense creates an ExpenseRecord; drivers can list their own

@@ -1,4 +1,4 @@
-// tests/load_delivery_cascade_test.rs
+// tests/it/load_delivery_cascade_test.rs
 //
 // Regression tests for #395 — a load stranded in `in_transit`.
 //

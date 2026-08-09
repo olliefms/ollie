@@ -1,4 +1,4 @@
-// tests/expenses_test.rs
+// tests/it/expenses_test.rs
 //
 // Integration tests for fleet REST expense create/list/get (#233 task 5).
 
@@ -440,7 +440,7 @@ async fn test_maintenance_expense_crosslink_and_cost_mirror() {
     let (server, _d1, _d2, _rx) = test_server().await;
     let token = setup_owner(&server).await;
     // Create a truck (copy the minimal truck-create request shape from
-    // tests/integration_test.rs truck tests).
+    // tests/it/integration_test.rs truck tests).
     let truck_id = create_truck(&server, &token).await; // local helper
     // Expense with equipment link, then a maintenance record linked to it.
     let exp_id = {
@@ -720,8 +720,9 @@ async fn test_delete_maintenance_unlinks_expense_and_review_succeeds() {
 
 // ── MCP delete_maintenance shares the REST unlink logic (final-review finding) ──
 //
-// Helpers copied from tests/integration_test.rs (each integration test file is
-// its own binary — no shared test-support module exists yet).
+// Helpers copied from tests/it/integration_test.rs. Both files are now modules
+// of the same `it` binary with a shared crate::common — folding these
+// duplicates into it is tracked in #418.
 
 /// Extract the single JSON-RPC message from a Streamable-HTTP SSE response body.
 /// rmcp frames each POST reply as one `event: message` / `data: {…}` SSE event.

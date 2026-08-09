@@ -1,4 +1,4 @@
-// tests/refresh_token_flow.rs
+// tests/it/refresh_token_flow.rs
 //
 // End-to-end integration tests for the fleet_user PWA refresh-token flow.
 // Covers: login sets cookie, refresh without access token (overnight-refresh

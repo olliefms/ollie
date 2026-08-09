@@ -1,4 +1,4 @@
-// tests/terminals_pay_settlement_test.rs
+// tests/it/terminals_pay_settlement_test.rs
 //
 // Integration tests for fleet_user terminal CRUD (#185).
 
@@ -926,7 +926,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
 
 // ---------------------------------------------------------------------------
 // Existing-DB migration guard (#185). Mirrors the `seed_pre_*` pattern in
-// tests/migration_test.rs: seed a PRE-SPRINT drivers+trips DB (old Arrow
+// tests/it/migration_test.rs: seed a PRE-SPRINT drivers+trips DB (old Arrow
 // schemas WITHOUT this sprint's columns), then open via DbClient::new and
 // assert the migration runs without crash-looping (the CAST-null trap), the
 // terminals table is created + Default seeded, drivers backfill to the default

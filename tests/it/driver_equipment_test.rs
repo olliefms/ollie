@@ -1,4 +1,4 @@
-// tests/driver_equipment_test.rs
+// tests/it/driver_equipment_test.rs
 //
 // Regression: the driver-UI Equipment tab showed no truck/trailer assignment for
 // a driver whose trip was still `Planned` (created with equipment attached but

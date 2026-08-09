@@ -1,4 +1,4 @@
-// tests/integration_test.rs
+// tests/it/integration_test.rs
 use axum::http::header;
 use axum_test::TestServer;
 use ollie::{
@@ -5404,7 +5404,7 @@ async fn test_load_doctor_flags_ungeocoded_facility() {
 /// `apply=true`, which is the only supported repair path (`invoice` runs only
 /// from `delivered`, so the billing chain is unreachable from `in_transit`).
 /// Unit coverage of the checks themselves lives in
-/// `tests/load_delivery_cascade_test.rs`.
+/// `tests/it/load_delivery_cascade_test.rs`.
 #[tokio::test]
 async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
     let (server, _b, _d, _rx, state) = test_server_with_state().await;
