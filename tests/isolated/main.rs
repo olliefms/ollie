@@ -5,7 +5,8 @@
 // every later Config::from_env in the same process would then inherit (turning
 // on cookie_secure and presigned URLs suite-wide), and the two pipeline tests
 // demand contradictory values of OLLIE_TESSERACT_BIN. Within this binary the
-// pipeline pair serialises on common::ENV_LOCK.
+// pipeline pair serialises on common::ENV_LOCK, and startup_recovery_test
+// mutates PORT, which every Config::from_env in the main suite reads.
 
 #[allow(dead_code)]
 #[path = "../common/mod.rs"]
@@ -14,3 +15,4 @@ mod common;
 mod oauth_flow;
 mod pipeline_empty_vision_test;
 mod pipeline_ocr_test;
+mod startup_recovery_test;

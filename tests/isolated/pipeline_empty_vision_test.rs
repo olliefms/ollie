@@ -1,4 +1,4 @@
-// tests/pipeline_empty_vision_test.rs
+// tests/isolated/pipeline_empty_vision_test.rs
 //
 // Regression test for #372: a scanned (image-only) PDF whose vision
 // description comes back EMPTY must leave the blob ready with no summary —

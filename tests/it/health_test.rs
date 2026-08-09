@@ -1,4 +1,4 @@
-// tests/health_test.rs
+// tests/it/health_test.rs
 //
 // A pipeline worker pool can die while the HTTP server keeps answering
 // perfectly: a panic in a job unwinds the worker task, dropping the last

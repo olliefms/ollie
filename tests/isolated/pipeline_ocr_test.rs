@@ -1,4 +1,4 @@
-// tests/pipeline_ocr_test.rs
+// tests/isolated/pipeline_ocr_test.rs
 //
 // #372: scanned PDFs are summarized OCR-first — when tesseract recovers real
 // text from the page image, the text model summarizes it and the vision model

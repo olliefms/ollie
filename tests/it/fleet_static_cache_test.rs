@@ -1,4 +1,4 @@
-// tests/fleet_static_cache_test.rs
+// tests/it/fleet_static_cache_test.rs
 //
 // The fleet SPA is served by a bare `ServeDir`, which sets `Last-Modified` but
 // no `Cache-Control` — leaving browsers on heuristic freshness. The `?v=` stamps

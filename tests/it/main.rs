@@ -23,7 +23,6 @@ mod load_delivery_cascade_test;
 mod maintenance_test;
 mod migration_test;
 mod refresh_token_flow;
-mod startup_recovery_test;
 mod terminals_pay_settlement_test;
 mod tonu_test;
 mod trip_lifecycle_fixes_test;

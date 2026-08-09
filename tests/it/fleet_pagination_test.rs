@@ -1,4 +1,4 @@
-// tests/fleet_pagination_test.rs
+// tests/it/fleet_pagination_test.rs
 //
 // Regression coverage for real limit/offset pagination on the fleet REST list
 // endpoints that previously hard-coded `list_x(..., 100, 0)` regardless of the

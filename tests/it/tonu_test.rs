@@ -1,4 +1,4 @@
-// tests/tonu_test.rs
+// tests/it/tonu_test.rs
 //
 // TONU (Truck Ordered Not Used): a load is dispatched, the truck rolls to the
 // shipper, and the driver is released before loading. The truck was ordered and
@@ -9,7 +9,7 @@
 // unavailable. Mileage must degrade to a warning, never an error; these tests
 // assert on stop structure and status, not mile counts. Driver pay is likewise
 // out of scope here — with no ORS a TONU'd trip ends with `deadhead_miles: None`
-// and earns nothing; `tests/terminals_pay_settlement_test.rs` sets mileage on the
+// and earns nothing; `tests/it/terminals_pay_settlement_test.rs` sets mileage on the
 // record directly and is where TONU pay is proven.
 
 use axum_test::TestServer;

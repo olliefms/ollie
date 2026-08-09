@@ -1,4 +1,4 @@
-// tests/startup_recovery_test.rs
+// tests/isolated/startup_recovery_test.rs
 //! #404: startup pipeline recovery must run *behind* the accept loop.
 //!
 //! The pipeline channel is bounded, so requeueing a backlog larger than its

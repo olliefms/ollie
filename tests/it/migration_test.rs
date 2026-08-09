@@ -1,4 +1,4 @@
-// tests/migration_test.rs
+// tests/it/migration_test.rs
 //
 // Existing-DB migration integration test (#251).
 //

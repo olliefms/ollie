@@ -67,9 +67,9 @@ impl DbClient {
     }
 
     /// Trips currently Dispatched or InTransit, filtered in the DB. Used by the
-    /// equipment-conflict checks on assign/attach — never scan all trips for
-    /// this; the historical trip count grows without bound while the active set
-    /// stays fleet-sized.
+    /// equipment-conflict checks on assign/attach and the active-trip guards in
+    /// trip_lifecycle — never scan all trips for this; the historical trip
+    /// count grows without bound while the active set stays fleet-sized.
     pub async fn list_active_trips(&self) -> Result<Vec<TripListItem>, AppError> {
         let stream = self.trip_table.query()
             .only_if("status IN ('dispatched', 'in_transit')")
