@@ -1,8 +1,4 @@
 // src/lib.rs
-// The single `json!` literal that builds the MCP tool list in
-// `api/fleet_portal/mcp.rs` expands recursively once per nested node, so the
-// limit has to grow as tools and their schemas are added.
-#![recursion_limit = "512"]
 pub mod ai;
 pub mod api;
 pub mod config;
