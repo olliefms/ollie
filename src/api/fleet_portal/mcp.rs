@@ -2989,6 +2989,34 @@ mod tests {
         }
     }
 
+    /// Enforcing the write scope isn't enough — a client builds its call from the
+    /// advertised catalog, so a tool whose description doesn't name the scope
+    /// hands back a denial the caller had no way to predict. `load_doctor` and
+    /// `compact_datasets` already documented theirs; this keeps the next
+    /// dual-mode tool from forgetting.
+    #[test]
+    fn dual_mode_tools_advertise_their_apply_scope() {
+        let catalog = tool_catalog();
+        for (tool, scope) in [
+            ("trip_doctor", "trips:write"),
+            ("load_doctor", "loads:write"),
+            ("facility_doctor", "facilities:write"),
+            ("compact_datasets", "datasets:maintain"),
+        ] {
+            let desc = catalog
+                .iter()
+                .find(|t| t.name == tool)
+                .unwrap_or_else(|| panic!("missing {tool}"))
+                .description
+                .as_deref()
+                .unwrap_or("");
+            assert!(
+                desc.contains(scope),
+                "{tool} description must name the scope apply=true requires ('{scope}')",
+            );
+        }
+    }
+
     /// Dispatcher holds read+write on both, which is why #409 is latent rather
     /// than exploitable today. If that ever stops being true, the guard above is
     /// the only thing standing between a read-only key and a trip rewrite.
