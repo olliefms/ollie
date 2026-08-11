@@ -959,8 +959,8 @@ pub async fn stop_late(
     seq: u32,
     req: StopLateRequest,
 ) -> Result<(), AppError> {
-    state.db.get_trip(trip_id).await?;
-    events::on_stop_late(&state.db, trip_id, seq, req.eta, req.notes).await;
+    let trip = state.db.get_trip(trip_id).await?;
+    events::on_stop_late(&state.db, &trip, seq, req.eta, req.notes).await;
     Ok(())
 }
 

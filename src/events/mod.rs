@@ -1,18 +1,19 @@
 use crate::db::DbClient;
+use crate::models::TripRecord;
 use uuid::Uuid;
 
 fn now_z() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-async fn stop_name(db: &DbClient, trip_id: Uuid, seq: u32) -> Option<String> {
-    db.get_trip(trip_id)
-        .await
-        .ok()?
-        .stops
-        .into_iter()
+/// Stop name for the event payload, read off the trip the caller already holds.
+/// The stop hooks fire on every driver arrive/depart — the hottest write path in
+/// the driver portal — so this must not cost a `get_trip`.
+fn stop_name(trip: &TripRecord, seq: u32) -> Option<String> {
+    trip.stops
+        .iter()
         .find(|s| s.sequence == seq)
-        .and_then(|s| s.name)
+        .and_then(|s| s.name.clone())
 }
 
 pub async fn on_trip_assigned(db: &DbClient, trip_id: Uuid) {
@@ -83,21 +84,24 @@ pub async fn on_trip_diverted(
     tracing::info!(trip_id = %trip_id, reason, "trip diverted");
 }
 
-pub async fn on_stop_arrived(db: &DbClient, trip_id: Uuid, seq: u32) {
-    let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(db, trip_id, seq).await });
+pub async fn on_stop_arrived(db: &DbClient, trip: &TripRecord, seq: u32) {
+    let trip_id = trip.id;
+    let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(trip, seq) });
     let _ = db.append_event("trip", trip_id, "stop.arrived", Some(payload), None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, seq, "stop arrived");
 }
 
-pub async fn on_stop_departed(db: &DbClient, trip_id: Uuid, seq: u32) {
-    let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(db, trip_id, seq).await });
+pub async fn on_stop_departed(db: &DbClient, trip: &TripRecord, seq: u32) {
+    let trip_id = trip.id;
+    let payload = serde_json::json!({ "seq": seq, "stop_name": stop_name(trip, seq) });
     let _ = db.append_event("trip", trip_id, "stop.departed", Some(payload), None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, seq, "stop departed");
 }
 
-pub async fn on_stop_late(db: &DbClient, trip_id: Uuid, seq: u32, eta: Option<String>, notes: Option<String>) {
+pub async fn on_stop_late(db: &DbClient, trip: &TripRecord, seq: u32, eta: Option<String>, notes: Option<String>) {
+    let trip_id = trip.id;
     let payload = serde_json::json!({
-        "seq": seq, "stop_name": stop_name(db, trip_id, seq).await, "eta": eta, "notes": notes
+        "seq": seq, "stop_name": stop_name(trip, seq), "eta": eta, "notes": notes
     });
     let _ = db.append_event("trip", trip_id, "stop.late", Some(payload), None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, seq, "stop late");
@@ -254,10 +258,11 @@ mod tests {
     async fn test_stop_arrived_writes_stop_name_in_payload() {
         let (db, _dir) = test_db().await;
         let trip_id = Uuid::new_v4();
+        // Deliberately NOT inserted: the name must come off the passed record,
+        // not a refetch (#417).
         let trip = make_trip(trip_id, vec![make_stop(1, Some("Test Stop"))]);
-        db.insert_trip(&trip).await.unwrap();
 
-        on_stop_arrived(&db, trip_id, 1).await;
+        on_stop_arrived(&db, &trip, 1).await;
 
         let (_total, events) = db.query_events(
             Some(trip_id), None, Some("stop.arrived"), None, None, 10, 0,
@@ -276,9 +281,8 @@ mod tests {
         let trip_id = Uuid::new_v4();
         // Trip has stop seq=0 only; call with seq=99 (doesn't exist).
         let trip = make_trip(trip_id, vec![make_stop(0, Some("Only Stop"))]);
-        db.insert_trip(&trip).await.unwrap();
 
-        on_stop_arrived(&db, trip_id, 99).await;
+        on_stop_arrived(&db, &trip, 99).await;
 
         let (_total, events) = db.query_events(
             Some(trip_id), None, Some("stop.arrived"), None, None, 10, 0,

@@ -286,6 +286,9 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         | "stop_arrive" | "stop_depart" | "stop_late" | "check_call"
         | "recalculate_trip_miles" => "trips:write",
         "delete_trip" => "trips:delete",
+        // trip_doctor diagnoses a trip. Its auto-fix rewrites the trip's stops,
+        // so `apply=true` additionally requires trips:write — enforced inside
+        // `tool_trip_doctor`, where the args are visible.
         "trip_doctor" => "trips:read",
         // Drivers
         "list_drivers" | "get_driver" => "drivers:read",
@@ -308,7 +311,9 @@ fn tool_required_scope(name: &str) -> Option<&'static str> {
         "list_expenses" | "get_expense" => "expenses:read",
         "create_expense" | "update_expense" | "delete_expense" => "expenses:write",
         "review_expense" => "expenses:approve",
-        // Facilities
+        // Facilities. facility_doctor's auto-fix re-queues geocoding, so
+        // `apply=true` additionally requires facilities:write — enforced inside
+        // `tool_facility_doctor`, where the args are visible.
         "list_facilities" | "get_facility" | "facility_doctor" => "facilities:read",
         "create_facility" | "update_facility" => "facilities:write",
         "delete_facility" => "facilities:delete",
@@ -1019,9 +1024,9 @@ async fn handle_tool_call(
         "get_facility" => tool_get_facility(state, args).await,
         "create_facility" => tool_create_facility(state, args).await,
         "update_facility" => tool_update_facility(state, args).await,
-        "trip_doctor" => tool_trip_doctor(state, args).await,
+        "trip_doctor" => tool_trip_doctor(state, args, scopes).await,
         "load_doctor" => tool_load_doctor(state, args, scopes).await,
-        "facility_doctor" => tool_facility_doctor(state, args).await,
+        "facility_doctor" => tool_facility_doctor(state, args, scopes).await,
         "compact_datasets" => tool_compact_datasets(state, args, scopes).await,
         "upload_blob" => tool_upload_blob(state, args).await,
         "get_blob_url" => tool_get_blob_url(state, args).await,
@@ -1894,14 +1899,39 @@ async fn tool_update_facility(state: &AppState, args: &Value) -> Result<Value, S
     Ok(mcp_content(record))
 }
 
+/// Enforce the extra scope a dual-mode tool needs once `apply=true`.
+///
+/// `tool_required_scope` is keyed on the tool name alone, so it can only express
+/// the read half of a tool that both diagnoses and repairs. The write half is
+/// gated here, where the args are visible.
+fn require_apply_scope(
+    tool: &str,
+    apply: bool,
+    scopes: &[String],
+    required: &str,
+) -> Result<(), String> {
+    if apply && !crate::models::permission::scope_granted(scopes, required) {
+        return Err(format!(
+            "{tool} apply=true denied: missing required scope '{required}'."
+        ));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Doctors (dry-run + diff-and-confirm). See `services::doctors` for the
 // check definitions; these wrappers are pure transport glue.
+//
+// All three are gated at their entity's *read* scope, because diagnosing is a
+// read. Each one's auto-fix mutates, so `apply=true` additionally requires the
+// write scope — see `require_apply_scope`.
 // ---------------------------------------------------------------------------
 
-async fn tool_trip_doctor(state: &AppState, args: &Value) -> Result<Value, String> {
+async fn tool_trip_doctor(state: &AppState, args: &Value, scopes: &[String]) -> Result<Value, String> {
     let trip_id = parse_uuid(args, "trip_id")?;
     let apply = args["apply"].as_bool().unwrap_or(false);
+    // `resync_stops_from_load` rewrites the trip's whole stops vec.
+    require_apply_scope("trip_doctor", apply, scopes, "trips:write")?;
     let report = crate::services::doctors::trip::run(state, trip_id, apply)
         .await
         .map_err(|e| e.to_string())?;
@@ -1911,20 +1941,20 @@ async fn tool_trip_doctor(state: &AppState, args: &Value) -> Result<Value, Strin
 async fn tool_load_doctor(state: &AppState, args: &Value, scopes: &[String]) -> Result<Value, String> {
     let load_id = parse_uuid(args, "load_id")?;
     let apply = args["apply"].as_bool().unwrap_or(false);
-    // Diagnosing is a read; applying moves the load's status, so it needs the
-    // write scope even though the tool itself is gated at loads:read.
-    if apply && !crate::models::permission::scope_granted(scopes, "loads:write") {
-        return Err("load_doctor apply=true denied: missing required scope 'loads:write'.".into());
-    }
+    // Applying moves the load's status.
+    require_apply_scope("load_doctor", apply, scopes, "loads:write")?;
     let report = crate::services::doctors::load::run(state, load_id, apply)
         .await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(report))
 }
 
-async fn tool_facility_doctor(state: &AppState, args: &Value) -> Result<Value, String> {
+async fn tool_facility_doctor(state: &AppState, args: &Value, scopes: &[String]) -> Result<Value, String> {
     let facility_id = parse_uuid(args, "facility_id")?;
     let apply = args["apply"].as_bool().unwrap_or(false);
+    // Re-queueing a permanently_failed facility resets geocode_failure_count
+    // and pushes onto the geocoding worker.
+    require_apply_scope("facility_doctor", apply, scopes, "facilities:write")?;
     let report = crate::services::doctors::facility::run(state, facility_id, apply)
         .await
         .map_err(|e| e.to_string())?;
@@ -1940,11 +1970,7 @@ async fn tool_compact_datasets(
     // Measuring fragmentation is a read; compacting rewrites every dataset on
     // disk, so it needs the maintain scope even though the tool is gated at
     // datasets:read.
-    if apply && !crate::models::permission::scope_granted(scopes, "datasets:maintain") {
-        return Err(
-            "compact_datasets apply=true denied: missing required scope 'datasets:maintain'.".into(),
-        );
-    }
+    require_apply_scope("compact_datasets", apply, scopes, "datasets:maintain")?;
     let report = crate::services::maintenance::run(
         &state.db,
         apply,
@@ -2928,6 +2954,57 @@ mod tests {
         for name in ["create_load", "update_trip", "dispatch_trip", "review_expense"] {
             assert_ne!(annotations_for(name).destructive_hint, Some(true),
                 "{name} must not be flagged destructive");
+        }
+    }
+
+    /// #409: the doctors are gated at their entity's read scope, so the write
+    /// half has to be enforced on the args. A read-only principal reaching
+    /// `apply=true` is the regression this locks down.
+    #[test]
+    fn doctor_apply_requires_the_write_scope() {
+        for (tool, read, write) in [
+            ("trip_doctor", "trips:read", "trips:write"),
+            ("load_doctor", "loads:read", "loads:write"),
+            ("facility_doctor", "facilities:read", "facilities:write"),
+        ] {
+            // The scope map must stay on the read scope — that is what makes the
+            // arg-level gate load-bearing rather than redundant.
+            assert_eq!(tool_required_scope(tool), Some(read), "{tool} scope map");
+
+            let read_only = vec![read.to_string()];
+            let Err(err) = require_apply_scope(tool, true, &read_only, write) else {
+                panic!("{tool} apply=true must be denied to a read-only principal");
+            };
+            assert!(err.contains(tool) && err.contains(write), "{tool}: {err}");
+
+            // Diagnosing is still allowed with only the read scope.
+            require_apply_scope(tool, false, &read_only, write)
+                .unwrap_or_else(|e| panic!("{tool} dry run must be allowed: {e}"));
+
+            // The write scope, a resource wildcard, and the superuser all pass.
+            for granted in [write.to_string(), format!("{}:*", write.split(':').next().unwrap()), "*".to_string()] {
+                require_apply_scope(tool, true, std::slice::from_ref(&granted), write)
+                    .unwrap_or_else(|e| panic!("{tool} apply must be allowed with {granted}: {e}"));
+            }
+        }
+    }
+
+    /// Dispatcher holds read+write on both, which is why #409 is latent rather
+    /// than exploitable today. If that ever stops being true, the guard above is
+    /// the only thing standing between a read-only key and a trip rewrite.
+    #[test]
+    fn dispatcher_can_still_apply_doctor_fixes() {
+        let scopes = crate::models::permission::DISPATCHER_SCOPES
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>();
+        for (tool, write) in [
+            ("trip_doctor", "trips:write"),
+            ("load_doctor", "loads:write"),
+            ("facility_doctor", "facilities:write"),
+        ] {
+            require_apply_scope(tool, true, &scopes, write)
+                .unwrap_or_else(|e| panic!("dispatcher must keep {tool} apply: {e}"));
         }
     }
 

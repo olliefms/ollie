@@ -47,7 +47,7 @@ pub async fn record_stop_arrive(
 
     cascade_load_stop_arrive(state, &trip, seq, &actual_arrive).await;
 
-    events::on_stop_arrived(&state.db, trip_id, seq).await;
+    events::on_stop_arrived(&state.db, &trip, seq).await;
     Ok(trip)
 }
 
@@ -84,7 +84,7 @@ pub async fn record_stop_depart(
     cascade_start_in_transit(state, &trip, seq).await;
     cascade_final_stop_delivered(state, trip_id, seq).await;
 
-    events::on_stop_departed(&state.db, trip_id, seq).await;
+    events::on_stop_departed(&state.db, &trip, seq).await;
 
     state.db.get_trip(trip_id).await
 }
