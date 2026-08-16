@@ -221,6 +221,7 @@ mod tests {
     fn make_trip(id: Uuid, stops: Vec<TripStop>) -> TripRecord {
         let now = chrono::Utc::now();
         TripRecord {
+            internal_notes: None,
             id,
             trip_number: "T-TEST-0001".into(),
             load_id: None,

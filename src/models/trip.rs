@@ -246,6 +246,13 @@ pub struct TripRecord {
     pub status: TripStatus,
     pub stops: Vec<TripStop>,
     pub notes: Option<String>,
+    /// Back-office annotation: mileage derivation, trip-chain links, equipment
+    /// provenance, timestamp corrections, billing detail. Never serialized by any
+    /// `/driver/api/v1` handler — the driver surface builds its own response
+    /// structs and does not map this field.
+    /// `tests/it/driver_internal_notes_test.rs` pins that.
+    #[serde(default)]
+    pub internal_notes: Option<String>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
     #[serde(default)]
@@ -295,6 +302,8 @@ pub struct CreateTripRequest {
     #[serde(default)]
     pub stops: Vec<TripStop>,
     pub notes: Option<String>,
+    /// Dispatcher-only annotation. Never reaches the driver surface.
+    pub internal_notes: Option<String>,
     pub previous_trip_id: Option<Uuid>,
     #[serde(default)]
     pub blob_ids: Vec<Uuid>,
@@ -328,6 +337,9 @@ pub struct TripListItem {
     pub status: TripStatus,
     pub stops: Vec<TripStop>,
     pub notes: Option<String>,
+    /// Dispatcher-only. This list type serves `/fleet` only.
+    #[serde(default)]
+    pub internal_notes: Option<String>,
     pub blob_ids: Vec<Uuid>,
     #[serde(default)]
     pub loaded_rate_per_mile: Option<f64>,
@@ -373,6 +385,7 @@ impl From<TripRecord> for TripListItem {
             status: r.status,
             stops: r.stops,
             notes: r.notes,
+            internal_notes: r.internal_notes,
             blob_ids: r.blob_ids,
             loaded_rate_per_mile: r.loaded_rate_per_mile,
             deadhead_rate_per_mile: r.deadhead_rate_per_mile,
@@ -495,6 +508,7 @@ mod tests {
     fn trip_with_status(status: TripStatus) -> TripRecord {
         let now = chrono::Utc::now();
         TripRecord {
+            internal_notes: None,
             id: Uuid::new_v4(),
             trip_number: "T-2026-0001".into(),
             load_id: None,
@@ -578,6 +592,7 @@ mod tests {
     fn test_embedding_text() {
         let now = chrono::Utc::now();
         let r = TripRecord {
+            internal_notes: None,
             id: Uuid::new_v4(),
             trip_number: "T-2026-0001".into(),
             load_id: None,
@@ -639,6 +654,7 @@ mod tests {
     fn test_trip_record_embedding_skipped_in_json() {
         let now = chrono::Utc::now();
         let r = TripRecord {
+            internal_notes: None,
             id: Uuid::new_v4(),
             trip_number: "T-2026-0001".into(),
             load_id: None,

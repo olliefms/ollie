@@ -144,6 +144,7 @@ pub(crate) async fn apply_trip_create(
         status: TripStatus::Planned,
         stops,
         notes: body.notes,
+        internal_notes: body.internal_notes,
         blob_ids: body.blob_ids,
         loaded_rate_per_mile: None,
         deadhead_rate_per_mile: None,

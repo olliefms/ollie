@@ -52,6 +52,10 @@ pub struct RecalculateMilesBody {
 pub struct PatchTripBody {
     #[serde(default)]
     pub notes: Option<String>,
+    /// Back-office annotation. Dispatcher-only — no `/driver/api/v1` handler
+    /// serializes it. Omitted = no change.
+    #[serde(default)]
+    pub internal_notes: Option<String>,
     /// `Some(uuid)` sets the link; omitted = no change.
     /// Note: clearing previous_trip_id to null is not currently supported via this
     /// endpoint — it lacks the `double_option` pattern the rate overrides below use
@@ -161,7 +165,8 @@ pub async fn recalculate_miles_handler(
     patch,
     path = "/fleet/api/v1/trips/{id}",
     params(("id" = Uuid, Path, description = "Trip UUID")),
-    request_body(content = PatchTripBody, description = "Allowed fields: notes, previous_trip_id"),
+    request_body(content = PatchTripBody,
+        description = "Allowed fields: notes, internal_notes, previous_trip_id"),
     responses(
         (status = 200, description = "Updated trip record (enriched, with mileage_summary); \
             on partial success a `mileage_recompute_warning` field is populated"),
@@ -244,9 +249,15 @@ pub async fn apply_trip_patch(
             "trip is already settled; settlement_ref cannot be changed".into()));
     }
 
-    if parsed.notes.is_some() || parsed.blob_ids.is_some() {
+    if parsed.notes.is_some() || parsed.internal_notes.is_some() || parsed.blob_ids.is_some() {
         state.db.update_trip_metadata(
-            id, None, None, None, parsed.notes.clone(), None, parsed.blob_ids.clone(),
+            id,
+            crate::db::trip_ops::TripMetadataUpdate {
+                notes: parsed.notes.clone(),
+                internal_notes: parsed.internal_notes.clone(),
+                blob_ids: parsed.blob_ids.clone(),
+                ..Default::default()
+            },
         ).await?;
     }
 

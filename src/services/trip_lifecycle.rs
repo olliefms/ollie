@@ -700,7 +700,9 @@ pub async fn tonu(
     for (i, s) in stops.iter_mut().enumerate() { s.sequence = i as u32; }
 
     // --- writes ---
-    state.db.update_trip_metadata(trip_id, None, None, Some(stops), None, None, None).await?;
+    state.db.update_trip_metadata(trip_id,
+        crate::db::trip_ops::TripMetadataUpdate { stops: Some(stops), ..Default::default() },
+    ).await?;
     state.db.transition_trip_status(trip_id, TripStatus::Tonu).await?;
     let warning = recompute_as_all_deadhead(state, trip_id).await;
 
@@ -811,7 +813,9 @@ pub async fn divert(
     for (i, s) in stops.iter_mut().enumerate() { s.sequence = i as u32; }
 
     // --- writes ---
-    state.db.update_trip_metadata(trip_id, None, None, Some(stops.clone()), None, None, None).await?;
+    state.db.update_trip_metadata(trip_id,
+        crate::db::trip_ops::TripMetadataUpdate { stops: Some(stops.clone()), ..Default::default() },
+    ).await?;
     // Clear before recomputing, exactly as `tonu` does. The old figure measures a
     // route to a consignee this trip is no longer going to, and it is not merely
     // cosmetic: `recalculate_trip_miles` short-circuits when deadhead and loaded

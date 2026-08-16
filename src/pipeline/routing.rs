@@ -67,6 +67,7 @@ mod tests {
 
         let load_id = uuid::Uuid::new_v4();
         let load = crate::models::LoadRecord {
+            internal_notes: None,
             id: load_id, load_number: "LD-2026-0001".into(), owner_id: 0,
             status: crate::models::LoadStatus::Planned,
             kind: crate::models::LoadKind::Freight,
