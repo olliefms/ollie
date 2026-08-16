@@ -11,6 +11,7 @@
 mod common;
 
 mod administrative_loads_test;
+mod blob_retry_test;
 mod divert_test;
 mod driver_equipment_test;
 mod driver_expenses_test;

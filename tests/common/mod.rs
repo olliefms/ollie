@@ -46,6 +46,45 @@ pub async fn mock_ollama(generate_response: &'static str) -> String {
     format!("http://{addr}")
 }
 
+/// A mock Ollama that is up but rejects every request with `code`. This is the
+/// reachable-but-refusing case (#406): the model answered, so the failure is
+/// about the document, not the dependency.
+pub async fn mock_ollama_rejecting(code: u16) -> String {
+    let status = axum::http::StatusCode::from_u16(code).unwrap();
+    let refuse = move || async move { (status, "model context overflow") };
+    let app = Router::new()
+        .route("/api/generate", post(refuse))
+        .route("/api/embeddings", post(refuse));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// A mock Ollama that summarizes fine but returns an embedding of the wrong
+/// dimension — what an embed-model swap looks like when `OLLAMA_EMBED_DIM` was
+/// not updated with it. Arrow's FixedSizeList builder asserts on the length, so
+/// this reaches the pipeline as a *panic*, not an error (#406).
+pub async fn mock_ollama_wrong_embed_dim(dim: usize) -> String {
+    let app = Router::new()
+        .route(
+            "/api/generate",
+            post(|_body: Json<serde_json::Value>| async move {
+                Json(serde_json::json!({ "response": "a summary" }))
+            }),
+        )
+        .route(
+            "/api/embeddings",
+            post(move || async move {
+                Json(serde_json::json!({ "embedding": vec![0.1f32; dim] }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
 /// A 1-page scanned-style PDF: no text layer, one full-page DCTDecode JPEG.
 pub fn scanned_pdf() -> Vec<u8> {
     use lopdf::{dictionary, Document, Object, Stream};

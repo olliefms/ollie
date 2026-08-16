@@ -122,8 +122,14 @@ pub fn spawn_pipeline(
                         match job {
                             PipelineJob::Process(id) => {
                                 tracing::error!("worker {i} panicked on {id}; worker survives, ending the pass");
+                                // An unattributed panic. We have no evidence the
+                                // bytes are at fault — an embedding of the wrong
+                                // dimension trips an arrow length assert right
+                                // here — so this must not spend the blob's retry
+                                // budget (#406).
                                 let recovery = worker::fail_without_degrading(
                                     id, &db, &ai, "pipeline worker panicked".into(),
+                                    crate::models::BlobFailureKind::Dependency,
                                 );
                                 match run_job(recovery).await {
                                     Ok(Ok(())) => {}

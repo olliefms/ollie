@@ -95,11 +95,20 @@ async fn extract_off_task(data: bytes::Bytes, mime_type: String) -> Option<Extra
 /// finished and the panic came from the best-effort expense-suggestion hook that
 /// runs after `mark_ready`, so there is nothing to repair and a second
 /// `processing_completed` event would misreport a run that actually succeeded.
+///
+/// `kind` comes from the caller because the two callers know different things.
+/// `process_blob` calls this when the *extractor* died on these bytes, which is
+/// evidence about the document. `run_job` calls it for any unattributed panic
+/// anywhere in the pass — including an arrow length assert when Ollama returns
+/// an embedding of the wrong dimension, which is a dependency/config fault
+/// wearing a panic's clothes. Hard-coding `Document` here would let an embed-model
+/// swap write off every queued document in three restarts (#406).
 pub(crate) async fn fail_without_degrading(
     id: Uuid,
     db: &DbClient,
     ai: &OllamaClient,
     error: String,
+    kind: BlobFailureKind,
 ) -> Result<(), AppError> {
     let record = db.get_by_id(id).await?;
     if record.status == crate::models::BlobStatus::Ready {
@@ -122,9 +131,7 @@ pub(crate) async fn fail_without_degrading(
         return Ok(());
     }
     tracing::error!("pipeline failed for {id}: {error}");
-    // The extractor panicked on these specific bytes — a retry only helps once
-    // the input or the extractor changes, so this one spends the budget (#406).
-    db.mark_failed(id, error.clone(), BlobFailureKind::Document).await?;
+    db.mark_failed(id, error.clone(), kind).await?;
     if let Err(e) = db.append_event(
         "blob", id, "processing_failed",
         Some(serde_json::json!({ "error": error })),
@@ -240,8 +247,11 @@ pub async fn process_blob(
         // Extractor panicked on these bytes. That is a failure of this blob, not
         // of the pipeline — end the pass so it leaves Processing and can be
         // re-queued once the input (or the extractor) changes.
+        // The extractor died on these specific bytes — the one panic we can
+        // actually attribute to the document, so it spends the budget (#406).
         return fail_without_degrading(
             id, db, ai, "content extraction panicked on these bytes".to_string(),
+            BlobFailureKind::Document,
         ).await;
     };
 
@@ -350,12 +360,12 @@ pub async fn process_blob(
         Err(e) => {
             tracing::error!("pipeline failed for {id}: {e}");
             let err_str = e.to_string();
-            // Every error that reaches here came out of an Ollama call —
-            // summarize, OCR-then-summarize, or embed. That is a statement
-            // about the dependency, not the document, so it must not spend the
-            // retry budget: three restarts with Ollama down would otherwise
-            // write off the whole failed population for good (#406).
-            db.mark_failed(id, err_str.clone(), BlobFailureKind::Dependency).await?;
+            // Every error here came out of an Ollama call, but that does not make
+            // them all the dependency's fault: a non-2xx from a reachable model
+            // (context overflow on these bytes) is document-scoped and should
+            // stop being retried, while connection-refused is not and must stay
+            // free. `classify_ollama_error` owns that split (#406).
+            db.mark_failed(id, err_str.clone(), crate::ai::classify_ollama_error(&e)).await?;
             if let Err(ev_err) = db.append_event(
                 "blob", id, "processing_failed",
                 Some(serde_json::json!({ "error": err_str })),
@@ -399,7 +409,7 @@ mod tests {
     #[tokio::test]
     async fn test_failed_pass_preserves_an_existing_summary() {
         let (db, ai, id, _dir) = blob_in_processing(Some("a good summary")).await;
-        fail_without_degrading(id, &db, &ai, "extractor panicked".into()).await.unwrap();
+        fail_without_degrading(id, &db, &ai, "extractor panicked".into(), BlobFailureKind::Document).await.unwrap();
 
         let record = db.get_by_id(id).await.unwrap();
         assert_eq!(record.status, BlobStatus::Ready);
@@ -409,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn test_failed_pass_marks_failed_when_there_is_nothing_to_keep() {
         let (db, ai, id, _dir) = blob_in_processing(None).await;
-        fail_without_degrading(id, &db, &ai, "extractor panicked".into()).await.unwrap();
+        fail_without_degrading(id, &db, &ai, "extractor panicked".into(), BlobFailureKind::Document).await.unwrap();
 
         let record = db.get_by_id(id).await.unwrap();
         assert_eq!(record.status, BlobStatus::Failed);
@@ -424,7 +434,7 @@ mod tests {
         db.mark_ready(id, Some("a good summary".into()), None).await.unwrap();
         let before = db.get_by_id(id).await.unwrap();
 
-        fail_without_degrading(id, &db, &ai, "panicked after mark_ready".into()).await.unwrap();
+        fail_without_degrading(id, &db, &ai, "panicked after mark_ready".into(), BlobFailureKind::Document).await.unwrap();
 
         let after = db.get_by_id(id).await.unwrap();
         assert_eq!(after.status, BlobStatus::Ready);
@@ -436,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn test_failed_pass_ignores_a_whitespace_summary() {
         let (db, ai, id, _dir) = blob_in_processing(Some("   \n\t ")).await;
-        fail_without_degrading(id, &db, &ai, "extractor panicked".into()).await.unwrap();
+        fail_without_degrading(id, &db, &ai, "extractor panicked".into(), BlobFailureKind::Document).await.unwrap();
 
         assert_eq!(db.get_by_id(id).await.unwrap().status, BlobStatus::Failed);
     }

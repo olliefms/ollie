@@ -147,12 +147,45 @@ This pattern appears in `record_to_batch` for every field. Follow it.
 
 ```
 pending → processing → ready
-                     → failed
+                     → failed → (startup recovery re-queues) → processing
+                              → permanently_failed
 ```
 
 - `mark_processing`: fetch record, set status to "processing", upsert
-- `mark_ready(id, summary, embedding)`: sets all AI output fields, clears error, upsert
-- `mark_failed(id, error)`: sets error string, leaves AI fields as-is, upsert
+- `mark_ready(id, summary, embedding)`: sets all AI output fields, clears error, resets `processing_attempts`, upsert
+- `mark_failed(id, error, kind)`: sets error string, leaves AI fields as-is, upsert. `kind` decides whether the blob spends a retry attempt — see below
+- `mark_pending`: the manual re-queue (`resummarize_blob`). Also resets `processing_attempts`, so it is the only way back from `permanently_failed`
+
+### The retry budget: only document-scoped failures spend it (#406)
+
+`failed` is **not** terminal — `list_non_ready_ids` includes it, so every restart
+re-queues it. That is deliberate: since #372 an unreadable payload becomes
+ready-with-no-summary, so what actually reaches `mark_failed` is
+disproportionately environmental, and a later attempt is exactly what fixes it.
+
+`BlobFailureKind` decides whether a failure costs the blob one of its
+`MAX_PROCESSING_ATTEMPTS`:
+
+- **`Document`** — positive evidence *these bytes* are the problem. Two sources
+  only: the extractor panicked on them (`process_blob`), or a *reachable* Ollama
+  answered with a non-2xx (`classify_ollama_error`, e.g. vision-model context
+  overflow). These repeat identically forever, so they are capped.
+- **`Dependency`** — everything else, and the default for anything unrecognised.
+  Transport errors, parse errors, and **any unattributed panic caught by
+  `run_job`**. Spending the budget here is the bug the whole design exists to
+  prevent: three restarts during one Ollama outage would write off every queued
+  document, and the only way back is hand-running `resummarize_blob` per blob.
+
+**The trap is the panic path.** `fail_without_degrading` has two callers that
+know different things — `process_blob` calls it for an *extractor* panic
+(document-scoped), while `run_job` calls it for *any* panic anywhere in the pass.
+An embedding of the wrong dimension (an embed-model swap without an
+`OLLAMA_EMBED_DIM` update) trips an `assert_eq!` inside arrow's
+`FixedSizeListBuilder` during `mark_ready` and arrives on that second path. So
+`kind` is a parameter, never hard-coded inside `fail_without_degrading`.
+`tests/it/blob_retry_test.rs` pins all three classifications, and the panic case
+drives a real `spawn_pipeline` — calling `process_blob` directly would just
+propagate the panic and prove nothing.
 
 ## Pipeline Architecture
 
