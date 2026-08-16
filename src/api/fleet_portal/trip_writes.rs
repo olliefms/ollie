@@ -59,8 +59,8 @@ pub struct PatchTripBody {
     /// `Some(uuid)` sets the link; omitted = no change.
     /// Note: clearing previous_trip_id to null is not currently supported via this
     /// endpoint — it lacks the `double_option` pattern the rate overrides below use
-    /// to distinguish omitted from explicit null. This is the one remaining field
-    /// without null-to-clear support.
+    /// to distinguish omitted from explicit null. The same is true of `notes`,
+    /// `internal_notes` and `blob_ids`: only the rate overrides can be cleared.
     #[serde(default)]
     pub previous_trip_id: Option<Uuid>,
     /// Document blobs to attach to this trip (BOLs, PODs, lumper receipts, scale
