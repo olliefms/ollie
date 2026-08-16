@@ -464,6 +464,9 @@ async fn open_or_create_load(conn: &lancedb::Connection, embed_dim: usize) -> Re
                     transforms.push((col.into(), "CAST(NULL AS string)".into()));
                 }
             }
+            if existing.field_with_name("internal_notes").is_err() {
+                transforms.push(("internal_notes".into(), "CAST(NULL AS string)".into()));
+            }
             if !transforms.is_empty() {
                 tracing::info!("migrating loads table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
@@ -521,6 +524,9 @@ async fn open_or_create_trip(conn: &lancedb::Connection, embed_dim: usize) -> Re
                 if existing.field_with_name(col).is_err() {
                     transforms.push((col.into(), "CAST(NULL AS string)".into()));
                 }
+            }
+            if existing.field_with_name("internal_notes").is_err() {
+                transforms.push(("internal_notes".into(), "CAST(NULL AS string)".into()));
             }
             if !transforms.is_empty() {
                 tracing::info!("migrating trips table: adding {} column(s)", transforms.len());
@@ -972,6 +978,9 @@ pub fn load_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("diverted_at", DataType::Utf8, true),
         Field::new("diversion_reason", DataType::Utf8, true),
         Field::new("diversion_notes", DataType::Utf8, true),
+        // Migration-added columns land at the end of the table schema, so new
+        // fields append here to keep this in step with `open_or_create_load`.
+        Field::new("internal_notes", DataType::Utf8, true),
     ]))
 }
 
@@ -1411,6 +1420,9 @@ pub fn trip_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("pay_period_start", DataType::Utf8, true),
         Field::new("pay_period_end", DataType::Utf8, true),
         Field::new("driver_pay_snapshot", DataType::Utf8, true),
+        // Migration-added columns land at the end of the table schema, so new
+        // fields append here to keep this in step with `open_or_create_trip`.
+        Field::new("internal_notes", DataType::Utf8, true),
     ]))
 }
 
@@ -1449,6 +1461,7 @@ fn empty_trip_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // pay_period_start
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // pay_period_end
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // driver_pay_snapshot
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // internal_notes
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -1687,6 +1700,7 @@ fn empty_load_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(StringArray::from(Vec::<Option<&str>>::new())),  // internal_notes
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

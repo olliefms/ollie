@@ -26,6 +26,27 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Field-wise patch for [`DbClient::update_load_metadata`]. Every field is
+/// "leave unchanged" when `None`, so callers construct it with
+/// `..Default::default()` and name only what they are changing — the previous
+/// positional form took eleven `Option`s and its call sites passed long runs of
+/// bare `None`, where a miscount is invisible in review.
+#[derive(Debug, Default)]
+pub struct LoadMetadataUpdate {
+    pub customer_name: Option<String>,
+    pub customer_ref: Option<String>,
+    pub stops: Option<Vec<Stop>>,
+    pub rate_items: Option<Vec<crate::models::RateLineItem>>,
+    pub commodity: Option<String>,
+    pub weight_lbs: Option<f64>,
+    pub miles: Option<f64>,
+    pub notes: Option<String>,
+    pub internal_notes: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub blob_ids: Option<Vec<Uuid>>,
+    pub embedding: Option<Vec<f32>>,
+}
+
 impl DbClient {
     pub async fn insert_load(&self, record: &LoadRecord) -> Result<(), AppError> {
         let batch = load_to_batch(record, self.embed_dim)?;
@@ -64,28 +85,24 @@ impl DbClient {
             .map_err(|e| AppError::Internal(e.to_string()))
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Patch a load's mutable metadata. `None` on a field means "leave unchanged";
+    /// build with `..Default::default()` and set only what you are changing.
     pub async fn update_load_metadata(
-        &self, id: Uuid,
-        customer_name: Option<String>, customer_ref: Option<String>,
-        stops: Option<Vec<Stop>>,
-        rate_items: Option<Vec<crate::models::RateLineItem>>,
-        commodity: Option<String>, weight_lbs: Option<f64>, miles: Option<f64>,
-        notes: Option<String>, tags: Option<Vec<String>>, blob_ids: Option<Vec<Uuid>>,
-        embedding: Option<Vec<f32>>,
+        &self, id: Uuid, update: LoadMetadataUpdate,
     ) -> Result<LoadRecord, AppError> {
         let mut record = self.get_load_by_id(id).await?;
-        if let Some(v) = customer_name { record.customer_name = v; }
-        if let Some(v) = customer_ref { record.customer_ref = Some(v); }
-        if let Some(v) = stops { record.stops = v; }
-        if let Some(v) = rate_items { record.rate_items = v; }
-        if let Some(v) = commodity { record.commodity = Some(v); }
-        if let Some(v) = weight_lbs { record.weight_lbs = Some(v); }
-        if let Some(v) = miles { record.miles = Some(v); }
-        if let Some(v) = notes { record.notes = Some(v); }
-        if let Some(v) = tags { record.tags = v; }
-        if let Some(v) = blob_ids { record.blob_ids = v; }
-        if let Some(v) = embedding { record.embedding = Some(v); }
+        if let Some(v) = update.customer_name { record.customer_name = v; }
+        if let Some(v) = update.customer_ref { record.customer_ref = Some(v); }
+        if let Some(v) = update.stops { record.stops = v; }
+        if let Some(v) = update.rate_items { record.rate_items = v; }
+        if let Some(v) = update.commodity { record.commodity = Some(v); }
+        if let Some(v) = update.weight_lbs { record.weight_lbs = Some(v); }
+        if let Some(v) = update.miles { record.miles = Some(v); }
+        if let Some(v) = update.notes { record.notes = Some(v); }
+        if let Some(v) = update.internal_notes { record.internal_notes = Some(v); }
+        if let Some(v) = update.tags { record.tags = v; }
+        if let Some(v) = update.blob_ids { record.blob_ids = v; }
+        if let Some(v) = update.embedding { record.embedding = Some(v); }
         record.updated_at = Utc::now();
         self.upsert_load(&record).await?;
         Ok(record)
@@ -380,6 +397,7 @@ fn load_to_batch(record: &LoadRecord, embed_dim: usize) -> Result<RecordBatch, A
         Arc::new(StringArray::from(vec![record.diverted_at.as_deref()])),
         Arc::new(StringArray::from(vec![record.diversion_reason.as_deref()])),
         Arc::new(StringArray::from(vec![record.diversion_notes.as_deref()])),
+        Arc::new(StringArray::from(vec![record.internal_notes.as_deref()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -445,7 +463,9 @@ fn row_to_load(batch: &RecordBatch, i: usize) -> Result<LoadRecord, AppError> {
         customer_name: str_col("customer_name"), customer_ref: opt_str("customer_ref"),
         stops, rate_items,
         commodity: opt_str("commodity"), weight_lbs: opt_f64("weight_lbs"),
-        miles: opt_f64("miles"), notes: opt_str("notes"), tags, blob_ids,
+        miles: opt_f64("miles"), notes: opt_str("notes"),
+        internal_notes: opt_str("internal_notes"),
+        tags, blob_ids,
         invoice_number: opt_str("invoice_number"), invoice_date: opt_str("invoice_date"),
         cancellation_reason: opt_str("cancellation_reason"),
         quoted_rate_items,
@@ -513,6 +533,7 @@ mod tests {
     fn sample_load() -> LoadRecord {
         let now = chrono::Utc::now();
         LoadRecord {
+            internal_notes: None,
             id: uuid::Uuid::new_v4(),
             load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,

@@ -397,6 +397,7 @@ mod tests {
 
     fn make_trip_with_last_stop(stop_type: TripStopType, actual_arrive: Option<String>) -> TripListItem {
         TripListItem {
+            internal_notes: None,
             id: Uuid::new_v4(),
             trip_number: "T-001".into(),
             load_id: None,

@@ -56,6 +56,10 @@ pub struct FleetTripListItem {
     pub updated_at: chrono::DateTime<chrono::Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// Back-office annotation. This type serves `/fleet` only — the driver
+    /// portal builds its own response structs and never maps this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal_notes: Option<String>,
     /// Flattened mileage projection for list views — keeps payloads small but
     /// gives agents enough info to audit the fleet without N+1 `get_trip` calls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -183,6 +187,7 @@ fn enrich_trip(
         created_at: trip.created_at,
         updated_at: trip.updated_at,
         notes: trip.notes,
+        internal_notes: trip.internal_notes,
         deadhead_miles: trip.deadhead_miles,
         loaded_miles: trip.loaded_miles,
         total_miles: trip.total_miles,
@@ -329,6 +334,7 @@ pub async fn create_load(
         weight_lbs: body.weight_lbs,
         miles: body.miles,
         notes: body.notes,
+        internal_notes: body.internal_notes,
         tags: body.tags,
         blob_ids: body.blob_ids,
         invoice_number: None,
@@ -405,17 +411,20 @@ pub async fn update_load(
 
     let mut updated = state.db.update_load_metadata(
         id,
-        body.customer_name,
-        body.customer_ref,
-        stops,
-        body.rate_items,
-        body.commodity,
-        body.weight_lbs,
-        body.miles,
-        body.notes,
-        body.tags,
-        body.blob_ids,
-        embedding,
+        crate::db::load_ops::LoadMetadataUpdate {
+            customer_name: body.customer_name,
+            customer_ref: body.customer_ref,
+            stops,
+            rate_items: body.rate_items,
+            commodity: body.commodity,
+            weight_lbs: body.weight_lbs,
+            miles: body.miles,
+            notes: body.notes,
+            internal_notes: body.internal_notes,
+            tags: body.tags,
+            blob_ids: body.blob_ids,
+            embedding,
+        },
     ).await?;
 
     if let Some(ln) = body.load_number {
@@ -1767,6 +1776,7 @@ mod tests {
     fn make_trip(id: Uuid, trip_number: &str, stops: Vec<TripStop>) -> TripRecord {
         let now = chrono::Utc::now();
         TripRecord {
+            internal_notes: None,
             id,
             trip_number: trip_number.into(),
             load_id: None,
@@ -1874,6 +1884,7 @@ mod tests {
     fn sample_load_record(load_number: &str) -> crate::models::LoadRecord {
         let now = chrono::Utc::now();
         crate::models::LoadRecord {
+            internal_notes: None,
             id: Uuid::new_v4(),
             load_number: load_number.into(),
             owner_id: 0,
@@ -2056,6 +2067,7 @@ pub async fn build_load_detail(
         weight_lbs: record.weight_lbs,
         miles: record.miles,
         notes: record.notes,
+        internal_notes: record.internal_notes,
         tags: record.tags,
         blob_ids: record.blob_ids,
         invoice_number: record.invoice_number,

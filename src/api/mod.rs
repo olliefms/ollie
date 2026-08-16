@@ -116,6 +116,10 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
         fleet_portal::blobs::query_blob,
         fleet_portal::blobs::presigned_upload,
         fleet_portal::blobs::presigned_download,
+        driver_portal::data::me,
+        driver_portal::data::list_trips,
+        driver_portal::data::trip_detail,
+        driver_portal::data::stop_detail,
         driver_portal::data::update_stop_times,
         driver_portal::equipment::get_equipment,
         driver_portal::equipment::update_trailer,
@@ -241,6 +245,15 @@ use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
             models::pay::DriverPay,
             driver_portal::data::DriverFacilityContact,
             driver_portal::data::UpdateStopTimesRequest,
+            driver_portal::data::DriverMeResponse,
+            driver_portal::data::DriverTripListItem,
+            driver_portal::data::DriverTripListResponse,
+            driver_portal::data::PastWeekInfo,
+            driver_portal::data::DriverTripLoadSummary,
+            driver_portal::data::DriverTripStopSummary,
+            driver_portal::data::DriverTripDetailResponse,
+            driver_portal::data::DriverStopAddress,
+            driver_portal::data::DriverStopDetailResponse,
             driver_portal::equipment::EquipmentTruckSummary,
             driver_portal::equipment::EquipmentTrailerSummary,
             driver_portal::equipment::DriverEquipmentResponse,
@@ -561,7 +574,10 @@ forbidden (403).
 ## Driver portal — /driver/api/v1 (driver app only)
 
 JWT auth (passkey or PIN); a driver sees only their own trips. Not part of the admin
-surface and not described in /openapi.json.
+surface. The read endpoints and their response schemas ARE published in
+/openapi.json (tag: driver) — deliberately as distinct types, not $refs to the
+fleet Trip/Stop schemas, because the driver surface is a strict subset: no rate or
+revenue data, no load notes, no internal_notes.
 
   Auth:  POST /auth/{challenge,verify,pin,register-passkey,refresh}
   Data:  GET /me, GET /trips (?tab=current|upcoming|past), GET /trips/:id,
