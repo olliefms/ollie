@@ -4215,7 +4215,13 @@ async fn test_driver_list_excludes_load_blob_without_trip_tag() {
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .multipart(form)
         .await;
-    let blob_id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let uploaded = upload.json::<serde_json::Value>();
+    assert_eq!(
+        uploaded["visibility"], "driver",
+        "precondition: the blob must really be driver-visible, or this test \
+         degrades to proving a private blob is hidden"
+    );
+    let blob_id = uploaded["id"].as_str().unwrap().to_string();
 
     let attach = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
