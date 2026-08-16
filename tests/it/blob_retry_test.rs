@@ -82,15 +82,17 @@ async fn a_rejecting_model_spends_the_budget_and_stops_being_requeued() {
     assert!(db.list_non_ready_ids().await.unwrap().contains(&id));
 }
 
-/// A reachable Ollama that answers 5xx or 404 is *not* evidence about the
+/// A reachable Ollama that answers 400, 404 or 5xx is *not* evidence about the
 /// document: 404 is a model that was never pulled, 500 is usually a model load
-/// failure or OOM, and 502/503/504 is a proxy over an Ollama that is down. Each
-/// hits every blob in the batch alike, so spending the budget here would walk
-/// the whole backlog to permanently_failed in three restarts — the exact harm
-/// #406 exists to prevent (a bad deploy, not a bad document).
+/// failure or OOM, 502/503/504 is a proxy over an Ollama that is down, and 400
+/// is ambiguous between a bad payload and a rejected *request shape* — an API
+/// change would answer it for every blob alike. Each hits the whole batch, so
+/// spending the budget here would walk the backlog to permanently_failed in
+/// three restarts: the exact harm #406 exists to prevent (a bad deploy, not a
+/// bad document).
 #[tokio::test]
 async fn a_service_fault_status_never_spends_the_retry_budget() {
-    for code in [404u16, 500, 503] {
+    for code in [400u16, 404, 500, 503] {
         let (id, db, store, _db_dir, _blob_dir, extract_dir) =
             seed_blob(b"a readable text document".to_vec(), "text/plain").await;
         let ai = ai_client(&mock_ollama_rejecting(code).await);

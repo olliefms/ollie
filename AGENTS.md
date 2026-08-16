@@ -168,8 +168,8 @@ disproportionately environmental, and a later attempt is exactly what fixes it.
 
 - **`Document`** — positive evidence *these bytes* are the problem. Two sources
   only: the extractor panicked on them (`process_blob`), or Ollama answered with
-  an **input-rejection status — 400, 413, 422** (`is_input_rejection`), meaning
-  it understood the request and judged the payload unusable. These repeat
+  an **input-rejection status — 413 or 422** (`is_input_rejection`), meaning it
+  understood the request and judged *the payload* unusable. These repeat
   identically forever, so they are capped.
 - **`Dependency`** — everything else, and the default for anything unrecognised.
   Transport errors, parse errors, **every other non-2xx**, and **any
@@ -184,8 +184,14 @@ found, try pulling it first` (a model never pulled, or a typo'd
 `OLLAMA_SUMMARY_MODEL`), **500** for a model load failure including `requires
 more system memory than is available` — the OOM case the issue names as
 environmental — and **502/503/504** arrives from any reverse proxy in front of an
-Ollama that is down or restarting. Every one of those hits the whole batch
-alike. Classify on the *status code*, never on non-2xx-ness. The status is
+Ollama that is down or restarting. **400 is on that list too** — it reads like an
+input rejection, but it is ambiguous between "this payload is bad" and "this
+*request shape* is bad", and an Ollama API change answers it for every blob
+alike. Only 413/422 make a claim about the payload specifically. Every one of
+those hits the whole batch alike. Classify on the *status code*, never on
+non-2xx-ness, and keep the document-scoped set narrow: being wrong that way
+costs one retry per restart, being wrong the other way loses documents. The
+status is
 carried as data: `status_err` writes it after `OLLAMA_STATUS_PREFIX` and
 `classify_ollama_error` parses it back, so the two sides cannot drift.
 

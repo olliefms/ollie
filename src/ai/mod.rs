@@ -48,32 +48,47 @@ struct GenerateResponse {
 /// inferred from prose.
 pub const OLLAMA_STATUS_PREFIX: &str = "ollama status ";
 
+/// Upstream bodies land in `BlobRecord::error` and in the `processing_failed`
+/// event, and dependency failures are retried on every restart — so a proxy
+/// that answers 5xx with a full HTML page would otherwise grow both by that
+/// page per blob per restart. Ollama's own errors are one short line.
+const MAX_ERROR_BODY: usize = 500;
+
 /// Build the error for a non-2xx from Ollama, keeping the response body.
 ///
 /// Deliberately not `error_for_status()`: that consumes the response and
 /// discards the body, which is where Ollama explains itself (AGENTS.md).
 fn status_err(op: &str, status: reqwest::StatusCode, body: &str) -> AppError {
+    let body = summarize::truncate_at_char_boundary(body.trim(), MAX_ERROR_BODY);
     AppError::Internal(format!(
-        "{OLLAMA_STATUS_PREFIX}{}: ollama {op} — {body}",
+        "{OLLAMA_STATUS_PREFIX}{}: {op} — {body}",
         status.as_u16()
     ))
 }
 
-/// Statuses that mean "the model saw these bytes and refused *them*" — the
-/// request was understood and judged unusable, so the same document fails the
-/// same way on every retry.
+/// Statuses that mean "the model saw *these bytes* and refused them" — the
+/// request was understood and the payload judged unusable, so the same document
+/// fails the same way on every retry.
 ///
-/// Every other non-2xx is about the service, not the document, and this
-/// distinction is the whole point: **404** is `model not found, try pulling it
-/// first` (a model that was never pulled, or a typo'd `OLLAMA_SUMMARY_MODEL`),
-/// **500** is most often a model load failure such as `requires more system
-/// memory than is available`, and **502/503/504** is a reverse proxy in front
-/// of an Ollama that is down or restarting. All of those hit every blob in the
-/// batch identically — treating them as document-scoped would walk the entire
-/// queued backlog to `PermanentlyFailed` in three restarts, which is exactly
-/// what #406 exists to prevent.
+/// Deliberately narrow. Every other non-2xx is about the service, not the
+/// document, and that distinction is the whole point: **404** is `model not
+/// found, try pulling it first` (never pulled, or a typo'd
+/// `OLLAMA_SUMMARY_MODEL`), **500** is most often a model load failure such as
+/// `requires more system memory than is available`, and **502/503/504** is a
+/// reverse proxy in front of an Ollama that is down or restarting.
+///
+/// **400 is excluded on purpose**, though it reads like an input rejection: it
+/// is ambiguous between "this payload is bad" and "this *request shape* is
+/// bad", and the second one — an Ollama API change, or a field we send that it
+/// stops accepting — answers 400 for every blob alike. That is the same
+/// systemic write-off as the codes above: three restarts and the whole queued
+/// backlog is `PermanentlyFailed`, recoverable only one `resummarize_blob` at a
+/// time. 413 and 422 carry a claim about the payload specifically; 400 does not.
+///
+/// The cost of being wrong in this direction is one wasted retry per restart.
+/// The cost of being wrong in the other direction is losing documents.
 fn is_input_rejection(code: u16) -> bool {
-    matches!(code, 400 | 413 | 422)
+    matches!(code, 413 | 422)
 }
 
 /// Did this failure implicate the document, or the dependency?
@@ -161,7 +176,7 @@ mod tests {
         let code = |c: u16| reqwest::StatusCode::from_u16(c).unwrap();
 
         // The model understood the request and refused these bytes.
-        for c in [400u16, 413, 422] {
+        for c in [413u16, 422] {
             for op in ["embed", "generate"] {
                 let err = status_err(op, code(c), "context length exceeded");
                 assert_eq!(
@@ -173,9 +188,10 @@ mod tests {
         }
 
         // Every other non-2xx is about the service. 404 = model never pulled,
-        // 500 = model load / OOM, 502-504 = a proxy over a down Ollama. These
-        // hit every blob alike and must never write one off.
-        for c in [404u16, 408, 429, 500, 502, 503, 504] {
+        // 500 = model load / OOM, 502-504 = a proxy over a down Ollama, and 400
+        // is ambiguous enough to belong here (a rejected *request shape* hits
+        // every blob alike). These must never write a document off.
+        for c in [400u16, 404, 408, 429, 500, 502, 503, 504] {
             for op in ["embed", "generate"] {
                 let err = status_err(op, code(c), "model requires more system memory");
                 assert_eq!(
@@ -205,6 +221,21 @@ mod tests {
         assert_eq!(
             classify_ollama_error(&AppError::Internal("ollama status notanumber: x".into())),
             BlobFailureKind::Dependency,
+        );
+    }
+
+    /// Upstream bodies are persisted per blob and re-written on every restart,
+    /// so a proxy's HTML error page must not land in the DB whole.
+    #[test]
+    fn test_status_err_bounds_the_upstream_body() {
+        let huge = "<html>".to_string() + &"x".repeat(50_000) + "</html>";
+        let err = status_err("generate", reqwest::StatusCode::BAD_GATEWAY, &huge);
+        let AppError::Internal(msg) = err else { panic!("expected Internal") };
+        assert!(msg.len() < MAX_ERROR_BODY + 100, "body must be truncated, got {} bytes", msg.len());
+        assert!(msg.starts_with(OLLAMA_STATUS_PREFIX), "the status tag must survive truncation");
+        assert_eq!(
+            classify_ollama_error(&AppError::Internal(msg)),
+            crate::models::BlobFailureKind::Dependency,
         );
     }
 
