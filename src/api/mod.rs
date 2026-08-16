@@ -561,7 +561,8 @@ forbidden (403).
 ## Driver portal — /driver/api/v1 (driver app only)
 
 JWT auth (passkey or PIN); a driver sees only their own trips. Not part of the admin
-surface and not described in /openapi.json.
+surface. Only some of it reaches /openapi.json — the documents, equipment, expenses
+and stop-time endpoints are described there; auth and the trip/me reads are not.
 
   Auth:  POST /auth/{challenge,verify,pin,register-passkey,refresh}
   Data:  GET /me, GET /trips (?tab=current|upcoming|past), GET /trips/:id,
