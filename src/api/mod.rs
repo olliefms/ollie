@@ -569,6 +569,14 @@ surface and not described in /openapi.json.
   PUT /equipment/trailer sets the driver's currently attached trailers (body:
   trailer_ids OR trailer_unit_numbers) and cascades onto their active
   Dispatched/InTransit trip unless they have arrived at the final delivery stop.
+  Docs:  GET /trips/:id/documents, GET /trips/:id/documents/:blob_id/content,
+         POST /trips/:id/documents (multipart), DELETE /trips/:id/documents/:blob_id
+         (uploader only). A blob is readable by the driver only when it is tagged
+         `trip:<id>` AND is either visibility=driver or was uploaded by that driver
+         — visibility is the exposure boundary, not which record the blob hangs
+         off, and it defaults to private. Both the list and the content endpoint
+         enforce it. The list is capped at the 200 newest tagged blobs (applied
+         before the visibility filter) and does not page.
   Expenses: POST /trips/:id/documents (multipart; doctype=expense plus an
   optional expense_category field auto-creates a submitted expense from the
   uploaded receipt), GET /expenses (?status, ?limit, ?offset) — this driver's

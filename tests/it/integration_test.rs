@@ -4099,14 +4099,17 @@ async fn test_driver_upload_lists_own_document() {
     assert_eq!(items[0]["visibility"], "driver");
 }
 
-#[tokio::test]
-async fn test_driver_upload_attaches_blob_to_load() {
-    let (server, _b, _d, _rx, state) = test_server_with_state().await;
-    let owner_token = setup_owner(&server).await;
+/// Load + trip linked to that load, assigned + dispatched + InTransit, with a
+/// driver JWT for the assigned driver. Returns (owner_token, driver_token,
+/// load_id, trip_id).
+async fn setup_driver_trip_on_load(
+    server: &TestServer,
+    state: &AppState,
+) -> (String, String, String, String) {
+    let owner_token = setup_owner(server).await;
 
-    // Build a load + trip linked to that load, assigned + dispatched + InTransit.
-    let fac_id = create_test_facility(&server, "Dock", "Memphis, TN").await;
-    let load_id = create_test_load(&server, &fac_id).await;
+    let fac_id = create_test_facility(server, "Dock", "Memphis, TN").await;
+    let load_id = create_test_load(server, &fac_id).await;
 
     let driver_id_str = server.post("/fleet/api/v1/drivers")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
@@ -4149,6 +4152,15 @@ async fn test_driver_upload_attaches_blob_to_load() {
     let secret = std::env::var("DRIVER_JWT_SECRET").unwrap();
     let driver_token = ollie::api::driver_portal::jwt::encode_driver_jwt(driver_id, 1, &secret).unwrap();
 
+    (owner_token, driver_token, load_id, trip_id)
+}
+
+#[tokio::test]
+async fn test_driver_upload_attaches_blob_to_load() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (owner_token, driver_token, load_id, trip_id) =
+        setup_driver_trip_on_load(&server, &state).await;
+
     let form = axum_test::multipart::MultipartForm::new()
         .add_text("doctype", "bol")
         .add_part(
@@ -4174,6 +4186,130 @@ async fn test_driver_upload_attaches_blob_to_load() {
         .iter().map(|v| v.as_str().unwrap().to_string()).collect();
     assert!(ids.contains(&blob_id),
         "load.blob_ids should contain driver-uploaded blob; got {ids:?}");
+}
+
+/// The driver document list selects on the `trip:{id}` tag — NOT on the trip's
+/// parent load. A blob sitting in `load.blob_ids`, even one uploaded
+/// `visibility=driver`, is invisible to the driver unless it also carries the
+/// trip tag. This is the question #425 asked; without it, a change that widened
+/// the selector to fold in load documents would pass the suite silently.
+#[tokio::test]
+async fn test_driver_list_excludes_load_blob_without_trip_tag() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let (owner_token, driver_token, load_id, trip_id) =
+        setup_driver_trip_on_load(&server, &state).await;
+
+    // Driver-visible on purpose: visibility alone must not expose it, because
+    // the tag selector never picks it up.
+    let form = axum_test::multipart::MultipartForm::new()
+        .add_text("visibility", "driver")
+        .add_text("tags", format!(r#"["load:{load_id}"]"#))
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"rate-con".to_vec())
+                .file_name("rate-con.pdf")
+                .mime_type("application/pdf"),
+        );
+    let upload = server
+        .post("/fleet/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .multipart(form)
+        .await;
+    let blob_id = upload.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let attach = server.put(&format!("/fleet/api/v1/loads/{load_id}"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "blob_ids": [blob_id] }))
+        .await;
+    assert_eq!(attach.status_code(), 200);
+    let attached: Vec<String> = attach.json::<serde_json::Value>()["blob_ids"]
+        .as_array().unwrap()
+        .iter().map(|v| v.as_str().unwrap().to_string()).collect();
+    assert!(
+        attached.contains(&blob_id),
+        "precondition: the blob must really be on the load; got {attached:?}"
+    );
+
+    let list = server
+        .get(&format!("/driver/api/v1/trips/{trip_id}/documents"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    let items: Vec<serde_json::Value> = serde_json::from_slice(list.as_bytes()).unwrap();
+    assert_eq!(
+        items.len(),
+        0,
+        "a load-attached blob with no trip: tag must not be listed; got {items:?}"
+    );
+
+    let content = server
+        .get(&format!(
+            "/driver/api/v1/trips/{trip_id}/documents/{blob_id}/content"
+        ))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(content.status_code(), 404, "content must apply the same tag gate");
+}
+
+/// The content endpoint re-checks tag AND visibility independently of the list,
+/// so knowing a blob id is not enough to read a private document.
+#[tokio::test]
+async fn test_driver_document_content_gate() {
+    let (server, _b, _d, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let private_form = axum_test::multipart::MultipartForm::new()
+        .add_text("visibility", "private")
+        .add_text("tags", format!(r#"["trip:{trip_id}"]"#))
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"rate-con".to_vec())
+                .file_name("rate-con.txt")
+                .mime_type("text/plain"),
+        );
+    let private_id = server
+        .post("/fleet/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .multipart(private_form)
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let shared_form = axum_test::multipart::MultipartForm::new()
+        .add_text("visibility", "driver")
+        .add_text("tags", format!(r#"["trip:{trip_id}"]"#))
+        .add_part(
+            "file",
+            axum_test::multipart::Part::bytes(b"bol-bytes".to_vec())
+                .file_name("bol.txt")
+                .mime_type("text/plain"),
+        );
+    let shared_id = server
+        .post("/fleet/api/v1/blobs")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .multipart(shared_form)
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let private = server
+        .get(&format!(
+            "/driver/api/v1/trips/{trip_id}/documents/{private_id}/content"
+        ))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(
+        private.status_code(),
+        404,
+        "a private blob must not be readable even with its id in hand"
+    );
+
+    let shared = server
+        .get(&format!(
+            "/driver/api/v1/trips/{trip_id}/documents/{shared_id}/content"
+        ))
+        .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+        .await;
+    assert_eq!(shared.status_code(), 200);
+    assert_eq!(shared.as_bytes().as_ref(), b"bol-bytes");
 }
 
 #[tokio::test]
@@ -7513,6 +7649,26 @@ async fn test_openapi_includes_presigned_blob_paths() {
     let paths = &spec["paths"];
     assert!(!paths["/fleet/blobs/presigned"].is_null(), "upload path missing from spec");
     assert!(!paths["/fleet/blobs/presigned/{id}"].is_null(), "download path missing from spec");
+}
+
+/// #425: the driver document-visibility rule has to be legible from the spec,
+/// not only from `documents.rs`. utoipa 4 sources an operation's description
+/// from the handler's doc comment, so dropping the comment silently
+/// un-documents the endpoint — which is the exact confusion #425 was filed
+/// over. Assert on the substance, not the wording.
+#[tokio::test]
+async fn test_openapi_states_driver_document_visibility_rule() {
+    let (server, _b, _d, _rx) = test_server().await;
+    let spec: serde_json::Value = server.get("/openapi.json").await.json();
+    let op = &spec["paths"]["/driver/api/v1/trips/{id}/documents"]["get"];
+    assert!(!op.is_null(), "driver document list missing from spec");
+    let text = format!("{} {}", op["summary"], op["description"]);
+    for needle in ["trip:{id}", "visibility", "uploaded by", "at most 200 blobs"] {
+        assert!(
+            text.contains(needle),
+            "spec description must state {needle:?}; got: {text}"
+        );
+    }
 }
 
 // --- TOCTOU race fix tests ---

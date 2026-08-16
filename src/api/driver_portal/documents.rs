@@ -264,11 +264,31 @@ pub async fn upload_document(
     Ok((status_code, Json(record)))
 }
 
+/// List the trip documents this driver is allowed to read.
+///
+/// Selection is by **tag**, then by an explicit **visibility gate**. It is not
+/// derived from `trip.blob_ids`, and it does not fold in the trip's parent
+/// load. A blob is returned only when **both** conditions hold:
+///
+/// 1. its tags contain `trip:{id}`, **and**
+/// 2. `visibility == "driver"` **or** it was uploaded by the requesting driver.
+///
+/// Which record a blob hangs off is therefore not what exposes it — `visibility`
+/// is the boundary, and it defaults to `private`. A fleet-side upload becomes
+/// driver-readable only when it is both tagged `trip:{id}` and uploaded with an
+/// explicit `visibility=driver`. Conversely, attaching a document to the load
+/// rather than the trip is not itself protective: a `driver`-visible blob
+/// carrying a `trip:` tag is readable regardless of its load association.
+///
+/// **Cap:** the tag query returns at most 200 blobs, newest first by
+/// `created_at`, and that cap is applied *before* the visibility filter. There
+/// is no paging, so a trip carrying more than 200 `trip:`-tagged blobs silently
+/// omits the oldest of them (#187).
 #[utoipa::path(
     get,
     path = "/driver/api/v1/trips/{id}/documents",
     responses(
-        (status = 200, description = "List of documents visible to this driver", body = Vec<crate::models::BlobListItem>),
+        (status = 200, description = "Documents on this trip the driver may read: `trip:{id}`-tagged AND (visibility=driver OR uploaded by this driver)", body = Vec<crate::models::BlobListItem>),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Trip not found"),
     ),
@@ -294,6 +314,14 @@ pub async fn list_documents(
     Ok(Json(visible))
 }
 
+/// Stream one trip document's bytes.
+///
+/// Re-checks the same two conditions as the list endpoint, independently of it:
+/// the blob must carry the `trip:{id}` tag **and** be either
+/// `visibility == "driver"` or uploaded by the requesting driver. The gate is
+/// therefore not list-only — a blob id guessed or held from elsewhere is
+/// refused here too. Failing either condition returns 404 rather than 403, so
+/// the endpoint never confirms that an id it will not serve exists.
 #[utoipa::path(
     get,
     path = "/driver/api/v1/trips/{id}/documents/{blob_id}/content",
