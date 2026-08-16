@@ -348,3 +348,91 @@ async fn test_openapi_publishes_driver_read_endpoints() {
             "DriverTripLoadSummary must not expose {absent}");
     }
 }
+
+
+/// Every `$ref` in the spec must resolve to a registered component.
+///
+/// A `ToSchema` struct whose field names a type by a qualified path
+/// (`crate::models::trip::MileageSummary`) makes utoipa emit a ref named
+/// `crate.models.trip.MileageSummary`, which never matches the component that
+/// `components(schemas(models::trip::MileageSummary))` registers as
+/// `MileageSummary`. The result is a spec that validators and client generators
+/// reject — the same class of defect as an undefined security scheme (AGENTS.md).
+///
+/// The names below were already dangling before #424 and are left alone here
+/// rather than fixed in an unrelated PR — tracked in #431. The point of this test
+/// is that the list cannot grow. If you add a schema, use a bare imported type
+/// name and register it; do not add to this list.
+#[tokio::test]
+async fn test_openapi_has_no_new_dangling_schema_refs() {
+    const KNOWN_PREEXISTING: &[&str] = &[
+        "BlobVisibility",
+        "DispatchLoadListResponse",
+        "crate.api.blobs.BlobUploadRequest",
+        "crate.models.BlobListItem",
+        "crate.models.FacilityListResponse",
+        "crate.models.FacilityRecord",
+        "crate.models.TripStop",
+        "crate.models.TripStopType",
+        "crate.models.pay.DriverPay",
+        "crate.models.trip.MileageSummary",
+    ];
+
+    fn collect_refs(v: &serde_json::Value, out: &mut std::collections::BTreeSet<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, val) in m {
+                    if k == "$ref" {
+                        if let Some(name) = val.as_str()
+                            .and_then(|s| s.strip_prefix("#/components/schemas/"))
+                        {
+                            out.insert(name.to_string());
+                        }
+                    }
+                    collect_refs(val, out);
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| collect_refs(x, out)),
+            _ => {}
+        }
+    }
+
+    let (server, _state, _b, _d) = setup().await;
+    let spec: serde_json::Value = server.get("/openapi.json").await.json();
+
+    let defined: std::collections::BTreeSet<String> = spec["components"]["schemas"]
+        .as_object()
+        .map(|o| o.keys().cloned().collect())
+        .unwrap_or_default();
+    assert!(!defined.is_empty(), "spec has no components.schemas at all");
+
+    let mut referenced = std::collections::BTreeSet::new();
+    collect_refs(&spec, &mut referenced);
+
+    let dangling: Vec<&String> = referenced.difference(&defined).collect();
+    let unexpected: Vec<&&String> = dangling.iter()
+        .filter(|n| !KNOWN_PREEXISTING.contains(&n.as_str()))
+        .collect();
+    assert!(unexpected.is_empty(),
+        "new dangling $ref(s) in the OpenAPI spec: {unexpected:?}. \
+         Name the type with a bare imported identifier in the schema struct and \
+         register it in ApiDoc — do not add it to KNOWN_PREEXISTING.");
+
+    // The driver schemas #424 publishes must be fully resolvable, since making
+    // the driver/dispatcher boundary checkable is the whole point of publishing
+    // them. `MileageSummary` is reachable from DriverTripDetailResponse.
+    for required in ["MileageSummary", "DeadheadOrigin", "LegMiles"] {
+        assert!(defined.contains(required),
+            "{required} must be a registered component — DriverTripDetailResponse refs it");
+    }
+    let mut driver_refs = std::collections::BTreeSet::new();
+    for schema in [
+        "DriverTripDetailResponse", "DriverStopDetailResponse",
+        "DriverTripListResponse", "DriverMeResponse",
+    ] {
+        collect_refs(&spec["components"]["schemas"][schema], &mut driver_refs);
+    }
+    let driver_dangling: Vec<&String> = driver_refs.difference(&defined).collect();
+    assert!(driver_dangling.is_empty(),
+        "driver response schemas must be fully resolvable, found: {driver_dangling:?}");
+}

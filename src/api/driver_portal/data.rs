@@ -14,7 +14,7 @@ use crate::{
     AppState,
     api::driver_portal::jwt::DriverClaims,
     error::AppError,
-    models::{TripListItem, TripStatus},
+    models::{TripListItem, TripStatus, trip::MileageSummary},
 };
 
 // ---------------------------------------------------------------------------
@@ -106,7 +106,7 @@ pub struct DriverTripDetailResponse {
     pub notes: Option<String>,
     pub load: Option<DriverTripLoadSummary>,
     pub stops: Vec<DriverTripStopSummary>,
-    pub mileage_summary: crate::models::trip::MileageSummary,
+    pub mileage_summary: MileageSummary,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
