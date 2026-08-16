@@ -40,6 +40,7 @@ fn blob(n: usize) -> BlobRecord {
         updated_at: now,
         visibility: Default::default(),
         uploaded_by: None,
+        processing_attempts: 0,
     }
 }
 

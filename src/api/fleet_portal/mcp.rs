@@ -2566,6 +2566,7 @@ mod tests {
                 updated_at: now,
                 visibility: Default::default(),
                 uploaded_by: None,
+                processing_attempts: 0,
             })
             .await
             .unwrap();
@@ -2628,6 +2629,7 @@ mod tests {
             updated_at: now,
             visibility: Default::default(),
             uploaded_by: None,
+            processing_attempts: 0,
         }
     }
 

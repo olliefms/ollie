@@ -13,7 +13,7 @@ use crate::{
     },
     db::DbClient,
     error::AppError,
-    models::ExpenseStatus,
+    models::{BlobFailureKind, ExpenseStatus},
     storage::{extract_store::write_extract, BlobStore},
 };
 use chrono::SecondsFormat;
@@ -122,7 +122,9 @@ pub(crate) async fn fail_without_degrading(
         return Ok(());
     }
     tracing::error!("pipeline failed for {id}: {error}");
-    db.mark_failed(id, error.clone()).await?;
+    // The extractor panicked on these specific bytes — a retry only helps once
+    // the input or the extractor changes, so this one spends the budget (#406).
+    db.mark_failed(id, error.clone(), BlobFailureKind::Document).await?;
     if let Err(e) = db.append_event(
         "blob", id, "processing_failed",
         Some(serde_json::json!({ "error": error })),
@@ -348,7 +350,12 @@ pub async fn process_blob(
         Err(e) => {
             tracing::error!("pipeline failed for {id}: {e}");
             let err_str = e.to_string();
-            db.mark_failed(id, err_str.clone()).await?;
+            // Every error that reaches here came out of an Ollama call —
+            // summarize, OCR-then-summarize, or embed. That is a statement
+            // about the dependency, not the document, so it must not spend the
+            // retry budget: three restarts with Ollama down would otherwise
+            // write off the whole failed population for good (#406).
+            db.mark_failed(id, err_str.clone(), BlobFailureKind::Dependency).await?;
             if let Err(ev_err) = db.append_event(
                 "blob", id, "processing_failed",
                 Some(serde_json::json!({ "error": err_str })),
@@ -379,6 +386,7 @@ mod tests {
             summary: summary.map(str::to_string),
             tags: vec![], embedding: None, created_at: now, updated_at: now,
             visibility: Default::default(), uploaded_by: None,
+            processing_attempts: 0,
         };
         db.insert(&record).await.unwrap();
         // Unreachable Ollama: event embedding is best-effort and must not matter here.

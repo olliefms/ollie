@@ -518,7 +518,11 @@ forbidden (403).
 ### Document blobs
   Files are content-addressed and deduplicated — identical bytes share storage and AI
   output. Each upload is processed asynchronously: Ollama generates a text summary and
-  a vector embedding (status: pending → processing → ready | failed). Scanned/image-only
+  a vector embedding (status: pending → processing → ready | failed | permanently_failed).
+  A failed blob is retried by startup recovery; only a document-scoped failure (the
+  extractor died on these bytes) spends its retry budget, so a dependency outage cannot
+  write one off. After 3 such failures it goes permanently_failed and is no longer retried
+  automatically — resummarize_blob resets it. Scanned/image-only
   PDFs and document photos are summarized OCR-first (the page image is recovered and read
   with tesseract), falling back to the vision model for non-document images; a doc nothing
   can read stays ready with no summary rather than failing.

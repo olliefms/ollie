@@ -134,6 +134,7 @@ pub async fn seed_blob(
         updated_at: Utc::now(),
         visibility: BlobVisibility::Private,
         uploaded_by: None,
+        processing_attempts: 0,
     };
     db.insert(&record).await.unwrap();
     (id, db, store, db_dir, blob_dir, extract_dir)

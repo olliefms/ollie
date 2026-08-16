@@ -49,7 +49,8 @@ export async function renderDocumentDetailView(id) {
     const doc = await metaRes.json();
 
     const tags = (doc.tags || []).map(t => escHtml(t)).join(', ') || '—';
-    const errorRow = doc.status === 'failed' && doc.error
+    const isFailed = doc.status === 'failed' || doc.status === 'permanently_failed';
+    const errorRow = isFailed && doc.error
       ? `<div class="detail-item" style="grid-column: 1 / -1;">
            <div class="detail-item__label">Error</div>
            <div class="detail-item__value" style="color:var(--color-danger);">${escHtml(doc.error)}</div>

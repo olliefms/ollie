@@ -77,6 +77,7 @@ mod tests {
             tags: vec!["doctype:expense".into()], embedding: None,
             created_at: now, updated_at: now,
             visibility: Default::default(), uploaded_by: None,
+            processing_attempts: 0,
         }
     }
 
@@ -112,6 +113,7 @@ mod tests {
             status: BlobStatus::Pending, error: None, summary: None,
             tags: vec![], embedding: None, created_at: now, updated_at: now,
             visibility: Default::default(), uploaded_by: None,
+            processing_attempts: 0,
         };
         let ready = BlobRecord {
             id: Uuid::new_v4(), owner_id: 0, checksum: "c2".into(),
@@ -119,6 +121,7 @@ mod tests {
             status: BlobStatus::Ready, error: None, summary: None,
             tags: vec![], embedding: None, created_at: now, updated_at: now,
             visibility: Default::default(), uploaded_by: None,
+            processing_attempts: 0,
         };
         db.insert(&pending).await.unwrap();
         db.insert(&ready).await.unwrap();
@@ -130,6 +133,45 @@ mod tests {
         assert_eq!(rx.len(), 1);
         let received = rx.recv().await.unwrap();
         assert_eq!(received, PipelineJob::Process(pending.id));
+    }
+
+    /// A `failed` blob is retryable and must come back on the next startup —
+    /// that is the whole of #406. A `permanently_failed` one has spent its
+    /// document-failure budget and must stay put until `resummarize_blob`.
+    #[tokio::test]
+    async fn test_requeue_sends_failed_but_not_permanently_failed() {
+        let dir = TempDir::new().unwrap();
+        let db = DbClient::new(dir.path().to_str().unwrap(), 4).await.unwrap();
+        let now = Utc::now();
+
+        let failed = BlobRecord {
+            id: Uuid::new_v4(), owner_id: 0, checksum: "c-failed".into(),
+            name: "f.txt".into(), mime_type: "text/plain".into(), size: 1,
+            status: BlobStatus::Failed, error: Some("ollama unreachable".into()),
+            summary: None, tags: vec![], embedding: None,
+            created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
+            processing_attempts: 0,
+        };
+        let permanently_failed = BlobRecord {
+            id: Uuid::new_v4(), owner_id: 0, checksum: "c-permanent".into(),
+            name: "g.txt".into(), mime_type: "text/plain".into(), size: 1,
+            status: BlobStatus::PermanentlyFailed, error: Some("bad bytes".into()),
+            summary: None, tags: vec![], embedding: None,
+            created_at: now, updated_at: now,
+            visibility: Default::default(), uploaded_by: None,
+            processing_attempts: 3,
+        };
+        db.insert(&failed).await.unwrap();
+        db.insert(&permanently_failed).await.unwrap();
+
+        let (tx, rx) = async_channel::bounded(10);
+        let (gtx, _) = async_channel::bounded(10);
+        let (rtx, _) = async_channel::bounded(10);
+        requeue_stale(&db, &tx, &gtx, &rtx).await.unwrap();
+
+        assert_eq!(rx.len(), 1, "only the retryable failure should requeue");
+        assert_eq!(rx.recv().await.unwrap(), PipelineJob::Process(failed.id));
     }
 
     /// A suggestions-only job targets an already-Ready blob, so the non-ready
