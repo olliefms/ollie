@@ -42,35 +42,60 @@ struct GenerateResponse {
     response: String,
 }
 
-/// Prefixes for the two Ollama errors that mean "the service answered, and it
-/// refused *these bytes*" — a non-2xx with the model up. They are consts
-/// because `classify_ollama_error` matches on them: constructor and classifier
-/// share one spelling so they cannot drift apart.
+/// Tag for "the model answered with a non-2xx". The numeric status follows
+/// immediately, so `classify_ollama_error` can read it back — constructor and
+/// classifier share this const, and the code is carried as data rather than
+/// inferred from prose.
+pub const OLLAMA_STATUS_PREFIX: &str = "ollama status ";
+
+/// Build the error for a non-2xx from Ollama, keeping the response body.
 ///
-/// Everything else the client can return — a transport error, a parse error —
-/// means we never got an answer, which says nothing about the document.
-pub const EMBED_STATUS_PREFIX: &str = "ollama embed status:";
-pub const GENERATE_STATUS_PREFIX: &str = "ollama generate status:";
+/// Deliberately not `error_for_status()`: that consumes the response and
+/// discards the body, which is where Ollama explains itself (AGENTS.md).
+fn status_err(op: &str, status: reqwest::StatusCode, body: &str) -> AppError {
+    AppError::Internal(format!(
+        "{OLLAMA_STATUS_PREFIX}{}: ollama {op} — {body}",
+        status.as_u16()
+    ))
+}
+
+/// Statuses that mean "the model saw these bytes and refused *them*" — the
+/// request was understood and judged unusable, so the same document fails the
+/// same way on every retry.
+///
+/// Every other non-2xx is about the service, not the document, and this
+/// distinction is the whole point: **404** is `model not found, try pulling it
+/// first` (a model that was never pulled, or a typo'd `OLLAMA_SUMMARY_MODEL`),
+/// **500** is most often a model load failure such as `requires more system
+/// memory than is available`, and **502/503/504** is a reverse proxy in front
+/// of an Ollama that is down or restarting. All of those hit every blob in the
+/// batch identically — treating them as document-scoped would walk the entire
+/// queued backlog to `PermanentlyFailed` in three restarts, which is exactly
+/// what #406 exists to prevent.
+fn is_input_rejection(code: u16) -> bool {
+    matches!(code, 400 | 413 | 422)
+}
 
 /// Did this failure implicate the document, or the dependency?
 ///
-/// Only a non-2xx from a reachable Ollama is document-scoped — that is the
-/// vision-model context overflow case (AGENTS.md), where the same bytes fail
-/// the same way every time and retrying forever is pure waste. Connection
-/// refused, timeouts and malformed responses are the dependency's problem, and
-/// must not spend a blob's retry budget: three restarts during one outage would
-/// otherwise write off every document that happened to be queued (#406).
+/// Only an input rejection from a reachable model is document-scoped — that is
+/// the context-overflow case, where the same bytes fail identically forever and
+/// retrying is pure waste. Connection refused, timeouts, malformed responses,
+/// and every other non-2xx are the dependency's problem and must not spend a
+/// blob's retry budget.
 ///
 /// Anything unrecognised defaults to `Dependency` — the safe direction, since
 /// it costs a retry rather than a document.
 pub fn classify_ollama_error(err: &AppError) -> crate::models::BlobFailureKind {
     use crate::models::BlobFailureKind;
-    match err {
-        AppError::Internal(msg)
-            if msg.starts_with(EMBED_STATUS_PREFIX) || msg.starts_with(GENERATE_STATUS_PREFIX) =>
-        {
-            BlobFailureKind::Document
-        }
+    let AppError::Internal(msg) = err else {
+        return BlobFailureKind::Dependency;
+    };
+    let Some(rest) = msg.strip_prefix(OLLAMA_STATUS_PREFIX) else {
+        return BlobFailureKind::Dependency;
+    };
+    match rest.split(':').next().and_then(|c| c.trim().parse::<u16>().ok()) {
+        Some(code) if is_input_rejection(code) => BlobFailureKind::Document,
         _ => BlobFailureKind::Dependency,
     }
 }
@@ -87,16 +112,19 @@ impl OllamaClient {
     }
 
     pub async fn embed(&self, text: &str) -> Result<Vec<f32>, AppError> {
-        let resp: EmbedResponse = self.client
+        let resp = self.client
             .post(format!("{}/api/embeddings", self.base_url))
             .json(&EmbedRequest { model: &self.embed_model, prompt: text })
             .send().await
-            .map_err(|e| AppError::Internal(format!("ollama embed: {e}")))?
-            .error_for_status()
-            .map_err(|e| AppError::Internal(format!("{EMBED_STATUS_PREFIX} {e}")))?
-            .json().await
+            .map_err(|e| AppError::Internal(format!("ollama embed: {e}")))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(status_err("embed", status, &body));
+        }
+        let parsed: EmbedResponse = resp.json().await
             .map_err(|e| AppError::Internal(format!("ollama embed parse: {e}")))?;
-        Ok(resp.embedding)
+        Ok(parsed.embedding)
     }
 
     pub async fn generate(&self, model: &str, prompt: &str, image_b64: Option<String>) -> Result<String, AppError> {
@@ -111,9 +139,7 @@ impl OllamaClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(AppError::Internal(format!(
-                "{GENERATE_STATUS_PREFIX} {status} — {body}"
-            )));
+            return Err(status_err("generate", status, &body));
         }
         let parsed: GenerateResponse = resp.json().await
             .map_err(|e| AppError::Internal(format!("ollama generate parse: {e}")))?;
@@ -126,25 +152,41 @@ mod tests {
     use super::*;
 
     /// The split that decides whether a blob spends its retry budget (#406).
-    /// These match the exact strings `embed`/`generate` construct above — the
-    /// shared consts are what keep the two sides from drifting.
+    /// Inputs are built through `status_err` — the same constructor `embed` and
+    /// `generate` use — so this cannot pass against a message shape the client
+    /// no longer produces.
     #[test]
     fn test_classify_ollama_error() {
         use crate::models::BlobFailureKind;
+        let code = |c: u16| reqwest::StatusCode::from_u16(c).unwrap();
 
-        // Reachable model, non-2xx: it saw these bytes and refused them.
-        for msg in [
-            format!("{EMBED_STATUS_PREFIX} HTTP status client error (413 Payload Too Large)"),
-            format!("{GENERATE_STATUS_PREFIX} 500 Internal Server Error — context overflow"),
-        ] {
-            assert_eq!(
-                classify_ollama_error(&AppError::Internal(msg.clone())),
-                BlobFailureKind::Document,
-                "a non-2xx from a reachable model is document-scoped: {msg}"
-            );
+        // The model understood the request and refused these bytes.
+        for c in [400u16, 413, 422] {
+            for op in ["embed", "generate"] {
+                let err = status_err(op, code(c), "context length exceeded");
+                assert_eq!(
+                    classify_ollama_error(&err),
+                    BlobFailureKind::Document,
+                    "{c} from {op} is an input rejection: {err}"
+                );
+            }
         }
 
-        // Never got an answer — says nothing about the document.
+        // Every other non-2xx is about the service. 404 = model never pulled,
+        // 500 = model load / OOM, 502-504 = a proxy over a down Ollama. These
+        // hit every blob alike and must never write one off.
+        for c in [404u16, 408, 429, 500, 502, 503, 504] {
+            for op in ["embed", "generate"] {
+                let err = status_err(op, code(c), "model requires more system memory");
+                assert_eq!(
+                    classify_ollama_error(&err),
+                    BlobFailureKind::Dependency,
+                    "{c} from {op} is the dependency's problem: {err}"
+                );
+            }
+        }
+
+        // Never got an answer at all — says nothing about the document.
         for msg in [
             "ollama embed: error sending request for url (http://127.0.0.1:1)",
             "ollama generate: connection refused",
@@ -159,8 +201,9 @@ mod tests {
         }
 
         // Anything unrecognised defaults to the safe direction.
+        assert_eq!(classify_ollama_error(&AppError::NotFound), BlobFailureKind::Dependency);
         assert_eq!(
-            classify_ollama_error(&AppError::NotFound),
+            classify_ollama_error(&AppError::Internal("ollama status notanumber: x".into())),
             BlobFailureKind::Dependency,
         );
     }

@@ -167,14 +167,27 @@ disproportionately environmental, and a later attempt is exactly what fixes it.
 `MAX_PROCESSING_ATTEMPTS`:
 
 - **`Document`** — positive evidence *these bytes* are the problem. Two sources
-  only: the extractor panicked on them (`process_blob`), or a *reachable* Ollama
-  answered with a non-2xx (`classify_ollama_error`, e.g. vision-model context
-  overflow). These repeat identically forever, so they are capped.
+  only: the extractor panicked on them (`process_blob`), or Ollama answered with
+  an **input-rejection status — 400, 413, 422** (`is_input_rejection`), meaning
+  it understood the request and judged the payload unusable. These repeat
+  identically forever, so they are capped.
 - **`Dependency`** — everything else, and the default for anything unrecognised.
-  Transport errors, parse errors, and **any unattributed panic caught by
-  `run_job`**. Spending the budget here is the bug the whole design exists to
-  prevent: three restarts during one Ollama outage would write off every queued
-  document, and the only way back is hand-running `resummarize_blob` per blob.
+  Transport errors, parse errors, **every other non-2xx**, and **any
+  unattributed panic caught by `run_job`**. Spending the budget here is the bug
+  the whole design exists to prevent: three restarts during one Ollama outage
+  would write off every queued document, and the only way back is hand-running
+  `resummarize_blob` per blob.
+
+**"Non-2xx" is not the same as "the document is bad"** — this is the second trap,
+and the first version of #406 got it wrong. Ollama returns **404** for `model not
+found, try pulling it first` (a model never pulled, or a typo'd
+`OLLAMA_SUMMARY_MODEL`), **500** for a model load failure including `requires
+more system memory than is available` — the OOM case the issue names as
+environmental — and **502/503/504** arrives from any reverse proxy in front of an
+Ollama that is down or restarting. Every one of those hits the whole batch
+alike. Classify on the *status code*, never on non-2xx-ness. The status is
+carried as data: `status_err` writes it after `OLLAMA_STATUS_PREFIX` and
+`classify_ollama_error` parses it back, so the two sides cannot drift.
 
 **The trap is the panic path.** `fail_without_degrading` has two callers that
 know different things — `process_blob` calls it for an *extractor* panic
