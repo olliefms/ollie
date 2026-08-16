@@ -1,7 +1,7 @@
 use crate::{
     db::{blob_schema, DbClient},
     error::AppError,
-    models::{BlobListItem, BlobRecord, BlobStatus},
+    models::{BlobFailureKind, BlobListItem, BlobRecord, BlobStatus, MAX_PROCESSING_ATTEMPTS},
 };
 use arrow_array::{
     Array, FixedSizeListArray, Float32Array, Int64Array, RecordBatch,
@@ -64,6 +64,9 @@ impl DbClient {
         record.summary = summary;
         record.embedding = embedding;
         record.error = None;
+        // A pass that got through proves the blob is processable, so it starts
+        // over with a full retry budget next time (#406).
+        record.processing_attempts = 0;
         record.updated_at = Utc::now();
         self.upsert_blob(&record).await
     }
@@ -72,9 +75,13 @@ impl DbClient {
     /// before the enqueue makes a resummarize request crash-safe: recovery
     /// re-enqueues every pending/processing blob on startup. Existing summary
     /// and embedding are preserved until mark_ready overwrites them.
+    /// Clears `processing_attempts` too: this is the operator's manual retry
+    /// path, and it is the only way back for a `PermanentlyFailed` blob —
+    /// mirrors `retry_facility_geocode` (#406).
     pub async fn mark_pending(&self, id: Uuid) -> Result<(), AppError> {
         let mut record = self.get_by_id(id).await?;
         record.status = BlobStatus::Pending;
+        record.processing_attempts = 0;
         record.updated_at = Utc::now();
         self.upsert_blob(&record).await
     }
@@ -88,14 +95,30 @@ impl DbClient {
         record.embedding = Some(embedding);
         record.status = BlobStatus::Ready;
         record.error = None;
+        record.processing_attempts = 0;
         record.updated_at = Utc::now();
         self.upsert_blob(&record).await?;
         Ok(record)
     }
 
-    pub async fn mark_failed(&self, id: Uuid, error: String) -> Result<(), AppError> {
+    /// Record a failed pipeline pass.
+    ///
+    /// Only a `Document` failure spends the retry budget. A `Dependency`
+    /// failure leaves `processing_attempts` where it was, so an Ollama outage
+    /// spanning three restarts cannot permanently write off a document that was
+    /// never at fault — the blob stays `Failed` and stays retryable (#406).
+    pub async fn mark_failed(
+        &self, id: Uuid, error: String, kind: BlobFailureKind,
+    ) -> Result<(), AppError> {
         let mut record = self.get_by_id(id).await?;
-        record.status = BlobStatus::Failed;
+        if kind == BlobFailureKind::Document {
+            record.processing_attempts += 1;
+        }
+        record.status = if record.processing_attempts >= MAX_PROCESSING_ATTEMPTS {
+            BlobStatus::PermanentlyFailed
+        } else {
+            BlobStatus::Failed
+        };
         record.error = Some(error);
         record.updated_at = Utc::now();
         self.upsert_blob(&record).await
@@ -168,9 +191,16 @@ impl DbClient {
         Ok(items)
     }
 
+    /// Blobs startup recovery should re-queue: everything that never reached
+    /// `ready`, **including retryable failures** (#406). What actually reaches
+    /// `failed` is disproportionately environmental — Ollama unreachable or
+    /// OOM, embed dimension mismatch, blob-store read errors — which is exactly
+    /// what a later attempt fixes. `permanently_failed` is excluded: it has
+    /// spent its budget on document-scoped failures and only `resummarize_blob`
+    /// brings it back.
     pub async fn list_non_ready_ids(&self) -> Result<Vec<Uuid>, AppError> {
         let stream = self.blob_table.query()
-            .only_if("status = 'pending' OR status = 'processing'")
+            .only_if("status = 'pending' OR status = 'processing' OR status = 'failed'")
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(batches_to_records(collect_stream(stream).await?)?
@@ -230,6 +260,7 @@ fn record_to_batch(record: &BlobRecord, embed_dim: usize) -> Result<RecordBatch,
             Arc::new(StringArray::from(vec![updated.as_str()])),
             Arc::new(StringArray::from(vec![visibility_str])),
             Arc::new(StringArray::from(vec![uploaded_by_str.as_deref()])),
+            Arc::new(Int64Array::from(vec![record.processing_attempts as i64])),
         ],
     )
     .map_err(|e| AppError::Internal(e.to_string()))
@@ -299,6 +330,7 @@ fn row_to_record(batch: &RecordBatch, i: usize) -> Result<BlobRecord, AppError> 
             .map_err(|e: chrono::ParseError| AppError::Internal(e.to_string()))?,
         visibility,
         uploaded_by,
+        processing_attempts: i64_col("processing_attempts").max(0) as u32,
     })
 }
 
@@ -336,6 +368,7 @@ mod tests {
             tags: vec!["tag1".into()], embedding: None,
             created_at: now, updated_at: now,
             visibility: Default::default(), uploaded_by: None,
+            processing_attempts: 0,
         }
     }
 
@@ -388,10 +421,100 @@ mod tests {
         let (db, _dir) = test_db().await;
         let record = sample_record();
         db.insert(&record).await.unwrap();
-        db.mark_failed(record.id, "ollama timeout".into()).await.unwrap();
+        db.mark_failed(record.id, "ollama timeout".into(), BlobFailureKind::Dependency)
+            .await.unwrap();
         let fetched = db.get_by_id(record.id).await.unwrap();
         assert_eq!(fetched.status, BlobStatus::Failed);
         assert_eq!(fetched.error.as_deref(), Some("ollama timeout"));
+    }
+
+    /// The #406 criterion that matters most: a dependency outage must never
+    /// write off a document that was never at fault. Five consecutive
+    /// dependency failures leave the budget untouched and the blob retryable.
+    #[tokio::test]
+    async fn test_dependency_failures_never_spend_the_retry_budget() {
+        let (db, _dir) = test_db().await;
+        let record = sample_record();
+        db.insert(&record).await.unwrap();
+        for attempt in 1..=5 {
+            db.mark_failed(record.id, "ollama unreachable".into(), BlobFailureKind::Dependency)
+                .await.unwrap();
+            let fetched = db.get_by_id(record.id).await.unwrap();
+            assert_eq!(fetched.processing_attempts, 0,
+                "dependency failure {attempt} must not spend the budget");
+            assert_eq!(fetched.status, BlobStatus::Failed,
+                "dependency failure {attempt} must leave the blob retryable");
+        }
+    }
+
+    /// Document failures spend the budget and promote to PermanentlyFailed at
+    /// the cap — a blob whose bytes the extractor cannot handle is retried
+    /// MAX_PROCESSING_ATTEMPTS times, then written off.
+    #[tokio::test]
+    async fn test_document_failures_spend_budget_and_promote_at_cap() {
+        let (db, _dir) = test_db().await;
+        let record = sample_record();
+        db.insert(&record).await.unwrap();
+
+        for expected in 1..MAX_PROCESSING_ATTEMPTS {
+            db.mark_failed(record.id, "extractor panicked".into(), BlobFailureKind::Document)
+                .await.unwrap();
+            let fetched = db.get_by_id(record.id).await.unwrap();
+            assert_eq!(fetched.processing_attempts, expected);
+            assert_eq!(fetched.status, BlobStatus::Failed,
+                "below the cap the blob must stay retryable");
+        }
+
+        db.mark_failed(record.id, "extractor panicked".into(), BlobFailureKind::Document)
+            .await.unwrap();
+        let fetched = db.get_by_id(record.id).await.unwrap();
+        assert_eq!(fetched.processing_attempts, MAX_PROCESSING_ATTEMPTS);
+        assert_eq!(fetched.status, BlobStatus::PermanentlyFailed);
+    }
+
+    /// A pass that got through proves the blob is processable, so the budget
+    /// starts over — an intermittent failure can never accumulate into a
+    /// write-off across unrelated runs.
+    #[tokio::test]
+    async fn test_success_resets_the_retry_budget() {
+        let (db, _dir) = test_db().await;
+        let record = sample_record();
+        db.insert(&record).await.unwrap();
+        for _ in 0..2 {
+            db.mark_failed(record.id, "bad bytes".into(), BlobFailureKind::Document)
+                .await.unwrap();
+        }
+        assert_eq!(db.get_by_id(record.id).await.unwrap().processing_attempts, 2);
+
+        db.mark_ready(record.id, Some("summary".into()), Some(vec![1.0, 2.0, 3.0, 4.0]))
+            .await.unwrap();
+        assert_eq!(db.get_by_id(record.id).await.unwrap().processing_attempts, 0);
+
+        db.mark_failed(record.id, "bad bytes".into(), BlobFailureKind::Document)
+            .await.unwrap();
+        let fetched = db.get_by_id(record.id).await.unwrap();
+        assert_eq!(fetched.processing_attempts, 1);
+        assert_eq!(fetched.status, BlobStatus::Failed,
+            "a post-success failure must not resume the old count");
+    }
+
+    /// `resummarize_blob`'s escape hatch: mark_pending is the only way back for
+    /// a permanently-failed blob, and it must hand back a full budget.
+    #[tokio::test]
+    async fn test_mark_pending_rescues_permanently_failed_blob() {
+        let (db, _dir) = test_db().await;
+        let record = sample_record();
+        db.insert(&record).await.unwrap();
+        for _ in 0..MAX_PROCESSING_ATTEMPTS {
+            db.mark_failed(record.id, "bad bytes".into(), BlobFailureKind::Document)
+                .await.unwrap();
+        }
+        assert_eq!(db.get_by_id(record.id).await.unwrap().status, BlobStatus::PermanentlyFailed);
+
+        db.mark_pending(record.id).await.unwrap();
+        let fetched = db.get_by_id(record.id).await.unwrap();
+        assert_eq!(fetched.status, BlobStatus::Pending);
+        assert_eq!(fetched.processing_attempts, 0);
     }
 
     #[tokio::test]
@@ -487,17 +610,36 @@ mod tests {
         assert_eq!(all_total, 3);
     }
 
+    /// Recovery's sweep: everything short of `ready` comes back, `failed`
+    /// included (#406), except `permanently_failed` — that one has spent its
+    /// budget and only `resummarize_blob` reopens it.
     #[tokio::test]
     async fn test_list_non_ready_ids() {
         let (db, _dir) = test_db().await;
-        let r1 = sample_record();
-        let mut r2 = sample_record();
-        r2.id = Uuid::new_v4();
-        r2.status = BlobStatus::Ready;
-        db.insert(&r1).await.unwrap();
-        db.insert(&r2).await.unwrap();
+        let mut seeded = Vec::new();
+        for status in [
+            BlobStatus::Pending,
+            BlobStatus::Processing,
+            BlobStatus::Ready,
+            BlobStatus::Failed,
+            BlobStatus::PermanentlyFailed,
+        ] {
+            let mut r = sample_record();
+            r.id = Uuid::new_v4();
+            r.status = status;
+            db.insert(&r).await.unwrap();
+            seeded.push(r);
+        }
+
         let ids = db.list_non_ready_ids().await.unwrap();
-        assert_eq!(ids.len(), 1);
-        assert_eq!(ids[0], r1.id);
+        assert_eq!(ids.len(), 3);
+        for r in &seeded {
+            let expected = matches!(
+                r.status,
+                BlobStatus::Pending | BlobStatus::Processing | BlobStatus::Failed
+            );
+            assert_eq!(ids.contains(&r.id), expected,
+                "{:?} requeue eligibility", r.status);
+        }
     }
 }

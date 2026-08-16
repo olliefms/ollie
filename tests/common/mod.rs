@@ -5,7 +5,7 @@
 // HTTP server on an ephemeral local port. The pipeline tests live in
 // tests/isolated.rs because they set process-global env vars
 // (OLLIE_TESSERACT_BIN) that must not leak into the main suite.
-use axum::{routing::post, Json, Router};
+use axum::{response::IntoResponse, routing::post, Json, Router};
 use bytes::Bytes;
 use chrono::Utc;
 use ollie::{
@@ -38,6 +38,71 @@ pub async fn mock_ollama(generate_response: &'static str) -> String {
             "/api/embeddings",
             post(|| async {
                 Json(serde_json::json!({ "embedding": vec![0.1f32; TEST_EMBED_DIM] }))
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// A mock Ollama that is up but answers every request with `code`. Which code
+/// matters (#406): 400/413/422 mean the model understood the request and
+/// refused *these bytes* (document-scoped), while 404/5xx mean the service
+/// itself is wrong — model never pulled, OOM on load, proxy over a dead Ollama
+/// — and must not cost the document its retry budget.
+pub async fn mock_ollama_rejecting(code: u16) -> String {
+    mock_ollama_rejecting_on(code, true, true).await
+}
+
+/// As above, but rejects only the endpoints you name — so a test can drive the
+/// `embed` constructor specifically, with summarization succeeding first.
+pub async fn mock_ollama_rejecting_on(code: u16, generate: bool, embeddings: bool) -> String {
+    let status = axum::http::StatusCode::from_u16(code).unwrap();
+    let app = Router::new()
+        .route(
+            "/api/generate",
+            post(move |_body: Json<serde_json::Value>| async move {
+                if generate {
+                    (status, "rejected".to_string()).into_response()
+                } else {
+                    Json(serde_json::json!({ "response": "a summary" })).into_response()
+                }
+            }),
+        )
+        .route(
+            "/api/embeddings",
+            post(move || async move {
+                if embeddings {
+                    (status, "rejected".to_string()).into_response()
+                } else {
+                    Json(serde_json::json!({ "embedding": vec![0.1f32; TEST_EMBED_DIM] }))
+                        .into_response()
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}")
+}
+
+/// A mock Ollama that summarizes fine but returns an embedding of the wrong
+/// dimension — what an embed-model swap looks like when `OLLAMA_EMBED_DIM` was
+/// not updated with it. Arrow's FixedSizeList builder asserts on the length, so
+/// this reaches the pipeline as a *panic*, not an error (#406).
+pub async fn mock_ollama_wrong_embed_dim(dim: usize) -> String {
+    let app = Router::new()
+        .route(
+            "/api/generate",
+            post(|_body: Json<serde_json::Value>| async move {
+                Json(serde_json::json!({ "response": "a summary" }))
+            }),
+        )
+        .route(
+            "/api/embeddings",
+            post(move || async move {
+                Json(serde_json::json!({ "embedding": vec![0.1f32; dim] }))
             }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -134,6 +199,7 @@ pub async fn seed_blob(
         updated_at: Utc::now(),
         visibility: BlobVisibility::Private,
         uploaded_by: None,
+        processing_attempts: 0,
     };
     db.insert(&record).await.unwrap();
     (id, db, store, db_dir, blob_dir, extract_dir)

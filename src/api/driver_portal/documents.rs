@@ -165,6 +165,7 @@ pub async fn upload_document(
             updated_at: now,
             visibility: BlobVisibility::Driver,
             uploaded_by: Some(driver_id),
+            processing_attempts: 0,
         };
         state.db.insert(&record).await?;
         let needs_pipeline = matches!(status, BlobStatus::Pending);
@@ -187,6 +188,7 @@ pub async fn upload_document(
             updated_at: now,
             visibility: BlobVisibility::Driver,
             uploaded_by: Some(driver_id),
+            processing_attempts: 0,
         };
         state.db.insert(&record).await?;
         (StatusCode::ACCEPTED, record, true)

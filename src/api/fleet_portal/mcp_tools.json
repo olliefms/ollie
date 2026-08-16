@@ -1880,7 +1880,7 @@
       "name": "update_blob"
     },
     {
-      "description": "Re-run the AI pipeline (content extraction → summary → embedding) for one blob. Use for docs whose summary is missing or stale — e.g. scanned PDFs or document photos uploaded before OCR support. Scanned pages are read OCR-first (tesseract), with a vision-model fallback for non-document images; a doc nothing can read is left ready with no summary (it is never flipped to failed). The blob is re-queued (status returns to pending) and processed asynchronously; poll get_blob_metadata for status ready. Fails if the blob is already pending or processing.",
+      "description": "Re-run the AI pipeline (content extraction → summary → embedding) for one blob. Use for docs whose summary is missing or stale — e.g. scanned PDFs or document photos uploaded before OCR support. Scanned pages are read OCR-first (tesseract), with a vision-model fallback for non-document images; a doc nothing can read is left ready with no summary (it is never flipped to failed). The blob is re-queued (status returns to pending) and processed asynchronously; poll get_blob_metadata for status ready. This also resets the blob's retry budget, so it is the only way back for a blob whose status is permanently_failed (3 document-scoped pipeline failures; a plain failed blob is already retried automatically on every restart). Fails if the blob is already pending or processing.",
       "inputSchema": {
         "properties": {
           "id": {

@@ -1063,6 +1063,130 @@ async fn migration_opens_pre_expense_id_maintenance_table_and_adds_expense_id_co
     assert_eq!(fetched.expense_id, Some(linked_expense_id));
 }
 
+/// Pre-#406 blobs schema: the current `blob_schema` minus the trailing
+/// `processing_attempts` column.
+fn blob_schema_pre_processing_attempts(embed_dim: usize) -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Utf8, false),
+        Field::new("owner_id", DataType::Int64, false),
+        Field::new("checksum", DataType::Utf8, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("mime_type", DataType::Utf8, false),
+        Field::new("size", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("error", DataType::Utf8, true),
+        Field::new("summary", DataType::Utf8, true),
+        Field::new("tags", DataType::Utf8, false),
+        Field::new("embedding", DataType::FixedSizeList(
+            Arc::new(Field::new("item", DataType::Float32, true)),
+            embed_dim as i32,
+        ), true),
+        Field::new("created_at", DataType::Utf8, false),
+        Field::new("updated_at", DataType::Utf8, false),
+        Field::new("visibility", DataType::Utf8, false),
+        Field::new("uploaded_by", DataType::Utf8, true),
+    ]))
+}
+
+/// Seeds one `failed` blob on the pre-#406 schema — failed on purpose, so the
+/// migrated row also exercises the retry path the new column drives.
+async fn seed_pre_processing_attempts_blobs(path: &str) -> Uuid {
+    let conn = lancedb::connect(path).execute().await.unwrap();
+    let schema = blob_schema_pre_processing_attempts(EMBED_DIM);
+    let id = Uuid::new_v4();
+    let id_str = id.to_string();
+    let now = Utc::now().to_rfc3339();
+    let nulls: Vec<Option<Vec<Option<f32>>>> = vec![None];
+    let batch = RecordBatch::try_new(schema.clone(), vec![
+        Arc::new(StringArray::from(vec![Some(id_str.as_str())])),
+        Arc::new(Int64Array::from(vec![0_i64])),
+        Arc::new(StringArray::from(vec![Some(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        )])),
+        Arc::new(StringArray::from(vec![Some("legacy-scan.pdf")])),
+        Arc::new(StringArray::from(vec![Some("application/pdf")])),
+        Arc::new(Int64Array::from(vec![4096_i64])),
+        Arc::new(StringArray::from(vec![Some("failed")])),
+        Arc::new(StringArray::from(vec![Some("ollama unreachable")])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+        Arc::new(StringArray::from(vec![Some("[]")])),
+        Arc::new(FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+            nulls, EMBED_DIM as i32,
+        )),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        Arc::new(StringArray::from(vec![Some(now.as_str())])),
+        Arc::new(StringArray::from(vec![Some("private")])),
+        Arc::new(StringArray::from(vec![None::<&str>])),
+    ]).unwrap();
+    let iter = RecordBatchIterator::new(vec![Ok(batch)], schema.clone());
+    let reader: Box<dyn RecordBatchReader + Send> = Box::new(iter);
+    conn.create_table("blobs", reader).execute().await.unwrap();
+    id
+}
+
+/// #406 added `processing_attempts` to the blobs table (the per-blob retry
+/// budget). Seed a pre-#406 blobs table, assert the migration adds the column
+/// with a `0` default, that the pre-existing failed row still reads back, and
+/// that a fresh non-zero count round-trips through insert/get.
+#[tokio::test]
+async fn migration_opens_pre_processing_attempts_blobs_and_adds_the_column() {
+    use ollie::models::{BlobRecord, BlobStatus};
+
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().to_str().unwrap();
+
+    let seeded_id = seed_pre_processing_attempts_blobs(path).await;
+
+    let client = DbClient::new(path, EMBED_DIM).await.expect(
+        "DbClient::new must migrate a pre-#406 blobs table without erroring. \
+         If this fails with a DataFusion CAST parser error, the \
+         processing_attempts migration is using an Arrow type name (e.g. \
+         `Int64`/`int64`) where a SQL keyword (`BIGINT`) is required — see \
+         AGENTS.md.",
+    );
+
+    let schema = client.blob_table.schema().await.unwrap();
+    assert!(
+        schema.field_with_name("processing_attempts").is_ok(),
+        "post-migration blobs schema missing processing_attempts (#406)"
+    );
+    assert_eq!(client.blob_table.count_rows(None).await.unwrap(), 1);
+
+    // (a) The pre-existing failed row reads back with a fresh budget, so
+    // recovery re-queues it instead of writing it off.
+    let seeded = client.get_by_id(seeded_id).await.unwrap();
+    assert_eq!(seeded.name, "legacy-scan.pdf");
+    assert_eq!(seeded.status, BlobStatus::Failed);
+    assert_eq!(seeded.processing_attempts, 0);
+    assert_eq!(client.list_non_ready_ids().await.unwrap(), vec![seeded_id]);
+
+    // (b) A fresh record carrying a non-zero count round-trips. The defaults-only
+    // assertion above would pass even if the column were the wrong type for
+    // anything but the migration default.
+    let now = Utc::now();
+    let new_id = Uuid::new_v4();
+    let record = BlobRecord {
+        id: new_id,
+        owner_id: 0,
+        checksum: "post-migration-checksum".into(),
+        name: "fresh.pdf".into(),
+        mime_type: "application/pdf".into(),
+        size: 1,
+        status: BlobStatus::Failed,
+        error: Some("extractor panicked".into()),
+        summary: None,
+        tags: vec![],
+        embedding: None,
+        created_at: now,
+        updated_at: now,
+        visibility: Default::default(),
+        uploaded_by: None,
+        processing_attempts: 2,
+    };
+    client.insert(&record).await.unwrap();
+    assert_eq!(client.get_by_id(new_id).await.unwrap().processing_attempts, 2);
+}
+
 /// Pre-`kind` load schema: the current `load_schema` minus the trailing
 /// `kind` column added for administrative loads.
 fn load_schema_pre_kind(embed_dim: usize) -> Arc<Schema> {

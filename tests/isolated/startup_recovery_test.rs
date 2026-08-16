@@ -37,6 +37,7 @@ fn pending_blob(n: usize) -> BlobRecord {
         status: BlobStatus::Pending, error: None, summary: None,
         tags: vec![], embedding: None, created_at: now, updated_at: now,
         visibility: Default::default(), uploaded_by: None,
+        processing_attempts: 0,
     }
 }
 

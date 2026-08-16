@@ -5,8 +5,11 @@ pub async fn embed_text(client: &OllamaClient, text: &str) -> Result<Vec<f32>, A
     if text.trim().is_empty() {
         return Err(AppError::Internal("cannot embed empty text".into()));
     }
-    // Truncate to ~8000 chars to stay within model context limits
-    let truncated = if text.len() > 8000 { &text[..8000] } else { text };
+    // Truncate to ~8000 bytes to stay within model context limits. Must respect
+    // char boundaries: this text is `String::from_utf8_lossy` over an uploaded
+    // document, and a naive slice panics on any multibyte char straddling the
+    // cap (#406).
+    let truncated = crate::ai::summarize::truncate_at_char_boundary(text, 8000);
     client.embed(truncated).await
 }
 

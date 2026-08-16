@@ -4,6 +4,27 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+/// Retry budget for document-scoped pipeline failures. Mirrors the geocoding
+/// cap in `mark_facility_geocode_failed`. Past this, a blob is
+/// `PermanentlyFailed` and startup recovery leaves it alone (#406).
+pub const MAX_PROCESSING_ATTEMPTS: u32 = 3;
+
+/// Why a pipeline pass failed. Only a `Document` failure spends the retry
+/// budget: a `Dependency` failure (Ollama unreachable or OOM, embedding
+/// dimension mismatch) says nothing about the document, and spending the budget
+/// on it would let an outage permanently write off a perfectly processable file
+/// — retried three times across three restarts while the dependency is still
+/// down, and written off for good (#406).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlobFailureKind {
+    /// These bytes are the problem — the extractor panicked on them. A retry
+    /// only helps once the input or the extractor changes, so this is capped.
+    Document,
+    /// Something we depend on was unavailable. Uncapped: the next restart is a
+    /// legitimate retry cadence and the document was never at fault.
+    Dependency,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BlobStatus {
@@ -11,6 +32,9 @@ pub enum BlobStatus {
     Processing,
     Ready,
     Failed,
+    /// Past `MAX_PROCESSING_ATTEMPTS` document-scoped failures. Terminal for
+    /// automatic recovery; `resummarize_blob` still resets it (#406).
+    PermanentlyFailed,
 }
 
 impl BlobStatus {
@@ -20,6 +44,7 @@ impl BlobStatus {
             Self::Processing => "processing",
             Self::Ready => "ready",
             Self::Failed => "failed",
+            Self::PermanentlyFailed => "permanently_failed",
         }
     }
 }
@@ -32,6 +57,7 @@ impl std::str::FromStr for BlobStatus {
             "processing" => Ok(Self::Processing),
             "ready" => Ok(Self::Ready),
             "failed" => Ok(Self::Failed),
+            "permanently_failed" => Ok(Self::PermanentlyFailed),
             other => Err(format!("unknown status: {other}")),
         }
     }
@@ -85,6 +111,11 @@ pub struct BlobRecord {
     pub visibility: BlobVisibility,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uploaded_by: Option<Uuid>,
+    /// Document-scoped pipeline failures so far. Reset to 0 by any successful
+    /// pass and by a manual re-queue; at `MAX_PROCESSING_ATTEMPTS` the blob
+    /// goes `PermanentlyFailed` (#406).
+    #[serde(default)]
+    pub processing_attempts: u32,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -153,7 +184,7 @@ mod tests {
 
     #[test]
     fn test_status_roundtrip() {
-        for s in ["pending", "processing", "ready", "failed"] {
+        for s in ["pending", "processing", "ready", "failed", "permanently_failed"] {
             let status: BlobStatus = s.parse().unwrap();
             assert_eq!(status.as_str(), s);
         }
@@ -170,6 +201,7 @@ mod tests {
             created_at: Utc::now(), updated_at: Utc::now(),
             visibility: BlobVisibility::Private,
             uploaded_by: None,
+            processing_attempts: 0,
         };
         let json = serde_json::to_value(&record).unwrap();
         assert!(json.get("embedding").is_none(), "embedding must not appear in JSON output");

@@ -128,7 +128,7 @@ pub(crate) async fn ingest_blob(
             id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
             size: data.len() as i64, status, error: None, summary, tags,
             embedding, created_at: now, updated_at: now,
-            visibility, uploaded_by: None,
+            visibility, uploaded_by: None, processing_attempts: 0,
         };
         state.db.insert(&record).await?;
         if matches!(record.status, BlobStatus::Pending) {
@@ -141,7 +141,7 @@ pub(crate) async fn ingest_blob(
             id: Uuid::new_v4(), owner_id: 0, checksum, name, mime_type,
             size: data.len() as i64, status: BlobStatus::Pending, error: None,
             summary: None, tags, embedding: None, created_at: now, updated_at: now,
-            visibility, uploaded_by: None,
+            visibility, uploaded_by: None, processing_attempts: 0,
         };
         state.db.insert(&record).await?;
         crate::pipeline::enqueue(&state.pipeline_tx, crate::pipeline::PipelineJob::Process(record.id))?;

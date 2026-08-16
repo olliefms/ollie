@@ -786,6 +786,12 @@ async fn open_or_create_blob(conn: &lancedb::Connection, embed_dim: usize) -> Re
             if existing.field_with_name("uploaded_by").is_err() {
                 transforms.push(("uploaded_by".into(), "CAST(NULL AS string)".into()));
             }
+            if existing.field_with_name("processing_attempts").is_err() {
+                // BIGINT is a DataFusion SQL keyword. Never spell this `Int64`
+                // or `int64` — the Arrow spelling parses at compile time and
+                // crash-loops the server at migration time (#406, AGENTS.md).
+                transforms.push(("processing_attempts".into(), "CAST(0 AS BIGINT)".into()));
+            }
             if !transforms.is_empty() {
                 tracing::info!("migrating blobs table: adding {} column(s)", transforms.len());
                 table.add_columns(NewColumnTransform::SqlExpressions(transforms), None).await
@@ -905,6 +911,7 @@ pub fn blob_schema(embed_dim: usize) -> Arc<Schema> {
         Field::new("updated_at", DataType::Utf8, false),
         Field::new("visibility", DataType::Utf8, false),
         Field::new("uploaded_by", DataType::Utf8, true),
+        Field::new("processing_attempts", DataType::Int64, false),
     ]))
 }
 
@@ -1048,6 +1055,7 @@ fn empty_blob_batch(schema: Arc<Schema>, embed_dim: usize) -> Result<RecordBatch
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
         Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        Arc::new(Int64Array::from(Vec::<i64>::new())),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 

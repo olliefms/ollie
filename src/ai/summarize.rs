@@ -9,7 +9,7 @@ pub async fn summarize_text(client: &OllamaClient, text: &str) -> Result<String,
     if text.trim().is_empty() {
         return Ok(String::new());
     }
-    let truncated = if text.len() > 4000 { &text[..4000] } else { text };
+    let truncated = truncate_at_char_boundary(text, 4000);
     let prompt = format!(
         "Provide a concise 1-2 sentence summary of the following content. \
         Respond with only the summary, no preamble:\n\n{truncated}"
@@ -40,8 +40,15 @@ pub async fn summarize_document_text(client: &OllamaClient, text: &str) -> Resul
 }
 
 /// Truncate to at most `max` bytes without splitting a UTF-8 character —
-/// OCR output is arbitrary text and a naive byte slice can panic mid-char.
-fn truncate_at_char_boundary(s: &str, max: usize) -> &str {
+/// `pub(crate)` so `embed_text` shares the one implementation.
+///
+/// OCR output is arbitrary text and a naive byte slice can panic mid-char. So
+/// is every other payload that reaches the summarizer: `Extractable::Text` is
+/// `String::from_utf8_lossy` over uploaded bytes, so any document with a
+/// multibyte character straddling the cap used to panic here. Since #406 a
+/// panic is re-queued on every restart rather than failing the blob once, so
+/// that panic became an unbounded retry loop instead of a one-off.
+pub(crate) fn truncate_at_char_boundary(s: &str, max: usize) -> &str {
     if s.len() <= max {
         return s;
     }

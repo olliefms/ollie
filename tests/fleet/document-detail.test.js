@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { saveToken } from '../../static/fleet/utils/auth.js';
 import { clearMe } from '../../static/fleet/utils/api.js';
 
-function doc(mime_type) {
+function doc(mime_type, overrides = {}) {
   return {
     id: 'b1',
     name: 'notes.md',
@@ -12,16 +12,17 @@ function doc(mime_type) {
     created_at: '2026-07-01T00:00:00Z',
     updated_at: '2026-07-01T00:00:00Z',
     tags: [],
+    ...overrides,
   };
 }
 
 // The detail view makes two calls: metadata (Accept: application/json), then
 // the raw bytes for the preview.
-function stubFetch(mime_type, body) {
+function stubFetch(mime_type, body, overrides = {}) {
   const fetchMock = vi.fn().mockImplementation((_url, opts) => {
     const wantsJson = opts?.headers?.Accept === 'application/json';
     if (wantsJson) {
-      return Promise.resolve({ ok: true, status: 200, json: async () => doc(mime_type) });
+      return Promise.resolve({ ok: true, status: 200, json: async () => doc(mime_type, overrides) });
     }
     return Promise.resolve({
       ok: true,
@@ -99,5 +100,26 @@ describe('document detail text preview', () => {
     stubFetch('text/plain', 'x'.repeat(1_000_000));
     await render();
     expect(document.getElementById('doc-preview-truncated')).toBeFalsy();
+  });
+});
+
+// #406 added permanently_failed. The error string is the only account an
+// operator gets of why a blob was written off, so the row that carries it must
+// not stay keyed to 'failed' alone.
+describe('document detail failure reporting', () => {
+  for (const status of ['failed', 'permanently_failed']) {
+    it(`shows the error for a ${status} document`, async () => {
+      stubFetch('text/plain', 'body', { status, error: 'ollama unreachable' });
+      await render();
+      expect(document.getElementById('main-content').textContent)
+        .toContain('ollama unreachable');
+    });
+
+  }
+
+  it('shows no error row for a ready document', async () => {
+    stubFetch('text/plain', 'body');
+    await render();
+    expect(document.getElementById('main-content').textContent).not.toContain('Error');
   });
 });
