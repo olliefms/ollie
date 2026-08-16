@@ -21,7 +21,7 @@ use crate::{
 // Response types
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverMeResponse {
     pub id: Uuid,
     pub name: String,
@@ -29,7 +29,7 @@ pub struct DriverMeResponse {
     pub status: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverTripListItem {
     pub id: Uuid,
     pub trip_number: String,
@@ -48,14 +48,14 @@ pub struct DriverTripListItem {
     pub delivered_tz: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverTripListResponse {
     pub items: Vec<DriverTripListItem>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub week: Option<PastWeekInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct PastWeekInfo {
     pub start: String,
     pub end: String,
@@ -65,7 +65,7 @@ pub struct PastWeekInfo {
     pub latest_week_start: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverTripLoadSummary {
     pub load_number: Option<String>,
     pub customer_ref: Option<String>,
@@ -73,7 +73,7 @@ pub struct DriverTripLoadSummary {
     pub weight_lbs: Option<f64>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverTripStopSummary {
     pub sequence: u32,
     pub stop_type: String,
@@ -96,7 +96,7 @@ pub struct DriverTripStopSummary {
     pub timezone: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverTripDetailResponse {
     pub id: Uuid,
     pub trip_number: String,
@@ -109,7 +109,7 @@ pub struct DriverTripDetailResponse {
     pub mileage_summary: crate::models::trip::MileageSummary,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverStopAddress {
     pub street: Option<String>,
     pub city: Option<String>,
@@ -140,7 +140,7 @@ pub struct UpdateStopTimesRequest {
     pub clear_depart: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, utoipa::ToSchema)]
 pub struct DriverStopDetailResponse {
     pub sequence: u32,
     pub stop_type: String,
@@ -212,7 +212,8 @@ fn tab_matches(tab: &TripTab, trip: &TripListItem) -> bool {
 // Query params
 // ---------------------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
 pub struct TripsQuery {
     pub tab: Option<String>,
     pub week_start: Option<String>,
@@ -276,6 +277,17 @@ fn sunday_of(d: chrono::NaiveDate) -> chrono::NaiveDate {
 // Handlers
 // ---------------------------------------------------------------------------
 
+#[utoipa::path(
+    get,
+    path = "/driver/api/v1/me",
+    responses(
+        (status = 200, description = "The authenticated driver's own profile",
+            body = DriverMeResponse),
+        (status = 401, description = "Unauthorized"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "driver"
+)]
 pub async fn me(
     State(state): State<AppState>,
     Extension(claims): Extension<DriverClaims>,
@@ -290,6 +302,22 @@ pub async fn me(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/driver/api/v1/trips",
+    params(TripsQuery),
+    responses(
+        (status = 200, description = "The authenticated driver's own trips for the \
+            requested tab. `week` is present only for `tab=past`. This is a \
+            deliberate subset of the dispatcher trip schema — it is not a \
+            projection of `TripListItem` and carries no load financials.",
+            body = DriverTripListResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 422, description = "Invalid tab or week_start"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "driver"
+)]
 pub async fn list_trips(
     State(state): State<AppState>,
     Extension(claims): Extension<DriverClaims>,
@@ -492,6 +520,22 @@ pub async fn list_trips(
     Ok(Json(DriverTripListResponse { items, week: week_info }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/driver/api/v1/trips/{id}",
+    params(("id" = Uuid, Path, description = "Trip UUID (must belong to the caller)")),
+    responses(
+        (status = 200, description = "Trip detail for the authenticated driver. \
+            `notes` is the trip's driver-facing note only — never the load's, and \
+            never `internal_notes`. The embedded `load` is a four-field summary \
+            carrying no rate, revenue, or customer-name data.",
+            body = DriverTripDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Trip not found, or not assigned to this driver"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "driver"
+)]
 pub async fn trip_detail(
     State(state): State<AppState>,
     Extension(claims): Extension<DriverClaims>,
@@ -605,6 +649,23 @@ pub async fn trip_detail(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/driver/api/v1/trips/{id}/stops/{seq}",
+    params(
+        ("id" = Uuid, Path, description = "Trip UUID (must belong to the caller)"),
+        ("seq" = u32, Path, description = "Stop sequence — 1-based, not an array index"),
+    ),
+    responses(
+        (status = 200, description = "Stop detail for the authenticated driver, \
+            including facility contacts and the stop's own notes.",
+            body = DriverStopDetailResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 404, description = "Trip or stop not found, or trip not assigned to this driver"),
+    ),
+    security(("BearerAuth" = [])),
+    tag = "driver"
+)]
 pub async fn stop_detail(
     State(state): State<AppState>,
     Extension(claims): Extension<DriverClaims>,
@@ -871,6 +932,7 @@ mod tests {
 
     fn make_trip(status: TripStatus, stops: Vec<TripStop>) -> TripListItem {
         TripListItem {
+            internal_notes: None,
             id: Uuid::new_v4(),
             trip_number: "T-001".into(),
             load_id: None,

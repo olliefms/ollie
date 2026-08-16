@@ -236,6 +236,10 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
         trips_schema.field_with_name("blob_ids").is_ok(),
         "post-migration trips schema missing blob_ids (#279)"
     );
+    assert!(
+        trips_schema.field_with_name("internal_notes").is_ok(),
+        "post-migration trips schema missing internal_notes (#423)"
+    );
 
     // Pre-existing row still readable.
     let row_count = client.trip_table.count_rows(None).await.unwrap();
@@ -247,6 +251,8 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
     let seed_id = seed[0].id;
     let seed_trip = client.get_trip(seed_id).await.unwrap();
     assert_eq!(seed_trip.blob_ids, Vec::<Uuid>::new());
+    assert!(seed_trip.internal_notes.is_none(),
+        "a pre-#423 trip row must migrate to a NULL internal_notes, not a parse error");
 
     // Step 4: insert a fresh trip via ops layer and round-trip the new columns.
     use ollie::models::trip::{TripRecord, TripStatus};
@@ -270,6 +276,7 @@ async fn migration_opens_pre_v16_trips_table_and_adds_new_columns() {
         status: TripStatus::Planned,
         stops: vec![],
         notes: None,
+        internal_notes: Some("deadhead 8.5 mi + 571.6 loaded = 580.1 total".into()),
         blob_ids: vec![blob_id],
         loaded_rate_per_mile: None,
         deadhead_rate_per_mile: None,
@@ -1384,6 +1391,8 @@ async fn migration_opens_pre_diversion_loads_table_and_adds_diversion_fields() {
     assert!(migrated.diverted_at.is_none());
     assert!(migrated.diversion_reason.is_none());
     assert!(migrated.diversion_notes.is_none());
+    assert!(migrated.internal_notes.is_none(),
+        "a pre-#423 load row must migrate to a NULL internal_notes, not a parse error");
 
     // And a fresh row carrying real values in all four round-trips through the
     // ops layer — this is what catches a wrong CAST type (`Utf8` vs `string`),
@@ -1399,6 +1408,7 @@ async fn migration_opens_pre_diversion_loads_table_and_adds_diversion_fields() {
     fresh.diverted_at = Some("2026-08-07T14:30:00Z".into());
     fresh.diversion_reason = Some("reconsigned".into());
     fresh.diversion_notes = Some("broker renominated to Salina".into());
+    fresh.internal_notes = Some("TONU billed separately on administrative load 2697702".into());
     db.insert_load(&fresh).await.unwrap();
 
     let refetched = db.get_load_by_id(fresh.id).await.unwrap();
@@ -1409,5 +1419,9 @@ async fn migration_opens_pre_diversion_loads_table_and_adds_diversion_fields() {
     assert_eq!(
         refetched.diversion_notes.as_deref(),
         Some("broker renominated to Salina"),
+    );
+    assert_eq!(
+        refetched.internal_notes.as_deref(),
+        Some("TONU billed separately on administrative load 2697702"),
     );
 }

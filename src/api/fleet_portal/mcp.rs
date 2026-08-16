@@ -1191,6 +1191,7 @@ async fn tool_create_load(state: &AppState, args: &Value) -> Result<Value, Strin
         weight_lbs: req.weight_lbs,
         miles: req.miles,
         notes: req.notes,
+        internal_notes: req.internal_notes,
         tags: req.tags,
         blob_ids: req.blob_ids,
         invoice_number: None,
@@ -1278,17 +1279,20 @@ async fn tool_update_load(state: &AppState, args: &Value) -> Result<Value, Strin
 
     let mut updated = state.db.update_load_metadata(
         id,
-        req.customer_name,
-        req.customer_ref,
-        stops,
-        req.rate_items,
-        req.commodity,
-        req.weight_lbs,
-        req.miles,
-        req.notes,
-        req.tags,
-        req.blob_ids,
-        embedding,
+        crate::db::load_ops::LoadMetadataUpdate {
+            customer_name: req.customer_name,
+            customer_ref: req.customer_ref,
+            stops,
+            rate_items: req.rate_items,
+            commodity: req.commodity,
+            weight_lbs: req.weight_lbs,
+            miles: req.miles,
+            notes: req.notes,
+            internal_notes: req.internal_notes,
+            tags: req.tags,
+            blob_ids: req.blob_ids,
+            embedding,
+        },
     ).await.map_err(|e| e.to_string())?;
 
     if let Some(ln) = req.load_number {

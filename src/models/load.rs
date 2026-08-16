@@ -339,6 +339,12 @@ pub struct LoadRecord {
     pub weight_lbs: Option<f64>,
     pub miles: Option<f64>,
     pub notes: Option<String>,
+    /// Back-office annotation: mileage derivation, trip-chain links, billing
+    /// detail, data-entry corrections. Never serialized by any `/driver/api/v1`
+    /// handler — the driver surface builds its own response structs and does not
+    /// map this field. `tests/it/driver_internal_notes_test.rs` pins that.
+    #[serde(default)]
+    pub internal_notes: Option<String>,
     pub tags: Vec<String>,
     pub blob_ids: Vec<Uuid>,
     pub invoice_number: Option<String>,
@@ -407,6 +413,8 @@ pub struct CreateLoadRequest {
     pub weight_lbs: Option<f64>,
     pub miles: Option<f64>,
     pub notes: Option<String>,
+    /// Dispatcher-only annotation. Never reaches the driver surface.
+    pub internal_notes: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -425,6 +433,8 @@ pub struct UpdateLoadRequest {
     pub weight_lbs: Option<f64>,
     pub miles: Option<f64>,
     pub notes: Option<String>,
+    /// Dispatcher-only annotation. Never reaches the driver surface.
+    pub internal_notes: Option<String>,
     pub tags: Option<Vec<String>>,
     pub blob_ids: Option<Vec<Uuid>>,
 }
@@ -455,6 +465,9 @@ pub struct LoadListItem {
     pub weight_lbs: Option<f64>,
     pub miles: Option<f64>,
     pub notes: Option<String>,
+    /// Dispatcher-only. This list type serves `/fleet` only.
+    #[serde(default)]
+    pub internal_notes: Option<String>,
     pub tags: Vec<String>,
     pub blob_ids: Vec<Uuid>,
     pub invoice_number: Option<String>,
@@ -481,7 +494,8 @@ impl From<LoadRecord> for LoadListItem {
             customer_name: r.customer_name, customer_ref: r.customer_ref,
             stops: r.stops, rate_items: r.rate_items, total_rate_usd: total,
             commodity: r.commodity, weight_lbs: r.weight_lbs, miles: r.miles,
-            notes: r.notes, tags: r.tags, blob_ids: r.blob_ids,
+            notes: r.notes, internal_notes: r.internal_notes,
+            tags: r.tags, blob_ids: r.blob_ids,
             invoice_number: r.invoice_number, invoice_date: r.invoice_date,
             cancellation_reason: r.cancellation_reason,
             quoted_rate_items: r.quoted_rate_items,
@@ -515,6 +529,9 @@ pub struct LoadDetailResponse {
     pub weight_lbs: Option<f64>,
     pub miles: Option<f64>,
     pub notes: Option<String>,
+    /// Dispatcher-only. This detail type serves `/fleet` only.
+    #[serde(default)]
+    pub internal_notes: Option<String>,
     pub tags: Vec<String>,
     pub blob_ids: Vec<Uuid>,
     pub invoice_number: Option<String>,
@@ -615,6 +632,7 @@ mod tests {
 
     fn load_of_kind(kind: LoadKind, status: LoadStatus) -> LoadRecord {
         LoadRecord {
+            internal_notes: None,
             id: uuid::Uuid::new_v4(), load_number: "JQL-4581461".into(),
             owner_id: 0, status, kind,
             customer_name: "Landstar".into(), customer_ref: None,
@@ -671,6 +689,7 @@ mod tests {
     #[test]
     fn test_total_rate_usd_sums_including_negatives() {
         let record = LoadRecord {
+            internal_notes: None,
             id: uuid::Uuid::new_v4(), load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
             kind: LoadKind::Freight,
@@ -694,6 +713,7 @@ mod tests {
     #[test]
     fn test_load_record_embedding_skipped_in_json() {
         let r = LoadRecord {
+            internal_notes: None,
             id: uuid::Uuid::new_v4(), load_number: "LD-2026-0001".into(),
             owner_id: 0, status: LoadStatus::Planned,
             kind: LoadKind::Freight,

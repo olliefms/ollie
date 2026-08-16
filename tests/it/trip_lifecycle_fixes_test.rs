@@ -181,6 +181,7 @@ fn trip(
 ) -> TripRecord {
     let n = now();
     TripRecord {
+        internal_notes: None,
         id,
         trip_number: number.into(),
         load_id: None,

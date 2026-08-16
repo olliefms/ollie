@@ -120,6 +120,7 @@ fn load(id: Uuid, status: LoadStatus) -> LoadRecord {
 
 fn load_with_stops(id: Uuid, status: LoadStatus, stops: Vec<Stop>) -> LoadRecord {
     LoadRecord {
+        internal_notes: None,
         id,
         load_number: "4819063".into(),
         owner_id: 0,
@@ -173,6 +174,7 @@ fn stop(seq: u32, stop_type: TripStopType, facility_id: Option<Uuid>) -> TripSto
 fn trip(id: Uuid, number: &str, load_id: Uuid, status: TripStatus, stops: Vec<TripStop>) -> TripRecord {
     let n = now();
     TripRecord {
+        internal_notes: None,
         id,
         trip_number: number.into(),
         load_id: Some(load_id),
