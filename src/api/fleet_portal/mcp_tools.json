@@ -81,6 +81,10 @@
           "customer_ref": {
             "type": "string"
           },
+          "internal_notes": {
+            "description": "Back-office annotation: mileage derivation, trip-chain links, billing detail, data-entry corrections. Dispatcher-only — never returned by the driver portal. Use this for anything the driver must not read; use `notes` for the driver briefing.",
+            "type": "string"
+          },
           "kind": {
             "description": "Default freight. 'administrative' marks revenue with no trip behind it (weekly guarantee, TONU, detention-only, layover, accessorial-only) — it invoices straight from planned and cannot be assigned to a trip.",
             "enum": [
@@ -150,6 +154,10 @@
           },
           "id": {
             "format": "uuid",
+            "type": "string"
+          },
+          "internal_notes": {
+            "description": "Back-office annotation: mileage derivation, trip-chain links, billing detail, data-entry corrections. Dispatcher-only — never returned by the driver portal. Use this for anything the driver must not read; use `notes` for the driver briefing.",
             "type": "string"
           },
           "kind": {
@@ -258,6 +266,10 @@
             "format": "uuid",
             "type": "string"
           },
+          "internal_notes": {
+            "description": "Back-office annotation: mileage derivation, trip-chain links, billing detail, data-entry corrections. Dispatcher-only — never returned by the driver portal. Use this for anything the driver must not read; use `notes` for the driver briefing.",
+            "type": "string"
+          },
           "load_id": {
             "format": "uuid",
             "type": "string"
@@ -307,6 +319,10 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "internal_notes": {
+            "description": "Back-office annotation: mileage derivation, trip-chain links, billing detail, data-entry corrections. Dispatcher-only — never returned by the driver portal. Use this for anything the driver must not read; use `notes` for the driver briefing.",
+            "type": "string"
           },
           "notes": {
             "type": "string"

@@ -200,8 +200,11 @@ pub async fn upload_document(
             let mut new_ids = load.blob_ids.clone();
             new_ids.push(record.id);
             state.db.update_load_metadata(
-                load_id, None, None, None, None, None, None, None,
-                None, None, Some(new_ids), None,
+                load_id,
+                crate::db::load_ops::LoadMetadataUpdate {
+                    blob_ids: Some(new_ids),
+                    ..Default::default()
+                },
             ).await?;
         }
     }

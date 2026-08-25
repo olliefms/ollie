@@ -14,6 +14,20 @@ use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Field-wise patch for [`DbClient::update_trip_metadata`]. Every field is
+/// "leave unchanged" when `None`, so callers construct it with
+/// `..Default::default()` and name only what they are changing.
+#[derive(Debug, Default)]
+pub struct TripMetadataUpdate {
+    pub load_id: Option<Uuid>,
+    pub sequence: Option<u32>,
+    pub stops: Option<Vec<TripStop>>,
+    pub notes: Option<String>,
+    pub internal_notes: Option<String>,
+    pub embedding: Option<Vec<f32>>,
+    pub blob_ids: Option<Vec<Uuid>>,
+}
+
 impl DbClient {
     pub async fn insert_trip(&self, record: &TripRecord) -> Result<(), AppError> {
         let batch = trip_to_batch(record, self.embed_dim)?;
@@ -160,23 +174,19 @@ impl DbClient {
         Ok(record)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Patch a trip's mutable metadata. `None` on a field means "leave unchanged";
+    /// build with `..Default::default()` and set only what you are changing.
     pub async fn update_trip_metadata(
-        &self, id: Uuid,
-        load_id: Option<Uuid>,
-        sequence: Option<u32>,
-        stops: Option<Vec<TripStop>>,
-        notes: Option<String>,
-        embedding: Option<Vec<f32>>,
-        blob_ids: Option<Vec<Uuid>>,
+        &self, id: Uuid, update: TripMetadataUpdate,
     ) -> Result<TripRecord, AppError> {
         let mut record = self.get_trip(id).await?;
-        if let Some(v) = load_id { record.load_id = Some(v); }
-        if let Some(v) = sequence { record.sequence = v; }
-        if let Some(v) = stops { record.stops = v; }
-        if let Some(v) = notes { record.notes = Some(v); }
-        if let Some(v) = embedding { record.embedding = Some(v); }
-        if let Some(v) = blob_ids { record.blob_ids = v; }
+        if let Some(v) = update.load_id { record.load_id = Some(v); }
+        if let Some(v) = update.sequence { record.sequence = v; }
+        if let Some(v) = update.stops { record.stops = v; }
+        if let Some(v) = update.notes { record.notes = Some(v); }
+        if let Some(v) = update.internal_notes { record.internal_notes = Some(v); }
+        if let Some(v) = update.embedding { record.embedding = Some(v); }
+        if let Some(v) = update.blob_ids { record.blob_ids = v; }
         record.updated_at = Utc::now();
         self.upsert_trip(&record).await?;
         Ok(record)
@@ -502,6 +512,7 @@ fn trip_to_batch(record: &TripRecord, embed_dim: usize) -> Result<RecordBatch, A
             record.driver_pay_snapshot.as_ref()
                 .map(|p| serde_json::to_string(p).unwrap_or_default())
         ])),
+        Arc::new(StringArray::from(vec![record.internal_notes.as_deref()])),
     ]).map_err(|e| AppError::Internal(e.to_string()))
 }
 
@@ -583,6 +594,7 @@ fn row_to_trip(batch: &RecordBatch, i: usize) -> Result<TripRecord, AppError> {
         status: str_col("status").parse().map_err(|e: String| AppError::Internal(e))?,
         stops,
         notes: opt_str("notes"),
+        internal_notes: opt_str("internal_notes"),
         blob_ids: serde_json::from_str(&str_col("blob_ids")).unwrap_or_default(),
         loaded_rate_per_mile: opt_f64("loaded_rate_per_mile"),
         deadhead_rate_per_mile: opt_f64("deadhead_rate_per_mile"),
@@ -647,6 +659,7 @@ mod tests {
     fn sample_trip() -> TripRecord {
         let now = chrono::Utc::now();
         TripRecord {
+            internal_notes: None,
             id: uuid::Uuid::new_v4(),
             trip_number: "T-2026-0001".into(),
             load_id: None,

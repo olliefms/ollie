@@ -390,6 +390,7 @@ async fn test_driver_pay_on_trip_detail_uses_resolved_rates() {
     let now = chrono::Utc::now();
     let trip_id = uuid::Uuid::new_v4();
     let trip = TripRecord {
+        internal_notes: None,
         id: trip_id,
         trip_number: "T-PAY-0001".into(),
         load_id: None,
@@ -496,6 +497,7 @@ async fn test_driver_pay_present_for_tonu_shaped_trip_with_deadhead_only() {
     let now = chrono::Utc::now();
     let trip_id = uuid::Uuid::new_v4();
     let trip = TripRecord {
+        internal_notes: None,
         id: trip_id,
         trip_number: "T-TONU-0001".into(),
         load_id: None,
@@ -575,6 +577,7 @@ async fn test_driver_pay_absent_when_no_miles_at_all() {
     let now = chrono::Utc::now();
     let trip_id = uuid::Uuid::new_v4();
     let trip = TripRecord {
+        internal_notes: None,
         id: trip_id,
         trip_number: "T-NOMILES-0001".into(),
         load_id: None,
@@ -676,6 +679,7 @@ async fn test_driver_pay_bills_detention_when_a_tonu_trip_has_no_miles() {
     let now = chrono::Utc::now();
     let trip_id = uuid::Uuid::new_v4();
     let trip = TripRecord {
+        internal_notes: None,
         id: trip_id,
         trip_number: "T-DWELL-0001".into(),
         load_id: None,
@@ -781,6 +785,7 @@ async fn test_settlement_freezes_pay_and_locks_edits() {
         actual_depart_utc: None,
     };
     let trip = TripRecord {
+        internal_notes: None,
         id: trip_id,
         trip_number: "T-SETTLE-0001".into(),
         load_id: None,

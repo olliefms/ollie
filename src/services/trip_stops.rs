@@ -134,8 +134,11 @@ async fn cascade_load_stop_clear(
     let _ = state
         .db
         .update_load_metadata(
-            load_id, None, None, Some(updated_stops),
-            None, None, None, None, None, None, None, None,
+            load_id,
+            crate::db::load_ops::LoadMetadataUpdate {
+                stops: Some(updated_stops),
+                ..Default::default()
+            },
         )
         .await;
 }
@@ -153,8 +156,11 @@ async fn cascade_load_stop_arrive(state: &AppState, trip: &TripRecord, seq: u32,
     let _ = state
         .db
         .update_load_metadata(
-            load_id, None, None, Some(updated_stops),
-            None, None, None, None, None, None, None, None,
+            load_id,
+            crate::db::load_ops::LoadMetadataUpdate {
+                stops: Some(updated_stops),
+                ..Default::default()
+            },
         )
         .await;
 }
@@ -172,8 +178,11 @@ async fn cascade_load_stop_depart(state: &AppState, trip: &TripRecord, seq: u32,
     let _ = state
         .db
         .update_load_metadata(
-            load_id, None, None, Some(updated_stops),
-            None, None, None, None, None, None, None, None,
+            load_id,
+            crate::db::load_ops::LoadMetadataUpdate {
+                stops: Some(updated_stops),
+                ..Default::default()
+            },
         )
         .await;
 }
