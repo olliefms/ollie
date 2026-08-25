@@ -436,3 +436,43 @@ async fn test_openapi_has_no_new_dangling_schema_refs() {
     assert!(driver_dangling.is_empty(),
         "driver response schemas must be fully resolvable, found: {driver_dangling:?}");
 }
+
+/// `llms.txt` claims "every endpoint below except the /auth routes is described
+/// in /openapi.json". That sentence has been wrong twice: it said the driver
+/// portal was absent from the spec entirely, then (in #430) that the `/me` and
+/// trip reads were absent — true when written, false one PR later. Prose that
+/// enumerates registered handlers goes stale silently, so assert it instead.
+///
+/// Auth routes are deliberately excluded: they are not registered in `ApiDoc`.
+#[tokio::test]
+async fn test_every_driver_data_route_is_in_the_openapi_spec() {
+    // (path, method) for every non-auth route in `driver_portal::portal_router`.
+    const DRIVER_DATA_ROUTES: &[(&str, &str)] = &[
+        ("/driver/api/v1/me", "get"),
+        ("/driver/api/v1/trips", "get"),
+        ("/driver/api/v1/trips/{id}", "get"),
+        ("/driver/api/v1/trips/{id}/stops/{seq}", "get"),
+        ("/driver/api/v1/trips/{id}/stops/{seq}", "patch"),
+        ("/driver/api/v1/trips/{id}/documents", "get"),
+        ("/driver/api/v1/trips/{id}/documents", "post"),
+        ("/driver/api/v1/trips/{id}/documents/{blob_id}", "delete"),
+        ("/driver/api/v1/trips/{id}/documents/{blob_id}/content", "get"),
+        ("/driver/api/v1/equipment", "get"),
+        ("/driver/api/v1/equipment/trailer", "put"),
+        ("/driver/api/v1/trailers", "get"),
+        ("/driver/api/v1/expenses", "get"),
+        ("/driver/api/v1/expenses/{id}", "delete"),
+    ];
+
+    let (server, _state, _b, _d) = setup().await;
+    let spec: serde_json::Value = server.get("/openapi.json").await.json();
+
+    let missing: Vec<String> = DRIVER_DATA_ROUTES.iter()
+        .filter(|(path, method)| spec["paths"][path][method].is_null())
+        .map(|(path, method)| format!("{} {}", method.to_uppercase(), path))
+        .collect();
+    assert!(missing.is_empty(),
+        "llms.txt claims every non-auth driver endpoint is in the spec, but these \
+         are missing: {missing:?}. Either register them in ApiDoc or correct the \
+         claim in LLMS_TXT.");
+}
