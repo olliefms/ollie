@@ -311,7 +311,7 @@ pub async fn dispatch(state: &AppState, trip_id: Uuid) -> Result<TripRecord, App
     // #433: warn, but proceed. A dispatcher starting a trip out of chain order
     // is overriding the plan on purpose — that is their call to make, unlike
     // the automatic path, which hard-blocks because nobody is watching it.
-    if let Err(reason) = predecessor_blocking_dispatch(state, &existing).await {
+    if let Err(reason) = predecessor_blocking_dispatch(state, existing.previous_trip_id).await {
         tracing::warn!(%trip_id, %reason, "dispatching a trip whose predecessor has not finished");
     }
 
@@ -1013,10 +1013,19 @@ fn resource_on_other_active_trip(
 /// True when a trip status means the trip is over and a successor may start.
 /// TONU counts: the truck rolled and was released, so the chain moves on.
 pub(crate) fn is_terminal_for_chaining(status: &TripStatus) -> bool {
-    matches!(
-        status,
-        TripStatus::Delivered | TripStatus::Completed | TripStatus::Cancelled | TripStatus::Tonu
-    )
+    // Matched exhaustively on purpose: a new TripStatus must be classified
+    // here rather than defaulting to "still running" under a catch-all. The
+    // terminal-status list has been missed twice on this codebase already.
+    match status {
+        TripStatus::Delivered
+        | TripStatus::Completed
+        | TripStatus::Cancelled
+        | TripStatus::Tonu => true,
+        TripStatus::Planned
+        | TripStatus::Assigned
+        | TripStatus::Dispatched
+        | TripStatus::InTransit => false,
+    }
 }
 
 /// Whether `trip`'s declared predecessor is finished. `Ok(())` when there is no
@@ -1029,9 +1038,9 @@ pub(crate) fn is_terminal_for_chaining(status: &TripStatus) -> bool {
 /// overriding the plan is a legitimate thing to do.
 async fn predecessor_blocking_dispatch(
     state: &AppState,
-    trip: &TripRecord,
+    previous_trip_id: Option<Uuid>,
 ) -> Result<(), String> {
-    let Some(prev_id) = trip.previous_trip_id else { return Ok(()) };
+    let Some(prev_id) = previous_trip_id else { return Ok(()) };
     match state.db.get_trip(prev_id).await {
         Ok(prev) if is_terminal_for_chaining(&prev.status) => Ok(()),
         Ok(prev) => Err(format!(
@@ -1070,8 +1079,9 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
         tracing::warn!(%driver_id, "auto-dispatch: failed to list assigned trips");
         return;
     };
+    // The just-delivered trip cannot be in this list — it is Delivered, not
+    // Assigned — so the chain link is the only filter needed.
     let candidates: Vec<_> = trips.into_iter()
-        .filter(|t| t.id != just_delivered_trip_id)
         .filter(|t| t.previous_trip_id == Some(just_delivered_trip_id))
         .collect();
 
@@ -1098,17 +1108,9 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
     // Defence in depth behind the chain filter: refuse a successor whose own
     // predecessor has not finished. Redundant while selection is chain-only —
     // and that is the point, it survives a future fallback.
-    match state.db.get_trip(trip_id).await {
-        Ok(record) => {
-            if let Err(reason) = predecessor_blocking_dispatch(state, &record).await {
-                tracing::warn!(%trip_id, %reason, "auto-dispatch: predecessor not finished, skipping");
-                return;
-            }
-        }
-        Err(e) => {
-            tracing::warn!(%trip_id, error = %e, "auto-dispatch: could not re-read candidate trip");
-            return;
-        }
+    if let Err(reason) = predecessor_blocking_dispatch(state, next.previous_trip_id).await {
+        tracing::warn!(%trip_id, %reason, "auto-dispatch: predecessor not finished, skipping");
+        return;
     }
 
     // Refuse to bind a truck or trailer that is already active on another trip.
