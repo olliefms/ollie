@@ -3858,10 +3858,13 @@ async fn test_final_stop_depart_auto_dispatches_next_assigned_trip() {
     let driver_id_str = in_transit.driver_id.unwrap().to_string();
     let truck_id_str = in_transit.truck_id.unwrap().to_string();
 
-    // Create trip B with a later scheduled origin arrive and assign same driver/truck.
+    // Create trip B chained off A, with a later scheduled origin arrive, and
+    // assign the same driver/truck. The chain link is what selects it (#433) —
+    // without it auto-dispatch deliberately does nothing.
     let trip_b_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
+            "previous_trip_id": trip_id,
             "stops": [
                 { "sequence": 1, "stop_type": "pickup", "name": "B-Origin",
                   "scheduled_arrive": "2026-05-10T08:00:00", "timezone": "America/Los_Angeles" },
@@ -3973,10 +3976,13 @@ async fn test_final_stop_depart_skips_auto_dispatch_when_truck_busy_elsewhere() 
     let trip_c_uuid: uuid::Uuid = trip_c_id_str.parse().unwrap();
     state.db.transition_trip_status(trip_c_uuid, ollie::models::TripStatus::InTransit).await.unwrap();
 
-    // Trip B: driver A on the SAME busy truck — assigned only.
+    // Trip B: driver A on the SAME busy truck — assigned only. It chains off
+    // trip A so it is a genuine auto-dispatch candidate; otherwise this test
+    // would pass because nothing was selected, not because the truck was busy.
     let trip_b_id_str = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
+            "previous_trip_id": trip_a_id,
             "stops": [
                 { "sequence": 1, "stop_type": "pickup", "name": "B-Origin",
                   "scheduled_arrive": "2026-05-10T08:00:00", "timezone": "America/Los_Angeles" },
@@ -4025,9 +4031,11 @@ async fn test_complete_trip_does_not_release_driver_already_on_next_trip() {
     let driver_id = in_transit.driver_id.unwrap();
     let truck_id = in_transit.truck_id.unwrap();
 
+    // Chained off A so the auto-dispatch below actually fires (#433).
     let trip_b_id = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
         .json(&serde_json::json!({
+            "previous_trip_id": trip_id,
             "stops": [
                 { "sequence": 1, "stop_type": "pickup", "name": "B-Origin",
                   "scheduled_arrive": "2026-05-10T08:00:00", "timezone": "America/Los_Angeles" },
@@ -9829,4 +9837,227 @@ async fn test_cancelling_the_only_trip_releases_a_dispatched_load() {
         .json::<serde_json::Value>();
     assert_eq!(after["status"], "planned",
         "no trip holds the load after cancelling its only dispatched trip");
+}
+
+// ---------------------------------------------------------------------------
+// #433 — auto-dispatch successor selection follows the trip chain.
+// ---------------------------------------------------------------------------
+
+/// Two-stop trip chained behind `previous_trip_id`, assigned to `driver_id` +
+/// `truck_id`. `origin_sched` is the first stop's scheduled arrival — the field
+/// the pre-#433 selector ordered on, so tests set it deliberately.
+async fn assigned_chained_trip(
+    server: &TestServer,
+    owner_token: &str,
+    driver_id: &str,
+    truck_id: &str,
+    name: &str,
+    previous_trip_id: Option<&str>,
+    origin_sched: &str,
+) -> String {
+    let mut body = serde_json::json!({
+        "stops": [
+            { "sequence": 1, "stop_type": "pickup", "name": format!("{name}-Origin"),
+              "scheduled_arrive": origin_sched, "timezone": "America/Los_Angeles" },
+            { "sequence": 2, "stop_type": "delivery", "name": format!("{name}-Dest"),
+              "scheduled_arrive": origin_sched, "timezone": "America/Los_Angeles" }
+        ]
+    });
+    if let Some(prev) = previous_trip_id {
+        body["previous_trip_id"] = serde_json::json!(prev);
+    }
+    let create = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&body)
+        .await;
+    assert_eq!(create.status_code(), 201, "create {name} failed: {}", create.text());
+    let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    let assign = server.post(&format!("/fleet/api/v1/trips/{id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign.status_code(), 200, "assign {name} failed: {}", assign.text());
+    id
+}
+
+/// Drive a two-stop trip to Delivered through the driver portal.
+async fn deliver_two_stop_trip(
+    server: &TestServer, driver_token: &str, trip_id: &str, day: &str,
+) {
+    for (seq, arrive, depart) in [(1, "08:00:00", "09:00:00"), (2, "12:00:00", "13:00:00")] {
+        let r = server.patch(&format!("/driver/api/v1/trips/{trip_id}/stops/{seq}"))
+            .add_header(header::AUTHORIZATION, format!("Bearer {driver_token}"))
+            .json(&serde_json::json!({
+                "actual_arrive": format!("{day}T{arrive}"),
+                "actual_depart": format!("{day}T{depart}")
+            }))
+            .await;
+        assert_eq!(r.status_code(), 200, "stop {seq} patch failed: {}", r.text());
+    }
+}
+
+async fn trip_status(state: &AppState, id: &str) -> ollie::models::TripStatus {
+    state.db.get_trip(id.parse().unwrap()).await.unwrap().status
+}
+
+/// The #433 regression. Trip C is built to win BOTH orderings the old selector
+/// could have used — it is created after B and its first stop is scheduled
+/// earlier than B's — so a revert to either recency or scheduled-time ordering
+/// fails here. Only the chain link picks B.
+#[tokio::test]
+async fn test_auto_dispatch_follows_the_chain_not_schedule_or_creation_order() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let a = state.db.get_trip(trip_a_id.parse().unwrap()).await.unwrap();
+    let driver_id = a.driver_id.unwrap().to_string();
+    let truck_id = a.truck_id.unwrap().to_string();
+
+    // B chains off A and is scheduled LATER in the day.
+    let trip_b_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "B", Some(&trip_a_id), "2026-05-10T15:06:00").await;
+    // C chains off B, is created AFTER B, and is scheduled EARLIER than B —
+    // the shape of a follow-on empty move whose broker appointment predates
+    // the delivery of the loaded run it follows.
+    let trip_c_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "C", Some(&trip_b_id), "2026-05-10T08:00:00").await;
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Dispatched,
+        "the trip chained off A is the one that must roll");
+    assert_eq!(trip_status(&state, &trip_c_id).await, ollie::models::TripStatus::Assigned,
+        "C chains off B, not A — an earlier appointment must not jump it ahead");
+}
+
+/// The chain advances one leg per completion, not all at once.
+#[tokio::test]
+async fn test_auto_dispatch_walks_one_chain_leg_per_completion() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let a = state.db.get_trip(trip_a_id.parse().unwrap()).await.unwrap();
+    let driver_id = a.driver_id.unwrap().to_string();
+    let truck_id = a.truck_id.unwrap().to_string();
+
+    let trip_b_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "B", Some(&trip_a_id), "2026-05-10T15:06:00").await;
+    let trip_c_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "C", Some(&trip_b_id), "2026-05-10T08:00:00").await;
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Dispatched);
+
+    // B rolls, then delivers — now C is the one that chains off the completed trip.
+    state.db.transition_trip_status(
+        trip_b_id.parse().unwrap(), ollie::models::TripStatus::InTransit).await.unwrap();
+    deliver_two_stop_trip(&server, &driver_token, &trip_b_id, "2026-05-10").await;
+
+    assert_eq!(trip_status(&state, &trip_c_id).await, ollie::models::TripStatus::Dispatched,
+        "completing B must advance the chain to C");
+}
+
+/// No chain link, no auto-dispatch. An account that does not chain its trips
+/// gets nothing dispatched automatically — deliberately, because guessing is
+/// what put the wrong load in a driver's app.
+#[tokio::test]
+async fn test_auto_dispatch_leaves_unchained_assigned_trips_alone() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let a = state.db.get_trip(trip_a_id.parse().unwrap()).await.unwrap();
+    let driver_id = a.driver_id.unwrap().to_string();
+    let truck_id = a.truck_id.unwrap().to_string();
+
+    let trip_b_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id, "B", None, "2026-05-10T08:00:00").await;
+    let trip_c_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id, "C", None, "2026-05-10T18:00:00").await;
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Assigned,
+        "an unchained trip must not be guessed at");
+    assert_eq!(trip_status(&state, &trip_c_id).await, ollie::models::TripStatus::Assigned,
+        "an unchained trip must not be guessed at");
+}
+
+/// Two trips claiming the same predecessor is a data problem a human resolves.
+/// Dispatch nothing and leave a journal entry naming both.
+#[tokio::test]
+async fn test_auto_dispatch_declines_an_ambiguous_chain_and_journals_it() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let a = state.db.get_trip(trip_a_id.parse().unwrap()).await.unwrap();
+    let driver_id = a.driver_id.unwrap().to_string();
+    let truck_id = a.truck_id.unwrap().to_string();
+
+    let trip_b_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "B", Some(&trip_a_id), "2026-05-10T15:06:00").await;
+    let trip_c_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "C", Some(&trip_a_id), "2026-05-10T08:00:00").await;
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Assigned,
+        "an ambiguous chain must dispatch neither candidate");
+    assert_eq!(trip_status(&state, &trip_c_id).await, ollie::models::TripStatus::Assigned,
+        "an ambiguous chain must dispatch neither candidate");
+
+    let (_total, events) = state.db.query_events(
+        Some(trip_a_id.parse().unwrap()), None,
+        Some("trip.auto_dispatch_ambiguous"), None, None, 10, 0).await.unwrap();
+    assert_eq!(events.len(), 1, "the ambiguity must be journalled against the completed trip");
+    assert_eq!(events[0].actor.as_deref(), Some("auto_dispatch"),
+        "system-initiated, and the journal should say so");
+    let payload = events[0].payload.as_deref().expect("ambiguity event carries a payload");
+    assert!(payload.contains(&trip_b_id) && payload.contains(&trip_c_id),
+        "payload must name both ambiguous trips, got {payload}");
+}
+
+/// A dispatcher starting a trip out of chain order is overriding the plan on
+/// purpose. The manual path warns; it must not block.
+#[tokio::test]
+async fn test_manual_dispatch_allows_starting_a_trip_out_of_chain_order() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+
+    let driver_id = server.post("/fleet/api/v1/drivers")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "name": "Chain Override Driver" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    let truck_id = server.post("/fleet/api/v1/trucks")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "unit_number": "T-CHAIN" }))
+        .await
+        .json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    // A is only Assigned — not a terminal state — and B chains off it.
+    let trip_a_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id, "A", None, "2026-05-10T08:00:00").await;
+    let trip_b_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "B", Some(&trip_a_id), "2026-05-10T18:00:00").await;
+
+    let resp = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/dispatch"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .await;
+    assert_eq!(resp.status_code(), 200,
+        "the manual path warns about chain order but must not block: {}", resp.text());
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Dispatched);
+    assert_eq!(trip_status(&state, &trip_a_id).await, ollie::models::TripStatus::Assigned,
+        "overriding chain order must not disturb the skipped predecessor");
 }

@@ -479,11 +479,14 @@ async fn test_tonu_does_not_auto_dispatch_the_next_trip() {
     let token = setup_owner(&server).await;
     let (_load_id, trip_id, driver_id) = dispatched_trip(&server, &token, "4581485").await;
 
-    // A follow-on already staged for the same driver.
+    // A follow-on already staged for the same driver, chained off the trip
+    // about to be TONU'd — so this test still exercises the TONU rule rather
+    // than passing because no successor was selected at all (#433).
     let fac_b = create_test_facility(&server, &token, "Next Dock", "Peoria, IL").await;
     let truck_b = create_truck(&server, &token, "T-NEXT").await;
     let trip_b = server.post("/fleet/api/v1/trips").authorization_bearer(&token)
         .json(&serde_json::json!({
+            "previous_trip_id": trip_id,
             "stops": [{
                 "sequence": 0, "stop_type": "pickup", "facility_id": fac_b,
                 "name": "Next Dock", "scheduled_arrive": "2026-06-02T08:00:00",
