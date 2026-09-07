@@ -1061,16 +1061,17 @@ async fn predecessor_blocking_dispatch(
 /// driver whose `previous_trip_id` is the trip that just delivered. Zero
 /// candidates dispatches nothing, and more than one dispatches nothing and
 /// journals the ambiguity — there is deliberately no recency or scheduled-time
-/// fallback.
-///
-/// The zero-candidate case journals only when the driver has OTHER Assigned
-/// trips that did not qualify (#438) — work is queued and the chain does not
-/// reach it. A driver with nothing queued is the ordinary end of a chain and is
-/// left as a log line. The old ordering (earliest first-stop `scheduled_arrive`) put the
+/// fallback. The old ordering (earliest first-stop `scheduled_arrive`) put the
 /// wrong load in a driver's app mid-run: on a lane that pairs a loaded run with
 /// a follow-on empty move, both sit Assigned at once and broker appointment
 /// times routinely arrive out of order. A wrong auto-dispatch is worse than
 /// none, because it silently replaces what the driver sees.
+///
+/// **The zero-candidate case journals selectively (#438).** It emits an event
+/// only when the driver has OTHER Assigned trips that did not qualify — work is
+/// queued and the chain does not reach it, so nothing rolls until a dispatcher
+/// intervenes. A driver with nothing queued is the ordinary end of a chain,
+/// fires on most completions, and stays a log line.
 ///
 /// `dispatch`'s resource-conflict checks are not reused as-is because the
 /// driver and truck from the just-delivered trip will still read `Dispatched`.
