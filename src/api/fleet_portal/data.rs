@@ -501,7 +501,7 @@ pub async fn invoice_load_handler(
     claims.require_scope("loads:invoice")?;
     let record = state.db.transition_load_status(
         id, LoadStatus::Invoiced,
-        body.invoice_number, body.invoice_date, None,
+        body.invoice_number, body.invoice_date, None, None,
     ).await?;
     let response = build_load_detail(&state, record).await?;
     Ok(Json(response))
@@ -529,7 +529,7 @@ pub async fn cancel_load_handler(
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:write")?;
     let record = state.db.transition_load_status(
-        id, LoadStatus::Cancelled, None, None, body.reason,
+        id, LoadStatus::Cancelled, None, None, body.reason, None,
     ).await?;
     let response = build_load_detail(&state, record).await?;
     Ok(Json(response))
@@ -555,7 +555,7 @@ pub async fn settle_load_handler(
 ) -> Result<impl IntoResponse, AppError> {
     claims.require_scope("loads:settle")?;
     let record = state.db.transition_load_status(
-        id, LoadStatus::Settled, None, None, None,
+        id, LoadStatus::Settled, None, None, None, None,
     ).await?;
     let response = build_load_detail(&state, record).await?;
     Ok(Json(response))

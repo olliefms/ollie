@@ -43,7 +43,7 @@ impl DbClient {
             if let Ok(load) = self.get_load_by_id(load_id).await {
                 if load.status == crate::models::LoadStatus::Planned {
                     let _ = self.transition_load_status(
-                        load_id, crate::models::LoadStatus::Assigned, None, None, None,
+                        load_id, crate::models::LoadStatus::Assigned, None, None, None, None,
                     ).await;
                 }
             }

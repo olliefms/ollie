@@ -108,11 +108,17 @@ impl DbClient {
         Ok(record)
     }
 
+    /// `actor` identifies what moved the load, and is forwarded to the journal
+    /// event emitted below (#435). System-initiated cascades pass a name — e.g.
+    /// `Some("auto_dispatch")` — so an automatic status change is distinguishable
+    /// from one a dispatcher made; human-initiated callers pass `None` until real
+    /// caller identity is threaded through.
     pub async fn transition_load_status(
         &self, id: Uuid, new_status: LoadStatus,
         invoice_number: Option<String>,
         invoice_date: Option<String>,
         cancellation_reason: Option<String>,
+        actor: Option<&str>,
     ) -> Result<LoadRecord, AppError> {
         let mut record = self.get_load_by_id(id).await?;
         if !record.can_transition_to(&new_status) {
@@ -128,7 +134,7 @@ impl DbClient {
         if let Some(v) = cancellation_reason { record.cancellation_reason = Some(v); }
         record.updated_at = Utc::now();
         self.upsert_load(&record).await?;
-        crate::events::on_load_status_changed(self, id, &from, record.status.as_str()).await;
+        crate::events::on_load_status_changed(self, id, &from, record.status.as_str(), actor).await;
         Ok(record)
     }
 
@@ -714,8 +720,8 @@ mod tests {
         let (db, _dir) = test_db().await;
         let load = sample_load();
         db.insert_load(&load).await.unwrap();
-        db.transition_load_status(load.id, LoadStatus::Assigned, None, None, None).await.unwrap();
-        db.transition_load_status(load.id, LoadStatus::Dispatched, None, None, None).await.unwrap();
+        db.transition_load_status(load.id, LoadStatus::Assigned, None, None, None, None).await.unwrap();
+        db.transition_load_status(load.id, LoadStatus::Dispatched, None, None, None, None).await.unwrap();
         let fetched = db.get_load_by_id(load.id).await.unwrap();
         assert_eq!(fetched.status, LoadStatus::Dispatched);
     }
@@ -817,9 +823,9 @@ mod tests {
 
         db.transition_load_status(
             load.id, LoadStatus::Invoiced,
-            Some("JQL-4581461".into()), Some("2026-07-29".into()), None,
+            Some("JQL-4581461".into()), Some("2026-07-29".into()), None, None,
         ).await.unwrap();
-        db.transition_load_status(load.id, LoadStatus::Settled, None, None, None).await.unwrap();
+        db.transition_load_status(load.id, LoadStatus::Settled, None, None, None, None).await.unwrap();
 
         let fetched = db.get_load_by_id(load.id).await.unwrap();
         assert_eq!(fetched.status, LoadStatus::Settled);
@@ -831,7 +837,7 @@ mod tests {
         let (db, _dir) = test_db().await;
         let load = sample_load();
         db.insert_load(&load).await.unwrap();
-        let err = db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None).await;
+        let err = db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None, None).await;
         assert!(matches!(err, Err(AppError::Conflict(_))));
     }
 
@@ -842,12 +848,44 @@ mod tests {
         load.kind = crate::models::LoadKind::Administrative;
         db.insert_load(&load).await.unwrap();
 
-        db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None).await.unwrap();
+        db.transition_load_status(load.id, LoadStatus::Invoiced, None, None, None, None).await.unwrap();
 
         let (_total, events) = db.query_events(
             Some(load.id), None, Some("load.invoiced"), None, None, 10, 0,
         ).await.unwrap();
         assert_eq!(events.len(), 1);
+    }
+
+    /// #435: the actor handed to `transition_load_status` reaches the journal, so
+    /// a cascaded status change is distinguishable from a dispatcher's own. Both
+    /// arms are asserted on purpose — a threading bug that hard-codes an actor
+    /// would still satisfy the `Some` case alone.
+    #[tokio::test]
+    async fn test_transition_threads_actor_into_the_load_event() {
+        let (db, _dir) = test_db().await;
+        let load = sample_load();
+        db.insert_load(&load).await.unwrap();
+
+        db.transition_load_status(load.id, LoadStatus::Assigned, None, None, None, None)
+            .await.unwrap();
+        db.transition_load_status(
+            load.id, LoadStatus::Dispatched, None, None, None,
+            Some(crate::events::AUTO_DISPATCH_ACTOR),
+        ).await.unwrap();
+
+        let (_total, assigned) = db.query_events(
+            Some(load.id), None, Some("load.assigned"), None, None, 10, 0,
+        ).await.unwrap();
+        assert_eq!(assigned.len(), 1);
+        assert_eq!(assigned[0].actor, None,
+            "a caller that passes no actor must not acquire one");
+
+        let (_total, dispatched) = db.query_events(
+            Some(load.id), None, Some("load.dispatched"), None, None, 10, 0,
+        ).await.unwrap();
+        assert_eq!(dispatched.len(), 1);
+        assert_eq!(dispatched[0].actor.as_deref(), Some("auto_dispatch"),
+            "the cascade's actor must reach the journal");
     }
 
     #[tokio::test]
