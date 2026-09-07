@@ -264,7 +264,8 @@ pub async fn assign(
     //
     // This is a guard, not an endorsement — re-assigning a released trip is an
     // artefact of that missing precondition rather than a designed workflow, and
-    // the fleet UI only offers Assign on `planned`.
+    // the fleet UI only offers Assign on `planned`. The precondition itself, and
+    // the stranded old truck it also leaves behind, are #440.
     let derive_allowed = existing.status == TripStatus::Planned;
 
     state.db.transition_trip_status(trip_id, TripStatus::Assigned).await?;
