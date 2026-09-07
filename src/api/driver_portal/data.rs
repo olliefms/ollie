@@ -772,7 +772,7 @@ pub async fn stop_detail(
     path = "/driver/api/v1/trips/{id}/stops/{seq}",
     request_body = UpdateStopTimesRequest,
     responses(
-        (status = 200, description = "Stop updated"),
+        (status = 200, description = "Stop updated. SIDE EFFECT: Recording the FINAL stop departure moves the trip to `delivered` and may AUTO-DISPATCH A DIFFERENT TRIP — the successor is the `assigned` trip on the same driver whose `previous_trip_id` is this trip. Selection is chain-only (no recency or schedule fallback): zero candidates dispatches nothing, and more than one dispatches nothing and journals `trip.auto_dispatch_ambiguous`. It also declines if the candidate's truck or any trailer is bound to another active trip. When it does fire the cascade is wide: the successor trip, the driver, the truck, every trailer, and a linked `assigned` load all move to `dispatched`, though each write is best-effort and a failure is logged rather than rolled back. Only `trip.dispatched` and `load.dispatched` are journalled, with `actor: \"auto_dispatch\"`; driver/truck/trailer status changes emit no event."),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Trip or stop not found"),
         (status = 422, description = "Validation failed"),

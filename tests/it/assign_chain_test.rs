@@ -811,3 +811,100 @@ async fn test_derivation_declines_when_another_drivers_trip_follows_this_one() {
     assert_ne!(previous_trip_id(&state, &trip_t).await, Some(trip_w),
         "chaining T behind W while S follows T reorders a chain nobody asked to reorder");
 }
+
+// ── #434: the auto-dispatch contract is published ────────────────────────────
+
+/// Auto-dispatch changes the status of a record the caller did not name, and
+/// cascades to driver, truck, trailer and load. That was in neither `llms.txt`
+/// nor `openapi.json`, so an integrator recording a stop departure had no way to
+/// know a second trip might move.
+///
+/// This asserts the *contract surfaces* carry it. It deliberately keys on the
+/// distinguishing facts (the two event type names, the chain-only rule) rather
+/// than on prose, so a rewording passes and a silent removal does not.
+#[tokio::test]
+async fn test_auto_dispatch_is_documented_in_llms_txt() {
+    let (server, _state, _b, _d, _rx) = setup().await;
+    let body = server.get("/llms.txt").await.text();
+
+    // Every needle must be absent from main, or it guards nothing. "auto_dispatch"
+    // alone would be satisfied by the event names below; "previous_trip_id" was
+    // already in this file. Both were dropped for that reason.
+    for needle in [
+        "Auto-dispatch on delivery",
+        "trip.auto_dispatch_no_chain",
+        "trip.auto_dispatch_ambiguous",
+        "candidate_trip_ids",
+        "unchained_assigned_trip_ids",
+        "triggered_by_trip_id",
+        "never auto-dispatches",
+        "best-effort",
+        "emit no event",
+        "does NOT auto-dispatch",
+    ] {
+        assert!(body.contains(needle),
+            "llms.txt must document the auto-dispatch rule; missing: {needle}");
+    }
+}
+
+/// The MCP tool descriptions are the surface an agent actually reads, and they
+/// are hand-maintained JSON — the likeliest thing to drift out of step.
+#[tokio::test]
+async fn test_auto_dispatch_is_documented_in_the_mcp_tool_descriptions() {
+    let raw = include_str!("../../src/api/fleet_portal/mcp_tools.json");
+    let spec: serde_json::Value = serde_json::from_str(raw).expect("mcp_tools.json parses");
+    let tools = spec.get("tools").and_then(|t| t.as_array())
+        .or_else(|| spec.as_array())
+        .expect("tool list");
+
+    let describe = |name: &str| -> String {
+        tools.iter()
+            .find(|t| t["name"] == name)
+            .and_then(|t| t["description"].as_str())
+            .unwrap_or_else(|| panic!("{name} tool missing"))
+            .to_string()
+    };
+
+    let depart = describe("stop_depart");
+    assert!(depart.contains("AUTO-DISPATCH A DIFFERENT TRIP"),
+        "stop_depart must declare the side effect; got: {depart}");
+    assert!(depart.contains("chain-only"),
+        "stop_depart must state the selection rule; got: {depart}");
+    assert!(depart.contains("emit no event"),
+        "stop_depart must not imply the resource moves are journalled; got: {depart}");
+
+    let complete = describe("complete_trip");
+    assert!(complete.contains("Does NOT auto-dispatch"),
+        "complete_trip must say it is not the trigger; got: {complete}");
+}
+
+/// The side effect belongs on the paths that actually cause it — both stop
+/// departure surfaces — and explicitly NOT on complete, which does not trigger it.
+#[tokio::test]
+async fn test_auto_dispatch_side_effect_is_declared_on_the_departure_paths() {
+    let (server, _state, _b, _d, _rx) = setup().await;
+    let spec: serde_json::Value = server.get("/openapi.json").await.json();
+
+    // Keyed on the SUCCESS response specifically: joining every description would
+    // still pass if the side-effect text drifted onto the 404.
+    let described = |path: &str, method: &str, code: &str| -> String {
+        spec["paths"][path][method]["responses"][code]["description"]
+            .as_str().unwrap_or_default().to_string()
+    };
+
+    for (path, method) in [
+        ("/fleet/api/v1/trips/{id}/stops/{seq}/depart", "post"),
+        ("/driver/api/v1/trips/{id}/stops/{seq}", "patch"),
+    ] {
+        let text = described(path, method, "200");
+        assert!(text.contains("AUTO-DISPATCH A DIFFERENT TRIP"),
+            "{path} {method} must declare that it can dispatch another trip; got: {text}");
+        assert!(text.contains("chain-only"),
+            "{path} {method} must state the selection rule; got: {text}");
+    }
+
+    let complete = described("/fleet/api/v1/trips/{id}/complete", "post", "204");
+    assert!(complete.contains("does NOT auto-dispatch"),
+        "complete must say it is not the trigger — the successor already rolled at \
+         delivery, and #434 assumed otherwise; got: {complete}");
+}

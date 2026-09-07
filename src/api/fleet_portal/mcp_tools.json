@@ -636,7 +636,7 @@
       "name": "divert_trip"
     },
     {
-      "description": "Complete a delivered trip and release the driver, truck, and trailers back to available. Trip must be in delivered status.",
+      "description": "Complete a delivered trip and release the driver, truck, and trailers back to available. Trip must be in delivered status. Does NOT auto-dispatch a successor: that happens earlier, on the final stop departure that made the trip delivered.",
       "inputSchema": {
         "properties": {
           "trip_id": {
@@ -678,7 +678,7 @@
       "name": "stop_arrive"
     },
     {
-      "description": "Record actual departure from a trip stop. Triggers trip and load status cascades: dispatched → in_transit when the first pickup departs (or, on a non-freight/empty move with no pickup, when the first stop departs), and → delivered when the final stop departs. A single-stop empty move advances straight to delivered on that one depart.",
+      "description": "Record actual departure from a trip stop. Triggers trip and load status cascades: dispatched → in_transit when the first pickup departs (or, on a non-freight/empty move with no pickup, when the first stop departs), and → delivered when the final stop departs. A single-stop empty move advances straight to delivered on that one depart. On that final departure it may also AUTO-DISPATCH A DIFFERENT TRIP: the successor is the assigned trip on the same driver whose previous_trip_id is this trip. Selection is chain-only, with no recency or schedule fallback. Zero candidates dispatches nothing; more than one dispatches nothing and journals trip.auto_dispatch_ambiguous. It also declines if the candidate's truck or any trailer is bound to another active trip. When it fires, the successor trip, the driver, the truck, every trailer, and a linked assigned load all move to dispatched, though each of those writes is best-effort and a failure is logged rather than rolled back. Only trip.dispatched and load.dispatched are journalled (actor 'auto_dispatch'); driver, truck and trailer status changes emit no event.",
       "inputSchema": {
         "properties": {
           "actual_depart": {

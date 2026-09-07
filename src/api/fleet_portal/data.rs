@@ -1106,7 +1106,7 @@ pub async fn divert_trip(
     path = "/fleet/api/v1/trips/{id}/complete",
     params(("id" = Uuid, Path, description = "Trip UUID")),
     responses(
-        (status = 204, description = "Trip completed and resources released"),
+        (status = 204, description = "Trip completed and resources released. Note this does NOT auto-dispatch a successor: that happens on the final stop departure, when the trip becomes `delivered`."),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Not found"),
         (status = 409, description = "Conflict — trip must be in delivered status"),
@@ -1176,7 +1176,7 @@ pub async fn stop_arrive(
     ),
     request_body(content = StopDepartRequest, description = "Actual departure time"),
     responses(
-        (status = 200, description = "Stop departure recorded", body = TripRecord),
+        (status = 200, description = "Stop departure recorded. SIDE EFFECT: Recording the FINAL stop departure moves the trip to `delivered` and may AUTO-DISPATCH A DIFFERENT TRIP — the successor is the `assigned` trip on the same driver whose `previous_trip_id` is this trip. Selection is chain-only (no recency or schedule fallback): zero candidates dispatches nothing, and more than one dispatches nothing and journals `trip.auto_dispatch_ambiguous`. It also declines if the candidate's truck or any trailer is bound to another active trip. When it does fire the cascade is wide: the successor trip, the driver, the truck, every trailer, and a linked `assigned` load all move to `dispatched`, though each write is best-effort and a failure is logged rather than rolled back. Only `trip.dispatched` and `load.dispatched` are journalled, with `actor: \"auto_dispatch\"`; driver/truck/trailer status changes emit no event.", body = TripRecord),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Not found"),
