@@ -250,7 +250,7 @@ async fn apply_safe_fixes(
             // is the same silent-failure shape #395 was about.
             "load.status_matches_trips" => {
                 state.db
-                    .transition_load_status(load.id, LoadStatus::Delivered, None, None, None)
+                    .transition_load_status(load.id, LoadStatus::Delivered, None, None, None, None)
                     .await?;
                 report.applied.push(check_id);
             }

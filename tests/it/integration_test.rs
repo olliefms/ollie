@@ -5589,7 +5589,7 @@ async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
     // the fix stays auto-applyable.
     let lid: uuid::Uuid = load_id.parse().unwrap();
     let tid: uuid::Uuid = trip_id.parse().unwrap();
-    state.db.transition_load_status(lid, ollie::models::LoadStatus::Assigned, None, None, None)
+    state.db.transition_load_status(lid, ollie::models::LoadStatus::Assigned, None, None, None, None)
         .await.unwrap();
     for s in [ollie::models::TripStatus::Assigned, ollie::models::TripStatus::Dispatched] {
         state.db.transition_trip_status(tid, s).await.unwrap();
@@ -5613,7 +5613,7 @@ async fn test_load_doctor_apply_unstrands_an_in_transit_load_over_mcp() {
         "fixture: the trip must have delivered for real",
     );
     for s in [ollie::models::LoadStatus::Dispatched, ollie::models::LoadStatus::InTransit] {
-        state.db.transition_load_status(lid, s, None, None, None).await.unwrap();
+        state.db.transition_load_status(lid, s, None, None, None, None).await.unwrap();
     }
 
     let dry = mcp_call(&server, &token, "load_doctor",
@@ -9846,6 +9846,7 @@ async fn test_cancelling_the_only_trip_releases_a_dispatched_load() {
 /// Two-stop trip chained behind `previous_trip_id`, assigned to `driver_id` +
 /// `truck_id`. `origin_sched` is the first stop's scheduled arrival — the field
 /// the pre-#433 selector ordered on, so tests set it deliberately.
+#[allow(clippy::too_many_arguments)]
 async fn assigned_chained_trip(
     server: &TestServer,
     owner_token: &str,
@@ -9854,6 +9855,7 @@ async fn assigned_chained_trip(
     name: &str,
     previous_trip_id: Option<&str>,
     origin_sched: &str,
+    load_id: Option<&str>,
 ) -> String {
     let mut body = serde_json::json!({
         "stops": [
@@ -9865,6 +9867,9 @@ async fn assigned_chained_trip(
     });
     if let Some(prev) = previous_trip_id {
         body["previous_trip_id"] = serde_json::json!(prev);
+    }
+    if let Some(load) = load_id {
+        body["load_id"] = serde_json::json!(load);
     }
     let create = server.post("/fleet/api/v1/trips")
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
@@ -9918,13 +9923,13 @@ async fn test_auto_dispatch_follows_the_chain_not_schedule_or_creation_order() {
     // B chains off A and is scheduled LATER in the day.
     let trip_b_id = assigned_chained_trip(
         &server, &owner_token, &driver_id, &truck_id,
-        "B", Some(&trip_a_id), "2026-05-10T15:06:00").await;
+        "B", Some(&trip_a_id), "2026-05-10T15:06:00", None).await;
     // C chains off B, is created AFTER B, and is scheduled EARLIER than B —
     // the shape of a follow-on empty move whose broker appointment predates
     // the delivery of the loaded run it follows.
     let trip_c_id = assigned_chained_trip(
         &server, &owner_token, &driver_id, &truck_id,
-        "C", Some(&trip_b_id), "2026-05-10T08:00:00").await;
+        "C", Some(&trip_b_id), "2026-05-10T08:00:00", None).await;
 
     deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
 
@@ -9947,10 +9952,10 @@ async fn test_auto_dispatch_walks_one_chain_leg_per_completion() {
 
     let trip_b_id = assigned_chained_trip(
         &server, &owner_token, &driver_id, &truck_id,
-        "B", Some(&trip_a_id), "2026-05-10T15:06:00").await;
+        "B", Some(&trip_a_id), "2026-05-10T15:06:00", None).await;
     let trip_c_id = assigned_chained_trip(
         &server, &owner_token, &driver_id, &truck_id,
-        "C", Some(&trip_b_id), "2026-05-10T08:00:00").await;
+        "C", Some(&trip_b_id), "2026-05-10T08:00:00", None).await;
 
     deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
     assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Dispatched);
@@ -9978,9 +9983,9 @@ async fn test_auto_dispatch_leaves_unchained_assigned_trips_alone() {
     let truck_id = a.truck_id.unwrap().to_string();
 
     let trip_b_id = assigned_chained_trip(
-        &server, &owner_token, &driver_id, &truck_id, "B", None, "2026-05-10T08:00:00").await;
+        &server, &owner_token, &driver_id, &truck_id, "B", None, "2026-05-10T08:00:00", None).await;
     let trip_c_id = assigned_chained_trip(
-        &server, &owner_token, &driver_id, &truck_id, "C", None, "2026-05-10T18:00:00").await;
+        &server, &owner_token, &driver_id, &truck_id, "C", None, "2026-05-10T18:00:00", None).await;
 
     deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
 
@@ -10004,10 +10009,10 @@ async fn test_auto_dispatch_declines_an_ambiguous_chain_and_journals_it() {
 
     let trip_b_id = assigned_chained_trip(
         &server, &owner_token, &driver_id, &truck_id,
-        "B", Some(&trip_a_id), "2026-05-10T15:06:00").await;
+        "B", Some(&trip_a_id), "2026-05-10T15:06:00", None).await;
     let trip_c_id = assigned_chained_trip(
         &server, &owner_token, &driver_id, &truck_id,
-        "C", Some(&trip_a_id), "2026-05-10T08:00:00").await;
+        "C", Some(&trip_a_id), "2026-05-10T08:00:00", None).await;
 
     deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
 
@@ -10025,6 +10030,122 @@ async fn test_auto_dispatch_declines_an_ambiguous_chain_and_journals_it() {
     let payload = events[0].payload.as_deref().expect("ambiguity event carries a payload");
     assert!(payload.contains(&trip_b_id) && payload.contains(&trip_c_id),
         "payload must name both ambiguous trips, got {payload}");
+}
+
+/// #435 — an automatic dispatch must say so in the journal, and name what
+/// triggered it. Without this an auto-dispatch and a dispatcher's own click are
+/// indistinguishable, which is what made #433 hard to characterise.
+#[tokio::test]
+async fn test_auto_dispatch_stamps_the_successor_event_with_actor_and_trigger() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let a = state.db.get_trip(trip_a_id.parse().unwrap()).await.unwrap();
+    let driver_id = a.driver_id.unwrap().to_string();
+    let truck_id = a.truck_id.unwrap().to_string();
+
+    // B carries a load so the cascade into `load.dispatched` is exercised too —
+    // that transition is the only other actor-tagged write on the auto path, and
+    // without a load on the trip nothing would guard it.
+    let fac_id = create_test_facility(&server, "Chain Dock", "Memphis, TN").await;
+    let load_id = create_test_load(&server, &fac_id).await;
+    let trip_b_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id,
+        "B", Some(&trip_a_id), "2026-05-10T15:06:00", Some(&load_id)).await;
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Dispatched);
+
+    let (_total, events) = state.db.query_events(
+        Some(trip_b_id.parse().unwrap()), None,
+        Some("trip.dispatched"), None, None, 10, 0).await.unwrap();
+    assert_eq!(events.len(), 1, "the auto-dispatched trip should have exactly one dispatch event");
+    assert_eq!(events[0].actor.as_deref(), Some("auto_dispatch"),
+        "a system-initiated dispatch must name itself");
+    let payload = events[0].payload.as_deref().expect("auto-dispatch event carries a payload");
+    assert!(payload.contains(&trip_a_id),
+        "payload must name the trip whose completion triggered it, got {payload}");
+
+    // The cascade the trip drags along must be attributed the same way.
+    let (_total, load_events) = state.db.query_events(
+        Some(load_id.parse().unwrap()), None,
+        Some("load.dispatched"), None, None, 10, 0).await.unwrap();
+    assert_eq!(load_events.len(), 1, "the cascaded load dispatch should be journalled once");
+    assert_eq!(load_events[0].actor.as_deref(), Some("auto_dispatch"),
+        "the load status change the auto-dispatch cascades into must name the system too");
+}
+
+/// The other half of #435, and the reason the actor is a parameter rather than a
+/// hard-coded value: a dispatcher's own dispatch must NOT be labelled
+/// `auto_dispatch`. Without this arm, an emitter that stamps every dispatch as
+/// automatic would pass the test above.
+#[tokio::test]
+async fn test_manual_dispatch_leaves_the_event_actor_unset() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let _owner_token = setup_owner(&server).await;
+    // The helper dispatches trip A through the fleet endpoint — the manual path.
+    let (_driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let (_total, events) = state.db.query_events(
+        Some(trip_a_id.parse().unwrap()), None,
+        Some("trip.dispatched"), None, None, 10, 0).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor, None,
+        "a dispatcher's own dispatch must not be attributed to the system");
+}
+
+/// #438 — the driver has Assigned work that the chain does not reach. Nothing
+/// will roll until a dispatcher intervenes, so it gets journalled.
+#[tokio::test]
+async fn test_auto_dispatch_journals_a_stalled_chain_when_the_driver_has_queued_work() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let a = state.db.get_trip(trip_a_id.parse().unwrap()).await.unwrap();
+    let driver_id = a.driver_id.unwrap().to_string();
+    let truck_id = a.truck_id.unwrap().to_string();
+
+    // Assigned to the driver, but chained to nothing — the plan-then-assign shape.
+    let trip_b_id = assigned_chained_trip(
+        &server, &owner_token, &driver_id, &truck_id, "B", None, "2026-05-10T08:00:00", None).await;
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Assigned,
+        "an unchained trip must still not be guessed at");
+
+    let (_total, events) = state.db.query_events(
+        Some(trip_a_id.parse().unwrap()), None,
+        Some("trip.auto_dispatch_no_chain"), None, None, 10, 0).await.unwrap();
+    assert_eq!(events.len(), 1, "a stalled chain must be journalled against the completed trip");
+    assert_eq!(events[0].actor.as_deref(), Some("auto_dispatch"),
+        "system-initiated, and the journal should say so");
+    let payload = events[0].payload.as_deref().expect("no-chain event carries a payload");
+    assert!(payload.contains(&trip_b_id),
+        "payload must name the queued trip that did not qualify, got {payload}");
+    assert!(payload.contains(&driver_id),
+        "payload must name the driver whose chain stalled, got {payload}");
+}
+
+/// The discriminator that keeps #438 from becoming noise: a driver who simply
+/// has nothing queued is the ordinary end of a chain — most completions look
+/// like this — and must NOT produce an event.
+#[tokio::test]
+async fn test_auto_dispatch_stays_silent_when_the_driver_has_nothing_queued() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let _owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+
+    let (_total, events) = state.db.query_events(
+        Some(trip_a_id.parse().unwrap()), None,
+        Some("trip.auto_dispatch_no_chain"), None, None, 10, 0).await.unwrap();
+    assert!(events.is_empty(),
+        "the common, correct end of a chain must not journal — an event here trains \
+         the reader to ignore the feed");
 }
 
 /// A dispatcher starting a trip out of chain order is overriding the plan on
@@ -10047,10 +10168,10 @@ async fn test_manual_dispatch_allows_starting_a_trip_out_of_chain_order() {
 
     // A is only Assigned — not a terminal state — and B chains off it.
     let trip_a_id = assigned_chained_trip(
-        &server, &owner_token, &driver_id, &truck_id, "A", None, "2026-05-10T08:00:00").await;
+        &server, &owner_token, &driver_id, &truck_id, "A", None, "2026-05-10T08:00:00", None).await;
     let trip_b_id = assigned_chained_trip(
         &server, &owner_token, &driver_id, &truck_id,
-        "B", Some(&trip_a_id), "2026-05-10T18:00:00").await;
+        "B", Some(&trip_a_id), "2026-05-10T18:00:00", None).await;
 
     let resp = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/dispatch"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))

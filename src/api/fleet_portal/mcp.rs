@@ -2298,7 +2298,7 @@ async fn tool_invoice_load(state: &AppState, args: &Value) -> Result<Value, Stri
     let invoice_number = args["invoice_number"].as_str().map(|s| s.to_string());
     let invoice_date = args["invoice_date"].as_str().map(|s| s.to_string());
     let record = state.db.transition_load_status(
-        id, LoadStatus::Invoiced, invoice_number, invoice_date, None,
+        id, LoadStatus::Invoiced, invoice_number, invoice_date, None, None,
     ).await.map_err(|e| e.to_string())?;
     let detail = super::data::build_load_detail(state, record).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(detail))
@@ -2308,7 +2308,7 @@ async fn tool_cancel_load(state: &AppState, args: &Value) -> Result<Value, Strin
     let id = parse_uuid(args, "id")?;
     let reason = args["reason"].as_str().map(|s| s.to_string());
     let record = state.db.transition_load_status(
-        id, LoadStatus::Cancelled, None, None, reason,
+        id, LoadStatus::Cancelled, None, None, reason, None,
     ).await.map_err(|e| e.to_string())?;
     let detail = super::data::build_load_detail(state, record).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(detail))
@@ -2317,7 +2317,7 @@ async fn tool_cancel_load(state: &AppState, args: &Value) -> Result<Value, Strin
 async fn tool_settle_load(state: &AppState, args: &Value) -> Result<Value, String> {
     let id = parse_uuid(args, "id")?;
     let record = state.db.transition_load_status(
-        id, LoadStatus::Settled, None, None, None,
+        id, LoadStatus::Settled, None, None, None, None,
     ).await.map_err(|e| e.to_string())?;
     let detail = super::data::build_load_detail(state, record).await.map_err(|e| e.to_string())?;
     Ok(mcp_content(detail))

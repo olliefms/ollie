@@ -2,6 +2,11 @@ use crate::db::DbClient;
 use crate::models::TripRecord;
 use uuid::Uuid;
 
+/// Actor name stamped on journal events the auto-dispatch path emits (#435).
+/// One constant so the value the emitters write and the value a reader filters
+/// on cannot drift apart.
+pub const AUTO_DISPATCH_ACTOR: &str = "auto_dispatch";
+
 fn now_z() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -26,9 +31,25 @@ pub async fn on_trip_unassigned(db: &DbClient, trip_id: Uuid) {
     tracing::info!(trip_id = %trip_id, "trip unassigned");
 }
 
-pub async fn on_trip_dispatched(db: &DbClient, trip_id: Uuid) {
-    let _ = db.append_event("trip", trip_id, "trip.dispatched", None, None, &now_z(), None).await;
-    tracing::info!(trip_id = %trip_id, "trip dispatched");
+/// A trip moved to Dispatched. `actor` names what initiated the transition and
+/// `triggered_by_trip_id` names the trip whose completion caused it (#435).
+///
+/// The automatic path passes `Some("auto_dispatch")` plus the completed trip;
+/// the manual path passes `None` for both until caller identity is threaded
+/// through `dispatch_trip`. `actor` is a parameter rather than a hard-coded
+/// value precisely so that later work only has to change the call site: without
+/// it, an automatic dispatch and a dispatcher's own click are indistinguishable
+/// in the journal, which is what made #433 hard to characterise.
+pub async fn on_trip_dispatched(
+    db: &DbClient,
+    trip_id: Uuid,
+    actor: Option<&str>,
+    triggered_by_trip_id: Option<Uuid>,
+) {
+    let payload = triggered_by_trip_id
+        .map(|prev| serde_json::json!({ "triggered_by_trip_id": prev.to_string() }));
+    let _ = db.append_event("trip", trip_id, "trip.dispatched", payload, actor, &now_z(), None).await;
+    tracing::info!(trip_id = %trip_id, ?actor, "trip dispatched");
 }
 
 /// More than one Assigned trip chains off the trip that just delivered, so
@@ -42,9 +63,43 @@ pub async fn on_auto_dispatch_ambiguous(db: &DbClient, trip_id: Uuid, candidate_
     let payload = serde_json::json!({ "candidate_trip_ids": candidate_ids });
     let _ = db.append_event(
         "trip", trip_id, "trip.auto_dispatch_ambiguous",
-        Some(payload), Some("auto_dispatch"), &now_z(), None,
+        Some(payload), Some(AUTO_DISPATCH_ACTOR), &now_z(), None,
     ).await;
     tracing::warn!(trip_id = %trip_id, "auto-dispatch ambiguous; no successor dispatched");
+}
+
+/// The completed trip has no Assigned successor chained to it, but the driver
+/// DOES have other Assigned trips queued (#438). That combination is the
+/// actionable one: work is waiting and the chain does not reach it, so nothing
+/// rolls until a dispatcher intervenes.
+///
+/// A driver with no queued work at all is the ordinary end of a chain and is
+/// deliberately NOT journalled — this fires on most completions, and an event on
+/// the common, correct path is worse than no event because it trains the reader
+/// to ignore the feed.
+///
+/// Classified `exception` in `classify_severity` for the same reason as
+/// `trip.auto_dispatch_ambiguous`: a stalled chain is exactly what the fleet ops
+/// feed's attention filter exists to surface, and a `normal` event there is a
+/// grey line nobody reads.
+pub async fn on_auto_dispatch_no_chain(
+    db: &DbClient,
+    trip_id: Uuid,
+    driver_id: Uuid,
+    unchained_trip_ids: &[String],
+) {
+    let payload = serde_json::json!({
+        "driver_id": driver_id.to_string(),
+        "unchained_assigned_trip_ids": unchained_trip_ids,
+    });
+    let _ = db.append_event(
+        "trip", trip_id, "trip.auto_dispatch_no_chain",
+        Some(payload), Some(AUTO_DISPATCH_ACTOR), &now_z(), None,
+    ).await;
+    tracing::warn!(
+        trip_id = %trip_id, %driver_id, queued = unchained_trip_ids.len(),
+        "auto-dispatch: driver has assigned trips but none chain off the completed trip"
+    );
 }
 
 pub async fn on_trip_undispatched(db: &DbClient, trip_id: Uuid) {
@@ -189,15 +244,20 @@ pub async fn expense_deleted(db: &DbClient, expense_id: Uuid, actor: Option<Stri
 /// than from its callers, so no path — API, MCP, trip cascade, or doctor fix —
 /// can move a load without leaving a record.
 ///
-/// `actor` is deliberately `None` for now: `transition_load_status` has no actor
-/// parameter, and the human-vs-cascade distinction belongs to the `set_load_status`
-/// work that will thread one through.
-pub async fn on_load_status_changed(db: &DbClient, load_id: Uuid, from: &str, to: &str) {
+/// `actor` is threaded from `transition_load_status` (#435). System-initiated
+/// cascades name themselves — the auto-dispatch path passes `Some("auto_dispatch")`
+/// so the `load.dispatched` it triggers is distinguishable from a dispatcher's own
+/// status change. Human-initiated paths still pass `None`: identifying the real
+/// caller belongs to the `set_load_status` work, and a wrong actor would be worse
+/// than an absent one.
+pub async fn on_load_status_changed(
+    db: &DbClient, load_id: Uuid, from: &str, to: &str, actor: Option<&str>,
+) {
     let payload = serde_json::json!({ "from": from, "to": to });
     let _ = db.append_event(
-        "load", load_id, &format!("load.{to}"), Some(payload), None, &now_z(), None,
+        "load", load_id, &format!("load.{to}"), Some(payload), actor, &now_z(), None,
     ).await;
-    tracing::info!(load_id = %load_id, from, to, "load status changed");
+    tracing::info!(load_id = %load_id, from, to, ?actor, "load status changed");
 }
 
 #[cfg(test)]
@@ -317,7 +377,7 @@ mod tests {
         let (db, _dir) = test_db().await;
         let load_id = Uuid::new_v4();
 
-        on_load_status_changed(&db, load_id, "planned", "invoiced").await;
+        on_load_status_changed(&db, load_id, "planned", "invoiced", None).await;
 
         let (_total, events) = db.query_events(
             Some(load_id), None, Some("load.invoiced"), None, None, 10, 0,

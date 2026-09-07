@@ -218,7 +218,7 @@ async fn cascade_start_in_transit(state: &AppState, trip: &TripRecord, seq: u32)
             if load.status == LoadStatus::Dispatched {
                 if let Err(e) = state
                     .db
-                    .transition_load_status(load_id, LoadStatus::InTransit, None, None, None)
+                    .transition_load_status(load_id, LoadStatus::InTransit, None, None, None, None)
                     .await
                 {
                     tracing::warn!(
@@ -262,7 +262,7 @@ async fn cascade_final_stop_delivered(state: &AppState, trip_id: Uuid, seq: u32)
                     if load.status == LoadStatus::InTransit {
                         if let Err(e) = state
                             .db
-                            .transition_load_status(load_id, LoadStatus::Delivered, None, None, None)
+                            .transition_load_status(load_id, LoadStatus::Delivered, None, None, None, None)
                             .await
                         {
                             tracing::warn!(

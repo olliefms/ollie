@@ -23,7 +23,7 @@ async fn demote_released_load(state: &AppState, load_id: Uuid, target: LoadStatu
     let label = target.as_str();
     if let Err(e) = state
         .db
-        .transition_load_status(load_id, target, None, None, None)
+        .transition_load_status(load_id, target, None, None, None, None)
         .await
     {
         tracing::warn!(
@@ -240,7 +240,7 @@ pub async fn assign(
     if let Some(load_id) = trip.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
             if load.status == LoadStatus::Planned {
-                let _ = state.db.transition_load_status(load_id, LoadStatus::Assigned, None, None, None).await;
+                let _ = state.db.transition_load_status(load_id, LoadStatus::Assigned, None, None, None, None).await;
             }
         }
     }
@@ -377,12 +377,14 @@ pub async fn dispatch(state: &AppState, trip_id: Uuid) -> Result<TripRecord, App
     if let Some(load_id) = existing.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
             if load.status == LoadStatus::Assigned {
-                let _ = state.db.transition_load_status(load_id, LoadStatus::Dispatched, None, None, None).await;
+                let _ = state.db.transition_load_status(load_id, LoadStatus::Dispatched, None, None, None, None).await;
             }
         }
     }
 
-    events::on_trip_dispatched(&state.db, trip_id).await;
+    // Manual path: no actor yet — `dispatch_trip` does not thread caller identity
+    // through, and a guessed actor is worse than an absent one (#435).
+    events::on_trip_dispatched(&state.db, trip_id, None, None).await;
     Ok(trip)
 }
 
@@ -719,7 +721,7 @@ pub async fn tonu(
             if let Ok(load) = state.db.get_load_by_id(load_id).await {
                 if matches!(load.status, LoadStatus::Assigned | LoadStatus::Dispatched) {
                     if let Err(e) = state.db.transition_load_status(
-                        load_id, LoadStatus::Tonu, None, None, req.reason.clone(),
+                        load_id, LoadStatus::Tonu, None, None, req.reason.clone(), None,
                     ).await {
                         tracing::warn!(%load_id, error = %e, "load not moved to tonu");
                     } else {
@@ -1065,6 +1067,12 @@ async fn predecessor_blocking_dispatch(
 /// times routinely arrive out of order. A wrong auto-dispatch is worse than
 /// none, because it silently replaces what the driver sees.
 ///
+/// **The zero-candidate case journals selectively (#438).** It emits an event
+/// only when the driver has OTHER Assigned trips that did not qualify — work is
+/// queued and the chain does not reach it, so nothing rolls until a dispatcher
+/// intervenes. A driver with nothing queued is the ordinary end of a chain,
+/// fires on most completions, and stays a log line.
+///
 /// `dispatch`'s resource-conflict checks are not reused as-is because the
 /// driver and truck from the just-delivered trip will still read `Dispatched`.
 /// Instead this helper checks whether the candidate trip's truck/trailers are
@@ -1080,16 +1088,32 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
         return;
     };
     // The just-delivered trip cannot be in this list — it is Delivered, not
-    // Assigned — so the chain link is the only filter needed.
-    let candidates: Vec<_> = trips.into_iter()
-        .filter(|t| t.previous_trip_id == Some(just_delivered_trip_id))
-        .collect();
+    // Assigned — so the chain link is the only filter needed. The trips that do
+    // NOT chain are kept rather than discarded: whether the driver has any is
+    // what separates a normal end-of-chain from a stall (#438).
+    let (candidates, unchained): (Vec<_>, Vec<_>) = trips.into_iter()
+        .partition(|t| t.previous_trip_id == Some(just_delivered_trip_id));
 
     if candidates.is_empty() {
-        tracing::info!(
-            %driver_id, prev_trip = %just_delivered_trip_id,
-            "auto-dispatch: no assigned trip chains off this one; leaving dispatch to the fleet_user"
+        // #438: "this driver is done for now" is the ordinary end of a chain and
+        // fires on most completions — it stays a log line, because an event on
+        // the common correct path trains the reader to ignore the feed. "This
+        // driver has work queued but none of it chains off the trip that just
+        // finished" is the actionable one: nothing rolls until a dispatcher
+        // intervenes, and until now the only record was a log line nobody reads.
+        if unchained.is_empty() {
+            tracing::info!(
+                %driver_id, prev_trip = %just_delivered_trip_id,
+                "auto-dispatch: no assigned trip chains off this one and the driver has none queued"
+            );
+            return;
+        }
+        let ids: Vec<String> = unchained.iter().map(|t| t.id.to_string()).collect();
+        tracing::warn!(
+            %driver_id, prev_trip = %just_delivered_trip_id, queued = ?ids,
+            "auto-dispatch: driver has assigned trips but none chain off this one; leaving dispatch to the fleet_user"
         );
+        events::on_auto_dispatch_no_chain(&state.db, just_delivered_trip_id, driver_id, &ids).await;
         return;
     }
     if candidates.len() > 1 {
@@ -1153,14 +1177,16 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
             if load.status == LoadStatus::Assigned {
                 let _ = state.db.transition_load_status(
-                    load_id, LoadStatus::Dispatched, None, None, None,
+                    load_id, LoadStatus::Dispatched, None, None, None, Some(events::AUTO_DISPATCH_ACTOR),
                 ).await;
             }
         }
     }
 
     tracing::info!(prev_trip = %just_delivered_trip_id, next_trip = %trip_id, %driver_id, "auto-dispatched next trip");
-    events::on_trip_dispatched(&state.db, trip_id).await;
+    events::on_trip_dispatched(
+        &state.db, trip_id, Some(events::AUTO_DISPATCH_ACTOR), Some(just_delivered_trip_id),
+    ).await;
 }
 
 #[cfg(test)]
