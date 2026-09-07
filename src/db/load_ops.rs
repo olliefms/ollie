@@ -109,10 +109,14 @@ impl DbClient {
     }
 
     /// `actor` identifies what moved the load, and is forwarded to the journal
-    /// event emitted below (#435). System-initiated cascades pass a name — e.g.
-    /// `Some("auto_dispatch")` — so an automatic status change is distinguishable
-    /// from one a dispatcher made; human-initiated callers pass `None` until real
-    /// caller identity is threaded through.
+    /// event emitted below (#435).
+    ///
+    /// Only the auto-dispatch cascade names itself so far
+    /// (`Some(events::AUTO_DISPATCH_ACTOR)`); every other call site still passes
+    /// `None`, so an absent actor means "not yet attributed", NOT "a human did
+    /// it". Threading real caller identity through the remaining paths — the
+    /// doctors' repairs and the trip-stop cascades among them — belongs to the
+    /// `set_load_status` work, and a guessed actor would be worse than none.
     pub async fn transition_load_status(
         &self, id: Uuid, new_status: LoadStatus,
         invoice_number: Option<String>,
