@@ -70,6 +70,14 @@ pub struct FleetTripListItem {
     pub total_miles: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_facility_name: Option<String>,
+    /// The trip this one follows: the auto-dispatch chain link, and the deadhead
+    /// origin for mileage. Exposed so a dispatcher can see what a trip is queued
+    /// behind — without it the link is write-only and unverifiable (#437).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_trip_id: Option<uuid::Uuid>,
+    /// `previous_trip_id`'s trip number, so the UI need not resolve it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_trip_number: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mileage_summary: Option<crate::models::trip::MileageSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,6 +200,8 @@ fn enrich_trip(
         loaded_miles: trip.loaded_miles,
         total_miles: trip.total_miles,
         origin_facility_name: None,
+        previous_trip_id: trip.previous_trip_id,
+        previous_trip_number: None,
         mileage_summary: None,
         // list shows frozen pay only; live pay on detail
         driver_pay: None,
@@ -694,6 +704,10 @@ pub async fn build_trip_list_items(
         .collect();
     let mut origin_name_by_trip: std::collections::HashMap<Uuid, String> =
         std::collections::HashMap::new();
+    // The predecessor records are fetched below for the origin facility anyway,
+    // so labelling the chain link costs nothing extra.
+    let mut prev_number: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
     if !prev_trip_ids.is_empty() {
         // Resolve each previous trip → last stop facility name.
         let mut fac_ids: Vec<Uuid> = Vec::new();
@@ -701,6 +715,7 @@ pub async fn build_trip_list_items(
             std::collections::HashMap::new();
         for prev_id in &prev_trip_ids {
             if let Ok(prev) = state.db.get_trip(*prev_id).await {
+                prev_number.insert(*prev_id, prev.trip_number.clone());
                 if let Some(fac_id) = prev.stops.last().and_then(|s| s.facility_id) {
                     fac_ids.push(fac_id);
                     prev_to_fac.insert(*prev_id, fac_id);
@@ -724,6 +739,8 @@ pub async fn build_trip_list_items(
             let trip_id = trip.id;
             let mut item = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
             item.origin_facility_name = origin_name_by_trip.get(&trip_id).cloned();
+            item.previous_trip_number = item.previous_trip_id
+                .and_then(|p| prev_number.get(&p).cloned());
             item
         })
         .collect();

@@ -232,9 +232,7 @@ async fn test_explicit_id_beats_the_derivation() {
         serde_json::json!({ "previous_trip_id": trip_a })).await;
 
     assert_eq!(previous_trip_id(&state, &trip_c).await, Some(trip_a),
-        "an explicitly chosen predecessor must win over the derived one");
-    assert_ne!(previous_trip_id(&state, &trip_c).await, Some(trip_b),
-        "the derivation must not overwrite an explicit choice");
+        "an explicitly chosen predecessor must win over the derived one (which would be {trip_b})");
 }
 
 /// A link already on the record is a stated plan. Re-assigning must not silently
@@ -350,4 +348,309 @@ async fn test_a_trip_is_never_its_own_predecessor() {
 
     assert_eq!(previous_trip_id(&state, &trip_a).await, None,
         "the driver's only trip is the one being assigned; it cannot follow itself");
+}
+
+// ── chain shape: walk to the tail, never fork ────────────────────────────────
+
+/// The bug a "most recently created" derivation would cause. Trips are created
+/// B, C, A — A last, as when a hot load is booked today while next week's legs
+/// were planned last week. Picking the newest chainable trip would point BOTH B
+/// and C at A, and `try_auto_dispatch_next_for_driver` refuses to resolve two
+/// candidates, so nothing would ever roll.
+#[tokio::test]
+async fn test_derivation_walks_to_the_chain_tail_not_the_newest_trip() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Tail Walker").await;
+    let truck_id = create_truck(&server, &token, "T-TAIL-1").await;
+
+    let trip_b = create_unassigned_trip(&server, &token, "B").await;
+    let trip_c = create_unassigned_trip(&server, &token, "C").await;
+    let trip_a = create_unassigned_trip(&server, &token, "A").await;
+
+    assign_trip(&server, &token, &trip_a, &driver_id, &truck_id, serde_json::json!({})).await;
+    assign_trip(&server, &token, &trip_b, &driver_id, &truck_id, serde_json::json!({})).await;
+    assign_trip(&server, &token, &trip_c, &driver_id, &truck_id, serde_json::json!({})).await;
+
+    assert_eq!(previous_trip_id(&state, &trip_b).await, Some(trip_a.clone()),
+        "B follows A, the only trip in the chain when B was assigned");
+    assert_eq!(previous_trip_id(&state, &trip_c).await, Some(trip_b),
+        "C must follow the TAIL of the chain, not the most recently created trip");
+    assert_ne!(previous_trip_id(&state, &trip_c).await, Some(trip_a),
+        "two successors on one predecessor is the ambiguity that dispatches nothing");
+}
+
+/// Two tails means parallel chains and no right answer. #433 established that a
+/// wrong chain is worse than none, so the derivation declines.
+#[tokio::test]
+async fn test_derivation_declines_when_the_driver_has_parallel_chains() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Forked").await;
+    let truck_id = create_truck(&server, &token, "T-TAIL-2").await;
+
+    // Two unchained assigned trips = two tails.
+    let trip_a = create_unassigned_trip(&server, &token, "A").await;
+    assign_trip(&server, &token, &trip_a, &driver_id, &truck_id,
+        serde_json::json!({ "previous_trip_id": null })).await;
+    let trip_b = create_unassigned_trip(&server, &token, "B").await;
+    assign_trip(&server, &token, &trip_b, &driver_id, &truck_id,
+        serde_json::json!({ "previous_trip_id": null })).await;
+
+    let trip_c = create_unassigned_trip(&server, &token, "C").await;
+    assign_trip(&server, &token, &trip_c, &driver_id, &truck_id, serde_json::json!({})).await;
+
+    assert_eq!(previous_trip_id(&state, &trip_c).await, None,
+        "with two possible tails there is no right answer; guessing is what #433 removed");
+}
+
+/// Re-assigning a trip that has been DISPATCHED but has not started rolling
+/// succeeds today, because `assign` has no status precondition and reuses the
+/// `Dispatched -> Assigned` edge that exists for `undispatch`. It must not
+/// re-derive: by then the trip's own successor is the only chainable candidate,
+/// and chaining to it builds a 2-cycle that blocks both trips from ever
+/// dispatching. See `test_an_in_transit_trip_cannot_be_reassigned` for the
+/// boundary — a trip actually in progress is rejected outright.
+#[tokio::test]
+async fn test_reassigning_a_dispatched_trip_does_not_chain_it_to_its_own_successor() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Swapper").await;
+    let truck_id = create_truck(&server, &token, "T-SWAP-1").await;
+    let truck_two = create_truck(&server, &token, "T-SWAP-2").await;
+
+    let trip_p = create_unassigned_trip(&server, &token, "P").await;
+    assign_trip(&server, &token, &trip_p, &driver_id, &truck_id,
+        serde_json::json!({ "previous_trip_id": null })).await;
+    set_status(&state, &trip_p, ollie::models::TripStatus::Dispatched).await;
+
+    let trip_q = create_unassigned_trip(&server, &token, "Q").await;
+    assign_trip(&server, &token, &trip_q, &driver_id, &truck_id, serde_json::json!({})).await;
+    assert_eq!(previous_trip_id(&state, &trip_q).await, Some(trip_p.clone()),
+        "fixture: Q must chain behind P or this test proves nothing");
+
+    // Second assignment on the released-but-not-rolling trip.
+    let res = assign_trip(&server, &token, &trip_p, &driver_id, &truck_two,
+        serde_json::json!({})).await;
+    assert_eq!(res.status_code(), 200, "re-assign failed: {}", res.text());
+
+    assert_eq!(previous_trip_id(&state, &trip_p).await, None,
+        "a re-assign must not point a running trip at its own successor");
+    assert_ne!(previous_trip_id(&state, &trip_p).await, Some(trip_q),
+        "P -> Q -> P is a cycle that blocks both trips from ever dispatching");
+}
+
+// ── validation of a caller-supplied link ─────────────────────────────────────
+
+/// A dangling id is worse than none: `predecessor_blocking_dispatch` treats an
+/// unreadable predecessor as a hard block, stranding the trip permanently.
+#[tokio::test]
+async fn test_pinning_a_nonexistent_predecessor_is_rejected() {
+    let (server, _state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Dangling").await;
+    let truck_id = create_truck(&server, &token, "T-VAL-1").await;
+
+    let trip = create_unassigned_trip(&server, &token, "A").await;
+    let res = assign_trip(&server, &token, &trip, &driver_id, &truck_id, serde_json::json!({
+        "previous_trip_id": "00000000-0000-0000-0000-000000000000"
+    })).await;
+
+    assert_eq!(res.status_code(), 422, "a dangling chain link must be rejected: {}", res.text());
+}
+
+/// Auto-dispatch only ever looks at one driver's trips, so a cross-driver link
+/// can never fire; it would only block this trip.
+#[tokio::test]
+async fn test_pinning_another_drivers_trip_is_rejected() {
+    let (server, _state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_a = create_driver(&server, &token, "Driver A").await;
+    let driver_b = create_driver(&server, &token, "Driver B").await;
+    let truck_id = create_truck(&server, &token, "T-VAL-2").await;
+
+    let trip_a = create_unassigned_trip(&server, &token, "A").await;
+    assign_trip(&server, &token, &trip_a, &driver_a, &truck_id, serde_json::json!({})).await;
+
+    let trip_b = create_unassigned_trip(&server, &token, "B").await;
+    let res = assign_trip(&server, &token, &trip_b, &driver_b, &truck_id, serde_json::json!({
+        "previous_trip_id": trip_a
+    })).await;
+
+    assert_eq!(res.status_code(), 422, "a cross-driver chain link must be rejected: {}", res.text());
+}
+
+#[tokio::test]
+async fn test_a_trip_cannot_be_pinned_to_itself() {
+    let (server, _state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Self").await;
+    let truck_id = create_truck(&server, &token, "T-VAL-3").await;
+
+    let trip = create_unassigned_trip(&server, &token, "A").await;
+    let res = assign_trip(&server, &token, &trip, &driver_id, &truck_id, serde_json::json!({
+        "previous_trip_id": trip
+    })).await;
+
+    assert_eq!(res.status_code(), 422, "a trip cannot follow itself: {}", res.text());
+}
+
+/// Pinning a trip that already follows this one closes a cycle.
+#[tokio::test]
+async fn test_pinning_a_successor_is_rejected_as_a_cycle() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Cycle").await;
+    let truck_id = create_truck(&server, &token, "T-VAL-4").await;
+
+    let trip_a = create_unassigned_trip(&server, &token, "A").await;
+    assign_trip(&server, &token, &trip_a, &driver_id, &truck_id,
+        serde_json::json!({ "previous_trip_id": null })).await;
+    let trip_b = create_unassigned_trip(&server, &token, "B").await;
+    assign_trip(&server, &token, &trip_b, &driver_id, &truck_id, serde_json::json!({})).await;
+    assert_eq!(previous_trip_id(&state, &trip_b).await, Some(trip_a.clone()),
+        "fixture: B must follow A");
+
+    // Now try to make A follow B.
+    server.post(&format!("/fleet/api/v1/trips/{trip_a}/unassign"))
+        .authorization_bearer(&token).await;
+    let res = assign_trip(&server, &token, &trip_a, &driver_id, &truck_id, serde_json::json!({
+        "previous_trip_id": trip_b
+    })).await;
+
+    assert_eq!(res.status_code(), 422, "A -> B -> A must be rejected: {}", res.text());
+}
+
+/// A link pointing at another driver's trip is stale, not a plan: it can never
+/// fire and blocks this trip. Re-deriving beats preserving it.
+#[tokio::test]
+async fn test_a_stale_cross_driver_link_is_re_derived() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_a = create_driver(&server, &token, "Driver A").await;
+    let driver_b = create_driver(&server, &token, "Driver B").await;
+    let truck_id = create_truck(&server, &token, "T-STALE-1").await;
+
+    // A1 belongs to driver A; X is chained behind it.
+    let trip_a1 = create_unassigned_trip(&server, &token, "A1").await;
+    assign_trip(&server, &token, &trip_a1, &driver_a, &truck_id, serde_json::json!({})).await;
+    let trip_x = create_unassigned_trip(&server, &token, "X").await;
+    assign_trip(&server, &token, &trip_x, &driver_a, &truck_id, serde_json::json!({})).await;
+    assert_eq!(previous_trip_id(&state, &trip_x).await, Some(trip_a1.clone()));
+
+    // Driver B picks up their own work, then X is handed to driver B.
+    let trip_b1 = create_unassigned_trip(&server, &token, "B1").await;
+    assign_trip(&server, &token, &trip_b1, &driver_b, &truck_id, serde_json::json!({})).await;
+    server.post(&format!("/fleet/api/v1/trips/{trip_x}/unassign"))
+        .authorization_bearer(&token).await;
+    assign_trip(&server, &token, &trip_x, &driver_b, &truck_id, serde_json::json!({})).await;
+
+    assert_ne!(previous_trip_id(&state, &trip_x).await, Some(trip_a1),
+        "a link to another driver's trip can never fire and must not survive a driver change");
+    assert_eq!(previous_trip_id(&state, &trip_x).await, Some(trip_b1),
+        "it should re-derive onto the new driver's chain");
+}
+
+/// Mileage is frozen after settlement, and this field recomputes it. Matches
+/// `apply_trip_patch`, which returns 409 rather than silently dropping the value.
+#[tokio::test]
+async fn test_settled_trip_rejects_an_explicit_chain_link() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Settled").await;
+    let truck_id = create_truck(&server, &token, "T-SETTLED-1").await;
+
+    let trip_a = create_unassigned_trip(&server, &token, "A").await;
+    assign_trip(&server, &token, &trip_a, &driver_id, &truck_id, serde_json::json!({})).await;
+    let trip_b = create_unassigned_trip(&server, &token, "B").await;
+    state.db.update_trip_settlement(
+        trip_b.parse().unwrap(), Some("SETTLE-1".into()), None, None, None,
+    ).await.unwrap();
+
+    let res = assign_trip(&server, &token, &trip_b, &driver_id, &truck_id, serde_json::json!({
+        "previous_trip_id": trip_a
+    })).await;
+
+    assert_eq!(res.status_code(), 409,
+        "a settled trip's chain link is frozen: {}", res.text());
+    assert_eq!(previous_trip_id(&state, &trip_b).await, None,
+        "and nothing was written before the rejection");
+}
+
+/// A predecessor with NO driver is the ordinary chain origin the create path
+/// writes: it supplies the deadhead origin for mileage and is not "another
+/// driver's trip". Treating it as stale would silently erase a routing input,
+/// which is exactly what an over-broad cross-driver check did here once.
+#[tokio::test]
+async fn test_a_driverless_predecessor_is_left_alone() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Origin Keeper").await;
+    let truck_id = create_truck(&server, &token, "T-ORIGIN-1").await;
+
+    // A prior trip with no driver at all — where the truck last was.
+    let origin = create_unassigned_trip(&server, &token, "Origin").await;
+    assert!(
+        state.db.get_trip(origin.parse().unwrap()).await.unwrap().driver_id.is_none(),
+        "fixture must have no driver or this test proves nothing");
+
+    let create = server.post("/fleet/api/v1/trips")
+        .authorization_bearer(&token)
+        .json(&serde_json::json!({
+            "previous_trip_id": origin,
+            "stops": two_stop_body("X")["stops"],
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201, "create X failed: {}", create.text());
+    let trip_x = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+
+    assign_trip(&server, &token, &trip_x, &driver_id, &truck_id, serde_json::json!({})).await;
+
+    assert_eq!(previous_trip_id(&state, &trip_x).await, Some(origin),
+        "a driverless chain origin must survive assignment untouched");
+}
+
+/// The same distinction on the explicit path: pinning a driverless predecessor
+/// is legitimate and must not be rejected as cross-driver.
+#[tokio::test]
+async fn test_pinning_a_driverless_predecessor_is_accepted() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Pinner").await;
+    let truck_id = create_truck(&server, &token, "T-ORIGIN-2").await;
+
+    let origin = create_unassigned_trip(&server, &token, "Origin").await;
+    let trip_x = create_unassigned_trip(&server, &token, "X").await;
+
+    let res = assign_trip(&server, &token, &trip_x, &driver_id, &truck_id, serde_json::json!({
+        "previous_trip_id": origin
+    })).await;
+
+    assert_eq!(res.status_code(), 200, "pinning a driverless origin failed: {}", res.text());
+    assert_eq!(previous_trip_id(&state, &trip_x).await, Some(origin));
+}
+
+/// A trip that is actually rolling cannot be re-assigned at all: there is no
+/// `InTransit -> Assigned` edge in `can_transition_to`, so `assign` fails at the
+/// status transition before any of the chain logic runs. Pinned here because the
+/// chain-derivation guard was originally justified by a "mid-run truck swap"
+/// that does not exist — swapping equipment under a rolling trip means a new
+/// trip, not a re-assignment.
+#[tokio::test]
+async fn test_an_in_transit_trip_cannot_be_reassigned() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Rolling").await;
+    let truck_id = create_truck(&server, &token, "T-ROLL-1").await;
+    let truck_two = create_truck(&server, &token, "T-ROLL-2").await;
+
+    let trip = create_unassigned_trip(&server, &token, "R").await;
+    assign_trip(&server, &token, &trip, &driver_id, &truck_id, serde_json::json!({})).await;
+    set_status(&state, &trip, ollie::models::TripStatus::Dispatched).await;
+    set_status(&state, &trip, ollie::models::TripStatus::InTransit).await;
+
+    let res = assign_trip(&server, &token, &trip, &driver_id, &truck_two, serde_json::json!({})).await;
+
+    assert_eq!(res.status_code(), 409,
+        "an in-transit trip must not be re-assignable: {}", res.text());
 }

@@ -7,7 +7,7 @@ use uuid::Uuid;
 pub fn classify_severity(event_type: &str) -> &'static str {
     match event_type {
         "stop.late" | "processing_failed" | "trip.auto_dispatch_ambiguous"
-        | "trip.auto_dispatch_no_chain" => "exception",
+        | "trip.auto_dispatch_no_chain" | "trip.mileage_recompute_failed" => "exception",
         "processing_started" | "processing_completed" | "driver.equipment_changed"
         | "driver.trailer_changed" => "system",
         _ => "normal",
@@ -85,6 +85,8 @@ mod tests {
         // #438: a driver with queued work that the chain does not reach is the
         // same class of stall — it must survive the attention filter too.
         assert_eq!(classify_severity("trip.auto_dispatch_no_chain"), "exception");
+        // #437: stale miles feed driver pay, so a failed recompute must surface.
+        assert_eq!(classify_severity("trip.mileage_recompute_failed"), "exception");
         assert_eq!(classify_severity("processing_started"), "system");
         assert_eq!(classify_severity("processing_completed"), "system");
         assert_eq!(classify_severity("driver.equipment_changed"), "system");

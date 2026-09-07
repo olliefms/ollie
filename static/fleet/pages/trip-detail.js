@@ -142,6 +142,11 @@ export async function renderTripDetail(id) {
           <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${escHtml(trip.driver_name || '—')}</div></div>
           <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${escHtml(trip.truck_unit || '—')}</div></div>
           <div class="detail-item"><div class="detail-item__label">Trailer</div><div class="detail-item__value">${escHtml((trip.trailer_units || []).join(', ') || '—')}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Follows</div><div class="detail-item__value">${
+            trip.previous_trip_id
+              ? escHtml(trip.previous_trip_number || shortId(trip.previous_trip_id))
+              : 'Not chained'
+          }</div></div>
         </div>
         ${actionBtns ? `<div class="form-panel__actions">${actionBtns}</div>` : ''}
       </div>

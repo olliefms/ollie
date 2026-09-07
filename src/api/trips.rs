@@ -191,8 +191,12 @@ pub(crate) async fn apply_trip_create(
                 driver_id,
                 truck_id,
                 trailer_ids: record.trailer_ids.clone(),
-                // Untouched: the chain link was already resolved above from the
-                // create payload, and `resolve_chain_link` leaves a set link alone.
+                // Untouched. The chain link was resolved above from the create
+                // payload; when that produced one, `resolve_chain_link` leaves it
+                // alone. When it produced none — no driver named, no prior trip,
+                // or a lookup that errored and was swallowed by `.ok()` — the
+                // assign-time derivation answers instead, under its own stricter
+                // rule. Both outcomes are intended; they are not the same rule.
                 previous_trip_id: None,
             },
         )
