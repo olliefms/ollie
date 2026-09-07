@@ -9878,9 +9878,17 @@ async fn assigned_chained_trip(
     assert_eq!(create.status_code(), 201, "create {name} failed: {}", create.text());
     let id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
 
+    // #437: assign now derives a chain link when the caller states no preference.
+    // A fixture that asked for no predecessor means it, so say so explicitly —
+    // otherwise every "unchained" trip built here would quietly acquire a link
+    // and the tests that turn on being unchained would stop testing anything.
+    let mut assign_body = serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id });
+    if previous_trip_id.is_none() {
+        assign_body["previous_trip_id"] = serde_json::Value::Null;
+    }
     let assign = server.post(&format!("/fleet/api/v1/trips/{id}/assign"))
         .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
-        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .json(&assign_body)
         .await;
     assert_eq!(assign.status_code(), 200, "assign {name} failed: {}", assign.text());
     id
@@ -10030,6 +10038,60 @@ async fn test_auto_dispatch_declines_an_ambiguous_chain_and_journals_it() {
     let payload = events[0].payload.as_deref().expect("ambiguity event carries a payload");
     assert!(payload.contains(&trip_b_id) && payload.contains(&trip_c_id),
         "payload must name both ambiguous trips, got {payload}");
+}
+
+/// #437, end to end — the outcome the issue is actually about. A trip created
+/// with no driver (rate con first, driver decided later) and assigned afterwards
+/// must now auto-dispatch when the driver's current trip delivers. Before this,
+/// `previous_trip_id` stayed `None` through both steps, so #433's chain-only
+/// selection found no candidate and the trip sat Assigned with its stop actions
+/// rejected — visible in the driver's app but dead.
+#[tokio::test]
+async fn test_plan_then_assign_trip_auto_dispatches_on_predecessor_delivery() {
+    let (server, _db, _blob, _rx, state) = test_server_with_state().await;
+    let owner_token = setup_owner(&server).await;
+    let (driver_token, trip_a_id) = setup_driver_with_intransit_trip_two_stops(&server, &state).await;
+
+    let a = state.db.get_trip(trip_a_id.parse().unwrap()).await.unwrap();
+    let driver_id = a.driver_id.unwrap().to_string();
+    let truck_id = a.truck_id.unwrap().to_string();
+
+    // Created with no driver — the plan-then-assign shape.
+    let create = server.post("/fleet/api/v1/trips")
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({
+            "stops": [
+                { "sequence": 1, "stop_type": "pickup", "name": "B-Origin",
+                  "timezone": "America/Los_Angeles" },
+                { "sequence": 2, "stop_type": "delivery", "name": "B-Dest",
+                  "timezone": "America/Los_Angeles" }
+            ]
+        }))
+        .await;
+    assert_eq!(create.status_code(), 201, "create B failed: {}", create.text());
+    let trip_b_id = create.json::<serde_json::Value>()["id"].as_str().unwrap().to_string();
+    assert!(
+        state.db.get_trip(trip_b_id.parse().unwrap()).await.unwrap().previous_trip_id.is_none(),
+        "fixture must start unchained or this test proves nothing");
+
+    // Assigned later, with no stated preference — the derivation supplies the link.
+    let assign = server.post(&format!("/fleet/api/v1/trips/{trip_b_id}/assign"))
+        .add_header(header::AUTHORIZATION, format!("Bearer {owner_token}"))
+        .json(&serde_json::json!({ "driver_id": driver_id, "truck_id": truck_id }))
+        .await;
+    assert_eq!(assign.status_code(), 200, "assign B failed: {}", assign.text());
+
+    deliver_two_stop_trip(&server, &driver_token, &trip_a_id, "2026-05-09").await;
+
+    assert_eq!(trip_status(&state, &trip_b_id).await, ollie::models::TripStatus::Dispatched,
+        "a plan-then-assign trip must now roll automatically when its predecessor delivers");
+
+    // And it must not look like a manual dispatch in the journal (#435).
+    let (_total, events) = state.db.query_events(
+        Some(trip_b_id.parse().unwrap()), None,
+        Some("trip.dispatched"), None, None, 10, 0).await.unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].actor.as_deref(), Some("auto_dispatch"));
 }
 
 /// #435 — an automatic dispatch must say so in the journal, and name what

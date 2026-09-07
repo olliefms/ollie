@@ -414,6 +414,35 @@ impl DbClient {
         Ok(trips.into_iter().next())
     }
 
+    /// The trip this driver will finish before a newly-assigned one starts:
+    /// their most recently created trip that is committed but not yet over —
+    /// Assigned, Dispatched, or InTransit — excluding `exclude_trip_id`.
+    ///
+    /// Deliberately NOT `get_last_trip_for_driver`, which the create path uses.
+    /// That one answers a *mileage* question ("where was the truck last") and so
+    /// accepts any non-cancelled trip, terminal and `Planned` ones included. This
+    /// answers a *dispatch* question, where both of those are wrong: a terminal
+    /// predecessor already fired its completion, so a successor chained to it
+    /// would never auto-dispatch; and a `Planned` predecessor may never run at
+    /// all, leaving a successor `predecessor_blocking_dispatch` will not release.
+    /// Either would be a fresh silent stall of the kind #437 exists to remove.
+    pub async fn get_chainable_predecessor_for_driver(
+        &self, driver_id: Uuid, exclude_trip_id: Uuid,
+    ) -> Result<Option<TripRecord>, AppError> {
+        let id_str = driver_id.to_string();
+        let exclude_str = exclude_trip_id.to_string();
+        let stream = self.trip_table.query()
+            .only_if(format!(
+                "driver_id = '{id_str}' AND id != '{exclude_str}' \
+                 AND status IN ('assigned', 'dispatched', 'in_transit')"
+            ))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let mut trips = batches_to_trips(collect_stream(stream).await?)?;
+        trips.sort_by_key(|t| std::cmp::Reverse(t.created_at));
+        Ok(trips.into_iter().next())
+    }
+
     pub async fn count_trips_referencing_facility(&self, facility_id: Uuid) -> Result<usize, AppError> {
         self.trip_table
             .count_rows(Some(format!("stops LIKE '%\"{}\"%'", facility_id)))

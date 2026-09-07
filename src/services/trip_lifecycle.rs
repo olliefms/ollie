@@ -39,6 +39,18 @@ pub struct AssignTripRequest {
     pub truck_id: Uuid,
     #[serde(default)]
     pub trailer_ids: Vec<Uuid>,
+    /// Which trip this one follows — the auto-dispatch chain link (#437).
+    ///
+    /// Three-state on purpose: **absent** means "decide for me" and derives from
+    /// the driver's current work, **`null`** means "this starts a new chain" and
+    /// sets no link, and **a value** pins that trip. Without the middle state a
+    /// dispatcher could not say "no chain" at all — the derivation would keep
+    /// re-attaching one on every assign.
+    ///
+    /// Note this field is also the deadhead origin, so setting it recomputes the
+    /// trip's mileage, which feeds driver pay.
+    #[serde(default, deserialize_with = "crate::models::double_option")]
+    pub previous_trip_id: Option<Option<Uuid>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -236,6 +248,7 @@ pub async fn assign(
     }
 
     let trip = state.db.get_trip(trip_id).await?;
+    let trip = resolve_chain_link(state, trip, &req).await;
 
     if let Some(load_id) = trip.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
@@ -247,6 +260,70 @@ pub async fn assign(
 
     events::on_trip_assigned(&state.db, trip_id).await;
     Ok(trip)
+}
+
+/// Settle `previous_trip_id` at assign time (#437), returning the trip as it now
+/// stands. Best-effort throughout: the assignment itself has already succeeded,
+/// and a chain link is not worth failing it over.
+///
+/// Before this, the field was written in exactly two places — trip creation
+/// (only when the create payload named a driver) and `update_trip_metadata`,
+/// which is MCP/REST-only. Plan-then-assign therefore never got a link, and
+/// since #433 made auto-dispatch chain-only, those trips silently stopped
+/// auto-dispatching with nothing in the UI to explain why or to fix it.
+async fn resolve_chain_link(
+    state: &AppState,
+    trip: TripRecord,
+    req: &AssignTripRequest,
+) -> TripRecord {
+    // Mileage feeds driver pay, and repointing this field recomputes it. A
+    // settled trip's miles are frozen everywhere else (`apply_trip_patch`
+    // rejects a `previous_trip_id` change outright); here the assignment has
+    // already committed, so leave the link alone rather than reject.
+    if trip.settlement_ref.is_some() {
+        return trip;
+    }
+
+    let resolved = match req.previous_trip_id {
+        // The dispatcher said what they wanted — including `null` for "no chain".
+        Some(explicit) => explicit,
+        // Untouched, and the trip already has a link: that is a stated plan
+        // (set at creation, or by an earlier edit) and must not be silently
+        // repointed. This is also the path `create_trip` takes when it promotes
+        // a fully-resourced new trip straight to Assigned.
+        None if trip.previous_trip_id.is_some() => return trip,
+        // Untouched and unlinked — the plan-then-assign case this exists for.
+        None => match state.db
+            .get_chainable_predecessor_for_driver(req.driver_id, trip.id)
+            .await
+        {
+            Ok(prev) => prev.map(|t| t.id),
+            Err(e) => {
+                tracing::warn!(trip_id = %trip.id, error = %e,
+                    "assign: could not look up a chain predecessor; leaving the trip unchained");
+                return trip;
+            }
+        },
+    };
+
+    if resolved == trip.previous_trip_id {
+        return trip;
+    }
+
+    if let Err(e) = state.db.update_trip_previous_trip_id(trip.id, resolved).await {
+        tracing::warn!(trip_id = %trip.id, error = %e, "assign: chain link not persisted");
+        return trip;
+    }
+
+    // Recompute is best-effort for the same reason it is in `apply_trip_patch`:
+    // the link is committed and valuable on its own, and ORS being down must not
+    // turn an assignment into a failure.
+    if let Err(e) = crate::api::trips::compute_and_persist_mileage(state, trip.id).await {
+        tracing::warn!(trip_id = %trip.id, error = %e,
+            "assign: mileage recompute after chain link change failed");
+    }
+
+    state.db.get_trip(trip.id).await.unwrap_or(trip)
 }
 
 pub async fn unassign(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppError> {
