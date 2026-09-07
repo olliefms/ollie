@@ -14,6 +14,10 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+/// Upper bound on a `previous_trip_id` walk. Chains are a handful of legs; the
+/// bound exists so a cycle already in the data cannot hang a request.
+const CHAIN_WALK_LIMIT: usize = 64;
+
 /// Walk a load's denormalized status back down after its trips released it.
 /// Best-effort like the resource cascades — a stale load status must not fail the
 /// trip operation the caller asked for — but the failure is logged rather than
@@ -39,6 +43,22 @@ pub struct AssignTripRequest {
     pub truck_id: Uuid,
     #[serde(default)]
     pub trailer_ids: Vec<Uuid>,
+    /// Which trip this one follows — the auto-dispatch chain link (#437).
+    ///
+    /// Three-state on purpose: **absent** means "decide for me" and derives from
+    /// the driver's current work, **`null`** means "this starts a new chain" and
+    /// sets no link, and **a value** pins that trip. Without the middle state
+    /// there would be no way to say "no chain" on an assignment at all.
+    ///
+    /// Note `null` is not durable state: it persists as `None`, which is
+    /// indistinguishable from never-derived, so a later unassign/re-assign cycle
+    /// with no stated preference will derive a link again. Telling the two apart
+    /// would need a column, which this issue does not add.
+    ///
+    /// Note this field is also the deadhead origin, so setting it recomputes the
+    /// trip's mileage, which feeds driver pay.
+    #[serde(default, deserialize_with = "crate::models::double_option")]
+    pub previous_trip_id: Option<Option<Uuid>>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -217,6 +237,37 @@ pub async fn assign(
     let (driver, truck, trailers) =
         validate_assignment(state, req.driver_id, req.truck_id, &req.trailer_ids).await?;
 
+    // #437 chain-link validation belongs up here with the rest: every rejectable
+    // condition must be checked before the first write, or a caller gets a 409
+    // with the assignment already half-applied.
+    let existing = state.db.get_trip(trip_id).await?;
+    if existing.settlement_ref.is_some() && req.previous_trip_id.is_some() {
+        // Matches `apply_trip_patch`: repointing this field recomputes mileage,
+        // and a settled trip's miles are frozen. Silently dropping the caller's
+        // value instead would return 200 for a request that did not happen.
+        return Err(AppError::Conflict(
+            "trip is settled; previous_trip_id is frozen (it would recompute miles)".into()));
+    }
+    if let Some(Some(prev_id)) = req.previous_trip_id {
+        validate_chain_link(state, trip_id, prev_id, req.driver_id).await?;
+    }
+    // Only a first assignment derives.
+    //
+    // `assign` has no status precondition of its own, so calling it on a
+    // *Dispatched* trip succeeds by reusing the `Dispatched -> Assigned` edge
+    // that exists for `undispatch`. (A trip that is actually rolling is safe:
+    // there is no `InTransit -> Assigned` edge, so it fails at the transition.)
+    // That second assignment must not re-derive: by then the trip's own successor
+    // is the only chainable candidate left, and chaining to it builds a 2-cycle
+    // that blocks both trips from ever dispatching and recomputes the deadhead of
+    // a trip already released to a driver.
+    //
+    // This is a guard, not an endorsement — re-assigning a released trip is an
+    // artefact of that missing precondition rather than a designed workflow, and
+    // the fleet UI only offers Assign on `planned`. The precondition itself, and
+    // the stranded old truck it also leaves behind, are #440.
+    let derive_allowed = existing.status == TripStatus::Planned;
+
     state.db.transition_trip_status(trip_id, TripStatus::Assigned).await?;
     state
         .db
@@ -236,6 +287,7 @@ pub async fn assign(
     }
 
     let trip = state.db.get_trip(trip_id).await?;
+    let trip = resolve_chain_link(state, trip, &req, derive_allowed).await;
 
     if let Some(load_id) = trip.load_id {
         if let Ok(load) = state.db.get_load_by_id(load_id).await {
@@ -247,6 +299,182 @@ pub async fn assign(
 
     events::on_trip_assigned(&state.db, trip_id).await;
     Ok(trip)
+}
+
+/// Reject a caller-supplied chain link that could not work. Runs before any
+/// write (#437).
+///
+/// `apply_trip_patch` accepts any UUID here, so a bad link is already reachable;
+/// this path is not going to widen that hole, especially now that the
+/// `assign_driver` MCP description invites agents to pass ids.
+async fn validate_chain_link(
+    state: &AppState,
+    trip_id: Uuid,
+    prev_id: Uuid,
+    driver_id: Uuid,
+) -> Result<(), AppError> {
+    if prev_id == trip_id {
+        return Err(AppError::UnprocessableEntity(
+            "a trip cannot follow itself".into()));
+    }
+    let prev = state.db.get_trip(prev_id).await.map_err(|_| {
+        // `predecessor_blocking_dispatch` treats an unreadable predecessor as a
+        // hard block, so accepting a dangling id would silently strand the trip.
+        AppError::UnprocessableEntity(format!("previous trip {prev_id} does not exist"))
+    })?;
+    // Only a DIFFERENT driver is a problem. A predecessor with no driver is the
+    // ordinary chain origin the create path produces — it supplies the deadhead
+    // origin for mileage and is legitimate.
+    if prev.driver_id.is_some() && prev.driver_id != Some(driver_id) {
+        // Auto-dispatch only ever looks at one driver's trips, so a cross-driver
+        // link can never fire — it would just block this trip permanently.
+        return Err(AppError::UnprocessableEntity(format!(
+            "previous trip {prev_id} is assigned to a different driver"
+        )));
+    }
+    if chain_reaches(state, prev_id, trip_id).await {
+        return Err(AppError::UnprocessableEntity(format!(
+            "previous trip {prev_id} already follows this trip; that would form a cycle"
+        )));
+    }
+    Ok(())
+}
+
+/// Whether walking `previous_trip_id` back from `from_id` reaches `target_id`.
+/// Bounded so a pre-existing cycle in the data cannot hang the request.
+async fn chain_reaches(state: &AppState, from_id: Uuid, target_id: Uuid) -> bool {
+    let mut cursor = Some(from_id);
+    for _ in 0..CHAIN_WALK_LIMIT {
+        let Some(id) = cursor else { return false };
+        if id == target_id { return true; }
+        cursor = match state.db.get_trip(id).await {
+            Ok(t) => t.previous_trip_id,
+            Err(_) => return false,
+        };
+    }
+    false
+}
+
+/// Settle `previous_trip_id` at assign time (#437), returning the trip as it now
+/// stands. Best-effort throughout: the assignment itself has already succeeded,
+/// and a chain link is not worth failing it over. Everything that CAN be
+/// rejected was rejected before the first write.
+///
+/// Before this, the field was written in exactly two places — trip creation
+/// (only when the create payload named a driver) and `update_trip_metadata`,
+/// which is MCP/REST-only. Plan-then-assign therefore never got a link, and
+/// since #433 made auto-dispatch chain-only, those trips silently stopped
+/// auto-dispatching with nothing in the UI to explain why or to fix it.
+async fn resolve_chain_link(
+    state: &AppState,
+    trip: TripRecord,
+    req: &AssignTripRequest,
+    derive_allowed: bool,
+) -> TripRecord {
+    // A settled trip's miles are frozen; an explicit value was already rejected
+    // above, so anything reaching here would be a derivation and must not run.
+    if trip.settlement_ref.is_some() {
+        return trip;
+    }
+
+    let resolved = match req.previous_trip_id {
+        // The dispatcher said what they wanted, `null` included.
+        Some(explicit) => explicit,
+        None => {
+            // A link pointing at another driver's trip cannot fire and blocks
+            // this trip permanently — that is a stale link from a previous
+            // assignment, not a plan, so re-derive rather than preserve it.
+            // Deriving is a first-assignment act, with no exceptions. An earlier
+            // draft let a stale link bypass this, which meant a re-assign of an
+            // already-released trip could still repoint its deadhead origin — and
+            // with it driver pay — on a trip a driver is already holding.
+            if !derive_allowed {
+                return trip;
+            }
+            // A link to another driver's trip can never fire and blocks this trip
+            // forever, so it is stale rather than a plan and gets re-derived. Any
+            // other existing link is left alone whether a dispatcher stated it or
+            // an earlier assign derived it — the two are indistinguishable on the
+            // record, and repointing either moves the deadhead origin.
+            if let Some(prev) = trip.previous_trip_id {
+                if predecessor_usable_by(state, prev, req.driver_id).await {
+                    return trip;
+                }
+            }
+            // Something already queued behind this trip means it is a predecessor,
+            // not a tail; deriving would point it at its own successor.
+            match state.db.list_trips_referencing_previous(trip.id).await {
+                Ok(succ) if succ.iter().any(|t| !is_terminal_for_chaining(&t.status)) => {
+                    return trip;
+                }
+                Err(e) => {
+                    tracing::warn!(trip_id = %trip.id, error = %e,
+                        "assign: could not check for successors; leaving the chain link alone");
+                    return trip;
+                }
+                Ok(_) => {}
+            }
+            let tail = match state.db.get_chain_tail_for_driver(req.driver_id, trip.id).await {
+                Ok(prev) => prev.map(|t| t.id),
+                Err(e) => {
+                    tracing::warn!(trip_id = %trip.id, error = %e,
+                        "assign: could not look up a chain predecessor; leaving the trip unchained");
+                    return trip;
+                }
+            };
+            // The successor check above only rejects a NON-terminal successor, so
+            // a chain that loops back through a cancelled or delivered leg can
+            // still close a cycle here. `validate_chain_link` rejects exactly this
+            // on the explicit path; the derived path needs the same guard or the
+            // two disagree about what is a legal chain.
+            if let Some(candidate) = tail {
+                if chain_reaches(state, candidate, trip.id).await {
+                    tracing::warn!(trip_id = %trip.id, %candidate,
+                        "assign: derived predecessor would close a chain cycle; leaving the trip unchained");
+                    return trip;
+                }
+            }
+            tail
+        }
+    };
+
+    if resolved == trip.previous_trip_id {
+        return trip;
+    }
+
+    if let Err(e) = state.db.update_trip_previous_trip_id(trip.id, resolved).await {
+        tracing::warn!(trip_id = %trip.id, error = %e, "assign: chain link not persisted");
+        return trip;
+    }
+
+    // Recompute is best-effort for the same reason it is in `apply_trip_patch`:
+    // the link is committed and valuable on its own, and ORS being down must not
+    // turn an assignment into a failure. Unlike that path there is no response
+    // field to carry a warning, so the failure is journalled — stale miles feed
+    // driver pay, and a log line is not a record anyone reviews.
+    if let Err(e) = crate::api::trips::compute_and_persist_mileage(state, trip.id).await {
+        tracing::warn!(trip_id = %trip.id, error = %e,
+            "assign: mileage recompute after chain link change failed");
+        events::on_mileage_recompute_failed(&state.db, trip.id, &e.to_string()).await;
+    }
+
+    state.db.get_trip(trip.id).await.unwrap_or(trip)
+}
+
+/// Whether an existing link is still usable for `driver_id`. Only a link to a
+/// DIFFERENT driver's trip is stale.
+///
+/// A predecessor with no driver is not stale: that is the ordinary chain origin
+/// the create path writes, and it exists to supply the deadhead origin for
+/// mileage rather than to dispatch anything. Clearing it would erase a routing
+/// input nobody asked to change. An unreadable predecessor is left alone too —
+/// `validate_chain_link` stops new dangling links, and silently rewriting old
+/// data on an unrelated code path is not this function's job.
+async fn predecessor_usable_by(state: &AppState, prev_id: Uuid, driver_id: Uuid) -> bool {
+    match state.db.get_trip(prev_id).await {
+        Ok(t) => t.driver_id.is_none() || t.driver_id == Some(driver_id),
+        Err(_) => true,
+    }
 }
 
 pub async fn unassign(state: &AppState, trip_id: Uuid) -> Result<TripRecord, AppError> {

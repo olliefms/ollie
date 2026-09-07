@@ -363,12 +363,20 @@
       "name": "recalculate_trip_miles"
     },
     {
-      "description": "Assign a driver, truck, and trailers to a trip.",
+      "description": "Assign a driver, truck, and trailers to a trip. Also settles the auto-dispatch chain link: omit previous_trip_id to attach the trip to the end of the driver's chain, pass null to start a new chain, or pass a trip id to pin the predecessor. Setting it recomputes the trip's mileage, which feeds driver pay.",
       "inputSchema": {
         "properties": {
           "driver_id": {
             "format": "uuid",
             "type": "string"
+          },
+          "previous_trip_id": {
+            "description": "Trip this one follows: the auto-dispatch chain link, and the deadhead origin for mileage. Omit to attach this trip to the end of the driver's existing chain (declined if the chain forks, or if this is not a first assignment); pass null to leave it unchained. Must name a trip of the same driver that does not already follow this one.",
+            "format": "uuid",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "trailer_ids": {
             "items": {

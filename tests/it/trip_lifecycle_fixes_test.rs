@@ -357,7 +357,7 @@ async fn assign_allows_dispatched_driver_but_dispatch_rejects() {
     let assigned = trip_lifecycle::assign(
         &state,
         tid,
-        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![] },
+        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![], previous_trip_id: None },
     )
     .await
     .expect("assign should succeed for a dispatched driver (planning the next leg)");
@@ -392,7 +392,7 @@ async fn assign_allows_dispatched_truck_but_dispatch_rejects() {
     let assigned = trip_lifecycle::assign(
         &state,
         tid,
-        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![] },
+        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![], previous_trip_id: None },
     )
     .await
     .expect("assign should succeed for a dispatched truck (planning the next leg)");
@@ -430,7 +430,7 @@ async fn assign_allows_dispatched_trailer_but_rejects_out_of_service() {
     let assigned = trip_lifecycle::assign(
         &state,
         tid,
-        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid] },
+        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid], previous_trip_id: None },
     )
     .await
     .expect("assign should succeed for a dispatched trailer");
@@ -453,7 +453,7 @@ async fn assign_allows_dispatched_trailer_but_rejects_out_of_service() {
     let err = trip_lifecycle::assign(
         &state,
         tid2,
-        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![oos] },
+        AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![oos], previous_trip_id: None },
     )
     .await
     .expect_err("assign should reject an out-of-service trailer");
@@ -481,7 +481,7 @@ async fn unassign_does_not_demote_a_still_dispatched_resource() {
         .insert_trip(&trip(ta, "T-UNA-A", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
         .await
         .unwrap();
-    trip_lifecycle::assign(&state, ta, AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid] })
+    trip_lifecycle::assign(&state, ta, AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid], previous_trip_id: None })
         .await
         .unwrap();
     trip_lifecycle::dispatch(&state, ta).await.unwrap();
@@ -494,7 +494,7 @@ async fn unassign_does_not_demote_a_still_dispatched_resource() {
         .insert_trip(&trip(tb, "T-UNA-B", TripStatus::Planned, None, None, None, vec![stop(1, TripStopType::Terminal)]))
         .await
         .unwrap();
-    trip_lifecycle::assign(&state, tb, AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid] })
+    trip_lifecycle::assign(&state, tb, AssignTripRequest { driver_id: did, truck_id: tkid, trailer_ids: vec![trid], previous_trip_id: None })
         .await
         .unwrap();
 

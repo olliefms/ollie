@@ -107,3 +107,56 @@ export function buildTripPatch({ notes = '', loaded_rate_per_mile, deadhead_rate
 
   return { payload, errors };
 }
+
+// --- Auto-dispatch chain link (#437) -----------------------------------------
+// Since #433 the successor auto-dispatched on completion is the trip whose
+// `previous_trip_id` names the completed one, and nothing else. Assign is where
+// a dispatcher learns who the driver is, so it is where the link has to be
+// settable — before this, plan-then-assign could not produce one at all.
+
+const CHAINABLE_STATUSES = new Set(['assigned', 'dispatched', 'in_transit']);
+
+/** Sentinel: let the server derive the link from the driver's current work. */
+export const CHAIN_AUTO = '';
+/** Sentinel: this trip deliberately starts a new chain. */
+export const CHAIN_NONE = 'none';
+
+/**
+ * Trips this one may be chained behind: the driver's committed, unfinished work.
+ * Terminal trips are excluded because their completion has already fired, so a
+ * successor chained to one would never auto-dispatch; `planned` trips are
+ * excluded because they may never run, which would strand the successor.
+ *
+ * Trips that something is ALREADY queued behind are excluded too, mirroring the
+ * server's tail rule. Picking one puts two successors on a single predecessor,
+ * which auto-dispatch refuses to resolve — so nothing rolls and the ambiguity is
+ * journalled. Offering that is offering a dead end.
+ */
+export function chainableTripOptions(trips, currentTripId) {
+  const list = (trips || []).filter((t) => t && t.id);
+  const spokenFor = new Set(
+    list.filter((t) => t.id !== currentTripId && t.previous_trip_id)
+        .map((t) => t.previous_trip_id),
+  );
+  return list
+    .filter((t) => t.id !== currentTripId
+      && CHAINABLE_STATUSES.has(t.status)
+      && !spokenFor.has(t.id))
+    .map((t) => ({ value: t.id, label: `${t.trip_number || t.id} · ${t.status}` }));
+}
+
+/**
+ * Assign request body. `previous_trip_id` is tri-state and the distinction is
+ * load-bearing: OMITTED means "derive it", explicit `null` means "no chain".
+ * Sending null for the auto case would pin every assigned trip to no-chain and
+ * silently re-break auto-dispatch, which is the bug this fixes.
+ */
+export function buildAssignPayload({ driver_id, truck_id, trailer_ids = [], chainChoice = CHAIN_AUTO } = {}) {
+  const payload = { driver_id, truck_id, trailer_ids };
+  if (chainChoice === CHAIN_NONE) {
+    payload.previous_trip_id = null;
+  } else if (chainChoice && chainChoice !== CHAIN_AUTO) {
+    payload.previous_trip_id = chainChoice;
+  }
+  return payload;
+}

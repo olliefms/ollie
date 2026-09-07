@@ -28,6 +28,34 @@ pub struct TripMetadataUpdate {
     pub blob_ids: Option<Vec<Uuid>>,
 }
 
+/// Statuses a trip may be chained behind: committed work that has not finished.
+const CHAINABLE_PREDECESSOR_STATUSES: [crate::models::TripStatus; 3] = [
+    crate::models::TripStatus::Assigned,
+    crate::models::TripStatus::Dispatched,
+    crate::models::TripStatus::InTransit,
+];
+
+/// Statuses that count as "live" when working out a driver's chain. Wider than
+/// the set above: a `Planned` trip cannot BE a predecessor, but it can already
+/// have claimed one, and ignoring that claim would fork the chain the moment it
+/// is assigned.
+const LIVE_CHAIN_STATUSES: [crate::models::TripStatus; 4] = [
+    crate::models::TripStatus::Planned,
+    crate::models::TripStatus::Assigned,
+    crate::models::TripStatus::Dispatched,
+    crate::models::TripStatus::InTransit,
+];
+
+/// SQL `IN (...)` list built from a status set, so the filter literals and the
+/// constants above cannot drift apart. `as_str` is the single source of the wire
+/// values.
+fn status_in_list(statuses: &[crate::models::TripStatus]) -> String {
+    statuses.iter()
+        .map(|s| format!("'{}'", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl DbClient {
     pub async fn insert_trip(&self, record: &TripRecord) -> Result<(), AppError> {
         let batch = trip_to_batch(record, self.embed_dim)?;
@@ -412,6 +440,55 @@ impl DbClient {
         let mut trips = batches_to_trips(collect_stream(stream).await?)?;
         trips.sort_by_key(|t| std::cmp::Reverse(t.created_at));
         Ok(trips.into_iter().next())
+    }
+
+    /// The tail of this driver's chain: the one committed, unfinished trip that
+    /// nothing of theirs is already queued behind. `None` when there is no tail
+    /// or more than one.
+    ///
+    /// Deliberately NOT `get_last_trip_for_driver`, which the create path uses.
+    /// That one answers a *mileage* question ("where was the truck last") and so
+    /// accepts any non-cancelled trip, terminal and `Planned` ones included. This
+    /// answers a *dispatch* question, where both are wrong: a terminal
+    /// predecessor already fired its completion, so a successor chained to it
+    /// would never auto-dispatch; a `Planned` predecessor may never run at all,
+    /// leaving a successor `predecessor_blocking_dispatch` will not release.
+    ///
+    /// Nor is it simply "the most recently created chainable trip". That forks
+    /// the chain whenever the running trip was booked AFTER the queued ones — a
+    /// hot load taken today while next week's legs were planned last week — and
+    /// two successors sharing one predecessor is exactly the shape
+    /// `try_auto_dispatch_next_for_driver` refuses to resolve, so nothing rolls.
+    /// Walking to the tail is what keeps the chain a chain.
+    ///
+    /// Two tails means parallel chains and there is no right answer; #433
+    /// established that a wrong chain is worse than none, so this declines and
+    /// leaves the trip unchained, where #438's journal will surface it.
+    pub async fn get_chain_tail_for_driver(
+        &self, driver_id: Uuid, exclude_trip_id: Uuid,
+    ) -> Result<Option<TripRecord>, AppError> {
+        let id_str = driver_id.to_string();
+        let exclude_str = exclude_trip_id.to_string();
+        // `LIVE_CHAIN_STATUSES` is deliberately wider than the chainable set —
+        // see its doc comment.
+        let live_statuses = status_in_list(&LIVE_CHAIN_STATUSES);
+        let stream = self.trip_table.query()
+            .only_if(format!(
+                "driver_id = '{id_str}' AND id != '{exclude_str}' \
+                 AND status IN ({live_statuses})"
+            ))
+            .execute().await
+            .map_err(|e| AppError::Internal(e.to_string()))?;
+        let live = batches_to_trips(collect_stream(stream).await?)?;
+
+        let taken: std::collections::HashSet<Uuid> =
+            live.iter().filter_map(|t| t.previous_trip_id).collect();
+        let mut tails: Vec<TripRecord> = live.into_iter()
+            .filter(|t| CHAINABLE_PREDECESSOR_STATUSES.contains(&t.status))
+            .filter(|t| !taken.contains(&t.id))
+            .collect();
+
+        if tails.len() == 1 { Ok(tails.pop()) } else { Ok(None) }
     }
 
     pub async fn count_trips_referencing_facility(&self, facility_id: Uuid) -> Result<usize, AppError> {

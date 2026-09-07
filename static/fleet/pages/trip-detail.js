@@ -6,6 +6,9 @@ import { setContent, navigate, goBack } from '../utils/dom.js';
 import {
   confirmAction, confirmTyped, promptText, promptFields, chooseOption,
 } from '../components/confirm.js';
+import {
+  chainableTripOptions, buildAssignPayload, CHAIN_AUTO, CHAIN_NONE,
+} from './trip-form-payload.js';
 
 // Status → allowed transitions (mirrors the backend lifecycle).
 const CAN_ASSIGN     = (s) => s === 'planned';
@@ -139,6 +142,11 @@ export async function renderTripDetail(id) {
           <div class="detail-item"><div class="detail-item__label">Driver</div><div class="detail-item__value">${escHtml(trip.driver_name || '—')}</div></div>
           <div class="detail-item"><div class="detail-item__label">Truck</div><div class="detail-item__value">${escHtml(trip.truck_unit || '—')}</div></div>
           <div class="detail-item"><div class="detail-item__label">Trailer</div><div class="detail-item__value">${escHtml((trip.trailer_units || []).join(', ') || '—')}</div></div>
+          <div class="detail-item"><div class="detail-item__label">Follows</div><div class="detail-item__value">${
+            trip.previous_trip_id
+              ? escHtml(trip.previous_trip_number || shortId(trip.previous_trip_id))
+              : 'Not chained'
+          }</div></div>
         </div>
         ${actionBtns ? `<div class="form-panel__actions">${actionBtns}</div>` : ''}
       </div>
@@ -250,14 +258,49 @@ async function assignTrip(statusEl, id) {
     if (trailerInput === null) return;
     const trailerIds = resolveTrailerIds(trailerInput, trailers);
 
+    const chainChoice = await pickChainPredecessor(driverId, id);
+    if (chainChoice === null) return;
+
     const res = await apiFetch(`${API_BASE}/trips/${id}/assign`, {
       method: 'POST',
-      body: JSON.stringify({ driver_id: driverId, truck_id: truckId, trailer_ids: trailerIds }),
+      body: JSON.stringify(buildAssignPayload({
+        driver_id: driverId,
+        truck_id: truckId,
+        trailer_ids: trailerIds,
+        chainChoice,
+      })),
     });
     await afterAction(statusEl, id, res);
   } catch (err) {
     if (err.message !== 'Unauthorized — please sign in again.') showError(statusEl, `Assign failed: ${err.message}`);
   }
+}
+
+// Which trip this one follows (#437). Returns a sentinel or a trip id, or null
+// if the dispatcher cancelled.
+//
+// Skipped entirely when the driver has no chainable work: the server-side
+// derivation would find nothing either, so the modal would only ask a question
+// with one real answer.
+async function pickChainPredecessor(driverId, tripId) {
+  const trips = await fetchList(
+    `trips?driver_id=${encodeURIComponent(driverId)}&limit=100`, ['items', 'trips'],
+  );
+  const candidates = chainableTripOptions(trips, tripId);
+  if (candidates.length === 0) return CHAIN_AUTO;
+
+  return chooseOption({
+    title: 'Follows which trip?',
+    message: 'When that trip is delivered, this one is dispatched to the driver automatically. '
+      + 'It is also the deadhead origin, so choosing it recalculates this trip\'s miles.',
+    label: 'Follows',
+    confirmLabel: 'Assign',
+    options: [
+      { value: CHAIN_AUTO, label: "Auto \u2014 follow the driver's current work" },
+      { value: CHAIN_NONE, label: 'No chain \u2014 this starts a new one' },
+      ...candidates,
+    ],
+  });
 }
 
 // Pick one id from a list. Returns the id, or null if cancelled or none exist.

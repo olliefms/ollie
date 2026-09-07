@@ -70,6 +70,14 @@ pub struct FleetTripListItem {
     pub total_miles: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_facility_name: Option<String>,
+    /// The trip this one follows: the auto-dispatch chain link, and the deadhead
+    /// origin for mileage. Exposed so a dispatcher can see what a trip is queued
+    /// behind — without it the link is write-only and unverifiable (#437).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_trip_id: Option<uuid::Uuid>,
+    /// `previous_trip_id`'s trip number, so the UI need not resolve it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_trip_number: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mileage_summary: Option<crate::models::trip::MileageSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,6 +200,8 @@ fn enrich_trip(
         loaded_miles: trip.loaded_miles,
         total_miles: trip.total_miles,
         origin_facility_name: None,
+        previous_trip_id: trip.previous_trip_id,
+        previous_trip_number: None,
         mileage_summary: None,
         // list shows frozen pay only; live pay on detail
         driver_pay: None,
@@ -694,6 +704,10 @@ pub async fn build_trip_list_items(
         .collect();
     let mut origin_name_by_trip: std::collections::HashMap<Uuid, String> =
         std::collections::HashMap::new();
+    // The predecessor records are fetched below for the origin facility anyway,
+    // so labelling the chain link costs nothing extra.
+    let mut prev_number: std::collections::HashMap<Uuid, String> =
+        std::collections::HashMap::new();
     if !prev_trip_ids.is_empty() {
         // Resolve each previous trip → last stop facility name.
         let mut fac_ids: Vec<Uuid> = Vec::new();
@@ -701,6 +715,7 @@ pub async fn build_trip_list_items(
             std::collections::HashMap::new();
         for prev_id in &prev_trip_ids {
             if let Ok(prev) = state.db.get_trip(*prev_id).await {
+                prev_number.insert(*prev_id, prev.trip_number.clone());
                 if let Some(fac_id) = prev.stops.last().and_then(|s| s.facility_id) {
                     fac_ids.push(fac_id);
                     prev_to_fac.insert(*prev_id, fac_id);
@@ -724,6 +739,8 @@ pub async fn build_trip_list_items(
             let trip_id = trip.id;
             let mut item = enrich_trip(trip, &driver_map, &truck_map, &trailer_map);
             item.origin_facility_name = origin_name_by_trip.get(&trip_id).cloned();
+            item.previous_trip_number = item.previous_trip_id
+                .and_then(|p| prev_number.get(&p).cloned());
             item
         })
         .collect();
@@ -782,6 +799,14 @@ pub async fn build_trip_detail(
         .and_then(|o| o.facility_name.clone());
     enriched.mileage_summary = Some(summary);
     enriched.driver_pay = driver_pay_for_record(state, &record).await;
+    // The detail surface must resolve the chain link's label too. Without this
+    // the "Follows" row falls through to `shortId(previous_trip_id)` and shows a
+    // raw UUID prefix to a dispatcher, which AGENTS.md forbids outright.
+    if let Some(prev_id) = record.previous_trip_id {
+        enriched.previous_trip_number = state.db.get_trip(prev_id).await
+            .ok()
+            .map(|p| p.trip_number);
+    }
     // Surface the trip's OWN rate overrides so the edit form can prefill them.
     enriched.loaded_rate_per_mile = record.loaded_rate_per_mile;
     enriched.deadhead_rate_per_mile = record.deadhead_rate_per_mile;
@@ -894,13 +919,14 @@ pub async fn driver_pay_for_record(
     post,
     path = "/fleet/api/v1/trips/{id}/assign",
     params(("id" = Uuid, Path, description = "Trip UUID")),
-    request_body(content = AssignTripRequest, description = "Driver, truck, and optional trailers"),
+    request_body(content = AssignTripRequest, description = "Driver, truck, optional trailers, and the optional auto-dispatch chain link (omit previous_trip_id to derive it, null for no chain, or a trip id to pin it)"),
     responses(
         (status = 200, description = "Trip assigned", body = TripRecord),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — driver/truck/trailer not eligible for assignment (inactive/out-of-service) or invalid status transition"),
+        (status = 409, description = "Conflict — driver/truck/trailer not eligible for assignment (inactive/out-of-service), invalid status transition, or the trip is settled and its chain link is frozen"),
+        (status = 422, description = "Unprocessable — previous_trip_id names the trip itself, a trip that does not exist, a trip assigned to a different driver, or one that already follows this trip"),
     ),
     security(("BearerAuth" = [])),
     tag = "fleet"

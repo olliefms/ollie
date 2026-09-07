@@ -506,7 +506,10 @@ forbidden (403).
   plans diverged — routing walks waypoint to waypoint, so without it the miles
   already driven away from the original destination are silently erased.
   A load may have multiple trips (relay). Trip responses include: previous_trip_id
-  (auto-chained to the driver's last non-cancelled trip unless provided),
+  (the dispatch chain link AND the deadhead origin; at create it defaults to the
+  driver's last non-cancelled trip when the payload names a driver, and at assign
+  it defaults to the tail of that driver's live chain — pass it explicitly to pin
+  a predecessor, or null at assign to leave the trip unchained),
   deadhead_miles and loaded_miles (ORS HGV routing; null when facilities lack
   coordinates), load_number (denormalized at creation), and per-stop address (from
   the linked facility at creation). When `stops` is omitted or empty and `load_id`

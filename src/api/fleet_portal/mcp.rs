@@ -1406,13 +1406,29 @@ async fn tool_assign_driver(state: &AppState, args: &Value) -> Result<Value, Str
         Some(v) => serde_json::from_value(v.clone())
             .map_err(|e| format!("invalid trailer_ids: {e}"))?,
     };
+    // Tri-state, matching the REST body (#437): omitted derives a chain link from
+    // the driver's current work, explicit `null` means "starts a new chain", and
+    // a UUID pins that predecessor.
+    let previous_trip_id = match args.get("previous_trip_id") {
+        None => None,
+        Some(Value::Null) => Some(None),
+        Some(v) => {
+            let raw = v.as_str()
+                .ok_or("previous_trip_id must be a UUID string, or null for no chain")?;
+            Some(Some(Uuid::parse_str(raw)
+                .map_err(|e| format!("invalid previous_trip_id: {e}"))?))
+        }
+    };
 
     // Delegate to the shared lifecycle so MCP and REST behave identically. Its
     // availability checks are lenient (only OutOfService/Inactive trucks and
     // Inactive drivers are rejected; already-Assigned trailers are accepted),
     // so re-assigning equipment already attached to THIS trip is idempotent
     // rather than a spurious "not available" error.
-    let trip = assign(state, trip_id, AssignTripRequest { driver_id, truck_id, trailer_ids })
+    let trip = assign(
+        state, trip_id,
+        AssignTripRequest { driver_id, truck_id, trailer_ids, previous_trip_id },
+    )
         .await
         .map_err(|e| e.to_string())?;
     Ok(mcp_content(trip))

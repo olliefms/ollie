@@ -7,6 +7,12 @@ use uuid::Uuid;
 /// on cannot drift apart.
 pub const AUTO_DISPATCH_ACTOR: &str = "auto_dispatch";
 
+/// Actor for side effects of an assignment (#437). Distinct from
+/// `AUTO_DISPATCH_ACTOR`: an assign is human-initiated, and labelling its
+/// fallout `auto_dispatch` would mis-attribute it in exactly the way #435 set
+/// out to fix.
+pub const ASSIGN_ACTOR: &str = "assign";
+
 fn now_z() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
@@ -100,6 +106,23 @@ pub async fn on_auto_dispatch_no_chain(
         trip_id = %trip_id, %driver_id, queued = unchained_trip_ids.len(),
         "auto-dispatch: driver has assigned trips but none chain off the completed trip"
     );
+}
+
+/// A mileage recompute triggered by a chain-link change failed (#437). The link
+/// itself is committed; the miles behind it are now stale, and miles feed driver
+/// pay, so this needs an operator-visible record rather than a log line.
+///
+/// `apply_trip_patch` returns the same failure to its caller as
+/// `mileage_recompute_warning`; the assign path has no response field to carry
+/// one, so the journal is the channel. Classified `exception` for the same
+/// reason: silently wrong pay inputs are exactly what the attention filter is for.
+pub async fn on_mileage_recompute_failed(db: &DbClient, trip_id: Uuid, reason: &str) {
+    let payload = serde_json::json!({ "reason": reason });
+    let _ = db.append_event(
+        "trip", trip_id, "trip.mileage_recompute_failed",
+        Some(payload), Some(ASSIGN_ACTOR), &now_z(), None,
+    ).await;
+    tracing::warn!(trip_id = %trip_id, reason, "mileage recompute failed; miles are stale");
 }
 
 pub async fn on_trip_undispatched(db: &DbClient, trip_id: Uuid) {

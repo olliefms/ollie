@@ -3,6 +3,10 @@ import {
   tripStopTypes,
   buildCreateTripPayload,
   buildTripPatch,
+  chainableTripOptions,
+  buildAssignPayload,
+  CHAIN_AUTO,
+  CHAIN_NONE,
 } from '../../static/fleet/pages/trip-form-payload.js';
 import { toNaiveDateTime } from '../../static/fleet/pages/load-form-payload.js';
 
@@ -380,5 +384,94 @@ describe('buildTripPatch — tri-state override semantics', () => {
     };
     const { errors } = buildTripPatch(state);
     expect(errors).toEqual([]);
+  });
+});
+
+// ── auto-dispatch chain link (#437) ───────────────────────────────────────────
+
+describe('chainableTripOptions', () => {
+  const trips = [
+    { id: 'a', trip_number: 'T-1', status: 'assigned' },
+    { id: 'b', trip_number: 'T-2', status: 'dispatched' },
+    { id: 'c', trip_number: 'T-3', status: 'in_transit' },
+    { id: 'd', trip_number: 'T-4', status: 'delivered' },
+    { id: 'e', trip_number: 'T-5', status: 'completed' },
+    { id: 'f', trip_number: 'T-6', status: 'cancelled' },
+    { id: 'g', trip_number: 'T-7', status: 'tonu' },
+    { id: 'h', trip_number: 'T-8', status: 'planned' },
+  ];
+
+  it('offers only committed, unfinished trips', () => {
+    expect(chainableTripOptions(trips, 'zzz').map((o) => o.value)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('excludes terminal trips, whose completion has already fired', () => {
+    const values = chainableTripOptions(trips, 'zzz').map((o) => o.value);
+    for (const terminal of ['d', 'e', 'f', 'g']) {
+      expect(values).not.toContain(terminal);
+    }
+  });
+
+  it('excludes planned trips, which may never run and would strand the successor', () => {
+    expect(chainableTripOptions(trips, 'zzz').map((o) => o.value)).not.toContain('h');
+  });
+
+  it('never offers the trip being assigned as its own predecessor', () => {
+    expect(chainableTripOptions(trips, 'b').map((o) => o.value)).toEqual(['a', 'c']);
+  });
+
+  it('excludes a trip something is already queued behind', () => {
+    // Two successors on one predecessor is the shape auto-dispatch refuses to
+    // resolve, so offering it in the picker is offering a dead end.
+    const chain = [
+      { id: 'a', trip_number: 'T-1', status: 'assigned' },
+      { id: 'b', trip_number: 'T-2', status: 'assigned', previous_trip_id: 'a' },
+    ];
+    expect(chainableTripOptions(chain, 'zzz').map((o) => o.value)).toEqual(['b']);
+  });
+
+  it('does not let the trip being assigned mask its own predecessor', () => {
+    // The current trip's own link must not mark A as spoken for — A is exactly
+    // where this trip already sits, and re-offering it is legitimate.
+    const chain = [
+      { id: 'a', trip_number: 'T-1', status: 'assigned' },
+      { id: 'me', trip_number: 'T-9', status: 'assigned', previous_trip_id: 'a' },
+    ];
+    expect(chainableTripOptions(chain, 'me').map((o) => o.value)).toEqual(['a']);
+  });
+
+  it('labels with the trip number and status', () => {
+    expect(chainableTripOptions([trips[0]], 'zzz')[0].label).toBe('T-1 · assigned');
+  });
+
+  it('tolerates a missing or malformed list', () => {
+    expect(chainableTripOptions(undefined, 'x')).toEqual([]);
+    expect(chainableTripOptions([null, {}, { id: 'q' }], 'x')).toEqual([]);
+  });
+});
+
+describe('buildAssignPayload', () => {
+  const base = { driver_id: 'd1', truck_id: 't1', trailer_ids: ['tr1'] };
+
+  it('OMITS previous_trip_id for the auto choice so the server derives it', () => {
+    const payload = buildAssignPayload({ ...base, chainChoice: CHAIN_AUTO });
+    // Sending an explicit null here would pin every assigned trip to "no chain"
+    // and silently re-break auto-dispatch — the exact bug #437 fixes.
+    expect('previous_trip_id' in payload).toBe(false);
+    expect(payload).toEqual({ driver_id: 'd1', truck_id: 't1', trailer_ids: ['tr1'] });
+  });
+
+  it('sends an explicit null for the no-chain choice', () => {
+    const payload = buildAssignPayload({ ...base, chainChoice: CHAIN_NONE });
+    expect('previous_trip_id' in payload).toBe(true);
+    expect(payload.previous_trip_id).toBeNull();
+  });
+
+  it('sends the chosen trip id', () => {
+    expect(buildAssignPayload({ ...base, chainChoice: 'trip-9' }).previous_trip_id).toBe('trip-9');
+  });
+
+  it('defaults to auto when no choice is supplied', () => {
+    expect('previous_trip_id' in buildAssignPayload(base)).toBe(false);
   });
 });
