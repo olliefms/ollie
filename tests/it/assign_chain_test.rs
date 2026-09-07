@@ -654,3 +654,160 @@ async fn test_an_in_transit_trip_cannot_be_reassigned() {
     assert_eq!(res.status_code(), 409,
         "an in-transit trip must not be re-assignable: {}", res.text());
 }
+
+// ── guards that iteration 2 found untested ───────────────────────────────────
+
+/// A trip that something is already queued behind is a predecessor, not a tail.
+/// Here the successor belongs to the SAME driver, so the derived tail's chain
+/// leads back and the cycle guard would also catch it — see
+/// `test_derivation_declines_when_another_drivers_trip_follows_this_one` for the
+/// case where the successor check is the only thing standing.
+#[tokio::test]
+async fn test_derivation_declines_for_a_trip_that_already_has_a_successor() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Predecessor").await;
+    let truck_id = create_truck(&server, &token, "T-SUCC-1").await;
+
+    // T is driverless and Planned; Z is queued behind it.
+    let trip_t = create_unassigned_trip(&server, &token, "T").await;
+    let trip_z = create_unassigned_trip(&server, &token, "Z").await;
+    assign_trip(&server, &token, &trip_z, &driver_id, &truck_id, serde_json::json!({
+        "previous_trip_id": trip_t
+    })).await;
+    assert_eq!(previous_trip_id(&state, &trip_z).await, Some(trip_t.clone()),
+        "fixture: Z must be queued behind T");
+
+    // Now T itself is assigned to the same driver, with no stated preference.
+    // The only tail on offer is Z — its own successor.
+    assign_trip(&server, &token, &trip_t, &driver_id, &truck_id, serde_json::json!({})).await;
+
+    assert_eq!(previous_trip_id(&state, &trip_t).await, None,
+        "a trip with work already queued behind it must not be chained to that work");
+}
+
+/// A cycle that loops back through a TERMINAL leg slips past the successor check,
+/// which only rejects non-terminal successors. The explicit path rejects this via
+/// `validate_chain_link`; the derived path must agree.
+#[tokio::test]
+async fn test_derivation_declines_a_cycle_through_a_cancelled_leg() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Looper").await;
+    let truck_id = create_truck(&server, &token, "T-LOOP-1").await;
+
+    let trip_t = create_unassigned_trip(&server, &token, "T").await;
+    let trip_sc = create_unassigned_trip(&server, &token, "Sc").await;
+    assign_trip(&server, &token, &trip_sc, &driver_id, &truck_id, serde_json::json!({
+        "previous_trip_id": trip_t
+    })).await;
+    let trip_z = create_unassigned_trip(&server, &token, "Z").await;
+    assign_trip(&server, &token, &trip_z, &driver_id, &truck_id, serde_json::json!({})).await;
+    assert_eq!(previous_trip_id(&state, &trip_z).await, Some(trip_sc.clone()),
+        "fixture: Z must chain behind Sc");
+
+    // Sc goes terminal, so it no longer blocks T's successor check.
+    set_status(&state, &trip_sc, ollie::models::TripStatus::Cancelled).await;
+
+    // T's only tail is Z, but T -> Z -> Sc -> T is a cycle.
+    assign_trip(&server, &token, &trip_t, &driver_id, &truck_id, serde_json::json!({})).await;
+
+    assert_eq!(previous_trip_id(&state, &trip_t).await, None,
+        "the derived path must refuse a cycle the explicit path would reject");
+    assert_ne!(previous_trip_id(&state, &trip_t).await, Some(trip_z),
+        "T -> Z -> Sc -> T closes a loop through the cancelled leg");
+}
+
+/// A stale cross-driver link must NOT bypass the first-assignment gate. Deriving
+/// on an already-released trip would repoint its deadhead origin, and deadhead
+/// feeds driver pay — the same reason a settled trip is left alone. The broken
+/// link stays visible instead; #440 covers whether this re-assign should be
+/// possible at all.
+#[tokio::test]
+async fn test_a_stale_link_does_not_re_derive_on_a_released_trip() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_a = create_driver(&server, &token, "Driver A").await;
+    let driver_b = create_driver(&server, &token, "Driver B").await;
+    let truck_id = create_truck(&server, &token, "T-STALE-2").await;
+
+    let trip_a1 = create_unassigned_trip(&server, &token, "A1").await;
+    assign_trip(&server, &token, &trip_a1, &driver_a, &truck_id, serde_json::json!({})).await;
+    let trip_x = create_unassigned_trip(&server, &token, "X").await;
+    assign_trip(&server, &token, &trip_x, &driver_a, &truck_id, serde_json::json!({})).await;
+    assert_eq!(previous_trip_id(&state, &trip_x).await, Some(trip_a1.clone()),
+        "fixture: X must chain behind A1");
+
+    // X is released, then re-assigned to a different driver without an unassign.
+    set_status(&state, &trip_x, ollie::models::TripStatus::Dispatched).await;
+    let trip_b1 = create_unassigned_trip(&server, &token, "B1").await;
+    assign_trip(&server, &token, &trip_b1, &driver_b, &truck_id, serde_json::json!({})).await;
+    assign_trip(&server, &token, &trip_x, &driver_b, &truck_id, serde_json::json!({})).await;
+
+    assert_eq!(previous_trip_id(&state, &trip_x).await, Some(trip_a1),
+        "a released trip's deadhead origin must not move under it, stale or not");
+}
+
+/// The read surface must resolve the chain link's LABEL, not just its id — the
+/// UI falls back to a raw UUID prefix without it, which AGENTS.md forbids.
+#[tokio::test]
+async fn test_trip_detail_resolves_the_predecessor_trip_number() {
+    let (server, _state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_id = create_driver(&server, &token, "Labelled").await;
+    let truck_id = create_truck(&server, &token, "T-LABEL-1").await;
+
+    let trip_a = create_unassigned_trip(&server, &token, "A").await;
+    assign_trip(&server, &token, &trip_a, &driver_id, &truck_id, serde_json::json!({})).await;
+    let trip_b = create_unassigned_trip(&server, &token, "B").await;
+    assign_trip(&server, &token, &trip_b, &driver_id, &truck_id, serde_json::json!({})).await;
+
+    let detail = server.get(&format!("/fleet/api/v1/trips/{trip_b}"))
+        .authorization_bearer(&token).await;
+    assert_eq!(detail.status_code(), 200);
+    let body: serde_json::Value = detail.json();
+
+    assert_eq!(body["previous_trip_id"].as_str(), Some(trip_a.as_str()));
+    let a_number = server.get(&format!("/fleet/api/v1/trips/{trip_a}"))
+        .authorization_bearer(&token).await
+        .json::<serde_json::Value>()["trip_number"].as_str().unwrap().to_string();
+    assert_eq!(body["previous_trip_number"].as_str(), Some(a_number.as_str()),
+        "the detail surface must resolve the predecessor's trip number: {body}");
+}
+
+/// The case where the successor check is load-bearing on its own. T already has a
+/// non-terminal successor S, but S belongs to a DIFFERENT driver, so S is absent
+/// from the tail computation for this driver and the derived tail's chain never
+/// leads back to T — the cycle guard sees nothing wrong. Only the successor check
+/// stops T being queued behind W while S is queued behind T.
+///
+/// Verified by mutation: deleting the successor check makes this fail (and
+/// nothing else in the suite).
+#[tokio::test]
+async fn test_derivation_declines_when_another_drivers_trip_follows_this_one() {
+    let (server, state, _b, _d, _rx) = setup().await;
+    let token = setup_owner(&server).await;
+    let driver_d = create_driver(&server, &token, "Driver D").await;
+    let driver_e = create_driver(&server, &token, "Driver E").await;
+    let truck_id = create_truck(&server, &token, "T-SUCC-2").await;
+
+    // T is driverless; S belongs to driver E and is queued behind T.
+    let trip_t = create_unassigned_trip(&server, &token, "T").await;
+    let trip_s = create_unassigned_trip(&server, &token, "S").await;
+    assign_trip(&server, &token, &trip_s, &driver_e, &truck_id, serde_json::json!({
+        "previous_trip_id": trip_t
+    })).await;
+    assert_eq!(previous_trip_id(&state, &trip_s).await, Some(trip_t.clone()),
+        "fixture: S must be queued behind T");
+
+    // Driver D has their own unchained work, which would otherwise be the tail.
+    let trip_w = create_unassigned_trip(&server, &token, "W").await;
+    assign_trip(&server, &token, &trip_w, &driver_d, &truck_id, serde_json::json!({})).await;
+
+    assign_trip(&server, &token, &trip_t, &driver_d, &truck_id, serde_json::json!({})).await;
+
+    assert_eq!(previous_trip_id(&state, &trip_t).await, None,
+        "a trip with work already queued behind it must not be re-queued elsewhere");
+    assert_ne!(previous_trip_id(&state, &trip_t).await, Some(trip_w),
+        "chaining T behind W while S follows T reorders a chain nobody asked to reorder");
+}

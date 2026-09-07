@@ -384,19 +384,22 @@ async fn resolve_chain_link(
             // A link pointing at another driver's trip cannot fire and blocks
             // this trip permanently — that is a stale link from a previous
             // assignment, not a plan, so re-derive rather than preserve it.
-            let stale = match trip.previous_trip_id {
-                Some(prev) => !predecessor_usable_by(state, prev, req.driver_id).await,
-                None => false,
-            };
-            if trip.previous_trip_id.is_some() && !stale {
-                // A usable link is left alone whether a dispatcher stated it or
-                // an earlier assign derived it — the two are indistinguishable on
-                // the record, and repointing either would move the deadhead
-                // origin, and with it driver pay.
+            // Deriving is a first-assignment act, with no exceptions. An earlier
+            // draft let a stale link bypass this, which meant a re-assign of an
+            // already-released trip could still repoint its deadhead origin — and
+            // with it driver pay — on a trip a driver is already holding.
+            if !derive_allowed {
                 return trip;
             }
-            if !derive_allowed && !stale {
-                return trip;
+            // A link to another driver's trip can never fire and blocks this trip
+            // forever, so it is stale rather than a plan and gets re-derived. Any
+            // other existing link is left alone whether a dispatcher stated it or
+            // an earlier assign derived it — the two are indistinguishable on the
+            // record, and repointing either moves the deadhead origin.
+            if let Some(prev) = trip.previous_trip_id {
+                if predecessor_usable_by(state, prev, req.driver_id).await {
+                    return trip;
+                }
             }
             // Something already queued behind this trip means it is a predecessor,
             // not a tail; deriving would point it at its own successor.
@@ -411,14 +414,27 @@ async fn resolve_chain_link(
                 }
                 Ok(_) => {}
             }
-            match state.db.get_chain_tail_for_driver(req.driver_id, trip.id).await {
+            let tail = match state.db.get_chain_tail_for_driver(req.driver_id, trip.id).await {
                 Ok(prev) => prev.map(|t| t.id),
                 Err(e) => {
                     tracing::warn!(trip_id = %trip.id, error = %e,
                         "assign: could not look up a chain predecessor; leaving the trip unchained");
                     return trip;
                 }
+            };
+            // The successor check above only rejects a NON-terminal successor, so
+            // a chain that loops back through a cancelled or delivered leg can
+            // still close a cycle here. `validate_chain_link` rejects exactly this
+            // on the explicit path; the derived path needs the same guard or the
+            // two disagree about what is a legal chain.
+            if let Some(candidate) = tail {
+                if chain_reaches(state, candidate, trip.id).await {
+                    tracing::warn!(trip_id = %trip.id, %candidate,
+                        "assign: derived predecessor would close a chain cycle; leaving the trip unchained");
+                    return trip;
+                }
             }
+            tail
         }
     };
 

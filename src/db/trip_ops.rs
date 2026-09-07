@@ -29,13 +29,32 @@ pub struct TripMetadataUpdate {
 }
 
 /// Statuses a trip may be chained behind: committed work that has not finished.
-/// Kept beside the query that uses it so the SQL literals and this list cannot
-/// drift; `TripStatus::as_str` supplies the wire values.
 const CHAINABLE_PREDECESSOR_STATUSES: [crate::models::TripStatus; 3] = [
     crate::models::TripStatus::Assigned,
     crate::models::TripStatus::Dispatched,
     crate::models::TripStatus::InTransit,
 ];
+
+/// Statuses that count as "live" when working out a driver's chain. Wider than
+/// the set above: a `Planned` trip cannot BE a predecessor, but it can already
+/// have claimed one, and ignoring that claim would fork the chain the moment it
+/// is assigned.
+const LIVE_CHAIN_STATUSES: [crate::models::TripStatus; 4] = [
+    crate::models::TripStatus::Planned,
+    crate::models::TripStatus::Assigned,
+    crate::models::TripStatus::Dispatched,
+    crate::models::TripStatus::InTransit,
+];
+
+/// SQL `IN (...)` list built from a status set, so the filter literals and the
+/// constants above cannot drift apart. `as_str` is the single source of the wire
+/// values.
+fn status_in_list(statuses: &[crate::models::TripStatus]) -> String {
+    statuses.iter()
+        .map(|s| format!("'{}'", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 impl DbClient {
     pub async fn insert_trip(&self, record: &TripRecord) -> Result<(), AppError> {
@@ -450,14 +469,13 @@ impl DbClient {
     ) -> Result<Option<TripRecord>, AppError> {
         let id_str = driver_id.to_string();
         let exclude_str = exclude_trip_id.to_string();
-        // Planned trips are pulled in too: they cannot be a predecessor, but a
-        // planned trip already pointing at a candidate means that candidate is
-        // spoken for, and chaining onto it anyway would fork the chain the moment
-        // the planned one is assigned.
+        // `LIVE_CHAIN_STATUSES` is deliberately wider than the chainable set —
+        // see its doc comment.
+        let live_statuses = status_in_list(&LIVE_CHAIN_STATUSES);
         let stream = self.trip_table.query()
             .only_if(format!(
                 "driver_id = '{id_str}' AND id != '{exclude_str}' \
-                 AND status IN ('planned', 'assigned', 'dispatched', 'in_transit')"
+                 AND status IN ({live_statuses})"
             ))
             .execute().await
             .map_err(|e| AppError::Internal(e.to_string()))?;

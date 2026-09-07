@@ -126,10 +126,22 @@ export const CHAIN_NONE = 'none';
  * Terminal trips are excluded because their completion has already fired, so a
  * successor chained to one would never auto-dispatch; `planned` trips are
  * excluded because they may never run, which would strand the successor.
+ *
+ * Trips that something is ALREADY queued behind are excluded too, mirroring the
+ * server's tail rule. Picking one puts two successors on a single predecessor,
+ * which auto-dispatch refuses to resolve — so nothing rolls and the ambiguity is
+ * journalled. Offering that is offering a dead end.
  */
 export function chainableTripOptions(trips, currentTripId) {
-  return (trips || [])
-    .filter((t) => t && t.id && t.id !== currentTripId && CHAINABLE_STATUSES.has(t.status))
+  const list = (trips || []).filter((t) => t && t.id);
+  const spokenFor = new Set(
+    list.filter((t) => t.id !== currentTripId && t.previous_trip_id)
+        .map((t) => t.previous_trip_id),
+  );
+  return list
+    .filter((t) => t.id !== currentTripId
+      && CHAINABLE_STATUSES.has(t.status)
+      && !spokenFor.has(t.id))
     .map((t) => ({ value: t.id, label: `${t.trip_number || t.id} · ${t.status}` }));
 }
 

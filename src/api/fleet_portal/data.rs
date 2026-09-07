@@ -799,6 +799,14 @@ pub async fn build_trip_detail(
         .and_then(|o| o.facility_name.clone());
     enriched.mileage_summary = Some(summary);
     enriched.driver_pay = driver_pay_for_record(state, &record).await;
+    // The detail surface must resolve the chain link's label too. Without this
+    // the "Follows" row falls through to `shortId(previous_trip_id)` and shows a
+    // raw UUID prefix to a dispatcher, which AGENTS.md forbids outright.
+    if let Some(prev_id) = record.previous_trip_id {
+        enriched.previous_trip_number = state.db.get_trip(prev_id).await
+            .ok()
+            .map(|p| p.trip_number);
+    }
     // Surface the trip's OWN rate overrides so the edit form can prefill them.
     enriched.loaded_rate_per_mile = record.loaded_rate_per_mile;
     enriched.deadhead_rate_per_mile = record.deadhead_rate_per_mile;
@@ -911,13 +919,14 @@ pub async fn driver_pay_for_record(
     post,
     path = "/fleet/api/v1/trips/{id}/assign",
     params(("id" = Uuid, Path, description = "Trip UUID")),
-    request_body(content = AssignTripRequest, description = "Driver, truck, and optional trailers"),
+    request_body(content = AssignTripRequest, description = "Driver, truck, optional trailers, and the optional auto-dispatch chain link (omit previous_trip_id to derive it, null for no chain, or a trip id to pin it)"),
     responses(
         (status = 200, description = "Trip assigned", body = TripRecord),
         (status = 400, description = "Bad request"),
         (status = 401, description = "Unauthorized"),
         (status = 404, description = "Not found"),
-        (status = 409, description = "Conflict — driver/truck/trailer not eligible for assignment (inactive/out-of-service) or invalid status transition"),
+        (status = 409, description = "Conflict — driver/truck/trailer not eligible for assignment (inactive/out-of-service), invalid status transition, or the trip is settled and its chain link is frozen"),
+        (status = 422, description = "Unprocessable — previous_trip_id names the trip itself, a trip that does not exist, a trip assigned to a different driver, or one that already follows this trip"),
     ),
     security(("BearerAuth" = [])),
     tag = "fleet"

@@ -420,6 +420,26 @@ describe('chainableTripOptions', () => {
     expect(chainableTripOptions(trips, 'b').map((o) => o.value)).toEqual(['a', 'c']);
   });
 
+  it('excludes a trip something is already queued behind', () => {
+    // Two successors on one predecessor is the shape auto-dispatch refuses to
+    // resolve, so offering it in the picker is offering a dead end.
+    const chain = [
+      { id: 'a', trip_number: 'T-1', status: 'assigned' },
+      { id: 'b', trip_number: 'T-2', status: 'assigned', previous_trip_id: 'a' },
+    ];
+    expect(chainableTripOptions(chain, 'zzz').map((o) => o.value)).toEqual(['b']);
+  });
+
+  it('does not let the trip being assigned mask its own predecessor', () => {
+    // The current trip's own link must not mark A as spoken for — A is exactly
+    // where this trip already sits, and re-offering it is legitimate.
+    const chain = [
+      { id: 'a', trip_number: 'T-1', status: 'assigned' },
+      { id: 'me', trip_number: 'T-9', status: 'assigned', previous_trip_id: 'a' },
+    ];
+    expect(chainableTripOptions(chain, 'me').map((o) => o.value)).toEqual(['a']);
+  });
+
   it('labels with the trip number and status', () => {
     expect(chainableTripOptions([trips[0]], 'zzz')[0].label).toBe('T-1 · assigned');
   });
