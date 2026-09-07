@@ -841,6 +841,8 @@ async fn test_auto_dispatch_is_documented_in_llms_txt() {
         "best-effort",
         "emit no event",
         "does NOT auto-dispatch",
+        "trip.mileage_recompute_failed",
+        "mileage_recompute_warning",
     ] {
         assert!(body.contains(needle),
             "llms.txt must document the auto-dispatch rule; missing: {needle}");
@@ -872,6 +874,20 @@ async fn test_auto_dispatch_is_documented_in_the_mcp_tool_descriptions() {
         "stop_depart must state the selection rule; got: {depart}");
     assert!(depart.contains("emit no event"),
         "stop_depart must not imply the resource moves are journalled; got: {depart}");
+    assert!(depart.contains("trip.auto_dispatch_no_chain"),
+        "stop_depart must name the stalled-chain event, not just the ambiguous one; got: {depart}");
+
+    // The create path derives a link of its own and does NOT validate it, which is
+    // the opposite of what this description said until v2.10.0 prep.
+    let create = describe("create_trip");
+    assert!(create.contains("does NOT guarantee no chain"),
+        "create_trip must not claim omitting previous_trip_id disables auto-dispatch; got: {create}");
+    assert!(create.contains("NOT validated"),
+        "create_trip must warn that its link is unvalidated; got: {create}");
+
+    let assign = describe("assign_driver");
+    assert!(assign.contains("best-effort"),
+        "assign_driver must not promise a mileage recompute it may not deliver; got: {assign}");
 
     let complete = describe("complete_trip");
     assert!(complete.contains("Does NOT auto-dispatch"),
@@ -901,6 +917,8 @@ async fn test_auto_dispatch_side_effect_is_declared_on_the_departure_paths() {
             "{path} {method} must declare that it can dispatch another trip; got: {text}");
         assert!(text.contains("chain-only"),
             "{path} {method} must state the selection rule; got: {text}");
+        assert!(text.contains("trip.auto_dispatch_no_chain"),
+            "{path} {method} must name the stalled-chain event too; got: {text}");
     }
 
     let complete = described("/fleet/api/v1/trips/{id}/complete", "post", "204");

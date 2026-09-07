@@ -534,6 +534,12 @@ forbidden (403).
   them.
   Completing a trip (`delivered → completed`) does NOT auto-dispatch — the
   successor, if any, already rolled when the trip delivered.
+  Setting `previous_trip_id` (on create, assign, or update_trip) recomputes the
+  trip's mileage, because the field is also the deadhead origin and deadhead feeds
+  driver pay. On the assign path that recompute is best-effort: a routing failure
+  leaves the link committed with stale miles, returns 200, and journals
+  `trip.mileage_recompute_failed` (severity `exception`). The update_trip path
+  instead returns `mileage_recompute_warning` in the response.
 
   A load may have multiple trips (relay). Trip responses include: previous_trip_id
   (the dispatch chain link AND the deadhead origin; at create it defaults to the

@@ -4325,7 +4325,7 @@ dependencies = [
 
 [[package]]
 name = "ollie"
-version = "2.9.0"
+version = "2.10.0"
 dependencies = [
  "anyhow",
  "arrow-array",

@@ -252,7 +252,7 @@
       "name": "get_trip"
     },
     {
-      "description": "Create a new trip. If load_id is given, stops can be omitted and will be copied from the load. Set previous_trip_id to chain this trip behind another: it supplies the deadhead origin for mileage, and when that trip delivers this is the trip auto-dispatched to the driver. Without it there is no auto-dispatch \u2014 the dispatcher starts this trip by hand.",
+      "description": "Create a new trip. If load_id is given, stops can be omitted and will be copied from the load. Set previous_trip_id to chain this trip behind another: it supplies the deadhead origin for mileage, and when that trip delivers this is the trip auto-dispatched to the driver. Omitting it does NOT guarantee no chain: when the payload names a driver, create defaults the link to that driver's most recent non-cancelled trip, and if the payload also names a truck the trip is promoted straight to assigned, where the assign-time derivation answers instead. The value written here is NOT validated \u2014 an id that does not exist, belongs to another driver, or already has a successor will silently prevent this trip from ever auto-dispatching. Prefer assign_driver, which validates and rejects all four cases.",
       "inputSchema": {
         "properties": {
           "blob_ids": {
@@ -363,7 +363,7 @@
       "name": "recalculate_trip_miles"
     },
     {
-      "description": "Assign a driver, truck, and trailers to a trip. Also settles the auto-dispatch chain link: omit previous_trip_id to attach the trip to the end of the driver's chain, pass null to start a new chain, or pass a trip id to pin the predecessor. Setting it recomputes the trip's mileage, which feeds driver pay.",
+      "description": "Assign a driver, truck, and trailers to a trip. Also settles the auto-dispatch chain link: omit previous_trip_id to attach the trip to the end of the driver's chain, pass null to start a new chain, or pass a trip id to pin the predecessor. Setting it recomputes the trip's mileage, which feeds driver pay. That recompute is best-effort: if routing is unavailable the assignment still succeeds with stale miles and a trip.mileage_recompute_failed event is journalled, so check the event feed rather than assuming a 200 means the miles moved.",
       "inputSchema": {
         "properties": {
           "driver_id": {
@@ -678,7 +678,7 @@
       "name": "stop_arrive"
     },
     {
-      "description": "Record actual departure from a trip stop. Triggers trip and load status cascades: dispatched → in_transit when the first pickup departs (or, on a non-freight/empty move with no pickup, when the first stop departs), and → delivered when the final stop departs. A single-stop empty move advances straight to delivered on that one depart. On that final departure it may also AUTO-DISPATCH A DIFFERENT TRIP: the successor is the assigned trip on the same driver whose previous_trip_id is this trip. Selection is chain-only, with no recency or schedule fallback. Zero candidates dispatches nothing; more than one dispatches nothing and journals trip.auto_dispatch_ambiguous. It also declines if the candidate's truck or any trailer is bound to another active trip. When it fires, the successor trip, the driver, the truck, every trailer, and a linked assigned load all move to dispatched, though each of those writes is best-effort and a failure is logged rather than rolled back. Only trip.dispatched and load.dispatched are journalled (actor 'auto_dispatch'); driver, truck and trailer status changes emit no event.",
+      "description": "Record actual departure from a trip stop. Triggers trip and load status cascades: dispatched → in_transit when the first pickup departs (or, on a non-freight/empty move with no pickup, when the first stop departs), and → delivered when the final stop departs. A single-stop empty move advances straight to delivered on that one depart. On that final departure it may also AUTO-DISPATCH A DIFFERENT TRIP: the successor is the assigned trip on the same driver whose previous_trip_id is this trip. Selection is chain-only, with no recency or schedule fallback. Zero candidates dispatches nothing, and journals trip.auto_dispatch_no_chain when the driver has other assigned trips that did not chain off this one; more than one dispatches nothing and journals trip.auto_dispatch_ambiguous. It also declines if the candidate's truck or any trailer is bound to another active trip. When it fires, the successor trip, the driver, the truck, every trailer, and a linked assigned load all move to dispatched, though each of those writes is best-effort and a failure is logged rather than rolled back. Only trip.dispatched and load.dispatched are journalled (actor 'auto_dispatch'); driver, truck and trailer status changes emit no event.",
       "inputSchema": {
         "properties": {
           "actual_depart": {
