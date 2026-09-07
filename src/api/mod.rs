@@ -505,6 +505,29 @@ forbidden (403).
   destination). divert_trip requires a `waypoint` marking where the old and new
   plans diverged — routing walks waypoint to waypoint, so without it the miles
   already driven away from the original destination are silently erased.
+  Auto-dispatch on delivery: recording the FINAL stop departure moves the trip to
+  `delivered` and may automatically dispatch a DIFFERENT trip — a status change on
+  a record the caller did not name. The successor is the `assigned` trip on the
+  same driver whose `previous_trip_id` is the trip that just delivered. Selection
+  is chain-only: there is deliberately no recency or scheduled-time fallback, so a
+  trip with no chain link is never auto-dispatched.
+    - Zero candidates dispatches nothing. When the driver has OTHER `assigned`
+      trips that did not chain off the completed one, a `trip.auto_dispatch_no_chain`
+      event is journalled (work is queued that the chain does not reach); a driver
+      with nothing queued is the ordinary end of a chain and is not journalled.
+    - More than one candidate dispatches nothing and journals
+      `trip.auto_dispatch_ambiguous` with the candidate ids.
+    - Auto-dispatch also declines if the candidate's truck, or any of its
+      trailers, is bound to another active trip.
+    - `tonu_trip` never auto-dispatches: the truck is not where the plan assumed.
+  The cascade is wider than the trip. Driver, truck and trailer statuses move to
+  `dispatched`, and a linked `assigned` load moves to `dispatched` too. Automatic
+  transitions carry `actor: "auto_dispatch"` in the event journal, and the
+  successor's `trip.dispatched` event carries `triggered_by_trip_id` naming the
+  completed trip, so an automatic dispatch is distinguishable from a dispatcher's.
+  Completing a trip (`delivered → completed`) does NOT auto-dispatch — the
+  successor, if any, already rolled when the trip delivered.
+
   A load may have multiple trips (relay). Trip responses include: previous_trip_id
   (the dispatch chain link AND the deadhead origin; at create it defaults to the
   driver's last non-cancelled trip when the payload names a driver, and at assign
