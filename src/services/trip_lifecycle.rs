@@ -308,6 +308,13 @@ pub async fn dispatch(state: &AppState, trip_id: Uuid) -> Result<TripRecord, App
         return Err(AppError::Conflict("trip must be in assigned status to dispatch".into()));
     }
 
+    // #433: warn, but proceed. A dispatcher starting a trip out of chain order
+    // is overriding the plan on purpose — that is their call to make, unlike
+    // the automatic path, which hard-blocks because nobody is watching it.
+    if let Err(reason) = predecessor_blocking_dispatch(state, existing.previous_trip_id).await {
+        tracing::warn!(%trip_id, %reason, "dispatching a trip whose predecessor has not finished");
+    }
+
     let driver_for_dispatch = if let Some(driver_id) = existing.driver_id {
         let driver = state.db.get_driver_by_id(driver_id).await?;
         if driver.status == DriverStatus::Dispatched {
@@ -1003,9 +1010,60 @@ fn resource_on_other_active_trip(
     })
 }
 
-/// After a trip transitions to Delivered, find the driver's next Assigned trip
-/// and auto-dispatch it. Best-effort: errors are logged and swallowed so a
+/// True when a trip status means the trip is over and a successor may start.
+/// TONU counts: the truck rolled and was released, so the chain moves on.
+pub(crate) fn is_terminal_for_chaining(status: &TripStatus) -> bool {
+    // Matched exhaustively on purpose: a new TripStatus must be classified
+    // here rather than defaulting to "still running" under a catch-all. The
+    // terminal-status list has been missed twice on this codebase already.
+    match status {
+        TripStatus::Delivered
+        | TripStatus::Completed
+        | TripStatus::Cancelled
+        | TripStatus::Tonu => true,
+        TripStatus::Planned
+        | TripStatus::Assigned
+        | TripStatus::Dispatched
+        | TripStatus::InTransit => false,
+    }
+}
+
+/// Whether `trip`'s declared predecessor is finished. `Ok(())` when there is no
+/// predecessor or it is terminal; `Err(reason)` when the predecessor is still
+/// running, or cannot be read at all.
+///
+/// #433: a trip whose predecessor has not finished is, on its own record, not
+/// yet eligible to start. Callers decide the consequence — the automatic path
+/// hard-blocks, the manual path warns and proceeds, because a dispatcher
+/// overriding the plan is a legitimate thing to do.
+async fn predecessor_blocking_dispatch(
+    state: &AppState,
+    previous_trip_id: Option<Uuid>,
+) -> Result<(), String> {
+    let Some(prev_id) = previous_trip_id else { return Ok(()) };
+    match state.db.get_trip(prev_id).await {
+        Ok(prev) if is_terminal_for_chaining(&prev.status) => Ok(()),
+        Ok(prev) => Err(format!(
+            "previous trip {prev_id} is still {} (not delivered/completed/cancelled/tonu)",
+            prev.status.as_str()
+        )),
+        Err(e) => Err(format!("previous trip {prev_id} could not be read: {e}")),
+    }
+}
+
+/// After a trip transitions to Delivered, dispatch the successor the completed
+/// trip actually names. Best-effort: errors are logged and swallowed so a
 /// hiccup here does not break the calling endpoint.
+///
+/// **Selection is chain-only (#433).** A candidate is an Assigned trip on this
+/// driver whose `previous_trip_id` is the trip that just delivered. Zero
+/// candidates dispatches nothing, and more than one dispatches nothing and
+/// journals the ambiguity — there is deliberately no recency or scheduled-time
+/// fallback. The old ordering (earliest first-stop `scheduled_arrive`) put the
+/// wrong load in a driver's app mid-run: on a lane that pairs a loaded run with
+/// a follow-on empty move, both sit Assigned at once and broker appointment
+/// times routinely arrive out of order. A wrong auto-dispatch is worse than
+/// none, because it silently replaces what the driver sees.
 ///
 /// `dispatch`'s resource-conflict checks are not reused as-is because the
 /// driver and truck from the just-delivered trip will still read `Dispatched`.
@@ -1021,27 +1079,39 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
         tracing::warn!(%driver_id, "auto-dispatch: failed to list assigned trips");
         return;
     };
-    let mut candidates: Vec<_> = trips.into_iter()
-        .filter(|t| t.id != just_delivered_trip_id)
+    // The just-delivered trip cannot be in this list — it is Delivered, not
+    // Assigned — so the chain link is the only filter needed.
+    let candidates: Vec<_> = trips.into_iter()
+        .filter(|t| t.previous_trip_id == Some(just_delivered_trip_id))
         .collect();
-    if candidates.is_empty() { return; }
 
-    candidates.sort_by_key(|t| {
-        let origin = t.stops.iter().min_by_key(|s| s.sequence);
-        let scheduled = origin.and_then(|s| {
-            s.scheduled_arrive.as_deref().and_then(|sa| {
-                let parsed = crate::models::load::parse_stop_time(sa, s.timezone.as_deref());
-                if parsed.is_none() {
-                    tracing::warn!(trip_id = %t.id, sched = %sa, "auto-dispatch: unparseable scheduled_arrive");
-                }
-                parsed
-            })
-        });
-        (scheduled.unwrap_or(chrono::DateTime::<chrono::Utc>::MAX_UTC), t.created_at)
-    });
+    if candidates.is_empty() {
+        tracing::info!(
+            %driver_id, prev_trip = %just_delivered_trip_id,
+            "auto-dispatch: no assigned trip chains off this one; leaving dispatch to the fleet_user"
+        );
+        return;
+    }
+    if candidates.len() > 1 {
+        let ids: Vec<String> = candidates.iter().map(|t| t.id.to_string()).collect();
+        tracing::warn!(
+            %driver_id, prev_trip = %just_delivered_trip_id, candidates = ?ids,
+            "auto-dispatch: more than one assigned trip chains off this one; dispatching none"
+        );
+        events::on_auto_dispatch_ambiguous(&state.db, just_delivered_trip_id, &ids).await;
+        return;
+    }
 
     let next = &candidates[0];
     let trip_id = next.id;
+
+    // Defence in depth behind the chain filter: refuse a successor whose own
+    // predecessor has not finished. Redundant while selection is chain-only —
+    // and that is the point, it survives a future fallback.
+    if let Err(reason) = predecessor_blocking_dispatch(state, next.previous_trip_id).await {
+        tracing::warn!(%trip_id, %reason, "auto-dispatch: predecessor not finished, skipping");
+        return;
+    }
 
     // Refuse to bind a truck or trailer that is already active on another trip.
     // The driver is exempt — they were on the just-delivered trip; their status
@@ -1091,4 +1161,32 @@ pub(crate) async fn try_auto_dispatch_next_for_driver(
 
     tracing::info!(prev_trip = %just_delivered_trip_id, next_trip = %trip_id, %driver_id, "auto-dispatched next trip");
     events::on_trip_dispatched(&state.db, trip_id).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_terminal_for_chaining;
+    use crate::models::TripStatus;
+
+    /// Pins the terminal set the chain guard uses (#433). TONU belongs here:
+    /// the truck rolled and was released, so the chain legitimately moves on.
+    #[test]
+    fn terminal_statuses_for_chaining() {
+        for s in [
+            TripStatus::Delivered,
+            TripStatus::Completed,
+            TripStatus::Cancelled,
+            TripStatus::Tonu,
+        ] {
+            assert!(is_terminal_for_chaining(&s), "{s:?} should be terminal");
+        }
+        for s in [
+            TripStatus::Planned,
+            TripStatus::Assigned,
+            TripStatus::Dispatched,
+            TripStatus::InTransit,
+        ] {
+            assert!(!is_terminal_for_chaining(&s), "{s:?} should not be terminal");
+        }
+    }
 }

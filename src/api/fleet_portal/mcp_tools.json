@@ -252,7 +252,7 @@
       "name": "get_trip"
     },
     {
-      "description": "Create a new trip. If load_id is given, stops can be omitted and will be copied from the load.",
+      "description": "Create a new trip. If load_id is given, stops can be omitted and will be copied from the load. Set previous_trip_id to chain this trip behind another: it supplies the deadhead origin for mileage, and when that trip delivers this is the trip auto-dispatched to the driver. Without it there is no auto-dispatch \u2014 the dispatcher starts this trip by hand.",
       "inputSchema": {
         "properties": {
           "blob_ids": {
@@ -310,7 +310,7 @@
       "name": "create_trip"
     },
     {
-      "description": "Update a trip's notes, blob_ids, and/or previous_trip_id link. Setting previous_trip_id triggers a mileage recompute. Mileage fields cannot be set directly.",
+      "description": "Update a trip's notes, blob_ids, and/or previous_trip_id link. previous_trip_id has TWO effects: it triggers a mileage recompute (it is the deadhead origin), and it is the dispatch chain link \u2014 when the referenced trip is delivered, this trip is the one auto-dispatched to the driver. Repointing it to correct a deadhead origin therefore also changes which trip lands on a driver's phone. Mileage fields cannot be set directly.",
       "inputSchema": {
         "properties": {
           "blob_ids": {

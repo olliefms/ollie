@@ -57,6 +57,12 @@ pub struct PatchTripBody {
     #[serde(default)]
     pub internal_notes: Option<String>,
     /// `Some(uuid)` sets the link; omitted = no change.
+    ///
+    /// This field carries two meanings, and callers correcting one will move the
+    /// other: it is the deadhead origin for mileage (`compute_trip_mileage`) AND
+    /// the dispatch chain link that decides which trip auto-dispatches when the
+    /// referenced trip delivers (#433, `try_auto_dispatch_next_for_driver`).
+    ///
     /// Note: clearing previous_trip_id to null is not currently supported via this
     /// endpoint — it lacks the `double_option` pattern the rate overrides below use
     /// to distinguish omitted from explicit null. The same is true of `notes`,

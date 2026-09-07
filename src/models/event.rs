@@ -6,7 +6,7 @@ use uuid::Uuid;
 /// Exception wins over system when both could apply.
 pub fn classify_severity(event_type: &str) -> &'static str {
     match event_type {
-        "stop.late" | "processing_failed" => "exception",
+        "stop.late" | "processing_failed" | "trip.auto_dispatch_ambiguous" => "exception",
         "processing_started" | "processing_completed" | "driver.equipment_changed"
         | "driver.trailer_changed" => "system",
         _ => "normal",
@@ -78,6 +78,9 @@ mod tests {
     fn classifies_severity() {
         assert_eq!(classify_severity("stop.late"), "exception");
         assert_eq!(classify_severity("processing_failed"), "exception");
+        // #433: a stalled dispatch chain is exactly what the attention filter
+        // in the fleet ops feed exists to surface.
+        assert_eq!(classify_severity("trip.auto_dispatch_ambiguous"), "exception");
         assert_eq!(classify_severity("processing_started"), "system");
         assert_eq!(classify_severity("processing_completed"), "system");
         assert_eq!(classify_severity("driver.equipment_changed"), "system");

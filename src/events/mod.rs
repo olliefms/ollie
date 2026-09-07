@@ -31,6 +31,22 @@ pub async fn on_trip_dispatched(db: &DbClient, trip_id: Uuid) {
     tracing::info!(trip_id = %trip_id, "trip dispatched");
 }
 
+/// More than one Assigned trip chains off the trip that just delivered, so
+/// auto-dispatch picked none of them (#433). Journalled against the completed
+/// trip because that is the record a dispatcher is looking at when they wonder
+/// why nothing rolled. `actor` marks it as system-initiated, and the type is
+/// classified `exception` in `classify_severity` so it survives the fleet ops
+/// feed's attention filter — a chain that stalled is precisely what that filter
+/// is for, and a `normal` event there would be a grey line nobody reads.
+pub async fn on_auto_dispatch_ambiguous(db: &DbClient, trip_id: Uuid, candidate_ids: &[String]) {
+    let payload = serde_json::json!({ "candidate_trip_ids": candidate_ids });
+    let _ = db.append_event(
+        "trip", trip_id, "trip.auto_dispatch_ambiguous",
+        Some(payload), Some("auto_dispatch"), &now_z(), None,
+    ).await;
+    tracing::warn!(trip_id = %trip_id, "auto-dispatch ambiguous; no successor dispatched");
+}
+
 pub async fn on_trip_undispatched(db: &DbClient, trip_id: Uuid) {
     let _ = db.append_event("trip", trip_id, "trip.undispatched", None, None, &now_z(), None).await;
     tracing::info!(trip_id = %trip_id, "trip undispatched");
