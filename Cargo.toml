@@ -57,7 +57,7 @@ url = "2"
 # default-features off drops the rmcp-macros proc-macro crate: the tool
 # catalogue in fleet_portal/mcp.rs is hand-authored, no #[tool] derives.
 # base64 stays for the blob Content/ResourceContents paths.
-rmcp = { version = "1.7", default-features = false, features = [
+rmcp = { version = "2.0", default-features = false, features = [
     "base64", "server", "transport-streamable-http-server",
     "transport-streamable-http-server-session", "tower",
 ] }
